@@ -31,6 +31,7 @@ const VIDEO_EXTS:      Array = ["mp4", "mkv", "webm", "avi", "mov", "ogv"]
 @onready var _hud_layout:  HBoxContainer     = $HUD/HUDBar/HUDLayout
 @onready var _round_lbl:   Label             = $HUD/HUDBar/HUDLayout/RoundLabel
 @onready var _progress:    ProgressBar       = $HUD/HUDBar/HUDLayout/ProgressBar
+@onready var _score_lbl:   Label             = $HUD/HUDBar/HUDLayout/ScoreLabel
 @onready var _pause_btn:   Button            = $HUD/HUDBar/HUDLayout/PauseBtn
 @onready var _menu_btn:    Button            = $HUD/HUDBar/HUDLayout/MenuBtn
 @onready var _options_btn: Button            = $HUD/HUDBar/HUDLayout/OptionsBtn
@@ -44,6 +45,7 @@ func _ready() -> void:
 	_apply_layout()
 	_apply_theme()
 	_connect_signals()
+	ScoreService.Reset()
 	_load_current_round()
 	_show_hud()
 
@@ -77,9 +79,12 @@ func _load_current_round() -> void:
 	_paused = false
 	_pause_btn.text = "|| PAUSE"
 
+	ScoreService.StartRound()
+
 	var fs_path: String = round.get("funscript_path", "")
 	if fs_path != "":
 		FunscriptPlayer.LoadFunscript(fs_path)
+		ScoreService.SetRoundActions(FunscriptPlayer.ActionCount)
 
 	var folder: String = round.get("folder", "")
 	var video_path: String = _find_video(folder)
@@ -153,6 +158,7 @@ func _start_no_video_fallback() -> void:
 # ---------------------------------------------------------------------------
 
 func _on_round_ended() -> void:
+	ScoreService.EndRound()
 	FunscriptPlayer.Stop()
 
 	if GameState.ShopAfterCurrent():
@@ -229,6 +235,10 @@ func _input(event: InputEvent) -> void:
 # Signals
 # ---------------------------------------------------------------------------
 
+func _on_score_changed(total: int) -> void:
+	_score_lbl.text = str(total) + " PTS"
+
+
 func _connect_signals() -> void:
 	_video.finished.connect(_on_round_ended)
 	_end_timer.timeout.connect(_on_round_ended)
@@ -239,6 +249,7 @@ func _connect_signals() -> void:
 	_menu_btn.mouse_entered.connect(_show_hud)
 	_options_btn.pressed.connect(_on_options_pressed)
 	_options_btn.mouse_entered.connect(_show_hud)
+	ScoreService.ScoreChanged.connect(_on_score_changed)
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +309,10 @@ func _apply_theme() -> void:
 	_round_lbl.add_theme_color_override("font_color",    COLOR_WHITE_SOFT)
 	_round_lbl.add_theme_font_size_override("font_size", 13)
 	_round_lbl.uppercase = true
+
+	_score_lbl.add_theme_color_override("font_color",    COLOR_MAGENTA)
+	_score_lbl.add_theme_font_size_override("font_size", 13)
+	_score_lbl.uppercase = true
 
 	_style_progress()
 	_style_button(_pause_btn,   COLOR_PURPLE_BRIGHT)

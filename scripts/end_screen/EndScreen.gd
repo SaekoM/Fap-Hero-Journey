@@ -28,7 +28,12 @@ const BORDER_WIDTH: int = 3
 @onready var _stat_rounds:  Label          = $Panel/VBox/StatsRow/StatRounds
 @onready var _stat_actions: Label          = $Panel/VBox/StatsRow/StatActions
 @onready var _stat_time:    Label          = $Panel/VBox/StatsRow/StatTime
-@onready var _back_btn:     Button         = $Panel/VBox/BackButton
+@onready var _score_divider:    HSeparator    = $Panel/VBox/ScoreDivider
+@onready var _score_title:      Label         = $Panel/VBox/ScoreSection/ScoreTitle
+@onready var _round_breakdown:  VBoxContainer = $Panel/VBox/ScoreSection/RoundBreakdownContainer
+@onready var _total_score_lbl: Label         = $Panel/VBox/ScoreSection/TotalScoreRow/TotalScoreLabel
+@onready var _total_score_val: Label         = $Panel/VBox/ScoreSection/TotalScoreRow/TotalScoreValue
+@onready var _back_btn:        Button        = $Panel/VBox/BackButton
 
 
 func _ready() -> void:
@@ -39,12 +44,61 @@ func _ready() -> void:
 
 
 func _populate() -> void:
-	var j: Dictionary = GameState.journey
+	var j: Dictionary = GameState.Journey
 	_journey_lbl.text  = (j.get("title", "Journey") as String).to_upper()
 	_stat_rounds.text  = str(j.get("rounds", []).size()) + " ROUNDS"
 	_stat_actions.text = str(j.get("total_actions", 0)) + " ACTIONS"
 	var secs: int = (j.get("total_length_ms", 0) as int) / 1000
 	_stat_time.text = _fmt(secs)
+	_populate_score()
+
+
+func _populate_score() -> void:
+	var breakdowns: Array = ScoreService.GetRoundBreakdowns()
+	var rounds: Array = GameState.Journey.get("rounds", [])
+	_total_score_val.text = str(ScoreService.TotalScore) + " PTS"
+
+	for i: int in breakdowns.size():
+		var r: Dictionary = breakdowns[i]
+		var rd: Dictionary = rounds[i] if i < rounds.size() else {}
+		var row: HBoxContainer = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 16)
+
+		var name_lbl: Label = Label.new()
+		var rname: String = (rd.get("name", "Round %d" % (i + 1)) as String).to_upper()
+		name_lbl.text = "R%d  %s" % [i + 1, rname]
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_lbl.add_theme_color_override("font_color", COLOR_WHITE_SOFT)
+		name_lbl.add_theme_font_size_override("font_size", 13)
+
+		var time_lbl: Label = Label.new()
+		var secs: int = (rd.get("length_ms", 0) as int) / 1000
+		time_lbl.text = _fmt(secs)
+		time_lbl.add_theme_color_override("font_color", COLOR_PURPLE_MID)
+		time_lbl.add_theme_font_size_override("font_size", 12)
+
+		var act_lbl: Label = Label.new()
+		act_lbl.text = "%d ACTIONS" % r["actions"]
+		act_lbl.add_theme_color_override("font_color", COLOR_PURPLE_MID)
+		act_lbl.add_theme_font_size_override("font_size", 12)
+
+		var detail_lbl: Label = Label.new()
+		detail_lbl.text = "%dS %dM %dL" % [r["small"], r["medium"], r["large"]]
+		detail_lbl.add_theme_color_override("font_color", COLOR_PURPLE_MID)
+		detail_lbl.add_theme_font_size_override("font_size", 12)
+
+		var pts_lbl: Label = Label.new()
+		pts_lbl.text = str(r["score"]) + " PTS"
+		pts_lbl.add_theme_color_override("font_color", COLOR_MAGENTA)
+		pts_lbl.add_theme_font_size_override("font_size", 13)
+
+		row.add_child(name_lbl)
+		row.add_child(time_lbl)
+		row.add_child(act_lbl)
+		row.add_child(detail_lbl)
+		row.add_child(pts_lbl)
+		_round_breakdown.add_child(row)
 
 
 func _fmt(total_seconds: int) -> String:
@@ -87,6 +141,9 @@ func _apply_layout() -> void:
 
 	_vbox.add_theme_constant_override("separation", 20)
 	_stats_row.add_theme_constant_override("separation", 0)
+	$Panel/VBox/ScoreSection.add_theme_constant_override("separation", 12)
+	$Panel/VBox/ScoreSection/TotalScoreRow.add_theme_constant_override("separation", 16)
+	_round_breakdown.add_theme_constant_override("separation", 6)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +191,24 @@ func _apply_theme() -> void:
 		lbl.add_theme_font_size_override("font_size", 15)
 		lbl.uppercase = true
 
+	var score_sep: StyleBoxFlat = StyleBoxFlat.new()
+	score_sep.bg_color           = COLOR_SEPARATOR
+	score_sep.content_margin_top    = 1
+	score_sep.content_margin_bottom = 1
+	_score_divider.add_theme_stylebox_override("separator", score_sep)
+
+	_score_title.add_theme_color_override("font_color",    COLOR_PURPLE_BRIGHT)
+	_score_title.add_theme_font_size_override("font_size", 18)
+	_score_title.uppercase = true
+
+	_total_score_lbl.add_theme_color_override("font_color",    COLOR_WHITE_SOFT)
+	_total_score_lbl.add_theme_font_size_override("font_size", 15)
+	_total_score_lbl.uppercase = true
+
+	_total_score_val.add_theme_color_override("font_color",    COLOR_MAGENTA)
+	_total_score_val.add_theme_font_size_override("font_size", 15)
+	_total_score_val.uppercase = true
+
 	_style_button(_back_btn, COLOR_PURPLE_BRIGHT)
 
 
@@ -142,7 +217,7 @@ func _style_button(btn: Button, accent: Color) -> void:
 	btn.add_theme_color_override("font_hover_color",   COLOR_WHITE_SOFT)
 	btn.add_theme_color_override("font_pressed_color", COLOR_BG)
 	btn.add_theme_font_size_override("font_size", 14)
-	btn.uppercase = true
+	btn.text = btn.text.to_upper()
 
 	var bs: StyleBoxFlat = StyleBoxFlat.new()
 	bs.bg_color            = COLOR_PURPLE_DARK

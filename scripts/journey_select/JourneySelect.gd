@@ -15,6 +15,7 @@ const COLOR_PURPLE_BRIGHT: Color = Color(0.698, 0.118, 1.0,   1.0)
 const COLOR_MAGENTA:       Color = Color(0.878, 0.0,   0.878, 1.0)
 const COLOR_WHITE_SOFT:    Color = Color(0.878, 0.780, 1.0,   1.0)
 const COLOR_SEPARATOR:     Color = Color(0.698, 0.118, 1.0,   0.5)
+const COLOR_DANGER:        Color = Color(0.9,   0.15,  0.15,  1.0)
 
 const TOP_BAR_HEIGHT:   int = 64
 const GRID_TOP_MARGIN:  int = 16
@@ -66,8 +67,9 @@ const JourneyCardScene = preload("res://scenes/journey_select/JourneyCard.tscn")
 @onready var _rounds_hdr:   Label           = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/RoundsHeader
 @onready var _round_scroll: ScrollContainer = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/RoundListScroll
 @onready var _round_list:   VBoxContainer   = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/RoundListScroll/RoundList
-@onready var _play_btn:     Button          = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/PlayButton
-@onready var _edit_btn:     Button          = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/EditButton
+@onready var _play_btn:     Button          = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow/PlayButton
+@onready var _edit_btn:     Button          = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow/EditButton
+@onready var _delete_btn:   Button          = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow/DeleteButton
 
 var _journeys:        Array      = []
 var _sort_field:      String     = "name"
@@ -184,6 +186,7 @@ func _apply_theme() -> void:
 	_style_button(_sort_actions,  COLOR_PURPLE_MID)
 	_style_button(_play_btn,      COLOR_PURPLE_BRIGHT)
 	_style_button(_edit_btn,      COLOR_PURPLE_MID)
+	_style_button(_delete_btn,    COLOR_DANGER)
 
 	_style_modal_panel()
 
@@ -295,6 +298,7 @@ func _connect_signals() -> void:
 	_backdrop.gui_input.connect(_on_backdrop_input)
 	_play_btn.pressed.connect(_on_play_pressed)
 	_edit_btn.pressed.connect(_on_edit_pressed)
+	_delete_btn.pressed.connect(_on_delete_pressed)
 
 
 func _on_sort_pressed(field: String) -> void:
@@ -329,6 +333,51 @@ func _on_edit_pressed() -> void:
 		return
 	JourneyBuilder.edit_journey = _current_journey
 	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
+
+
+func _on_delete_pressed() -> void:
+	if _current_journey.is_empty():
+		return
+	var title: String = _current_journey.get("title", "this journey")
+	var dialog: ConfirmationDialog = ConfirmationDialog.new()
+	dialog.title = "Delete Journey"
+	dialog.dialog_text = "Permanently delete \"%s\"?\n\nAll videos, funscripts, and cover images in the journey folder will be removed. This cannot be undone." % title
+	dialog.ok_button_text = "DELETE"
+	dialog.get_ok_button().add_theme_color_override("font_color", COLOR_DANGER)
+	dialog.confirmed.connect(func() -> void:
+		_confirm_delete()
+		dialog.queue_free()
+	)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered()
+
+
+func _confirm_delete() -> void:
+	var folder: String = _current_journey.get("folder", "")
+	if folder != "":
+		_delete_directory_recursive(folder)
+	_journeys.erase(_current_journey)
+	_current_journey = {}
+	_modal.visible = false
+	_sort_and_populate()
+
+
+func _delete_directory_recursive(path: String) -> void:
+	var dir: DirAccess = DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var fname: String = dir.get_next()
+	while fname != "":
+		var child: String = path + "/" + fname
+		if dir.current_is_dir():
+			_delete_directory_recursive(child)
+		else:
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(child))
+		fname = dir.get_next()
+	dir.list_dir_end()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 # ---------------------------------------------------------------------------
 # Journey scanning

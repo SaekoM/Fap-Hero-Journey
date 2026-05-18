@@ -51,6 +51,30 @@ size_flags_vertical = 0
 layout_mode = 2
 size_flags_horizontal = 3
 
+[node name="OutputSection" type="VBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000010]
+layout_mode = 2
+
+[node name="OutputHeader" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection" unique_id=1900000011]
+layout_mode = 2
+text = "DEVICE OUTPUT"
+
+[node name="OutputDivider" type="HSeparator" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection" unique_id=1900000012]
+layout_mode = 2
+
+[node name="OutputModeRow" type="HBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection" unique_id=1900000013]
+layout_mode = 2
+
+[node name="OutputModeLabel" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow" unique_id=1900000014]
+layout_mode = 2
+text = "MODE"
+
+[node name="OutputModeDropdown" type="OptionButton" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow" unique_id=1900000015]
+layout_mode = 2
+
+[node name="OutputGap" type="Control" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000016]
+custom_minimum_size = Vector2(0, 24)
+layout_mode = 2
+
 [node name="AudioSection" type="VBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1420965730]
 layout_mode = 2
 
@@ -184,3 +208,74 @@ text = "DEVICE"
 layout_mode = 2
 size_flags_horizontal = 3
 disabled = true
+
+[node name="SerialGap" type="Control" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000020]
+custom_minimum_size = Vector2(0, 24)
+layout_mode = 2
+
+[node name="SerialSection" type="VBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000021]
+layout_mode = 2
+
+[node name="SerialHeader" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection" unique_id=1900000022]
+layout_mode = 2
+text = "SERIAL T-CODE (SR6 / OSR2)"
+
+[node name="SerialDivider" type="HSeparator" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection" unique_id=1900000023]
+layout_mode = 2
+
+[node name="SerialPortRow" type="HBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection" unique_id=1900000024]
+layout_mode = 2
+
+[node name="SerialPortLabel" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow" unique_id=1900000025]
+layout_mode = 2
+text = "COM PORT"
+
+[node name="SerialPortDropdown" type="OptionButton" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow" unique_id=1900000026]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="SerialRefreshBtn" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow" unique_id=1900000027]
+layout_mode = 2
+text = "↻ REFRESH"
+
+[node name="SerialBaudRow" type="HBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection" unique_id=1900000028]
+layout_mode = 2
+
+[node name="SerialBaudLabel" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow" unique_id=1900000029]
+layout_mode = 2
+text = "BAUD RATE"
+
+[node name="SerialBaudInput" type="LineEdit" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow" unique_id=1900000030]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "115200"
+placeholder_text = "115200"
+
+[node name="SerialAutoRow" type="HBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection" unique_id=1900000031]
+layout_mode = 2
+
+[node name="SerialAutoLabel" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialAutoRow" unique_id=1900000032]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "AUTO-CONNECT ON LAUNCH"
+
+[node name="SerialAutoToggle" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialAutoRow" unique_id=1900000033]
+layout_mode = 2
+toggle_mode = true
+text = "OFF"
+
+[node name="SerialConnRow" type="HBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection" unique_id=1900000034]
+layout_mode = 2
+
+[node name="SerialConnectBtn" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow" unique_id=1900000035]
+layout_mode = 2
+text = "> CONNECT"
+
+[node name="SerialTestBtn" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow" unique_id=1900000036]
+layout_mode = 2
+text = "> TEST STROKE"
+
+[node name="SerialStatusLabel" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow" unique_id=1900000037]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "● DISCONNECTED"

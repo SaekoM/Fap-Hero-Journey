@@ -39,6 +39,10 @@ size_flags_horizontal = 3
 show_percentage = false
 value = 0.0
 
+[node name="ScoreLabel" type="Label" parent="HUD/HUDBar/HUDLayout"]
+layout_mode = 2
+text = "0 PTS"
+
 [node name="PauseBtn" type="Button" parent="HUD/HUDBar/HUDLayout"]
 layout_mode = 2
 text = "|| PAUSE"

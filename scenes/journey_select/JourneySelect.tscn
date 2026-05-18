@@ -147,10 +147,20 @@ size_flags_horizontal = 3
 [node name="ActionDivider" type="HSeparator" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn" unique_id=1371586860]
 layout_mode = 2
 
-[node name="PlayButton" type="Button" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn" unique_id=1269778352]
+[node name="ActionRow" type="HBoxContainer" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn" unique_id=1269778355]
 layout_mode = 2
+
+[node name="PlayButton" type="Button" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow" unique_id=1269778352]
+layout_mode = 2
+size_flags_horizontal = 3
 text = "> PLAY JOURNEY"
 
-[node name="EditButton" type="Button" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn" unique_id=1269778353]
+[node name="EditButton" type="Button" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow" unique_id=1269778353]
 layout_mode = 2
+size_flags_horizontal = 3
 text = "✎ EDIT JOURNEY"
+
+[node name="DeleteButton" type="Button" parent="DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow" unique_id=1269778354]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "✕ DELETE JOURNEY"

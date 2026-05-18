@@ -27,6 +27,9 @@ const VALUE_LABEL_W:   int = 64
 
 const SETTINGS_PATH:       String = "user://settings.cfg"
 const DEFAULT_BP_ADDRESS:  String = "ws://localhost:12345"
+const DEFAULT_BAUD_RATE:   int    = 115200
+const OUTPUT_MODES:        Array  = ["Buttplug (Intiface)", "Serial T-code (SR6 / OSR2)"]
+const OUTPUT_MODE_KEYS:    Array  = ["buttplug", "serial"]
 
 const RESOLUTIONS: Array = [
 	Vector2i(1280, 720),
@@ -52,6 +55,16 @@ const RESOLUTIONS: Array = [
 @onready var _status_lbl:      Label          = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow/StatusLabel
 @onready var _device_dropdown: OptionButton   = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/DeviceRow/DeviceDropdown
 
+@onready var _output_mode_dropdown: OptionButton = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeDropdown
+
+@onready var _serial_port_dropdown: OptionButton = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow/SerialPortDropdown
+@onready var _serial_refresh_btn:   Button       = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow/SerialRefreshBtn
+@onready var _serial_baud_input:    LineEdit     = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow/SerialBaudInput
+@onready var _serial_auto_toggle:   Button       = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialAutoRow/SerialAutoToggle
+@onready var _serial_connect_btn:   Button       = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow/SerialConnectBtn
+@onready var _serial_test_btn:      Button       = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow/SerialTestBtn
+@onready var _serial_status_lbl:    Label        = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow/SerialStatusLabel
+
 var _config: ConfigFile = ConfigFile.new()
 var _is_connected: bool = false
 var overlay_mode: bool = false
@@ -61,9 +74,12 @@ func _ready() -> void:
 	_apply_layout()
 	_apply_theme()
 	_populate_resolution_dropdown()
+	_populate_output_mode_dropdown()
+	_refresh_serial_ports()
 	_load_settings()
 	_connect_signals()
 	_sync_buttplug_state()
+	_sync_serial_state()
 
 
 # ---------------------------------------------------------------------------
@@ -107,14 +123,17 @@ func _apply_layout() -> void:
 	_content_vbox.add_theme_constant_override("separation", 10)
 
 	for section_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection",
 	]:
 		var s: VBoxContainer = get_node(section_path)
 		s.add_theme_constant_override("separation", 12)
 
 	for row_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/MasterRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/FullscreenRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/ResolutionRow",
@@ -122,6 +141,10 @@ func _apply_layout() -> void:
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/AutoConnectRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/DeviceRow",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialAutoRow",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialConnRow",
 	]:
 		var r: HBoxContainer = get_node(row_path)
 		r.add_theme_constant_override("separation", 16)
@@ -132,15 +155,20 @@ func _apply_layout() -> void:
 	_master_value.custom_minimum_size  = Vector2(VALUE_LABEL_W, 0)
 
 	for label_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/FullscreenRow/FsLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/ResolutionRow/ResLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/AddressRow/AddressLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/DeviceRow/DeviceLabel",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow/SerialPortLabel",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow/SerialBaudLabel",
 	]:
 		(get_node(label_path) as Label).custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 
 	_res_dropdown.custom_minimum_size  = Vector2(220, 0)
 	_device_dropdown.custom_minimum_size = Vector2(220, 0)
+	_output_mode_dropdown.custom_minimum_size = Vector2(280, 0)
+	_serial_port_dropdown.custom_minimum_size = Vector2(180, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -161,39 +189,55 @@ func _apply_theme() -> void:
 	_style_panel()
 
 	for header_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputHeader",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/AudioHeader",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/DisplayHeader",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/IntifaceHeader",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialHeader",
 	]:
 		_style_label(get_node(header_path), COLOR_PURPLE_BRIGHT, 13, true)
 
 	var sep_style: StyleBoxFlat = _make_separator_style()
 	for sep_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputDivider",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/AudioDivider",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/DisplayDivider",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/IntifaceDivider",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialDivider",
 	]:
 		(get_node(sep_path) as HSeparator).add_theme_stylebox_override("separator", sep_style)
 
 	for row_label_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/MasterRow/MasterLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/FullscreenRow/FsLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/ResolutionRow/ResLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/AddressRow/AddressLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/AutoConnectRow/AutoConnectLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/DeviceRow/DeviceLabel",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow/SerialPortLabel",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow/SerialBaudLabel",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialAutoRow/SerialAutoLabel",
 	]:
 		_style_label(get_node(row_label_path), COLOR_WHITE_SOFT, 14, false)
 
 	_style_label(_master_value, COLOR_PURPLE_BRIGHT, 14, false)
 	_style_label(_status_lbl,   COLOR_ERROR,         13, false)
+	_style_label(_serial_status_lbl, COLOR_ERROR,    13, false)
 
 	_style_slider(_master_slider)
 	_style_option_button(_res_dropdown)
 	_style_option_button(_device_dropdown)
+	_style_option_button(_output_mode_dropdown)
+	_style_option_button(_serial_port_dropdown)
 	_style_line_edit(_address_input)
+	_style_line_edit(_serial_baud_input)
 	_style_toggle(_fs_toggle,   false)
 	_style_toggle(_auto_toggle, false)
+	_style_toggle(_serial_auto_toggle, false)
+	_style_button(_serial_refresh_btn, COLOR_PURPLE_MID)
+	_style_button(_serial_connect_btn, COLOR_PURPLE_BRIGHT)
+	_style_button(_serial_test_btn,    COLOR_PURPLE_MID)
 
 
 func _style_panel() -> void:
@@ -336,6 +380,26 @@ func _populate_resolution_dropdown() -> void:
 		_res_dropdown.add_item("%d × %d" % [res.x, res.y])
 
 
+func _populate_output_mode_dropdown() -> void:
+	_output_mode_dropdown.clear()
+	for label: String in OUTPUT_MODES:
+		_output_mode_dropdown.add_item(label)
+
+
+func _refresh_serial_ports() -> void:
+	var current: String = ""
+	if _serial_port_dropdown.item_count > 0 and _serial_port_dropdown.selected >= 0:
+		current = _serial_port_dropdown.get_item_text(_serial_port_dropdown.selected)
+	_serial_port_dropdown.clear()
+	for p: String in SerialDeviceService.GetAvailablePorts():
+		_serial_port_dropdown.add_item(p)
+	if current != "":
+		for i: int in _serial_port_dropdown.item_count:
+			if _serial_port_dropdown.get_item_text(i) == current:
+				_serial_port_dropdown.selected = i
+				return
+
+
 func _load_settings() -> void:
 	if _config.load(SETTINGS_PATH) != OK:
 		_apply_defaults()
@@ -364,6 +428,26 @@ func _load_settings() -> void:
 	var saved_device: String = _config.get_value("intiface", "selected_device", "")
 	_restore_device_selection(saved_device)
 
+	var mode_key: String = _config.get_value("output", "mode", "buttplug")
+	var mode_idx: int    = OUTPUT_MODE_KEYS.find(mode_key)
+	if mode_idx < 0:
+		mode_idx = 0
+	_output_mode_dropdown.selected = mode_idx
+
+	var saved_port: String = _config.get_value("serial", "port", "")
+	if saved_port != "":
+		for i: int in _serial_port_dropdown.item_count:
+			if _serial_port_dropdown.get_item_text(i) == saved_port:
+				_serial_port_dropdown.selected = i
+				break
+
+	var saved_baud: int = _config.get_value("serial", "baud_rate", DEFAULT_BAUD_RATE)
+	_serial_baud_input.text = str(saved_baud)
+
+	var serial_auto: bool = _config.get_value("serial", "auto_connect", false)
+	_serial_auto_toggle.button_pressed = serial_auto
+	_style_toggle(_serial_auto_toggle, serial_auto)
+
 
 func _apply_defaults() -> void:
 	_master_slider.value = 1.0
@@ -383,6 +467,18 @@ func _save_settings() -> void:
 	_config.set_value("intiface", "auto_connect",     _auto_toggle.button_pressed)
 	if _device_dropdown.selected >= 0 and _device_dropdown.item_count > 0:
 		_config.set_value("intiface", "selected_device", _device_dropdown.get_item_text(_device_dropdown.selected))
+
+	var mode_idx: int = clampi(_output_mode_dropdown.selected, 0, OUTPUT_MODE_KEYS.size() - 1)
+	_config.set_value("output", "mode", OUTPUT_MODE_KEYS[mode_idx])
+
+	if _serial_port_dropdown.selected >= 0 and _serial_port_dropdown.item_count > 0:
+		_config.set_value("serial", "port", _serial_port_dropdown.get_item_text(_serial_port_dropdown.selected))
+	var baud: int = _serial_baud_input.text.to_int()
+	if baud <= 0:
+		baud = DEFAULT_BAUD_RATE
+	_config.set_value("serial", "baud_rate", baud)
+	_config.set_value("serial", "auto_connect", _serial_auto_toggle.button_pressed)
+
 	_config.save(SETTINGS_PATH)
 
 
@@ -412,12 +508,22 @@ func _connect_signals() -> void:
 	_scan_btn.pressed.connect(_on_scan_pressed)
 	_device_dropdown.item_selected.connect(_on_device_selected)
 
+	_output_mode_dropdown.item_selected.connect(_on_output_mode_selected)
+	_serial_refresh_btn.pressed.connect(_refresh_serial_ports)
+	_serial_connect_btn.pressed.connect(_on_serial_connect_pressed)
+	_serial_test_btn.pressed.connect(_on_serial_test_pressed)
+	_serial_auto_toggle.toggled.connect(_on_serial_auto_toggled)
+
 	ButtplugService.connect("Connected",     _on_bp_connected)
 	ButtplugService.connect("Disconnected",  _on_bp_disconnected)
 	ButtplugService.connect("DeviceAdded",   _on_bp_device_added)
 	ButtplugService.connect("DeviceRemoved", _on_bp_device_removed)
 	ButtplugService.connect("ScanFinished",  _on_bp_scan_finished)
 	ButtplugService.connect("ErrorOccurred", _on_bp_error)
+
+	SerialDeviceService.connect("Connected",     _on_serial_connected)
+	SerialDeviceService.connect("Disconnected",  _on_serial_disconnected)
+	SerialDeviceService.connect("ErrorOccurred", _on_serial_error)
 
 
 func _on_back_pressed() -> void:
@@ -559,3 +665,79 @@ func _apply_fullscreen(enabled: bool) -> void:
 	var mode: DisplayServer.WindowMode = DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN if enabled \
 		else DisplayServer.WINDOW_MODE_WINDOWED
 	DisplayServer.window_set_mode(mode)
+
+
+# ---------------------------------------------------------------------------
+# Output mode + Serial
+# ---------------------------------------------------------------------------
+
+func _on_output_mode_selected(_index: int) -> void:
+	_save_settings()
+
+
+func _on_serial_auto_toggled(pressed: bool) -> void:
+	_style_toggle(_serial_auto_toggle, pressed)
+	_save_settings()
+
+
+func _on_serial_connect_pressed() -> void:
+	if SerialDeviceService.SerialConnected:
+		SerialDeviceService.Disconnect()
+		return
+	if _serial_port_dropdown.selected < 0 or _serial_port_dropdown.item_count == 0:
+		_set_serial_status("● NO PORT SELECTED", COLOR_ERROR)
+		return
+	var port: String = _serial_port_dropdown.get_item_text(_serial_port_dropdown.selected)
+	var baud: int    = _serial_baud_input.text.to_int()
+	if baud <= 0:
+		baud = DEFAULT_BAUD_RATE
+	_set_serial_status("● CONNECTING…", COLOR_PURPLE_MID)
+	_serial_connect_btn.disabled = true
+	SerialDeviceService.Connect(port, baud)
+
+
+func _on_serial_test_pressed() -> void:
+	if not SerialDeviceService.SerialConnected:
+		_set_serial_status("● NOT CONNECTED", COLOR_ERROR)
+		return
+	# Quick stroke: top in 600ms, bottom in 600ms, midpoint in 400ms.
+	SerialDeviceService.SendLinear(600, 1.0)
+	await get_tree().create_timer(0.7).timeout
+	SerialDeviceService.SendLinear(600, 0.0)
+	await get_tree().create_timer(0.7).timeout
+	SerialDeviceService.SendLinear(400, 0.5)
+
+
+func _on_serial_connected() -> void:
+	_serial_connect_btn.disabled = false
+	_set_serial_status("● CONNECTED", COLOR_OK)
+	_style_button(_serial_connect_btn, COLOR_MAGENTA)
+	_serial_connect_btn.text = "> DISCONNECT"
+
+
+func _on_serial_disconnected() -> void:
+	_serial_connect_btn.disabled = false
+	_set_serial_status("● DISCONNECTED", COLOR_ERROR)
+	_style_button(_serial_connect_btn, COLOR_PURPLE_BRIGHT)
+	_serial_connect_btn.text = "> CONNECT"
+
+
+func _on_serial_error(message: String) -> void:
+	_serial_connect_btn.disabled = false
+	_set_serial_status("● ERROR: " + message.left(60).to_upper(), COLOR_ERROR)
+
+
+func _set_serial_status(text: String, color: Color) -> void:
+	_serial_status_lbl.text = text
+	_serial_status_lbl.add_theme_color_override("font_color", color)
+
+
+func _sync_serial_state() -> void:
+	if SerialDeviceService.SerialConnected:
+		_set_serial_status("● CONNECTED", COLOR_OK)
+		_style_button(_serial_connect_btn, COLOR_MAGENTA)
+		_serial_connect_btn.text = "> DISCONNECT"
+	else:
+		_set_serial_status("● DISCONNECTED", COLOR_ERROR)
+		_style_button(_serial_connect_btn, COLOR_PURPLE_BRIGHT)
+		_serial_connect_btn.text = "> CONNECT"

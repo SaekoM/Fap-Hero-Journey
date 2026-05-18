@@ -7,6 +7,8 @@ public partial class FunscriptPlayer : Node
 {
 	private struct Action { public float AtMs; public int Pos; }
 
+	private enum OutputMode { Buttplug, Serial }
+
 	private List<Action> _actions = new List<Action>();
 	private bool _playing = false;
 	private double _positionMs = 0.0;
@@ -14,8 +16,11 @@ public partial class FunscriptPlayer : Node
 	private bool? _isLinearDevice = null;
 	private int _deviceIndex = -1;
 	private bool _syncedThisFrame = false;
+	private OutputMode _outputMode = OutputMode.Buttplug;
+	private bool _outputResolved = false;
 
-	public bool Playing => _playing;
+	public bool Playing     => _playing;
+	public int  ActionCount => _actions.Count;
 
 	public void LoadFunscript(string path)
 	{
@@ -53,17 +58,53 @@ public partial class FunscriptPlayer : Node
 		}
 	}
 
+	private const uint EaseDurationMs = 500;
+	private const double CenterPosition = 0.5;
+
 	public void Play() => _playing = true;
-	public void Pause() => _playing = false;
+
+	public void Pause()
+	{
+		_playing = false;
+		EaseToNeutral();
+	}
+
 	public void Resume() => _playing = true;
 
 	public void Stop()
 	{
 		_playing = false;
+		EaseToNeutral();
 		_positionMs = 0.0;
 		_actionIndex = 0;
 		_isLinearDevice = null;
 		_deviceIndex = -1;
+		_outputResolved = false;
+	}
+
+	// Send a gentle "go to neutral" command so the device doesn't stay
+	// mid-stroke or vibrating when playback halts. Linear → midpoint,
+	// vibrator → 0 intensity. Safe to call when nothing is connected.
+	private void EaseToNeutral()
+	{
+		ResolveOutput();
+
+		if (_outputMode == OutputMode.Serial)
+		{
+			var serial = GetNode<SerialDeviceService>("/root/SerialDeviceService");
+			if (serial != null && serial.SerialConnected)
+				serial.SendLinear(EaseDurationMs, CenterPosition);
+			return;
+		}
+
+		var bp = GetNode<ButtplugService>("/root/ButtplugService");
+		if (bp == null || !bp.BpConnected || _deviceIndex < 0)
+			return;
+
+		if (_isLinearDevice == true)
+			bp.SendLinear(_deviceIndex, EaseDurationMs, CenterPosition);
+		else
+			bp.SendVibrate(_deviceIndex, 0.0);
 	}
 
 	// Call this each frame from GameLoop to keep funscript in sync with the video clock.
@@ -97,29 +138,72 @@ public partial class FunscriptPlayer : Node
 
 	}
 
-	private void SendCommand(int index)
+	private void ResolveOutput()
 	{
-		var bp = GetNode<ButtplugService>("/root/ButtplugService");
-
-		if (bp == null || !bp.BpConnected)
+		if (_outputResolved) 
 			return;
 
-		if (_isLinearDevice == null)
+		var config = new ConfigFile();
+		if (config.Load("user://settings.cfg") == Error.Ok)
 		{
-			_deviceIndex = bp.GetSelectedDeviceIndex();
-			_isLinearDevice = _deviceIndex >= 0 && bp.DeviceSupportsLinear(_deviceIndex);
+			string mode = config.GetValue("output", "mode", Variant.From("buttplug")).AsString();
+			_outputMode = mode == "serial" ? OutputMode.Serial : OutputMode.Buttplug;
 		}
 
-		if (_deviceIndex < 0)
+		if (_outputMode == OutputMode.Serial)
+		{
+			// Serial T-code devices are always linear; nothing else to resolve.
+			_isLinearDevice = true;
+			_deviceIndex = 0;
+		}
+		else
+		{
+			var bp = GetNode<ButtplugService>("/root/ButtplugService");
+			if (bp != null)
+			{
+				_deviceIndex = bp.GetSelectedDeviceIndex();
+				_isLinearDevice = _deviceIndex >= 0 && bp.DeviceSupportsLinear(_deviceIndex);
+			}
+		}
+		_outputResolved = true;
+	}
+
+	private void SendCommand(int index)
+	{
+		ResolveOutput();
+
+		if (index + 1 < _actions.Count)
+		{
+			int amplitude = Math.Abs(_actions[index + 1].Pos - _actions[index].Pos);
+			GetNode<ScoreService>("/root/ScoreService")?.AddStroke(amplitude);
+		}
+
+		if (_outputMode == OutputMode.Serial)
+		{
+			var serial = GetNode<SerialDeviceService>("/root/SerialDeviceService");
+
+			if (serial == null || !serial.SerialConnected)
+				return;
+
+			if (index + 1 >= _actions.Count)
+				return;
+
+			double targetNormalised = _actions[index + 1].Pos / 100.0;
+			uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
+			serial.SendLinear(durationMs, targetNormalised);
+
+			return;
+		}
+
+		var bp = GetNode<ButtplugService>("/root/ButtplugService");
+		if (bp == null || !bp.BpConnected || _deviceIndex < 0)
 			return;
 
 		if (_isLinearDevice == true)
 		{
-			// Funscript actions are keyframes: at AtMs[i] the device should be at Pos[i].
-			// Crossing action i means the device just reached Pos[i] — now command it
-			// toward the NEXT action's position over the gap to that action.
 			if (index + 1 >= _actions.Count)
 				return;
+
 			double targetNormalised = _actions[index + 1].Pos / 100.0;
 			uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
 			bp.SendLinear(_deviceIndex, durationMs, targetNormalised);

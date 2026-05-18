@@ -60,6 +60,32 @@ size_flags_horizontal = 3
 horizontal_alignment = 1
 text = "0:00"
 
+[node name="ScoreDivider" type="HSeparator" parent="Panel/VBox"]
+layout_mode = 2
+
+[node name="ScoreSection" type="VBoxContainer" parent="Panel/VBox"]
+layout_mode = 2
+
+[node name="ScoreTitle" type="Label" parent="Panel/VBox/ScoreSection"]
+layout_mode = 2
+horizontal_alignment = 1
+text = "SCORE"
+
+[node name="RoundBreakdownContainer" type="VBoxContainer" parent="Panel/VBox/ScoreSection"]
+layout_mode = 2
+
+[node name="TotalScoreRow" type="HBoxContainer" parent="Panel/VBox/ScoreSection"]
+layout_mode = 2
+
+[node name="TotalScoreLabel" type="Label" parent="Panel/VBox/ScoreSection/TotalScoreRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "TOTAL"
+
+[node name="TotalScoreValue" type="Label" parent="Panel/VBox/ScoreSection/TotalScoreRow"]
+layout_mode = 2
+text = "0 PTS"
+
 [node name="BackButton" type="Button" parent="Panel/VBox"]
 layout_mode = 2
 text = "> RETURN TO CATALOGUE"
