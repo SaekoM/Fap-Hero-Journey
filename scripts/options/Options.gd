@@ -55,6 +55,8 @@ const RESOLUTIONS: Array = [
 @onready var _status_lbl:      Label          = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow/StatusLabel
 @onready var _device_dropdown: OptionButton   = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/DeviceRow/DeviceDropdown
 
+@onready var _open_folder_btn:      Button       = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection/JourneysRow/OpenFolderBtn
+
 @onready var _output_mode_dropdown: OptionButton = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeDropdown
 
 @onready var _serial_port_dropdown: OptionButton = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialPortRow/SerialPortDropdown
@@ -123,6 +125,7 @@ func _apply_layout() -> void:
 	_content_vbox.add_theme_constant_override("separation", 10)
 
 	for section_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection",
@@ -133,6 +136,7 @@ func _apply_layout() -> void:
 		s.add_theme_constant_override("separation", 12)
 
 	for row_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection/JourneysRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/MasterRow",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/FullscreenRow",
@@ -183,12 +187,14 @@ func _apply_theme() -> void:
 	_title_lbl.horizontal_alignment  = HORIZONTAL_ALIGNMENT_CENTER
 
 	_style_button(_back_btn, COLOR_MAGENTA)
+	_style_button(_open_folder_btn, COLOR_PURPLE_MID)
 	_style_button(_connect_btn, COLOR_PURPLE_BRIGHT)
 	_style_button(_scan_btn, COLOR_PURPLE_MID)
 
 	_style_panel()
 
 	for header_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection/JourneysHeader",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputHeader",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/AudioHeader",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/DisplayHeader",
@@ -199,6 +205,7 @@ func _apply_theme() -> void:
 
 	var sep_style: StyleBoxFlat = _make_separator_style()
 	for sep_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection/JourneysDivider",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputDivider",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/AudioDivider",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/DisplayDivider",
@@ -500,6 +507,7 @@ func _sync_buttplug_state() -> void:
 
 func _connect_signals() -> void:
 	_back_btn.pressed.connect(_on_back_pressed)
+	_open_folder_btn.pressed.connect(_on_open_journeys_folder_pressed)
 	_master_slider.value_changed.connect(_on_volume_changed)
 	_fs_toggle.toggled.connect(_on_fullscreen_toggled)
 	_res_dropdown.item_selected.connect(_on_resolution_selected)
@@ -524,6 +532,13 @@ func _connect_signals() -> void:
 	SerialDeviceService.connect("Connected",     _on_serial_connected)
 	SerialDeviceService.connect("Disconnected",  _on_serial_disconnected)
 	SerialDeviceService.connect("ErrorOccurred", _on_serial_error)
+
+
+func _on_open_journeys_folder_pressed() -> void:
+	var abs_path: String = ProjectSettings.globalize_path("user://journeys")
+	if not DirAccess.dir_exists_absolute(abs_path):
+		DirAccess.make_dir_recursive_absolute(abs_path)
+	OS.shell_open(abs_path)
 
 
 func _on_back_pressed() -> void:

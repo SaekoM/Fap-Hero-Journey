@@ -51,6 +51,27 @@ size_flags_vertical = 0
 layout_mode = 2
 size_flags_horizontal = 3
 
+[node name="JourneysSection" type="VBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000041]
+layout_mode = 2
+
+[node name="JourneysHeader" type="Label" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection" unique_id=1900000042]
+layout_mode = 2
+text = "JOURNEYS"
+
+[node name="JourneysDivider" type="HSeparator" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection" unique_id=1900000043]
+layout_mode = 2
+
+[node name="JourneysRow" type="HBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection" unique_id=1900000044]
+layout_mode = 2
+
+[node name="OpenFolderBtn" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection/JourneysRow" unique_id=1900000045]
+layout_mode = 2
+text = "📂 OPEN JOURNEYS FOLDER"
+
+[node name="JourneysGap" type="Control" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000046]
+custom_minimum_size = Vector2(0, 24)
+layout_mode = 2
+
 [node name="OutputSection" type="VBoxContainer" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox" unique_id=1900000010]
 layout_mode = 2
 
