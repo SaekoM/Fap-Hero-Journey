@@ -55,6 +55,10 @@ layout_mode = 2
 layout_mode = 2
 text = "> START"
 
+[node name="BuildButton" type="Button" parent="Panel/CenterContainer/ButtonContainer" unique_id=1234567891]
+layout_mode = 2
+text = "> BUILD JOURNEY"
+
 [node name="OptionsButton" type="Button" parent="Panel/CenterContainer/ButtonContainer" unique_id=1785582695]
 layout_mode = 2
 text = "> OPTIONS"

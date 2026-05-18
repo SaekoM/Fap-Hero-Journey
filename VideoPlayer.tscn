@@ -1,7 +1,0 @@
-[gd_scene format=3 uid="uid://ihwm0i8xn636"]
-
-[node name="VideoPlayerScene" type="Node2D" unique_id=1688983235]
-
-[node name="VideoStreamPlayer" type="VideoStreamPlayer" parent="." unique_id=271431725]
-offset_right = 244.0
-offset_bottom = 167.0

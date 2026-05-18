@@ -46,6 +46,7 @@ const FLICKER_DURATION:     float = 0.08
 @onready var _button_container: VBoxContainer  = $Panel/CenterContainer/ButtonContainer
 @onready var _start_btn:        Button         = $Panel/CenterContainer/ButtonContainer/StartButton
 @onready var _options_btn:      Button         = $Panel/CenterContainer/ButtonContainer/OptionsButton
+@onready var _build_btn:        Button         = $Panel/CenterContainer/ButtonContainer/BuildButton
 @onready var _quit_btn:         Button         = $Panel/CenterContainer/ButtonContainer/QuitButton
 @onready var _tagline:          Label          = $Panel/CenterContainer/TaglineLabel
 
@@ -124,7 +125,7 @@ func _apply_layout() -> void:
 	_button_container.add_theme_constant_override("separation", 14)
 	_button_container.alignment = BoxContainer.ALIGNMENT_CENTER
 
-	for btn: Button in [_start_btn, _options_btn, _quit_btn]:
+	for btn: Button in [_start_btn, _options_btn, _build_btn, _quit_btn]:
 		btn.custom_minimum_size = Vector2(BUTTON_MIN_WIDTH, BUTTON_MIN_HEIGHT)
 
 
@@ -148,6 +149,7 @@ func _apply_theme() -> void:
 
 	_style_button(_start_btn,   COLOR_PURPLE_BRIGHT)
 	_style_button(_options_btn, COLOR_MAGENTA)
+	_style_button(_build_btn,   COLOR_PURPLE_MID)
 	_style_button(_quit_btn,    COLOR_PURPLE_MID)
 
 	_style_label(_tagline, COLOR_TAGLINE, FONT_SIZE_TAGLINE, true)
@@ -202,7 +204,7 @@ func _make_btn_style(border_color: Color, fill_color: Color) -> StyleBoxFlat:
 	s.border_color        = border_color
 	s.border_width_left   = 2
 	s.border_width_right  = 2
-	s.border_width_top    = 2
+	#s.border_width_top    = 2
 	s.border_width_bottom = 2
 	s.corner_radius_top_left     = 0
 	s.corner_radius_top_right    = 0
@@ -222,6 +224,7 @@ func _make_btn_style(border_color: Color, fill_color: Color) -> StyleBoxFlat:
 func _connect_buttons() -> void:
 	_start_btn.pressed.connect(_on_start_pressed)
 	_options_btn.pressed.connect(_on_options_pressed)
+	_build_btn.pressed.connect(_on_build_pressed)
 	_quit_btn.pressed.connect(_on_quit_pressed)
 
 
@@ -231,6 +234,10 @@ func _on_start_pressed() -> void:
 
 func _on_options_pressed() -> void:
 	Transition.change_scene("res://scenes/options/Options.tscn")
+
+
+func _on_build_pressed() -> void:
+	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
 
 
 func _on_quit_pressed() -> void:

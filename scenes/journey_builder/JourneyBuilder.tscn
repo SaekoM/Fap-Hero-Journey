@@ -1,0 +1,159 @@
+[gd_scene format=3 uid="uid://c4jbuilder001"]
+
+[ext_resource type="Script" path="res://scripts/journey_builder/JourneyBuilder.gd" id="1_jb"]
+[ext_resource type="Script" uid="uid://dscg7dyswe1h7" path="res://scripts/main/AnimatedBackground.gd" id="2_abg"]
+
+[node name="JourneyBuilder" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_jb")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+color = Color(0, 0, 0, 1)
+
+[node name="AnimatedBackground" type="Control" parent="."]
+anchors_preset = 0
+script = ExtResource("2_abg")
+
+[node name="TopBar" type="HBoxContainer" parent="."]
+layout_mode = 0
+
+[node name="BackButton" type="Button" parent="TopBar"]
+layout_mode = 2
+text = "< BACK"
+
+[node name="TitleLabel" type="Label" parent="TopBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "JOURNEY BUILDER"
+horizontal_alignment = 1
+
+[node name="Scroll" type="ScrollContainer" parent="."]
+layout_mode = 0
+
+[node name="Content" type="VBoxContainer" parent="Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="InfoSection" type="VBoxContainer" parent="Scroll/Content"]
+layout_mode = 2
+
+[node name="InfoHeader" type="Label" parent="Scroll/Content/InfoSection"]
+layout_mode = 2
+text = "JOURNEY INFO"
+
+[node name="InfoDivider" type="HSeparator" parent="Scroll/Content/InfoSection"]
+layout_mode = 2
+
+[node name="InfoLayout" type="HBoxContainer" parent="Scroll/Content/InfoSection"]
+layout_mode = 2
+
+[node name="CoverColumn" type="VBoxContainer" parent="Scroll/Content/InfoSection/InfoLayout"]
+layout_mode = 2
+
+[node name="CoverBorder" type="PanelContainer" parent="Scroll/Content/InfoSection/InfoLayout/CoverColumn"]
+layout_mode = 2
+
+[node name="CoverPreview" type="TextureRect" parent="Scroll/Content/InfoSection/InfoLayout/CoverColumn/CoverBorder"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+expand_mode = 1
+stretch_mode = 5
+clip_contents = true
+
+[node name="CoverButton" type="Button" parent="Scroll/Content/InfoSection/InfoLayout/CoverColumn"]
+layout_mode = 2
+text = "PICK COVER IMAGE"
+
+[node name="FieldsColumn" type="VBoxContainer" parent="Scroll/Content/InfoSection/InfoLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="NameRow" type="HBoxContainer" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn"]
+layout_mode = 2
+
+[node name="NameLabel" type="Label" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/NameRow"]
+layout_mode = 2
+text = "NAME"
+
+[node name="NameField" type="LineEdit" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/NameRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="AuthorRow" type="HBoxContainer" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn"]
+layout_mode = 2
+
+[node name="AuthorLabel" type="Label" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/AuthorRow"]
+layout_mode = 2
+text = "AUTHOR"
+
+[node name="AuthorField" type="LineEdit" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/AuthorRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DiffRow" type="HBoxContainer" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn"]
+layout_mode = 2
+
+[node name="DiffLabel" type="Label" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/DiffRow"]
+layout_mode = 2
+text = "DIFFICULTY"
+
+[node name="DiffOption" type="OptionButton" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/DiffRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DescRow" type="VBoxContainer" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="DescLabel" type="Label" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/DescRow"]
+layout_mode = 2
+text = "DESCRIPTION"
+
+[node name="DescField" type="TextEdit" parent="Scroll/Content/InfoSection/InfoLayout/FieldsColumn/DescRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="RoundsSection" type="VBoxContainer" parent="Scroll/Content"]
+layout_mode = 2
+
+[node name="RoundsHeader" type="Label" parent="Scroll/Content/RoundsSection"]
+layout_mode = 2
+text = "ROUNDS"
+
+[node name="RoundsDivider" type="HSeparator" parent="Scroll/Content/RoundsSection"]
+layout_mode = 2
+
+[node name="RoundListHeader" type="HBoxContainer" parent="Scroll/Content/RoundsSection"]
+layout_mode = 2
+
+[node name="RoundList" type="VBoxContainer" parent="Scroll/Content/RoundsSection"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="AddRoundButton" type="Button" parent="Scroll/Content/RoundsSection"]
+layout_mode = 2
+text = "+ ADD ROUND"
+
+[node name="BottomSection" type="VBoxContainer" parent="Scroll/Content"]
+layout_mode = 2
+
+[node name="BottomDivider" type="HSeparator" parent="Scroll/Content/BottomSection"]
+layout_mode = 2
+
+[node name="StatusLabel" type="Label" parent="Scroll/Content/BottomSection"]
+layout_mode = 2
+visible = false
+horizontal_alignment = 1
+
+[node name="SaveButton" type="Button" parent="Scroll/Content/BottomSection"]
+layout_mode = 2
+size_flags_horizontal = 4
+text = "SAVE JOURNEY"
