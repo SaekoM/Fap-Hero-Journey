@@ -426,12 +426,23 @@ func _parse_journey(path: String, folder: String) -> Dictionary:
 		"author":          data.get("Author", "Unknown"),
 		"rounds":          [],
 		"forks":           [],
-		"shops":           data.get("Shops", []),
+		"shops":           [],
 		"cover_path":      "",
 		"total_actions":   0,
 		"total_length_ms": 0,
 		"modified_time":   FileAccess.get_modified_time(json_path),
 	}
+
+	var raw_shops: Array = data.get("Shops", [])
+	for raw_shop in raw_shops:
+		if raw_shop is Dictionary:
+			journey["shops"].append({
+				"after_order": raw_shop.get("AfterOrder", raw_shop.get("after_order", 0)),
+				"title":       raw_shop.get("Title",       raw_shop.get("title",       "")),
+			})
+		else:
+			# Legacy format: bare int order number.
+			journey["shops"].append({"after_order": int(raw_shop), "title": ""})
 
 	journey["cover_path"] = _find_cover_image(path)
 
@@ -493,6 +504,16 @@ func _parse_journey(path: String, folder: String) -> Dictionary:
 					"action_count":   pr_fs["count"],
 					"length_ms":      pr_fs["length_ms"],
 				})
+			path_entry["shops"] = []
+			var raw_pr_shops: Array = raw_path.get("Shops", raw_path.get("shops", []))
+			for raw_ps in raw_pr_shops:
+				if raw_ps is Dictionary:
+					path_entry["shops"].append({
+						"after_order": raw_ps.get("AfterOrder", raw_ps.get("after_order", 0)),
+						"title":       raw_ps.get("Title",      raw_ps.get("title",       "")),
+					})
+				else:
+					path_entry["shops"].append({"after_order": int(raw_ps), "title": ""})
 			fork_entry["paths"].append(path_entry)
 		parsed_forks.append(fork_entry)
 	journey["forks"] = parsed_forks
@@ -653,7 +674,7 @@ func _populate_modal(journey: Dictionary) -> void:
 	for child in _round_list.get_children():
 		child.queue_free()
 
-	var shops: Array = journey.get("shops", [])
+	var shops_data: Array = journey.get("shops", [])
 
 	# Column headers
 	var hdr: HBoxContainer = HBoxContainer.new()
@@ -681,9 +702,11 @@ func _populate_modal(journey: Dictionary) -> void:
 	var forks_data: Array = journey.get("forks", [])
 	var seq: Array = []
 	for rd: Dictionary in rounds:
-		seq.append({"type": "round", "data": rd, "key": (rd.get("order", 0) as int) * 2})
+		seq.append({"type": "round", "data": rd, "key": (rd.get("order", 0) as int) * 3})
+	for sh: Dictionary in shops_data:
+		seq.append({"type": "shop", "data": sh, "key": (sh.get("after_order", 0) as int) * 3 + 1})
 	for fk: Dictionary in forks_data:
-		seq.append({"type": "fork", "data": fk, "key": (fk.get("after_order", 0) as int) * 2 + 1})
+		seq.append({"type": "fork", "data": fk, "key": (fk.get("after_order", 0) as int) * 3 + 2})
 	seq.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return (a["key"] as int) < (b["key"] as int))
 
 	for item: Dictionary in seq:
@@ -703,6 +726,23 @@ func _populate_modal(journey: Dictionary) -> void:
 			fork_lbl.add_theme_color_override("font_color", COLOR_PURPLE_BRIGHT)
 			fork_lbl.add_theme_font_size_override("font_size", 11)
 			fork_row.add_child(fork_lbl)
+			continue
+
+		if item["type"] == "shop":
+			var shop: Dictionary = item["data"]
+			var shop_row: HBoxContainer = HBoxContainer.new()
+			shop_row.add_theme_constant_override("separation", 8)
+			_round_list.add_child(shop_row)
+			var shop_lbl: Label = Label.new()
+			var shop_title: String = shop.get("title", "")
+			if shop_title != "":
+				shop_lbl.text = "  ◆  SHOP: %s" % shop_title.to_upper()
+			else:
+				shop_lbl.text = "  ◆  SHOP"
+			shop_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			shop_lbl.add_theme_color_override("font_color", COLOR_MAGENTA)
+			shop_lbl.add_theme_font_size_override("font_size", 11)
+			shop_row.add_child(shop_lbl)
 			continue
 
 		var round_data: Dictionary = item["data"]
@@ -750,17 +790,6 @@ func _populate_modal(journey: Dictionary) -> void:
 		coins_lbl.add_theme_color_override("font_color", COLOR_MAGENTA)
 		coins_lbl.add_theme_font_size_override("font_size", 12)
 		row.add_child(coins_lbl)
-
-		if order in shops:
-			var shop_row: HBoxContainer = HBoxContainer.new()
-			_round_list.add_child(shop_row)
-			var shop_lbl: Label = Label.new()
-			shop_lbl.text = "  ◆ SHOP"
-			shop_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			shop_lbl.add_theme_color_override("font_color", COLOR_MAGENTA)
-			shop_lbl.add_theme_font_size_override("font_size", 11)
-			shop_lbl.uppercase = true
-			shop_row.add_child(shop_lbl)
 
 
 func _format_duration(total_seconds: int) -> String:

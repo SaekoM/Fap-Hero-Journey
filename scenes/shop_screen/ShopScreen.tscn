@@ -1,0 +1,54 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/shop_screen/ShopScreen.gd" id="1_shop"]
+
+[node name="root" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_shop")
+
+[node name="Backdrop" type="ColorRect" parent="."]
+layout_mode = 0
+color = Color(0, 0, 0, 0.78)
+
+[node name="Panel" type="PanelContainer" parent="."]
+layout_mode = 0
+
+[node name="VBox" type="VBoxContainer" parent="Panel"]
+layout_mode = 2
+
+[node name="HeaderRow" type="HBoxContainer" parent="Panel/VBox"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="Panel/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "// BLACK MARKET //"
+
+[node name="CoinBadge" type="PanelContainer" parent="Panel/VBox/HeaderRow"]
+layout_mode = 2
+
+[node name="CoinLabel" type="Label" parent="Panel/VBox/HeaderRow/CoinBadge"]
+layout_mode = 2
+text = "♦ 0"
+
+[node name="Subtitle" type="Label" parent="Panel/VBox"]
+layout_mode = 2
+text = "JACK IN. SPEND COIN. UPGRADE YOUR STACK."
+
+[node name="CardsRow" type="HBoxContainer" parent="Panel/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="FooterRow" type="HBoxContainer" parent="Panel/VBox"]
+layout_mode = 2
+
+[node name="FooterSpacer" type="Control" parent="Panel/VBox/FooterRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ContinueButton" type="Button" parent="Panel/VBox/FooterRow"]
+layout_mode = 2
+text = "> JACK OUT"

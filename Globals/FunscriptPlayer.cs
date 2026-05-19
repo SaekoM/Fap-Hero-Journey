@@ -172,9 +172,18 @@ public partial class FunscriptPlayer : Node
 	{
 		ResolveOutput();
 
+		var inv = GetNodeOrNull<InventoryService>("/root/InventoryService");
+		var effects = inv?.GetActiveEffects();
+
+		if (effects != null && HasBlockEffect(effects))
+			return;
+
+		int currentPos = TransformPos(_actions[index].Pos, effects);
+		int nextPos    = index + 1 < _actions.Count ? TransformPos(_actions[index + 1].Pos, effects) : currentPos;
+
 		if (index + 1 < _actions.Count)
 		{
-			int amplitude = Math.Abs(_actions[index + 1].Pos - _actions[index].Pos);
+			int amplitude = Math.Abs(nextPos - currentPos);
 			GetNode<ScoreService>("/root/ScoreService")?.AddStroke(amplitude);
 		}
 
@@ -188,7 +197,7 @@ public partial class FunscriptPlayer : Node
 			if (index + 1 >= _actions.Count)
 				return;
 
-			double targetNormalised = _actions[index + 1].Pos / 100.0;
+			double targetNormalised = nextPos / 100.0;
 			uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
 			serial.SendLinear(durationMs, targetNormalised);
 
@@ -204,14 +213,54 @@ public partial class FunscriptPlayer : Node
 			if (index + 1 >= _actions.Count)
 				return;
 
-			double targetNormalised = _actions[index + 1].Pos / 100.0;
+			double targetNormalised = nextPos / 100.0;
 			uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
 			bp.SendLinear(_deviceIndex, durationMs, targetNormalised);
 		}
 		else
 		{
 			// Vibrators have no stroke direction — just hold the current keyframe intensity.
-			bp.SendVibrate(_deviceIndex, _actions[index].Pos / 100.0);
+			bp.SendVibrate(_deviceIndex, currentPos / 100.0);
 		}
+	}
+
+	private static bool HasBlockEffect(Godot.Collections.Array effects)
+	{
+		foreach (var e in effects)
+		{
+			var d = e.AsGodotDictionary();
+			if (d.ContainsKey("kind") && d["kind"].AsString() == "block")
+				return true;
+		}
+		return false;
+	}
+
+	// Scale around centre, then remap into clamp range. Multiple effects of the
+	// same kind stack multiplicatively (scale) or successively (clamp).
+	private static int TransformPos(int rawPos, Godot.Collections.Array effects)
+	{
+		if (effects == null || effects.Count == 0) return rawPos;
+		float pos = rawPos;
+		foreach (var e in effects)
+		{
+			var d = e.AsGodotDictionary();
+			if (d.ContainsKey("kind") && d["kind"].AsString() == "scale" && d.ContainsKey("factor"))
+			{
+				float factor = d["factor"].AsSingle();
+				pos = 50f + (pos - 50f) * factor;
+			}
+		}
+		foreach (var e in effects)
+		{
+			var d = e.AsGodotDictionary();
+			if (d.ContainsKey("kind") && d["kind"].AsString() == "clamp")
+			{
+				float minV = d.ContainsKey("min") ? d["min"].AsSingle() : 0f;
+				float maxV = d.ContainsKey("max") ? d["max"].AsSingle() : 100f;
+				pos = minV + Math.Clamp(pos, 0f, 100f) / 100f * (maxV - minV);
+			}
+		}
+		pos = Math.Clamp(pos, 0f, 100f);
+		return (int)Math.Round(pos);
 	}
 }

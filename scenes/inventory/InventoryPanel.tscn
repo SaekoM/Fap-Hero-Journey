@@ -1,0 +1,49 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/inventory/InventoryPanel.gd" id="1_inv"]
+
+[node name="root" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_inv")
+
+[node name="Backdrop" type="ColorRect" parent="."]
+layout_mode = 0
+color = Color(0, 0, 0, 0.45)
+
+[node name="Panel" type="PanelContainer" parent="."]
+layout_mode = 0
+
+[node name="VBox" type="VBoxContainer" parent="Panel"]
+layout_mode = 2
+
+[node name="HeaderRow" type="HBoxContainer" parent="Panel/VBox"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="Panel/VBox/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "INVENTORY"
+
+[node name="CloseButton" type="Button" parent="Panel/VBox/HeaderRow"]
+layout_mode = 2
+text = "✕"
+
+[node name="Subtitle" type="Label" parent="Panel/VBox"]
+layout_mode = 2
+text = "CLICK AN ITEM TO ACTIVATE"
+
+[node name="EmptyLabel" type="Label" parent="Panel/VBox"]
+visible = false
+layout_mode = 2
+text = "// INVENTORY EMPTY //"
+
+[node name="Scroll" type="ScrollContainer" parent="Panel/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="ItemList" type="VBoxContainer" parent="Panel/VBox/Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3

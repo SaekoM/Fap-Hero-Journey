@@ -34,7 +34,26 @@ public partial class GameState : Node
 		{
 			var rd = r.AsGodotDictionary();
 			int order = rd.ContainsKey("order") ? rd["order"].AsInt32() : 0;
-			items.Add((order * 2, new Dictionary { ["type"] = "round", ["data"] = rd }));
+			items.Add((order * 3, new Dictionary { ["type"] = "round", ["data"] = rd }));
+		}
+
+		var shops = data.ContainsKey("shops") ? data["shops"].AsGodotArray() : new Array();
+		foreach (var s in shops)
+		{
+			Dictionary sd;
+			int afterOrder;
+			if (s.VariantType == Variant.Type.Dictionary)
+			{
+				sd = s.AsGodotDictionary();
+				afterOrder = sd.ContainsKey("after_order") ? sd["after_order"].AsInt32() : 0;
+			}
+			else
+			{
+				// Legacy format: "shops": [orderNum, ...]
+				afterOrder = s.AsInt32();
+				sd = new Dictionary { ["after_order"] = afterOrder };
+			}
+			items.Add((afterOrder * 3 + 1, new Dictionary { ["type"] = "shop", ["data"] = sd }));
 		}
 
 		var forks = data.ContainsKey("forks") ? data["forks"].AsGodotArray() : new Array();
@@ -42,8 +61,7 @@ public partial class GameState : Node
 		{
 			var fd = f.AsGodotDictionary();
 			int afterOrder = fd.ContainsKey("after_order") ? fd["after_order"].AsInt32() : 0;
-			// Sort key: immediately after the round with matching order.
-			items.Add((afterOrder * 2 + 1, new Dictionary { ["type"] = "fork", ["data"] = fd }));
+			items.Add((afterOrder * 3 + 2, new Dictionary { ["type"] = "fork", ["data"] = fd }));
 		}
 
 		items.Sort((a, b) => a.SortKey.CompareTo(b.SortKey));
@@ -80,6 +98,15 @@ public partial class GameState : Node
 		return new Dictionary();
 	}
 
+	// Returns the current shop's data dict. Empty if current item is not a shop.
+	public Dictionary CurrentShop()
+	{
+		var item = CurrentItem();
+		if (item.ContainsKey("type") && item["type"].AsString() == "shop")
+			return item["data"].AsGodotDictionary();
+		return new Dictionary();
+	}
+
 	// Replaces the current fork marker with the chosen path's rounds, then leaves
 	// _seqIndex pointing at the first round of the chosen path.
 	public void ResolveFork(int pathIndex)
@@ -96,19 +123,33 @@ public partial class GameState : Node
 		if (pathIndex < 0 || pathIndex >= paths.Count)
 			pathIndex = 0;
 
-		var chosen      = paths[pathIndex].AsGodotDictionary();
+		var chosen       = paths[pathIndex].AsGodotDictionary();
 		var chosenRounds = chosen.ContainsKey("rounds") ? chosen["rounds"].AsGodotArray() : new Array();
+		var chosenShops  = chosen.ContainsKey("shops")  ? chosen["shops"].AsGodotArray()  : new Array();
+
+		// Interleave path rounds and shops by the same sort-key scheme as
+		// BuildSequence so authoring order is preserved on resolution.
+		var subItems = new List<(int SortKey, Dictionary Data)>();
+		foreach (var r in chosenRounds)
+		{
+			var rd = r.AsGodotDictionary();
+			int order = rd.ContainsKey("order") ? rd["order"].AsInt32() : 0;
+			subItems.Add((order * 3, new Dictionary { ["type"] = "round", ["data"] = rd }));
+		}
+		foreach (var s in chosenShops)
+		{
+			var sd = s.AsGodotDictionary();
+			int afterOrder = sd.ContainsKey("after_order") ? sd["after_order"].AsInt32() : 0;
+			subItems.Add((afterOrder * 3 + 1, new Dictionary { ["type"] = "shop", ["data"] = sd }));
+		}
+		subItems.Sort((a, b) => a.SortKey.CompareTo(b.SortKey));
 
 		_sequence.RemoveAt(_seqIndex);
-		for (int i = chosenRounds.Count - 1; i >= 0; i--)
+		for (int i = subItems.Count - 1; i >= 0; i--)
 		{
-			_sequence.Insert(_seqIndex, new Dictionary
-			{
-				["type"] = "round",
-				["data"] = chosenRounds[i].AsGodotDictionary(),
-			});
+			_sequence.Insert(_seqIndex, subItems[i].Data);
 		}
-		// _seqIndex now points at the first round of the chosen path.
+		// _seqIndex now points at the first item of the chosen path.
 	}
 
 	public void Advance() => _seqIndex++;
@@ -132,13 +173,4 @@ public partial class GameState : Node
 		return result;
 	}
 
-	public bool ShopAfterCurrent()
-	{
-		var round = CurrentRound();
-		if (round.Count == 0 || !Journey.ContainsKey("shops")) return false;
-		int order = round.ContainsKey("order") ? round["order"].AsInt32() : -1;
-		foreach (var shop in Journey["shops"].AsGodotArray())
-			if (shop.AsInt32() == order) return true;
-		return false;
-	}
 }

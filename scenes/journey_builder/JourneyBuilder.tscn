@@ -149,6 +149,10 @@ text = "+ ADD ROUND"
 layout_mode = 2
 text = "⑂ ADD FORK"
 
+[node name="AddShopButton" type="Button" parent="Scroll/Content/RoundsSection/AddButtonsRow"]
+layout_mode = 2
+text = "◆ ADD SHOP"
+
 [node name="BottomSection" type="VBoxContainer" parent="Scroll/Content"]
 layout_mode = 2
 

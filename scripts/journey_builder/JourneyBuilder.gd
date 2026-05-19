@@ -56,6 +56,7 @@ const DropZoneScript = preload("res://scripts/journey_builder/DropZone.gd")
 @onready var _round_list:    VBoxContainer   = $Scroll/Content/RoundsSection/RoundList
 @onready var _add_round_btn: Button          = $Scroll/Content/RoundsSection/AddButtonsRow/AddRoundButton
 @onready var _add_fork_btn:  Button          = $Scroll/Content/RoundsSection/AddButtonsRow/AddForkButton
+@onready var _add_shop_btn:  Button          = $Scroll/Content/RoundsSection/AddButtonsRow/AddShopButton
 @onready var _status_lbl:    Label           = $Scroll/Content/BottomSection/StatusLabel
 @onready var _save_btn:      Button          = $Scroll/Content/BottomSection/SaveButton
 
@@ -223,6 +224,7 @@ func _apply_theme() -> void:
 
 	_style_button(_add_round_btn, COLOR_PURPLE_MID)
 	_style_button(_add_fork_btn,  COLOR_MAGENTA)
+	_style_button(_add_shop_btn,  COLOR_PURPLE_BRIGHT)
 
 	_status_lbl.add_theme_font_size_override("font_size", 13)
 	_status_lbl.visible = false
@@ -356,6 +358,7 @@ func _connect_signals() -> void:
 	_cover_btn.pressed.connect(_on_cover_pressed)
 	_add_round_btn.pressed.connect(_on_add_round_pressed)
 	_add_fork_btn.pressed.connect(_on_add_fork_pressed)
+	_add_shop_btn.pressed.connect(_on_add_shop_pressed)
 	_save_btn.pressed.connect(_on_save_pressed)
 	get_viewport().files_dropped.connect(_on_viewport_files_dropped)
 
@@ -387,10 +390,15 @@ func _on_add_fork_pressed() -> void:
 		"title":       "",
 		"description": "",
 		"paths": [
-			{"name": "Path A", "description": "", "image_path": "", "rounds": []},
-			{"name": "Path B", "description": "", "image_path": "", "rounds": []},
+			{"name": "Path A", "description": "", "image_path": "", "items": []},
+			{"name": "Path B", "description": "", "image_path": "", "items": []},
 		],
 	})
+	_refresh_items()
+
+
+func _on_add_shop_pressed() -> void:
+	_items.append({"type": "shop", "title": ""})
 	_refresh_items()
 
 
@@ -466,12 +474,13 @@ func _load_journey(journey: Dictionary) -> void:
 		return (a.get("order", 0) as int) < (b.get("order", 0) as int)
 	)
 	var forks: Array = journey.get("forks", []).duplicate()
+	var shops: Array = journey.get("shops", []).duplicate()
 
-	# Interleave rounds and forks by sort key (same logic as GameState.BuildSequence)
+	# Interleave rounds, shops and forks by sort key (same logic as GameState.BuildSequence)
 	var seq: Array = []
 	for r: Dictionary in rounds:
 		seq.append({
-			"key": (r.get("order", 0) as int) * 2,
+			"key": (r.get("order", 0) as int) * 3,
 			"data": {
 				"type":           "round",
 				"name":           r.get("name", ""),
@@ -480,20 +489,45 @@ func _load_journey(journey: Dictionary) -> void:
 				"coins":          r.get("coins", 0),
 			},
 		})
+	for sh: Dictionary in shops:
+		seq.append({
+			"key": (sh.get("after_order", 0) as int) * 3 + 1,
+			"data": {
+				"type":  "shop",
+				"title": sh.get("title", ""),
+			},
+		})
 	for f: Dictionary in forks:
 		var paths_out: Array = []
 		for p: Dictionary in f.get("paths", []):
-			var pr_out: Array = []
+			# Interleave path rounds and shops by sort key, same scheme as the top-level sequence.
+			var path_sub_seq: Array = []
 			for pr: Dictionary in p.get("rounds", []):
-				pr_out.append({
-					"name":           pr.get("name", ""),
-					"funscript_path": pr.get("funscript_path", ""),
-					"video_path":     _find_video_in_round(pr.get("folder", "")),
-					"coins":          pr.get("coins", 0),
+				path_sub_seq.append({
+					"key": (pr.get("order", 0) as int) * 3,
+					"data": {
+						"type":           "round",
+						"name":           pr.get("name", ""),
+						"funscript_path": pr.get("funscript_path", ""),
+						"video_path":     _find_video_in_round(pr.get("folder", "")),
+						"coins":          pr.get("coins", 0),
+					},
 				})
-			paths_out.append({"name": p.get("name",""), "description": p.get("description",""), "image_path": p.get("image_path",""), "rounds": pr_out})
+			for ps: Dictionary in p.get("shops", []):
+				path_sub_seq.append({
+					"key": (ps.get("after_order", 0) as int) * 3 + 1,
+					"data": {
+						"type":  "shop",
+						"title": ps.get("title", ""),
+					},
+				})
+			path_sub_seq.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return (a["key"] as int) < (b["key"] as int))
+			var path_items: Array = []
+			for s in path_sub_seq:
+				path_items.append(s["data"])
+			paths_out.append({"name": p.get("name",""), "description": p.get("description",""), "image_path": p.get("image_path",""), "items": path_items})
 		seq.append({
-			"key": (f.get("after_order", 0) as int) * 2 + 1,
+			"key": (f.get("after_order", 0) as int) * 3 + 2,
 			"data": {
 				"type":        "fork",
 				"title":       f.get("title", ""),
@@ -533,10 +567,11 @@ func _refresh_items() -> void:
 	for child in _round_list.get_children():
 		child.queue_free()
 	for i in _items.size():
-		if _items[i].get("type", "round") == "round":
-			_round_list.add_child(_make_round_row(i))
-		else:
-			_round_list.add_child(_make_fork_block(i))
+		var t: String = _items[i].get("type", "round")
+		match t:
+			"round": _round_list.add_child(_make_round_row(i))
+			"fork":  _round_list.add_child(_make_fork_block(i))
+			"shop":  _round_list.add_child(_make_shop_block(i))
 
 
 func _make_round_row(idx: int) -> Control:
@@ -639,6 +674,57 @@ func _make_round_row(idx: int) -> Control:
 	return panel
 
 
+func _make_shop_block(idx: int) -> Control:
+	var item: Dictionary = _items[idx]
+
+	var outer: PanelContainer = PanelContainer.new()
+	var os: StyleBoxFlat = StyleBoxFlat.new()
+	os.bg_color              = Color(COLOR_PURPLE_BRIGHT.r, COLOR_PURPLE_BRIGHT.g, COLOR_PURPLE_BRIGHT.b, 0.06)
+	os.border_color          = COLOR_PURPLE_BRIGHT
+	os.border_width_left     = 2; os.border_width_right  = 2
+	os.border_width_top      = 2; os.border_width_bottom = 2
+	os.content_margin_left   = 12; os.content_margin_right  = 12
+	os.content_margin_top    = 10; os.content_margin_bottom = 10
+	outer.add_theme_stylebox_override("panel", os)
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var hbox: HBoxContainer = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", ROW_SEP)
+	outer.add_child(hbox)
+
+	var shop_lbl: Label = Label.new()
+	shop_lbl.text = "◆ SHOP"
+	shop_lbl.add_theme_color_override("font_color", COLOR_PURPLE_BRIGHT)
+	shop_lbl.add_theme_font_size_override("font_size", 13)
+	shop_lbl.custom_minimum_size = Vector2(72, 0)
+	hbox.add_child(shop_lbl)
+
+	var title_edit: LineEdit = LineEdit.new()
+	title_edit.placeholder_text     = "Shop title (optional)..."
+	title_edit.text                  = item.get("title", "")
+	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_line_edit(title_edit)
+	title_edit.text_changed.connect(func(val: String) -> void: _items[idx]["title"] = val)
+	hbox.add_child(title_edit)
+
+	var up_btn: Button = _make_icon_btn("↑", idx == 0, COLOR_PURPLE_MID)
+	up_btn.pressed.connect(func() -> void: _move_item(idx, -1))
+	hbox.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", idx == _items.size() - 1, COLOR_PURPLE_MID)
+	dn_btn.pressed.connect(func() -> void: _move_item(idx, 1))
+	hbox.add_child(dn_btn)
+
+	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
+	rm_btn.pressed.connect(func() -> void:
+		_items.remove_at(idx)
+		_refresh_items()
+	)
+	hbox.add_child(rm_btn)
+
+	return outer
+
+
 func _make_fork_block(idx: int) -> Control:
 	var item: Dictionary = _items[idx]
 
@@ -715,7 +801,7 @@ func _make_fork_block(idx: int) -> Control:
 		add_path_btn.text = "+ ADD PATH"
 		_style_button(add_path_btn, COLOR_PURPLE_MID)
 		add_path_btn.pressed.connect(func() -> void:
-			_items[idx]["paths"].append({"name": "Path %s" % (char(65 + _items[idx]["paths"].size())), "description": "", "image_path": "", "rounds": []})
+			_items[idx]["paths"].append({"name": "Path %s" % (char(65 + _items[idx]["paths"].size())), "description": "", "image_path": "", "items": []})
 			_refresh_items()
 		)
 		col.add_child(add_path_btn)
@@ -801,29 +887,47 @@ func _make_fork_path_block(fork_idx: int, path_idx: int) -> Control:
 		_items[fork_idx]["paths"][path_idx]["image_path"] = path
 	)
 
-	# Round list for this path
-	var round_list: VBoxContainer = VBoxContainer.new()
-	round_list.add_theme_constant_override("separation", 4)
-	col.add_child(round_list)
+	# Items list for this path — mixed rounds and shops, rendered in array order.
+	var items_list: VBoxContainer = VBoxContainer.new()
+	items_list.add_theme_constant_override("separation", 4)
+	col.add_child(items_list)
 
-	var pr_rounds: Array = path_data.get("rounds", [])
-	for ri in pr_rounds.size():
-		round_list.add_child(_make_fork_round_row(fork_idx, path_idx, ri))
+	var path_items: Array = path_data.get("items", [])
+	for ri in path_items.size():
+		var t: String = path_items[ri].get("type", "round")
+		match t:
+			"round": items_list.add_child(_make_fork_round_row(fork_idx, path_idx, ri))
+			"shop":  items_list.add_child(_make_fork_path_shop_row(fork_idx, path_idx, ri))
+
+	var add_btns_row: HBoxContainer = HBoxContainer.new()
+	add_btns_row.add_theme_constant_override("separation", 8)
+	col.add_child(add_btns_row)
 
 	var add_round_btn: Button = Button.new()
-	add_round_btn.text = "+ ADD ROUND TO PATH"
+	add_round_btn.text                  = "+ ADD ROUND TO PATH"
+	add_round_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_button(add_round_btn, COLOR_PURPLE_MID)
 	add_round_btn.pressed.connect(func() -> void:
-		_items[fork_idx]["paths"][path_idx]["rounds"].append({"name": "", "funscript_path": "", "video_path": "", "coins": 0})
+		_items[fork_idx]["paths"][path_idx]["items"].append({"type": "round", "name": "", "funscript_path": "", "video_path": "", "coins": 0})
 		_refresh_items()
 	)
-	col.add_child(add_round_btn)
+	add_btns_row.add_child(add_round_btn)
+
+	var add_shop_btn: Button = Button.new()
+	add_shop_btn.text                  = "◆ ADD SHOP TO PATH"
+	add_shop_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_button(add_shop_btn, COLOR_PURPLE_BRIGHT)
+	add_shop_btn.pressed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"].append({"type": "shop", "title": ""})
+		_refresh_items()
+	)
+	add_btns_row.add_child(add_shop_btn)
 
 	return panel
 
 
 func _make_fork_round_row(fork_idx: int, path_idx: int, round_idx: int) -> Control:
-	var round_data: Dictionary = _items[fork_idx]["paths"][path_idx]["rounds"][round_idx]
+	var round_data: Dictionary = _items[fork_idx]["paths"][path_idx]["items"][round_idx]
 
 	var panel: PanelContainer = PanelContainer.new()
 	var ps: StyleBoxFlat = StyleBoxFlat.new()
@@ -853,7 +957,7 @@ func _make_fork_round_row(fork_idx: int, path_idx: int, round_idx: int) -> Contr
 	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(val: String) -> void:
-		_items[fork_idx]["paths"][path_idx]["rounds"][round_idx]["name"] = val
+		_items[fork_idx]["paths"][path_idx]["items"][round_idx]["name"] = val
 	)
 	hbox.add_child(name_edit)
 
@@ -866,10 +970,10 @@ func _make_fork_round_row(fork_idx: int, path_idx: int, round_idx: int) -> Contr
 	if round_data.get("video_path", "") != "":
 		video_zone.call_deferred("set_file", round_data["video_path"])
 	video_zone.file_dropped.connect(func(path: String) -> void:
-		_items[fork_idx]["paths"][path_idx]["rounds"][round_idx]["video_path"] = path
-		if (_items[fork_idx]["paths"][path_idx]["rounds"][round_idx].get("name","") as String).strip_edges() == "":
+		_items[fork_idx]["paths"][path_idx]["items"][round_idx]["video_path"] = path
+		if (_items[fork_idx]["paths"][path_idx]["items"][round_idx].get("name","") as String).strip_edges() == "":
 			var auto: String = path.get_file().get_basename()
-			_items[fork_idx]["paths"][path_idx]["rounds"][round_idx]["name"] = auto
+			_items[fork_idx]["paths"][path_idx]["items"][round_idx]["name"] = auto
 			name_edit.text = auto
 	)
 
@@ -882,21 +986,108 @@ func _make_fork_round_row(fork_idx: int, path_idx: int, round_idx: int) -> Contr
 	if round_data.get("funscript_path", "") != "":
 		fs_zone.call_deferred("set_file", round_data["funscript_path"])
 	fs_zone.file_dropped.connect(func(path: String) -> void:
-		_items[fork_idx]["paths"][path_idx]["rounds"][round_idx]["funscript_path"] = path
-		if (_items[fork_idx]["paths"][path_idx]["rounds"][round_idx].get("name","") as String).strip_edges() == "":
+		_items[fork_idx]["paths"][path_idx]["items"][round_idx]["funscript_path"] = path
+		if (_items[fork_idx]["paths"][path_idx]["items"][round_idx].get("name","") as String).strip_edges() == "":
 			var auto: String = path.get_file().get_basename()
-			_items[fork_idx]["paths"][path_idx]["rounds"][round_idx]["name"] = auto
+			_items[fork_idx]["paths"][path_idx]["items"][round_idx]["name"] = auto
 			name_edit.text = auto
 	)
 
+	var coins_edit: LineEdit = LineEdit.new()
+	coins_edit.text                = str(round_data.get("coins", 0))
+	coins_edit.custom_minimum_size = Vector2(64, 0)
+	coins_edit.max_length          = 6
+	coins_edit.placeholder_text    = "0"
+	_style_line_edit(coins_edit)
+	coins_edit.text_changed.connect(func(val: String) -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][round_idx]["coins"] = val.to_int()
+	)
+	hbox.add_child(coins_edit)
+
+	var path_items_count: int = _items[fork_idx]["paths"][path_idx]["items"].size()
+
+	var up_btn: Button = _make_icon_btn("↑", round_idx == 0, COLOR_PURPLE_MID)
+	up_btn.pressed.connect(func() -> void: _move_path_item(fork_idx, path_idx, round_idx, -1))
+	hbox.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", round_idx == path_items_count - 1, COLOR_PURPLE_MID)
+	dn_btn.pressed.connect(func() -> void: _move_path_item(fork_idx, path_idx, round_idx, 1))
+	hbox.add_child(dn_btn)
+
 	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
 	rm_btn.pressed.connect(func() -> void:
-		_items[fork_idx]["paths"][path_idx]["rounds"].remove_at(round_idx)
+		_items[fork_idx]["paths"][path_idx]["items"].remove_at(round_idx)
 		_refresh_items()
 	)
 	hbox.add_child(rm_btn)
 
 	return panel
+
+
+func _make_fork_path_shop_row(fork_idx: int, path_idx: int, item_idx: int) -> Control:
+	var shop_data: Dictionary = _items[fork_idx]["paths"][path_idx]["items"][item_idx]
+
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color            = Color(COLOR_PURPLE_BRIGHT.r, COLOR_PURPLE_BRIGHT.g, COLOR_PURPLE_BRIGHT.b, 0.06)
+	ps.border_color        = COLOR_PURPLE_BRIGHT
+	ps.border_width_left   = 1; ps.border_width_right  = 1
+	ps.border_width_top    = 1; ps.border_width_bottom = 1
+	ps.content_margin_left = 8; ps.content_margin_right  = 8
+	ps.content_margin_top  = 6; ps.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", ps)
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var hbox: HBoxContainer = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", ROW_SEP)
+	panel.add_child(hbox)
+
+	var shop_lbl: Label = Label.new()
+	shop_lbl.text = "◆ SHOP"
+	shop_lbl.add_theme_color_override("font_color", COLOR_PURPLE_BRIGHT)
+	shop_lbl.add_theme_font_size_override("font_size", 12)
+	shop_lbl.custom_minimum_size = Vector2(60, 0)
+	hbox.add_child(shop_lbl)
+
+	var title_edit: LineEdit = LineEdit.new()
+	title_edit.placeholder_text     = "Shop title (optional)..."
+	title_edit.text                  = shop_data.get("title", "")
+	title_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_line_edit(title_edit)
+	title_edit.text_changed.connect(func(val: String) -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][item_idx]["title"] = val
+	)
+	hbox.add_child(title_edit)
+
+	var path_items_count: int = _items[fork_idx]["paths"][path_idx]["items"].size()
+
+	var up_btn: Button = _make_icon_btn("↑", item_idx == 0, COLOR_PURPLE_MID)
+	up_btn.pressed.connect(func() -> void: _move_path_item(fork_idx, path_idx, item_idx, -1))
+	hbox.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", item_idx == path_items_count - 1, COLOR_PURPLE_MID)
+	dn_btn.pressed.connect(func() -> void: _move_path_item(fork_idx, path_idx, item_idx, 1))
+	hbox.add_child(dn_btn)
+
+	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
+	rm_btn.pressed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"].remove_at(item_idx)
+		_refresh_items()
+	)
+	hbox.add_child(rm_btn)
+
+	return panel
+
+
+func _move_path_item(fork_idx: int, path_idx: int, item_idx: int, direction: int) -> void:
+	var arr: Array = _items[fork_idx]["paths"][path_idx]["items"]
+	var new_idx: int = item_idx + direction
+	if new_idx < 0 or new_idx >= arr.size():
+		return
+	var tmp: Dictionary = arr[item_idx]
+	arr[item_idx] = arr[new_idx]
+	arr[new_idx]  = tmp
+	_refresh_items()
 
 
 func _make_icon_btn(icon: String, disabled: bool, accent: Color) -> Button:
@@ -954,7 +1145,8 @@ func _on_save_pressed() -> void:
 	var round_count: int = 0
 	for i in _items.size():
 		var it: Dictionary = _items[i]
-		if it.get("type", "round") == "round":
+		var t: String = it.get("type", "round")
+		if t == "round":
 			round_count += 1
 			if (it.get("name","") as String).strip_edges() == "":
 				_show_status("Round %d needs a name." % round_count, true)
@@ -964,6 +1156,9 @@ func _on_save_pressed() -> void:
 				_show_status("Round %d needs a funscript file." % round_count, true)
 				_save_btn.disabled = false
 				return
+		elif t == "shop":
+			# Shops have no validation requirements.
+			pass
 		else:
 			var paths: Array = it.get("paths", [])
 			if paths.size() < 2:
@@ -976,19 +1171,23 @@ func _on_save_pressed() -> void:
 					_show_status("Fork path %d needs a name." % (pi + 1), true)
 					_save_btn.disabled = false
 					return
-				var pr_list: Array = ppath.get("rounds", [])
-				if pr_list.is_empty():
+				var pi_list: Array = ppath.get("items", [])
+				var pr_count: int = pi_list.reduce(func(acc: int, x: Dictionary) -> int:
+					return acc + (1 if x.get("type","round") == "round" else 0), 0)
+				if pr_count == 0:
 					_show_status("Fork path \"%s\" needs at least one round." % ppath.get("name","?"), true)
 					_save_btn.disabled = false
 					return
-				for ri in pr_list.size():
-					var pr: Dictionary = pr_list[ri]
-					if (pr.get("name","") as String).strip_edges() == "":
+				for ri in pi_list.size():
+					var pi_item: Dictionary = pi_list[ri]
+					if pi_item.get("type","round") != "round":
+						continue
+					if (pi_item.get("name","") as String).strip_edges() == "":
 						_show_status("A round in fork path \"%s\" needs a name." % ppath.get("name","?"), true)
 						_save_btn.disabled = false
 						return
-					if pr.get("funscript_path","") == "":
-						_show_status("Round \"%s\" in fork path \"%s\" needs a funscript." % [pr.get("name","?"), ppath.get("name","?")], true)
+					if pi_item.get("funscript_path","") == "":
+						_show_status("Round \"%s\" in fork path \"%s\" needs a funscript." % [pi_item.get("name","?"), ppath.get("name","?")], true)
 						_save_btn.disabled = false
 						return
 
@@ -997,15 +1196,16 @@ func _on_save_pressed() -> void:
 	for it: Dictionary in _items:
 		if any_video:
 			break
-		if it.get("type","round") == "round":
+		var t_check: String = it.get("type","round")
+		if t_check == "round":
 			if it.get("video_path","") != "":
 				any_video = true
-		else:
+		elif t_check == "fork":
 			for p: Dictionary in it.get("paths",[]):
 				if any_video:
 					break
-				for pr: Dictionary in p.get("rounds",[]):
-					if pr.get("video_path","") != "":
+				for pi_item: Dictionary in p.get("items",[]):
+					if pi_item.get("type","round") == "round" and pi_item.get("video_path","") != "":
 						any_video = true
 						break
 
@@ -1046,13 +1246,21 @@ func _on_save_pressed() -> void:
 
 	var rounds_json: Array = []
 	var forks_json: Array  = []
+	var shops_json: Array  = []
 	var rorder: int = 0
 	var last_rorder: int = 0
 	var total_main_rounds: int = _items.count(func(it: Dictionary) -> bool: return it.get("type","round") == "round")
 
 	for i in _items.size():
 		var it: Dictionary = _items[i]
-		if it.get("type","round") == "round":
+		var it_type: String = it.get("type","round")
+		if it_type == "shop":
+			shops_json.append({
+				"AfterOrder": last_rorder,
+				"Title":      it.get("title",""),
+			})
+			continue
+		if it_type == "round":
 			rorder += 1
 			last_rorder = rorder
 
@@ -1104,23 +1312,33 @@ func _on_save_pressed() -> void:
 					"Description": path_data.get("description",""),
 					"Image":       img_fname,
 					"Rounds":      [],
+					"Shops":       [],
 				}
 				var pr_order: int = 0
-				for pr: Dictionary in path_data.get("rounds",[]):
+				var pr_last_order: int = 0
+				for pi_item: Dictionary in path_data.get("items",[]):
+					var pi_type: String = pi_item.get("type","round")
+					if pi_type == "shop":
+						path_entry["Shops"].append({
+							"AfterOrder": pr_last_order,
+							"Title":      pi_item.get("title",""),
+						})
+						continue
 					pr_order += 1
-					var pr_name: String = (pr.get("name","") as String).strip_edges()
+					pr_last_order = pr_order
+					var pr_name: String = (pi_item.get("name","") as String).strip_edges()
 					var pr_dir: String  = abs_dir + "/" + pr_name
 					DirAccess.make_dir_recursive_absolute(pr_dir)
-					var pr_fs: String = pr.get("funscript_path","")
+					var pr_fs: String = pi_item.get("funscript_path","")
 					if pr_fs != "":
 						_copy_file(pr_fs, pr_dir + "/" + pr_name + "." + pr_fs.get_extension())
-					var pr_vid: String = pr.get("video_path","")
+					var pr_vid: String = pi_item.get("video_path","")
 					if pr_vid != "":
 						_copy_file(pr_vid, pr_dir + "/" + pr_vid.get_file())
 					path_entry["Rounds"].append({
 						"Name":         pr_name,
 						"Order":        pr_order,
-						"CoinsAwarded": pr.get("coins",0) as int,
+						"CoinsAwarded": pi_item.get("coins",0) as int,
 					})
 				fork_entry["Paths"].append(path_entry)
 			forks_json.append(fork_entry)
@@ -1135,7 +1353,7 @@ func _on_save_pressed() -> void:
 		"Difficulty":  DIFFICULTIES[_diff_option.selected],
 		"Rounds":      rounds_json,
 		"Forks":       forks_json,
-		"Shops":       [],
+		"Shops":       shops_json,
 	}
 
 	var f: FileAccess = FileAccess.open(journey_dir + "/journey.json", FileAccess.WRITE)

@@ -33,6 +33,10 @@ layout_mode = 2
 layout_mode = 2
 text = "ROUND 1 / 1"
 
+[node name="CoinLabel" type="Label" parent="HUD/HUDBar/HUDLayout"]
+layout_mode = 2
+text = "♦ 0"
+
 [node name="ScoreLabel" type="Label" parent="HUD/HUDBar/HUDLayout"]
 layout_mode = 2
 text = "0 PTS"
@@ -41,13 +45,20 @@ text = "0 PTS"
 layout_mode = 2
 text = "|| PAUSE"
 
-[node name="MenuBtn" type="Button" parent="HUD/HUDBar/HUDLayout"]
+[node name="InventoryBtn" type="Button" parent="HUD/HUDBar/HUDLayout"]
 layout_mode = 2
-text = "< MENU"
+text = "▤ INVENTORY"
 
 [node name="OptionsBtn" type="Button" parent="HUD/HUDBar/HUDLayout"]
 layout_mode = 2
 text = "⚙ OPTIONS"
+
+[node name="MenuBtn" type="Button" parent="HUD/HUDBar/HUDLayout"]
+layout_mode = 2
+text = "< MENU"
+
+[node name="EffectChipsRow" type="HBoxContainer" parent="HUD"]
+layout_mode = 0
 
 [node name="ProgressBar" type="ProgressBar" parent="HUD"]
 layout_mode = 0
