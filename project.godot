@@ -21,6 +21,8 @@ GameState="*uid://b0xgwdayjw8ne"
 ButtplugService="*uid://bxwpe4tgnygde"
 SerialDeviceService="*res://Globals/SerialDeviceService.cs"
 ScoreService="*res://Globals/ScoreService.cs"
+CoinService="*res://Globals/CoinService.cs"
+InventoryService="*res://Globals/InventoryService.cs"
 FunscriptPlayer="*uid://20dnrtc866mq"
 Transition="*uid://b2y3bfjyfdjjw"
 
