@@ -56,6 +56,14 @@ public partial class GameState : Node
 			items.Add((afterOrder * 3 + 1, new Dictionary { ["type"] = "shop", ["data"] = sd }));
 		}
 
+		var storyboards = data.ContainsKey("storyboards") ? data["storyboards"].AsGodotArray() : new Array();
+		foreach (var sb in storyboards)
+		{
+			var sbd = sb.AsGodotDictionary();
+			int order = sbd.ContainsKey("order") ? sbd["order"].AsInt32() : 0;
+			items.Add((order * 3, new Dictionary { ["type"] = "storyboard", ["data"] = sbd }));
+		}
+
 		var forks = data.ContainsKey("forks") ? data["forks"].AsGodotArray() : new Array();
 		foreach (var f in forks)
 		{
@@ -107,6 +115,15 @@ public partial class GameState : Node
 		return new Dictionary();
 	}
 
+	// Returns the current storyboard's data dict. Empty if current item is not a storyboard.
+	public Dictionary CurrentStoryboard()
+	{
+		var item = CurrentItem();
+		if (item.ContainsKey("type") && item["type"].AsString() == "storyboard")
+			return item["data"].AsGodotDictionary();
+		return new Dictionary();
+	}
+
 	// Replaces the current fork marker with the chosen path's rounds, then leaves
 	// _seqIndex pointing at the first round of the chosen path.
 	public void ResolveFork(int pathIndex)
@@ -124,10 +141,11 @@ public partial class GameState : Node
 			pathIndex = 0;
 
 		var chosen       = paths[pathIndex].AsGodotDictionary();
-		var chosenRounds = chosen.ContainsKey("rounds") ? chosen["rounds"].AsGodotArray() : new Array();
-		var chosenShops  = chosen.ContainsKey("shops")  ? chosen["shops"].AsGodotArray()  : new Array();
+		var chosenRounds      = chosen.ContainsKey("rounds")      ? chosen["rounds"].AsGodotArray()      : new Array();
+		var chosenShops       = chosen.ContainsKey("shops")       ? chosen["shops"].AsGodotArray()       : new Array();
+		var chosenStoryboards = chosen.ContainsKey("storyboards") ? chosen["storyboards"].AsGodotArray() : new Array();
 
-		// Interleave path rounds and shops by the same sort-key scheme as
+		// Interleave path rounds, shops, and storyboards by the same sort-key scheme as
 		// BuildSequence so authoring order is preserved on resolution.
 		var subItems = new List<(int SortKey, Dictionary Data)>();
 		foreach (var r in chosenRounds)
@@ -135,6 +153,12 @@ public partial class GameState : Node
 			var rd = r.AsGodotDictionary();
 			int order = rd.ContainsKey("order") ? rd["order"].AsInt32() : 0;
 			subItems.Add((order * 3, new Dictionary { ["type"] = "round", ["data"] = rd }));
+		}
+		foreach (var sb in chosenStoryboards)
+		{
+			var sbd = sb.AsGodotDictionary();
+			int order = sbd.ContainsKey("order") ? sbd["order"].AsInt32() : 0;
+			subItems.Add((order * 3, new Dictionary { ["type"] = "storyboard", ["data"] = sbd }));
 		}
 		foreach (var s in chosenShops)
 		{

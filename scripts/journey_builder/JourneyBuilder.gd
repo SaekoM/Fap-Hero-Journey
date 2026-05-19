@@ -18,6 +18,7 @@ const COLOR_WHITE_SOFT:    Color = Color(0.878, 0.780, 1.0,   1.0)
 const COLOR_SEPARATOR:     Color = Color(0.698, 0.118, 1.0,   0.5)
 const COLOR_ERROR:         Color = Color(1.0,   0.3,   0.3,   1.0)
 const COLOR_SUCCESS:       Color = Color(0.3,   1.0,   0.5,   1.0)
+const COLOR_STORYBOARD:    Color = Color(0.0,   0.78,  0.88,  1.0)
 
 const TOP_BAR_HEIGHT:  int = 64
 const CONTENT_PADDING: int = 48
@@ -54,9 +55,10 @@ const DropZoneScript = preload("res://scripts/journey_builder/DropZone.gd")
 @onready var _desc_field:    TextEdit        = $Scroll/Content/InfoSection/InfoLayout/FieldsColumn/DescRow/DescField
 @onready var _round_header:  HBoxContainer   = $Scroll/Content/RoundsSection/RoundListHeader
 @onready var _round_list:    VBoxContainer   = $Scroll/Content/RoundsSection/RoundList
-@onready var _add_round_btn: Button          = $Scroll/Content/RoundsSection/AddButtonsRow/AddRoundButton
-@onready var _add_fork_btn:  Button          = $Scroll/Content/RoundsSection/AddButtonsRow/AddForkButton
-@onready var _add_shop_btn:  Button          = $Scroll/Content/RoundsSection/AddButtonsRow/AddShopButton
+@onready var _add_round_btn:      Button = $Scroll/Content/RoundsSection/AddButtonsRow/AddRoundButton
+@onready var _add_fork_btn:       Button = $Scroll/Content/RoundsSection/AddButtonsRow/AddForkButton
+@onready var _add_shop_btn:       Button = $Scroll/Content/RoundsSection/AddButtonsRow/AddShopButton
+@onready var _add_storyboard_btn: Button = $Scroll/Content/RoundsSection/AddButtonsRow/AddStoryboardButton
 @onready var _status_lbl:    Label           = $Scroll/Content/BottomSection/StatusLabel
 @onready var _save_btn:      Button          = $Scroll/Content/BottomSection/SaveButton
 
@@ -222,9 +224,10 @@ func _apply_theme() -> void:
 
 	_build_round_header()
 
-	_style_button(_add_round_btn, COLOR_PURPLE_MID)
-	_style_button(_add_fork_btn,  COLOR_MAGENTA)
-	_style_button(_add_shop_btn,  COLOR_PURPLE_BRIGHT)
+	_style_button(_add_round_btn,      COLOR_PURPLE_MID)
+	_style_button(_add_fork_btn,       COLOR_MAGENTA)
+	_style_button(_add_shop_btn,       COLOR_PURPLE_BRIGHT)
+	_style_button(_add_storyboard_btn, COLOR_STORYBOARD)
 
 	_status_lbl.add_theme_font_size_override("font_size", 13)
 	_status_lbl.visible = false
@@ -359,6 +362,7 @@ func _connect_signals() -> void:
 	_add_round_btn.pressed.connect(_on_add_round_pressed)
 	_add_fork_btn.pressed.connect(_on_add_fork_pressed)
 	_add_shop_btn.pressed.connect(_on_add_shop_pressed)
+	_add_storyboard_btn.pressed.connect(_on_add_storyboard_pressed)
 	_save_btn.pressed.connect(_on_save_pressed)
 	get_viewport().files_dropped.connect(_on_viewport_files_dropped)
 
@@ -399,6 +403,11 @@ func _on_add_fork_pressed() -> void:
 
 func _on_add_shop_pressed() -> void:
 	_items.append({"type": "shop", "title": ""})
+	_refresh_items()
+
+
+func _on_add_storyboard_pressed() -> void:
+	_items.append({"type": "storyboard", "coins": 0, "image": "", "lines": []})
 	_refresh_items()
 
 
@@ -473,10 +482,11 @@ func _load_journey(journey: Dictionary) -> void:
 	rounds.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return (a.get("order", 0) as int) < (b.get("order", 0) as int)
 	)
-	var forks: Array = journey.get("forks", []).duplicate()
-	var shops: Array = journey.get("shops", []).duplicate()
+	var forks:       Array = journey.get("forks",       []).duplicate()
+	var shops:       Array = journey.get("shops",       []).duplicate()
+	var storyboards: Array = journey.get("storyboards", []).duplicate()
 
-	# Interleave rounds, shops and forks by sort key (same logic as GameState.BuildSequence)
+	# Interleave rounds, storyboards, shops, and forks by sort key (same logic as GameState.BuildSequence)
 	var seq: Array = []
 	for r: Dictionary in rounds:
 		seq.append({
@@ -487,6 +497,16 @@ func _load_journey(journey: Dictionary) -> void:
 				"funscript_path": r.get("funscript_path", ""),
 				"video_path":     _find_video_in_round(r.get("folder", "")),
 				"coins":          r.get("coins", 0),
+			},
+		})
+	for sb: Dictionary in storyboards:
+		seq.append({
+			"key": (sb.get("order", 0) as int) * 3,
+			"data": {
+				"type":  "storyboard",
+				"coins": sb.get("coins", 0),
+				"image": sb.get("image", ""),
+				"lines": sb.get("lines", []),
 			},
 		})
 	for sh: Dictionary in shops:
@@ -500,7 +520,7 @@ func _load_journey(journey: Dictionary) -> void:
 	for f: Dictionary in forks:
 		var paths_out: Array = []
 		for p: Dictionary in f.get("paths", []):
-			# Interleave path rounds and shops by sort key, same scheme as the top-level sequence.
+			# Interleave path rounds, storyboards, and shops by sort key.
 			var path_sub_seq: Array = []
 			for pr: Dictionary in p.get("rounds", []):
 				path_sub_seq.append({
@@ -511,6 +531,16 @@ func _load_journey(journey: Dictionary) -> void:
 						"funscript_path": pr.get("funscript_path", ""),
 						"video_path":     _find_video_in_round(pr.get("folder", "")),
 						"coins":          pr.get("coins", 0),
+					},
+				})
+			for psb: Dictionary in p.get("storyboards", []):
+				path_sub_seq.append({
+					"key": (psb.get("order", 0) as int) * 3,
+					"data": {
+						"type":  "storyboard",
+						"coins": psb.get("coins", 0),
+						"image": psb.get("image", ""),
+						"lines": psb.get("lines", []),
 					},
 				})
 			for ps: Dictionary in p.get("shops", []):
@@ -569,9 +599,10 @@ func _refresh_items() -> void:
 	for i in _items.size():
 		var t: String = _items[i].get("type", "round")
 		match t:
-			"round": _round_list.add_child(_make_round_row(i))
-			"fork":  _round_list.add_child(_make_fork_block(i))
-			"shop":  _round_list.add_child(_make_shop_block(i))
+			"round":       _round_list.add_child(_make_round_row(i))
+			"fork":        _round_list.add_child(_make_fork_block(i))
+			"shop":        _round_list.add_child(_make_shop_block(i))
+			"storyboard":  _round_list.add_child(_make_storyboard_block(i))
 
 
 func _make_round_row(idx: int) -> Control:
@@ -896,8 +927,9 @@ func _make_fork_path_block(fork_idx: int, path_idx: int) -> Control:
 	for ri in path_items.size():
 		var t: String = path_items[ri].get("type", "round")
 		match t:
-			"round": items_list.add_child(_make_fork_round_row(fork_idx, path_idx, ri))
-			"shop":  items_list.add_child(_make_fork_path_shop_row(fork_idx, path_idx, ri))
+			"round":      items_list.add_child(_make_fork_round_row(fork_idx, path_idx, ri))
+			"shop":       items_list.add_child(_make_fork_path_shop_row(fork_idx, path_idx, ri))
+			"storyboard": items_list.add_child(_make_fork_path_storyboard_block(fork_idx, path_idx, ri))
 
 	var add_btns_row: HBoxContainer = HBoxContainer.new()
 	add_btns_row.add_theme_constant_override("separation", 8)
@@ -922,6 +954,16 @@ func _make_fork_path_block(fork_idx: int, path_idx: int) -> Control:
 		_refresh_items()
 	)
 	add_btns_row.add_child(add_shop_btn)
+
+	var add_sb_btn: Button = Button.new()
+	add_sb_btn.text                  = "◈ ADD STORYBOARD TO PATH"
+	add_sb_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_button(add_sb_btn, COLOR_STORYBOARD)
+	add_sb_btn.pressed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"].append({"type": "storyboard", "coins": 0, "image": "", "lines": []})
+		_refresh_items()
+	)
+	add_btns_row.add_child(add_sb_btn)
 
 	return panel
 
@@ -1079,6 +1121,389 @@ func _make_fork_path_shop_row(fork_idx: int, path_idx: int, item_idx: int) -> Co
 	return panel
 
 
+func _make_storyboard_block(idx: int) -> Control:
+	var item: Dictionary = _items[idx]
+
+	var outer: PanelContainer = PanelContainer.new()
+	var os: StyleBoxFlat = StyleBoxFlat.new()
+	os.bg_color              = Color(COLOR_STORYBOARD.r, COLOR_STORYBOARD.g, COLOR_STORYBOARD.b, 0.06)
+	os.border_color          = COLOR_STORYBOARD
+	os.border_width_left     = 2; os.border_width_right  = 2
+	os.border_width_top      = 2; os.border_width_bottom = 2
+	os.content_margin_left   = 12; os.content_margin_right  = 12
+	os.content_margin_top    = 10; os.content_margin_bottom = 10
+	outer.add_theme_stylebox_override("panel", os)
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	outer.add_child(col)
+
+	# Header row
+	var hdr: HBoxContainer = HBoxContainer.new()
+	hdr.add_theme_constant_override("separation", ROW_SEP)
+	col.add_child(hdr)
+
+	var sb_lbl: Label = Label.new()
+	sb_lbl.text = "◈ STORYBOARD"
+	sb_lbl.add_theme_color_override("font_color", COLOR_STORYBOARD)
+	sb_lbl.add_theme_font_size_override("font_size", 13)
+	sb_lbl.custom_minimum_size = Vector2(130, 0)
+	hdr.add_child(sb_lbl)
+
+	var coins_lbl: Label = Label.new()
+	coins_lbl.text = "COINS"
+	coins_lbl.add_theme_color_override("font_color", COLOR_SEPARATOR)
+	coins_lbl.add_theme_font_size_override("font_size", 10)
+	coins_lbl.uppercase = true
+	hdr.add_child(coins_lbl)
+
+	var coins_edit: LineEdit = LineEdit.new()
+	coins_edit.text              = str(item.get("coins", 0))
+	coins_edit.custom_minimum_size = Vector2(70, 0)
+	coins_edit.max_length        = 6
+	coins_edit.placeholder_text  = "0"
+	_style_line_edit(coins_edit)
+	coins_edit.text_changed.connect(func(val: String) -> void:
+		_items[idx]["coins"] = val.to_int()
+	)
+	hdr.add_child(coins_edit)
+
+	var spacer: Control = Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+
+	var up_btn: Button = _make_icon_btn("↑", idx == 0, COLOR_STORYBOARD)
+	up_btn.pressed.connect(func() -> void: _move_item(idx, -1))
+	hdr.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", idx == _items.size() - 1, COLOR_STORYBOARD)
+	dn_btn.pressed.connect(func() -> void: _move_item(idx, 1))
+	hdr.add_child(dn_btn)
+
+	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
+	rm_btn.pressed.connect(func() -> void:
+		_items.remove_at(idx)
+		_refresh_items()
+	)
+	hdr.add_child(rm_btn)
+
+	# Default image
+	var img_lbl: Label = Label.new()
+	img_lbl.text = "DEFAULT IMAGE"
+	img_lbl.add_theme_color_override("font_color", COLOR_SEPARATOR)
+	img_lbl.add_theme_font_size_override("font_size", 10)
+	img_lbl.uppercase = true
+	col.add_child(img_lbl)
+
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions   = IMAGE_EXTENSIONS.duplicate()
+	img_zone.picker_title          = "Select Default Image for Storyboard"
+	img_zone.picker_filters        = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(img_zone)
+	if item.get("image", "") != "":
+		img_zone.call_deferred("set_file", item["image"])
+	img_zone.file_dropped.connect(func(path: String) -> void:
+		_items[idx]["image"] = path
+	)
+
+	# Lines
+	var lines_col: VBoxContainer = VBoxContainer.new()
+	lines_col.add_theme_constant_override("separation", 4)
+	col.add_child(lines_col)
+
+	var lines: Array = item.get("lines", [])
+	for li in lines.size():
+		lines_col.add_child(_make_storyboard_line_row(idx, li))
+
+	var add_line_btn: Button = Button.new()
+	add_line_btn.text = "+ ADD DIALOGUE LINE"
+	add_line_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_button(add_line_btn, COLOR_STORYBOARD)
+	add_line_btn.pressed.connect(func() -> void:
+		_items[idx]["lines"].append({"speaker": "", "text": "", "image": ""})
+		_refresh_items()
+	)
+	col.add_child(add_line_btn)
+
+	return outer
+
+
+func _make_storyboard_line_row(sb_idx: int, line_idx: int) -> Control:
+	var line_data: Dictionary = _items[sb_idx]["lines"][line_idx]
+	var lines_count: int = _items[sb_idx]["lines"].size()
+
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color            = COLOR_PANEL_BG
+	ps.border_color        = Color(COLOR_STORYBOARD.r, COLOR_STORYBOARD.g, COLOR_STORYBOARD.b, 0.4)
+	ps.border_width_left   = 1; ps.border_width_right  = 1
+	ps.border_width_top    = 1; ps.border_width_bottom = 1
+	ps.content_margin_left = 8; ps.content_margin_right  = 8
+	ps.content_margin_top  = 6; ps.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", ps)
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var hbox: HBoxContainer = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", ROW_SEP)
+	panel.add_child(hbox)
+
+	var num_lbl: Label = Label.new()
+	num_lbl.text = "%d." % (line_idx + 1)
+	num_lbl.custom_minimum_size = Vector2(24, 0)
+	num_lbl.add_theme_color_override("font_color", COLOR_STORYBOARD)
+	num_lbl.add_theme_font_size_override("font_size", 12)
+	hbox.add_child(num_lbl)
+
+	var speaker_edit: LineEdit = LineEdit.new()
+	speaker_edit.placeholder_text     = "Speaker..."
+	speaker_edit.text                  = line_data.get("speaker", "")
+	speaker_edit.custom_minimum_size   = Vector2(120, 0)
+	_style_line_edit(speaker_edit)
+	speaker_edit.text_changed.connect(func(val: String) -> void:
+		_items[sb_idx]["lines"][line_idx]["speaker"] = val
+	)
+	hbox.add_child(speaker_edit)
+
+	var text_edit: TextEdit = TextEdit.new()
+	text_edit.placeholder_text      = "Dialogue text..."
+	text_edit.text                   = line_data.get("text", "")
+	text_edit.size_flags_horizontal  = Control.SIZE_EXPAND_FILL
+	text_edit.size_flags_vertical    = Control.SIZE_EXPAND_FILL
+	text_edit.custom_minimum_size    = Vector2(0, 72)
+	text_edit.wrap_mode              = TextEdit.LINE_WRAPPING_BOUNDARY
+	_style_text_edit(text_edit)
+	text_edit.text_changed.connect(func() -> void:
+		_items[sb_idx]["lines"][line_idx]["text"] = text_edit.text
+	)
+	hbox.add_child(text_edit)
+
+	var img_col: VBoxContainer = VBoxContainer.new()
+	img_col.add_theme_constant_override("separation", 2)
+	img_col.custom_minimum_size = Vector2(200, 0)
+	hbox.add_child(img_col)
+
+	var img_lbl: Label = Label.new()
+	img_lbl.text = "SPEAKER IMAGE"
+	img_lbl.add_theme_color_override("font_color", COLOR_SEPARATOR)
+	img_lbl.add_theme_font_size_override("font_size", 9)
+	img_lbl.uppercase = true
+	img_col.add_child(img_lbl)
+
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions = IMAGE_EXTENSIONS.duplicate()
+	img_zone.picker_title        = "Select Speaker Image for Line %d" % (line_idx + 1)
+	img_zone.picker_filters      = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_col.add_child(img_zone)
+	if line_data.get("image", "") != "":
+		img_zone.call_deferred("set_file", line_data["image"])
+	img_zone.file_dropped.connect(func(path: String) -> void:
+		_items[sb_idx]["lines"][line_idx]["image"] = path
+	)
+
+	var up_btn: Button = _make_icon_btn("↑", line_idx == 0, COLOR_STORYBOARD)
+	up_btn.pressed.connect(func() -> void: _move_storyboard_line(sb_idx, line_idx, -1))
+	hbox.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", line_idx == lines_count - 1, COLOR_STORYBOARD)
+	dn_btn.pressed.connect(func() -> void: _move_storyboard_line(sb_idx, line_idx, 1))
+	hbox.add_child(dn_btn)
+
+	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
+	rm_btn.pressed.connect(func() -> void:
+		_items[sb_idx]["lines"].remove_at(line_idx)
+		_refresh_items()
+	)
+	hbox.add_child(rm_btn)
+
+	return panel
+
+
+func _make_fork_path_storyboard_block(fork_idx: int, path_idx: int, item_idx: int) -> Control:
+	var sb_data: Dictionary = _items[fork_idx]["paths"][path_idx]["items"][item_idx]
+	var path_items_count: int = _items[fork_idx]["paths"][path_idx]["items"].size()
+
+	var outer: PanelContainer = PanelContainer.new()
+	var os: StyleBoxFlat = StyleBoxFlat.new()
+	os.bg_color              = Color(COLOR_STORYBOARD.r, COLOR_STORYBOARD.g, COLOR_STORYBOARD.b, 0.06)
+	os.border_color          = COLOR_STORYBOARD
+	os.border_width_left     = 1; os.border_width_right  = 1
+	os.border_width_top      = 1; os.border_width_bottom = 1
+	os.content_margin_left   = 8; os.content_margin_right  = 8
+	os.content_margin_top    = 6; os.content_margin_bottom = 6
+	outer.add_theme_stylebox_override("panel", os)
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	outer.add_child(col)
+
+	# Header
+	var hdr: HBoxContainer = HBoxContainer.new()
+	hdr.add_theme_constant_override("separation", ROW_SEP)
+	col.add_child(hdr)
+
+	var sb_lbl: Label = Label.new()
+	sb_lbl.text = "◈ STORYBOARD"
+	sb_lbl.add_theme_color_override("font_color", COLOR_STORYBOARD)
+	sb_lbl.add_theme_font_size_override("font_size", 12)
+	sb_lbl.custom_minimum_size = Vector2(110, 0)
+	hdr.add_child(sb_lbl)
+
+	var coins_edit: LineEdit = LineEdit.new()
+	coins_edit.text                = str(sb_data.get("coins", 0))
+	coins_edit.custom_minimum_size = Vector2(64, 0)
+	coins_edit.max_length          = 6
+	coins_edit.placeholder_text    = "0"
+	_style_line_edit(coins_edit)
+	coins_edit.text_changed.connect(func(val: String) -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][item_idx]["coins"] = val.to_int()
+	)
+	hdr.add_child(coins_edit)
+
+	var spacer: Control = Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(spacer)
+
+	var up_btn: Button = _make_icon_btn("↑", item_idx == 0, COLOR_STORYBOARD)
+	up_btn.pressed.connect(func() -> void: _move_path_item(fork_idx, path_idx, item_idx, -1))
+	hdr.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", item_idx == path_items_count - 1, COLOR_STORYBOARD)
+	dn_btn.pressed.connect(func() -> void: _move_path_item(fork_idx, path_idx, item_idx, 1))
+	hdr.add_child(dn_btn)
+
+	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
+	rm_btn.pressed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"].remove_at(item_idx)
+		_refresh_items()
+	)
+	hdr.add_child(rm_btn)
+
+	# Default image
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions   = IMAGE_EXTENSIONS.duplicate()
+	img_zone.picker_title          = "Select Default Image"
+	img_zone.picker_filters        = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(img_zone)
+	if sb_data.get("image", "") != "":
+		img_zone.call_deferred("set_file", sb_data["image"])
+	img_zone.file_dropped.connect(func(path: String) -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][item_idx]["image"] = path
+	)
+
+	# Lines
+	var lines_col: VBoxContainer = VBoxContainer.new()
+	lines_col.add_theme_constant_override("separation", 3)
+	col.add_child(lines_col)
+
+	var lines: Array = sb_data.get("lines", [])
+	for li in lines.size():
+		lines_col.add_child(_make_fork_path_storyboard_line_row(fork_idx, path_idx, item_idx, li))
+
+	var add_line_btn: Button = Button.new()
+	add_line_btn.text = "+ ADD LINE"
+	add_line_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_button(add_line_btn, COLOR_STORYBOARD)
+	add_line_btn.pressed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][item_idx]["lines"].append({"speaker": "", "text": "", "image": ""})
+		_refresh_items()
+	)
+	col.add_child(add_line_btn)
+
+	return outer
+
+
+func _make_fork_path_storyboard_line_row(fork_idx: int, path_idx: int, sb_idx: int, line_idx: int) -> Control:
+	var line_data: Dictionary = _items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"][line_idx]
+	var lines_count: int = _items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"].size()
+
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color            = COLOR_PANEL_BG
+	ps.border_color        = Color(COLOR_STORYBOARD.r, COLOR_STORYBOARD.g, COLOR_STORYBOARD.b, 0.35)
+	ps.border_width_left   = 1; ps.border_width_right  = 1
+	ps.border_width_top    = 1; ps.border_width_bottom = 1
+	ps.content_margin_left = 6; ps.content_margin_right  = 6
+	ps.content_margin_top  = 4; ps.content_margin_bottom = 4
+	panel.add_theme_stylebox_override("panel", ps)
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var hbox: HBoxContainer = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", ROW_SEP)
+	panel.add_child(hbox)
+
+	var num_lbl: Label = Label.new()
+	num_lbl.text = "%d." % (line_idx + 1)
+	num_lbl.custom_minimum_size = Vector2(20, 0)
+	num_lbl.add_theme_color_override("font_color", COLOR_STORYBOARD)
+	num_lbl.add_theme_font_size_override("font_size", 11)
+	hbox.add_child(num_lbl)
+
+	var speaker_edit: LineEdit = LineEdit.new()
+	speaker_edit.placeholder_text     = "Speaker..."
+	speaker_edit.text                  = line_data.get("speaker", "")
+	speaker_edit.custom_minimum_size   = Vector2(100, 0)
+	_style_line_edit(speaker_edit)
+	speaker_edit.text_changed.connect(func(val: String) -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"][line_idx]["speaker"] = val
+	)
+	hbox.add_child(speaker_edit)
+
+	var text_edit: TextEdit = TextEdit.new()
+	text_edit.placeholder_text      = "Dialogue text..."
+	text_edit.text                   = line_data.get("text", "")
+	text_edit.size_flags_horizontal  = Control.SIZE_EXPAND_FILL
+	text_edit.size_flags_vertical    = Control.SIZE_EXPAND_FILL
+	text_edit.custom_minimum_size    = Vector2(0, 72)
+	text_edit.wrap_mode              = TextEdit.LINE_WRAPPING_BOUNDARY
+	_style_text_edit(text_edit)
+	text_edit.text_changed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"][line_idx]["text"] = text_edit.text
+	)
+	hbox.add_child(text_edit)
+
+	var up_btn: Button = _make_icon_btn("↑", line_idx == 0, COLOR_STORYBOARD)
+	up_btn.pressed.connect(func() -> void:
+		var arr: Array = _items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"]
+		if line_idx <= 0: return
+		var tmp: Dictionary = arr[line_idx]; arr[line_idx] = arr[line_idx-1]; arr[line_idx-1] = tmp
+		_refresh_items()
+	)
+	hbox.add_child(up_btn)
+
+	var dn_btn: Button = _make_icon_btn("↓", line_idx == lines_count - 1, COLOR_STORYBOARD)
+	dn_btn.pressed.connect(func() -> void:
+		var arr: Array = _items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"]
+		if line_idx >= arr.size() - 1: return
+		var tmp: Dictionary = arr[line_idx]; arr[line_idx] = arr[line_idx+1]; arr[line_idx+1] = tmp
+		_refresh_items()
+	)
+	hbox.add_child(dn_btn)
+
+	var rm_btn: Button = _make_icon_btn("✕", false, COLOR_MAGENTA)
+	rm_btn.pressed.connect(func() -> void:
+		_items[fork_idx]["paths"][path_idx]["items"][sb_idx]["lines"].remove_at(line_idx)
+		_refresh_items()
+	)
+	hbox.add_child(rm_btn)
+
+	return panel
+
+
+func _move_storyboard_line(sb_idx: int, line_idx: int, direction: int) -> void:
+	var arr: Array = _items[sb_idx]["lines"]
+	var new_idx: int = line_idx + direction
+	if new_idx < 0 or new_idx >= arr.size():
+		return
+	var tmp: Dictionary = arr[line_idx]
+	arr[line_idx] = arr[new_idx]
+	arr[new_idx]  = tmp
+	_refresh_items()
+
+
 func _move_path_item(fork_idx: int, path_idx: int, item_idx: int, direction: int) -> void:
 	var arr: Array = _items[fork_idx]["paths"][path_idx]["items"]
 	var new_idx: int = item_idx + direction
@@ -1156,8 +1581,8 @@ func _on_save_pressed() -> void:
 				_show_status("Round %d needs a funscript file." % round_count, true)
 				_save_btn.disabled = false
 				return
-		elif t == "shop":
-			# Shops have no validation requirements.
+		elif t == "shop" or t == "storyboard":
+			# Shops and storyboards have no required fields for save.
 			pass
 		else:
 			var paths: Array = it.get("paths", [])
@@ -1173,14 +1598,16 @@ func _on_save_pressed() -> void:
 					return
 				var pi_list: Array = ppath.get("items", [])
 				var pr_count: int = pi_list.reduce(func(acc: int, x: Dictionary) -> int:
-					return acc + (1 if x.get("type","round") == "round" else 0), 0)
+					var xt: String = x.get("type","round")
+					return acc + (1 if xt == "round" else 0), 0)
 				if pr_count == 0:
 					_show_status("Fork path \"%s\" needs at least one round." % ppath.get("name","?"), true)
 					_save_btn.disabled = false
 					return
 				for ri in pi_list.size():
 					var pi_item: Dictionary = pi_list[ri]
-					if pi_item.get("type","round") != "round":
+					var pi_t: String = pi_item.get("type","round")
+					if pi_t != "round":
 						continue
 					if (pi_item.get("name","") as String).strip_edges() == "":
 						_show_status("A round in fork path \"%s\" needs a name." % ppath.get("name","?"), true)
@@ -1244,9 +1671,10 @@ func _on_save_pressed() -> void:
 		modal = _create_transcode_modal()
 		add_child(modal)
 
-	var rounds_json: Array = []
-	var forks_json: Array  = []
-	var shops_json: Array  = []
+	var rounds_json:      Array = []
+	var forks_json:       Array = []
+	var shops_json:       Array = []
+	var storyboards_json: Array = []
 	var rorder: int = 0
 	var last_rorder: int = 0
 	var total_main_rounds: int = _items.count(func(it: Dictionary) -> bool: return it.get("type","round") == "round")
@@ -1258,6 +1686,37 @@ func _on_save_pressed() -> void:
 			shops_json.append({
 				"AfterOrder": last_rorder,
 				"Title":      it.get("title",""),
+			})
+			continue
+		if it_type == "storyboard":
+			rorder += 1
+			last_rorder = rorder
+			var sb_slug: String = "storyboard_%d" % rorder
+			var sb_img_src: String = it.get("image", "")
+			var sb_img_fname: String = ""
+			if sb_img_src != "":
+				var sb_ext: String = sb_img_src.get_extension().to_lower()
+				sb_img_fname = sb_slug + "." + sb_ext
+				_copy_file(sb_img_src, abs_dir + "/" + sb_img_fname)
+			var sb_lines_json: Array = []
+			for sb_li_idx in (it.get("lines", []) as Array).size():
+				var sb_li: Dictionary = it["lines"][sb_li_idx]
+				var li_img_src: String = sb_li.get("image", "")
+				var li_img_fname: String = ""
+				if li_img_src != "":
+					var li_ext: String = li_img_src.get_extension().to_lower()
+					li_img_fname = sb_slug + "_line_%d.%s" % [sb_li_idx, li_ext]
+					_copy_file(li_img_src, abs_dir + "/" + li_img_fname)
+				sb_lines_json.append({
+					"Speaker": sb_li.get("speaker", ""),
+					"Text":    sb_li.get("text",    ""),
+					"Image":   li_img_fname,
+				})
+			storyboards_json.append({
+				"Order":        rorder,
+				"CoinsAwarded": it.get("coins", 0) as int,
+				"Image":        sb_img_fname,
+				"Lines":        sb_lines_json,
 			})
 			continue
 		if it_type == "round":
@@ -1313,6 +1772,7 @@ func _on_save_pressed() -> void:
 					"Image":       img_fname,
 					"Rounds":      [],
 					"Shops":       [],
+					"Storyboards": [],
 				}
 				var pr_order: int = 0
 				var pr_last_order: int = 0
@@ -1322,6 +1782,37 @@ func _on_save_pressed() -> void:
 						path_entry["Shops"].append({
 							"AfterOrder": pr_last_order,
 							"Title":      pi_item.get("title",""),
+						})
+						continue
+					if pi_type == "storyboard":
+						pr_order += 1
+						pr_last_order = pr_order
+						var psb_slug: String = "storyboard_%d_%d" % [forks_json.size(), pr_order]
+						var psb_img_src: String = pi_item.get("image", "")
+						var psb_img_fname: String = ""
+						if psb_img_src != "":
+							var psb_ext: String = psb_img_src.get_extension().to_lower()
+							psb_img_fname = psb_slug + "." + psb_ext
+							_copy_file(psb_img_src, abs_dir + "/" + psb_img_fname)
+						var psb_lines_json: Array = []
+						for psb_li_idx in (pi_item.get("lines",[]) as Array).size():
+							var psb_li: Dictionary = pi_item["lines"][psb_li_idx]
+							var psb_li_img_src: String = psb_li.get("image","")
+							var psb_li_img_fname: String = ""
+							if psb_li_img_src != "":
+								var psb_li_ext: String = psb_li_img_src.get_extension().to_lower()
+								psb_li_img_fname = psb_slug + "_line_%d.%s" % [psb_li_idx, psb_li_ext]
+								_copy_file(psb_li_img_src, abs_dir + "/" + psb_li_img_fname)
+							psb_lines_json.append({
+								"Speaker": psb_li.get("speaker",""),
+								"Text":    psb_li.get("text",""),
+								"Image":   psb_li_img_fname,
+							})
+						path_entry["Storyboards"].append({
+							"Order":        pr_order,
+							"CoinsAwarded": pi_item.get("coins",0) as int,
+							"Image":        psb_img_fname,
+							"Lines":        psb_lines_json,
 						})
 						continue
 					pr_order += 1
@@ -1354,6 +1845,7 @@ func _on_save_pressed() -> void:
 		"Rounds":      rounds_json,
 		"Forks":       forks_json,
 		"Shops":       shops_json,
+		"Storyboards": storyboards_json,
 	}
 
 	var f: FileAccess = FileAccess.open(journey_dir + "/journey.json", FileAccess.WRITE)

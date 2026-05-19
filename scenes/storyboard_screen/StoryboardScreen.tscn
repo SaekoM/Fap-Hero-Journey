@@ -1,0 +1,38 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/storyboard_screen/StoryboardScreen.gd" id="1_sb"]
+
+[node name="StoryboardScreen" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_sb")
+
+[node name="BgImage" type="TextureRect" parent="."]
+layout_mode = 0
+
+[node name="VNBar" type="PanelContainer" parent="."]
+layout_mode = 0
+
+[node name="Inner" type="MarginContainer" parent="VNBar"]
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="VNBar/Inner"]
+layout_mode = 2
+
+[node name="Speaker" type="Label" parent="VNBar/Inner/VBox"]
+layout_mode = 2
+text = "SPEAKER"
+
+[node name="DialogueLine" type="Label" parent="VNBar/Inner/VBox"]
+layout_mode = 2
+text = ""
+
+[node name="ContinueHint" type="Label" parent="VNBar/Inner/VBox"]
+layout_mode = 2
+text = "▶ CLICK OR PRESS SPACE TO CONTINUE"
+
+[node name="FadeOverlay" type="ColorRect" parent="."]
+layout_mode = 0
+color = Color(0, 0, 0, 1)

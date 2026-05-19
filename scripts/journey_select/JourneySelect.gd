@@ -427,6 +427,7 @@ func _parse_journey(path: String, folder: String) -> Dictionary:
 		"rounds":          [],
 		"forks":           [],
 		"shops":           [],
+		"storyboards":     [],
 		"cover_path":      "",
 		"total_actions":   0,
 		"total_length_ms": 0,
@@ -443,6 +444,29 @@ func _parse_journey(path: String, folder: String) -> Dictionary:
 		else:
 			# Legacy format: bare int order number.
 			journey["shops"].append({"after_order": int(raw_shop), "title": ""})
+
+	var raw_storyboards: Array = data.get("Storyboards", [])
+	for raw_sb in raw_storyboards:
+		if not raw_sb is Dictionary:
+			continue
+		var sb_img_file: String = raw_sb.get("Image", raw_sb.get("image", ""))
+		var sb_lines_raw: Array = raw_sb.get("Lines", raw_sb.get("lines", []))
+		var sb_lines: Array = []
+		for raw_line in sb_lines_raw:
+			if not raw_line is Dictionary:
+				continue
+			var line_img_file: String = raw_line.get("Image", raw_line.get("image", ""))
+			sb_lines.append({
+				"speaker": raw_line.get("Speaker", raw_line.get("speaker", "")),
+				"text":    raw_line.get("Text",    raw_line.get("text",    "")),
+				"image":   (path + "/" + line_img_file) if line_img_file != "" else "",
+			})
+		journey["storyboards"].append({
+			"order":  raw_sb.get("Order",        raw_sb.get("order",        0)),
+			"coins":  raw_sb.get("CoinsAwarded", raw_sb.get("coins",        0)),
+			"image":  (path + "/" + sb_img_file) if sb_img_file != "" else "",
+			"lines":  sb_lines,
+		})
 
 	journey["cover_path"] = _find_cover_image(path)
 
@@ -514,6 +538,29 @@ func _parse_journey(path: String, folder: String) -> Dictionary:
 					})
 				else:
 					path_entry["shops"].append({"after_order": int(raw_ps), "title": ""})
+			path_entry["storyboards"] = []
+			var raw_pr_sbs: Array = raw_path.get("Storyboards", raw_path.get("storyboards", []))
+			for raw_psb in raw_pr_sbs:
+				if not raw_psb is Dictionary:
+					continue
+				var psb_img_file: String = raw_psb.get("Image", raw_psb.get("image", ""))
+				var psb_lines_raw: Array = raw_psb.get("Lines", raw_psb.get("lines", []))
+				var psb_lines: Array = []
+				for raw_pl in psb_lines_raw:
+					if not raw_pl is Dictionary:
+						continue
+					var pl_img_file: String = raw_pl.get("Image", raw_pl.get("image", ""))
+					psb_lines.append({
+						"speaker": raw_pl.get("Speaker", raw_pl.get("speaker", "")),
+						"text":    raw_pl.get("Text",    raw_pl.get("text",    "")),
+						"image":   (path + "/" + pl_img_file) if pl_img_file != "" else "",
+					})
+				path_entry["storyboards"].append({
+					"order":  raw_psb.get("Order",        raw_psb.get("order",        0)),
+					"coins":  raw_psb.get("CoinsAwarded", raw_psb.get("coins",        0)),
+					"image":  (path + "/" + psb_img_file) if psb_img_file != "" else "",
+					"lines":  psb_lines,
+				})
 			fork_entry["paths"].append(path_entry)
 		parsed_forks.append(fork_entry)
 	journey["forks"] = parsed_forks
@@ -699,10 +746,13 @@ func _populate_modal(journey: Dictionary) -> void:
 	hdr_line.add_theme_stylebox_override("separator", hdr_style)
 	_round_list.add_child(hdr_line)
 
-	var forks_data: Array = journey.get("forks", [])
+	var forks_data:      Array = journey.get("forks",       [])
+	var storyboards_data:Array = journey.get("storyboards", [])
 	var seq: Array = []
 	for rd: Dictionary in rounds:
 		seq.append({"type": "round", "data": rd, "key": (rd.get("order", 0) as int) * 3})
+	for sb: Dictionary in storyboards_data:
+		seq.append({"type": "storyboard", "data": sb, "key": (sb.get("order", 0) as int) * 3})
 	for sh: Dictionary in shops_data:
 		seq.append({"type": "shop", "data": sh, "key": (sh.get("after_order", 0) as int) * 3 + 1})
 	for fk: Dictionary in forks_data:
@@ -743,6 +793,29 @@ func _populate_modal(journey: Dictionary) -> void:
 			shop_lbl.add_theme_color_override("font_color", COLOR_MAGENTA)
 			shop_lbl.add_theme_font_size_override("font_size", 11)
 			shop_row.add_child(shop_lbl)
+			continue
+
+		if item["type"] == "storyboard":
+			var sb: Dictionary = item["data"]
+			var sb_row: HBoxContainer = HBoxContainer.new()
+			sb_row.add_theme_constant_override("separation", 8)
+			_round_list.add_child(sb_row)
+			var sb_lbl: Label = Label.new()
+			var sb_line_count: int = (sb.get("lines", []) as Array).size()
+			sb_lbl.text = "  ◈  STORYBOARD  (%d LINE%s)" % [sb_line_count, "S" if sb_line_count != 1 else ""]
+			sb_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			sb_lbl.add_theme_color_override("font_color", Color(0.10, 0.85, 0.90, 1.0))
+			sb_lbl.add_theme_font_size_override("font_size", 11)
+			sb_row.add_child(sb_lbl)
+			var sb_coins: int = sb.get("coins", 0)
+			if sb_coins > 0:
+				var sb_coins_lbl: Label = Label.new()
+				sb_coins_lbl.text = "♦ %d" % sb_coins
+				sb_coins_lbl.custom_minimum_size = Vector2(72, 0)
+				sb_coins_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+				sb_coins_lbl.add_theme_color_override("font_color", COLOR_MAGENTA)
+				sb_coins_lbl.add_theme_font_size_override("font_size", 12)
+				sb_row.add_child(sb_coins_lbl)
 			continue
 
 		var round_data: Dictionary = item["data"]

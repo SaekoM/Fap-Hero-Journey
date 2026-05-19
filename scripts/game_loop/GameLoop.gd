@@ -1,9 +1,10 @@
 extends Control
 
-const OptionsScene        = preload("res://scenes/options/Options.tscn")
-const ForkScene           = preload("res://scenes/fork_screen/ForkScreen.tscn")
-const ShopScene           = preload("res://scenes/shop_screen/ShopScreen.tscn")
-const InventoryPanelScene = preload("res://scenes/inventory/InventoryPanel.tscn")
+const OptionsScene         = preload("res://scenes/options/Options.tscn")
+const ForkScene            = preload("res://scenes/fork_screen/ForkScreen.tscn")
+const ShopScene            = preload("res://scenes/shop_screen/ShopScreen.tscn")
+const StoryboardScene      = preload("res://scenes/storyboard_screen/StoryboardScreen.tscn")
+const InventoryPanelScene  = preload("res://scenes/inventory/InventoryPanel.tscn")
 
 # ---------------------------------------------------------------------------
 # GameLoop.gd  –  Round controller and video player
@@ -82,8 +83,31 @@ func _load_current_item() -> void:
 			_show_fork_screen(GameState.CurrentFork())
 		"shop":
 			_show_shop_screen(GameState.CurrentShop())
+		"storyboard":
+			_show_storyboard_screen(GameState.CurrentStoryboard())
 		_:
 			_load_current_round()
+
+
+func _show_storyboard_screen(sb_data: Dictionary) -> void:
+	_video.paused = true
+	FunscriptPlayer.Pause()
+	var sb: Control = StoryboardScene.instantiate()
+	sb.completed.connect(_on_storyboard_completed)
+	add_child(sb)
+	sb.setup(sb_data)
+
+
+func _on_storyboard_completed(coins: int) -> void:
+	if coins > 0:
+		CoinService.AddCoins(coins)
+	GameState.Advance()
+	if GameState.IsSequenceDone():
+		Transition.change_scene("res://scenes/end_screen/EndScreen.tscn")
+	else:
+		_video.paused = false
+		FunscriptPlayer.Resume()
+		_load_current_item()
 
 
 func _show_shop_screen(shop_data: Dictionary) -> void:

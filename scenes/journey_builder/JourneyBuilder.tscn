@@ -153,6 +153,10 @@ text = "⑂ ADD FORK"
 layout_mode = 2
 text = "◆ ADD SHOP"
 
+[node name="AddStoryboardButton" type="Button" parent="Scroll/Content/RoundsSection/AddButtonsRow"]
+layout_mode = 2
+text = "◈ ADD STORYBOARD"
+
 [node name="BottomSection" type="VBoxContainer" parent="Scroll/Content"]
 layout_mode = 2
 

@@ -55,7 +55,7 @@
               "RelativeDocumentMoniker": "Globals\\InventoryService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\InventoryService.cs",
               "RelativeToolTip": "Globals\\InventoryService.cs",
-              "ViewState": "AgIAAC8AAAAAAAAAAAAQwEcAAAAbAAAAAAAAAA==",
+              "ViewState": "AgIAAAYAAAAAAAAAAAAAACwAAAAYAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-05-19T12:28:48.943Z",
               "EditorCaption": ""
@@ -70,8 +70,7 @@
               "RelativeToolTip": "Globals\\CoinService.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAACMAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-19T01:12:42.492Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-05-19T01:12:42.492Z"
             },
             {
               "$type": "Document",
@@ -107,8 +106,7 @@
               "RelativeToolTip": "Globals\\GameState.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T16:42:53.814Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-05-18T16:42:53.814Z"
             },
             {
               "$type": "Document",
@@ -132,8 +130,7 @@
               "RelativeToolTip": "Globals\\FunscriptPlayer.cs",
               "ViewState": "AgIAAJcAAAAAAAAAAAAwwN4AAAARAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T16:42:53.897Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-05-18T16:42:53.897Z"
             },
             {
               "$type": "Document",

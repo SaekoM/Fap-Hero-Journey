@@ -17,6 +17,7 @@ config/icon="res://icon.svg"
 
 [autoload]
 
+SettingsService="*res://Globals/SettingsService.gd"
 GameState="*uid://b0xgwdayjw8ne"
 ButtplugService="*uid://bxwpe4tgnygde"
 SerialDeviceService="*res://Globals/SerialDeviceService.cs"
