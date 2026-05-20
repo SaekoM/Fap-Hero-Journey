@@ -60,6 +60,10 @@ var _config: ConfigFile = ConfigFile.new()
 var _is_connected: bool = false
 var overlay_mode: bool = false
 
+var _range_slider:  RangeSlider = null
+var _range_min_lbl: Label       = null
+var _range_max_lbl: Label       = null
+
 
 func _ready() -> void:
 	_apply_layout()
@@ -162,6 +166,73 @@ func _apply_layout() -> void:
 	_device_dropdown.custom_minimum_size = Vector2(220, 0)
 	_output_mode_dropdown.custom_minimum_size = Vector2(280, 0)
 	_serial_port_dropdown.custom_minimum_size = Vector2(180, 0)
+
+	# ── Device Range section (built entirely in code) ─────────────────────────
+	var range_section: VBoxContainer = VBoxContainer.new()
+	range_section.add_theme_constant_override("separation", 12)
+	_content_vbox.add_child(range_section)
+
+	var range_header: Label = Label.new()
+	range_header.text = "DEVICE RANGE"
+	_style_label(range_header, UITheme.PURPLE_BRIGHT, 13, true)
+	range_section.add_child(range_header)
+
+	var range_divider: HSeparator = HSeparator.new()
+	range_divider.add_theme_stylebox_override("separator", _make_separator_style())
+	range_section.add_child(range_divider)
+
+	var range_row: HBoxContainer = HBoxContainer.new()
+	range_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(range_row)
+
+	var range_lbl: Label = Label.new()
+	range_lbl.text = "Position Clamp"
+	range_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(range_lbl, UITheme.WHITE_SOFT, 14, false)
+	range_row.add_child(range_lbl)
+
+	# Slider + value labels stacked vertically
+	var slider_col: VBoxContainer = VBoxContainer.new()
+	slider_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider_col.add_theme_constant_override("separation", 4)
+	range_row.add_child(slider_col)
+
+	_range_slider = RangeSlider.new()
+	_range_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider_col.add_child(_range_slider)
+
+	# Min / max value row beneath the slider
+	var val_row: HBoxContainer = HBoxContainer.new()
+	val_row.add_theme_constant_override("separation", 0)
+	slider_col.add_child(val_row)
+
+	_range_min_lbl = Label.new()
+	_range_min_lbl.text = "MIN: 0"
+	_style_label(_range_min_lbl, UITheme.PURPLE_MID, 11, true)
+	val_row.add_child(_range_min_lbl)
+
+	var val_spacer: Control = Control.new()
+	val_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	val_row.add_child(val_spacer)
+
+	_range_max_lbl = Label.new()
+	_range_max_lbl.text = "MAX: 100"
+	_style_label(_range_max_lbl, UITheme.PURPLE_MID, 11, true)
+	val_row.add_child(_range_max_lbl)
+
+	# Update labels + auto-save whenever a handle is moved
+	_range_slider.range_changed.connect(func(lo: float, hi: float) -> void:
+		_range_min_lbl.text = "MIN: %d" % roundi(lo)
+		_range_max_lbl.text = "MAX: %d" % roundi(hi)
+		_save_settings()
+	)
+
+	# Hint beneath the slider
+	var hint: Label = Label.new()
+	hint.text = "Hard-clamps all playback positions to this range. Affects both Buttplug and Serial outputs."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(hint)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +515,13 @@ func _load_settings() -> void:
 	_serial_auto_toggle.button_pressed = serial_auto
 	_style_toggle(_serial_auto_toggle, serial_auto)
 
+	var range_lo: float = (_config.get_value("device", "range_min", 0)   as float)
+	var range_hi: float = (_config.get_value("device", "range_max", 100) as float)
+	if _range_slider != null:
+		_range_slider.set_range_values(range_lo, range_hi)
+		_range_min_lbl.text = "MIN: %d" % roundi(range_lo)
+		_range_max_lbl.text = "MAX: %d" % roundi(range_hi)
+
 
 func _apply_defaults() -> void:
 	_master_slider.value = 1.0
@@ -474,6 +552,10 @@ func _save_settings() -> void:
 		baud = DEFAULT_BAUD_RATE
 	_config.set_value("serial", "baud_rate", baud)
 	_config.set_value("serial", "auto_connect", _serial_auto_toggle.button_pressed)
+
+	if _range_slider != null:
+		_config.set_value("device", "range_min", _range_slider.lo)
+		_config.set_value("device", "range_max", _range_slider.hi)
 
 	_config.save(SETTINGS_PATH)
 

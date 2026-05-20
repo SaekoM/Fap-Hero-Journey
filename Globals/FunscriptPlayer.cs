@@ -18,6 +18,8 @@ public partial class FunscriptPlayer : Node
 	private bool _syncedThisFrame = false;
 	private OutputMode _outputMode = OutputMode.Buttplug;
 	private bool _outputResolved = false;
+	private int _rangeMin = 0;
+	private int _rangeMax = 100;
 
 	public bool Playing     => _playing;
 	public int  ActionCount => _actions.Count;
@@ -148,6 +150,10 @@ public partial class FunscriptPlayer : Node
 		{
 			string mode = config.GetValue("output", "mode", Variant.From("buttplug")).AsString();
 			_outputMode = mode == "serial" ? OutputMode.Serial : OutputMode.Buttplug;
+
+			// Cache device range limits so SendCommand doesn't hit disk per-action.
+			_rangeMin = (int)config.GetValue("device", "range_min", Variant.From(0)).AsSingle();
+			_rangeMax = (int)config.GetValue("device", "range_max", Variant.From(100)).AsSingle();
 		}
 
 		if (_outputMode == OutputMode.Serial)
@@ -180,6 +186,11 @@ public partial class FunscriptPlayer : Node
 
 		int currentPos = TransformPos(_actions[index].Pos, effects);
 		int nextPos    = index + 1 < _actions.Count ? TransformPos(_actions[index + 1].Pos, effects) : currentPos;
+
+		// Apply user-configured hard range clamp (device settings → Position Clamp).
+		// Runs after inventory effects so shop modifiers compose correctly with the limit.
+		currentPos = Math.Clamp(currentPos, _rangeMin, _rangeMax);
+		nextPos    = Math.Clamp(nextPos,    _rangeMin, _rangeMax);
 
 		if (index + 1 < _actions.Count)
 		{
