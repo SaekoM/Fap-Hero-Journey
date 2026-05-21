@@ -52,7 +52,6 @@ public partial class FunscriptPlayer : Node
     private bool _easing = false;
     private double _easeStartMs = 0.0;
     private double _easeDurationMs = 0.0;
-    private const float EaseFromPos = 50f;
     private const float EaseSpeedUnitsPerMs = 40f / 1000f; // 40 units/sec
     private const double EaseMinMs = 50.0;
     private const double EaseMaxMs = 1500.0;
@@ -127,8 +126,21 @@ public partial class FunscriptPlayer : Node
         }
     }
 
-    private const uint EaseDurationMs = 500;
-    private const double CenterPosition = 0.5;
+    // Home-position config — updated live by Options via SetHomePosition().
+    // L0 only: secondary axes always home to 0.5 regardless of this setting.
+    private int _homePosition = 50;   // 0–100, matches funscript scale
+    private uint _homeEaseMs = 2000;  // milliseconds for the home ease move
+
+    // Fixed duration used only when parking unloaded secondary axes at round start.
+    private const uint AxisParkMs = 500;
+
+    /// Push updated home-position config directly into the player so mid-session
+    /// changes in Options take effect without a restart.
+    public void SetHomePosition(int position, int easeMs)
+    {
+        _homePosition = Math.Clamp(position, 0, 100);
+        _homeEaseMs = (uint)Math.Max(50, easeMs);
+    }
 
     // Load a secondary-axis funscript. Call before Play().
     // axis: T-code name, e.g. "L1", "R0".
@@ -186,7 +198,7 @@ public partial class FunscriptPlayer : Node
         foreach (var axis in KnownAxes)
         {
             if (!_axes.ContainsKey(axis))
-                serial.SendAxis(axis, EaseDurationMs, 0.5);
+                serial.SendAxis(axis, AxisParkMs, 0.5);
         }
     }
 
@@ -267,7 +279,7 @@ public partial class FunscriptPlayer : Node
             return;
 
         int idx = Math.Min(_actionIndex, _actions.Count - 1);
-        float gap = Math.Abs(_actions[idx].Pos - EaseFromPos);
+        float gap = Math.Abs(_actions[idx].Pos - _homePosition);
 
         if (gap <= 2f)
         {
@@ -288,16 +300,18 @@ public partial class FunscriptPlayer : Node
     {
         ResolveOutput();
 
+        double homeNorm = _homePosition / 100.0;
+
         if (_outputMode == OutputMode.Serial)
         {
             var serial = _serial;
             if (serial != null && serial.SerialConnected)
             {
-                serial.SendLinear(EaseDurationMs, CenterPosition);
-                // Return every loaded secondary axis to neutral so none stay
-                // mid-position after a pause, stop, or mid-round exit.
+                // L0 homes to the user-configured position.
+                serial.SendLinear(_homeEaseMs, homeNorm);
+                // Secondary axes always return to centre — home position is L0-only.
                 foreach (var axis in _axes.Keys)
-                    serial.SendAxis(axis, EaseDurationMs, 0.5);
+                    serial.SendAxis(axis, _homeEaseMs, 0.5);
             }
             return;
         }
@@ -307,7 +321,7 @@ public partial class FunscriptPlayer : Node
             return;
 
         if (_isLinearDevice == true)
-            bp.SendLinear(_deviceIndex, EaseDurationMs, CenterPosition);
+            bp.SendLinear(_deviceIndex, _homeEaseMs, homeNorm);
         else
             bp.SendVibrate(_deviceIndex, 0.0);
     }
@@ -371,9 +385,9 @@ public partial class FunscriptPlayer : Node
                             if (idx + 1 < state.Actions.Count)
                             {
                                 int nextPos = state.Actions[idx + 1].Pos;
-                                // Blend toward neutral (EaseFromPos = 50) during ease-in.
+                                // Secondary axes always home to centre (50), so blend from 50.
                                 if (_easing || easeSmooth < 1f)
-                                    nextPos = (int)Math.Round(EaseFromPos + (nextPos - EaseFromPos) * easeSmooth);
+                                    nextPos = (int)Math.Round(50f + (nextPos - 50f) * easeSmooth);
 
                                 double targetNorm = nextPos / 100.0;
                                 uint durMs = (uint)Math.Max(1, (int)(state.Actions[idx + 1].AtMs - state.Actions[idx].AtMs));
@@ -460,6 +474,12 @@ public partial class FunscriptPlayer : Node
         _rangeMin = _settings.Call("get_range_min").AsInt32();
         _rangeMax = _settings.Call("get_range_max").AsInt32();
 
+        // Cache home-position config. SetHomePosition() can override these live
+        // (called by Options on every slider change), but we also read them here
+        // so the first round after a fresh launch picks up the saved values.
+        _homePosition = Math.Clamp(_settings.Call("get_home_position").AsInt32(), 0, 100);
+        _homeEaseMs = (uint)Math.Max(50, _settings.Call("get_home_ease_ms").AsInt32());
+
         if (_outputMode == OutputMode.Serial)
         {
             // Serial T-code devices are always linear; nothing else to resolve.
@@ -507,8 +527,11 @@ public partial class FunscriptPlayer : Node
             float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
             // Smoothstep (ease-in-out Hermite) — feels natural for device motion.
             float smooth = t * t * (3f - 2f * t);
-            currentPos = (int)Math.Round(EaseFromPos + (currentPos - EaseFromPos) * smooth);
-            nextPos = (int)Math.Round(EaseFromPos + (nextPos - EaseFromPos) * smooth);
+            // Blend from the home position (where the device actually is) toward
+            // the script position. Secondary axes still use 50 as their anchor
+            // since they always home to centre.
+            currentPos = (int)Math.Round(_homePosition + (currentPos - _homePosition) * smooth);
+            nextPos    = (int)Math.Round(_homePosition + (nextPos    - _homePosition) * smooth);
             if (elapsed >= _easeDurationMs)
                 _easing = false;
         }

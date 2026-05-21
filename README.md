@@ -85,14 +85,14 @@ Journeys are stored as folders inside `user://journeys/` (accessible via **Optio
 ```
 user://journeys/
 └── My Journey/
-    ├── journey.json          ← metadata, round list, tags, difficulty
-    ├── media/                ← cover image and storyboard images
-    ├── Round 1/
-    │   ├── Round 1.funscript
-    │   ├── Round 1_L1.funscript   ← optional secondary axis
-    │   └── video.mp4
-    └── Round 2/
-        └── ...
+	├── journey.json          ← metadata, round list, tags, difficulty
+	├── media/                ← cover image and storyboard images
+	├── Round 1/
+	│   ├── Round 1.funscript
+	│   ├── Round 1_L1.funscript   ← optional secondary axis
+	│   └── video.mp4
+	└── Round 2/
+		└── ...
 ```
 
 `journey.json` schema (abbreviated):

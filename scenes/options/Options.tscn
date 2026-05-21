@@ -208,6 +208,11 @@ layout_mode = 2
 layout_mode = 2
 text = "> CONNECT"
 
+[node name="BpTestBtn" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow" unique_id=1900000051]
+layout_mode = 2
+disabled = true
+text = "> TEST"
+
 [node name="ScanBtn" type="Button" parent="ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow" unique_id=203484428]
 layout_mode = 2
 disabled = true

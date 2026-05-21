@@ -32,6 +32,8 @@ const DEFAULT_SERIAL_BAUD:       int    = 115200
 const DEFAULT_SERIAL_AUTO:       bool   = false
 const DEFAULT_RANGE_MIN:         int    = 0
 const DEFAULT_RANGE_MAX:         int    = 100
+const DEFAULT_HOME_POSITION:     int    = 50
+const DEFAULT_HOME_EASE_MS:      int    = 2000
 const DEFAULT_FILLER_ENABLED:    bool   = false
 const DEFAULT_FILLER_HALF_CYCLE: int    = 2000
 const DEFAULT_FILLER_LO:         int    = 0
@@ -89,6 +91,12 @@ func get_range_min() -> int:
 func get_range_max() -> int:
 	return int(_config.get_value("device", "range_max", DEFAULT_RANGE_MAX))
 
+func get_home_position() -> int:
+	return int(_config.get_value("device", "home_position", DEFAULT_HOME_POSITION))
+
+func get_home_ease_ms() -> int:
+	return int(_config.get_value("device", "home_ease_ms", DEFAULT_HOME_EASE_MS))
+
 func get_filler_enabled() -> bool:
 	return bool(_config.get_value("storyboard_filler", "enabled", DEFAULT_FILLER_ENABLED))
 
@@ -140,6 +148,12 @@ func set_range_min(v: int) -> void:
 
 func set_range_max(v: int) -> void:
 	_config.set_value("device", "range_max", v)
+
+func set_home_position(v: int) -> void:
+	_config.set_value("device", "home_position", v)
+
+func set_home_ease_ms(v: int) -> void:
+	_config.set_value("device", "home_ease_ms", v)
 
 func set_filler_enabled(v: bool) -> void:
 	_config.set_value("storyboard_filler", "enabled", v)

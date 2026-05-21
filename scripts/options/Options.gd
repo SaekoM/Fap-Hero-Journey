@@ -42,6 +42,7 @@ const RESOLUTIONS: Array = [
 @onready var _scan_btn:        Button         = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow/ScanBtn
 @onready var _status_lbl:      Label          = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow/StatusLabel
 @onready var _device_dropdown: OptionButton   = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/DeviceRow/DeviceDropdown
+@onready var _bp_test_btn:     Button         = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/ConnectionRow/BpTestBtn
 
 @onready var _open_folder_btn:      Button       = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection/JourneysRow/OpenFolderBtn
 
@@ -61,6 +62,10 @@ var overlay_mode: bool = false
 var _range_slider:  RangeSlider = null
 var _range_min_lbl: Label       = null
 var _range_max_lbl: Label       = null
+
+var _home_slider:    HSlider  = null
+var _home_value_lbl: Label    = null
+var _home_ease_input: LineEdit = null
 
 var _filler_toggle:     Button      = null
 var _filler_speed_input: LineEdit   = null
@@ -238,6 +243,74 @@ func _apply_layout() -> void:
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(hint, UITheme.SEPARATOR, 11, false)
 	range_section.add_child(hint)
+
+	# ── Home Position row ────────────────────────────────────────────────────
+	var home_row: HBoxContainer = HBoxContainer.new()
+	home_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(home_row)
+
+	var home_lbl: Label = Label.new()
+	home_lbl.text = "Home Position"
+	home_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(home_lbl, UITheme.WHITE_SOFT, 14, false)
+	home_row.add_child(home_lbl)
+
+	var home_slider_col: VBoxContainer = VBoxContainer.new()
+	home_slider_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	home_slider_col.add_theme_constant_override("separation", 4)
+	home_row.add_child(home_slider_col)
+
+	_home_slider = HSlider.new()
+	_home_slider.min_value = 0
+	_home_slider.max_value = 100
+	_home_slider.step = 1
+	_home_slider.value = 50
+	_home_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(_home_slider)
+	home_slider_col.add_child(_home_slider)
+
+	_home_value_lbl = Label.new()
+	_home_value_lbl.text = "50"
+	_style_label(_home_value_lbl, UITheme.PURPLE_MID, 11, true)
+	home_slider_col.add_child(_home_value_lbl)
+
+	_home_slider.value_changed.connect(func(v: float) -> void:
+		_home_value_lbl.text = str(roundi(v))
+		_save_settings()
+	)
+
+	# ── Home Ease row ────────────────────────────────────────────────────────
+	var home_ease_row: HBoxContainer = HBoxContainer.new()
+	home_ease_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(home_ease_row)
+
+	var home_ease_lbl: Label = Label.new()
+	home_ease_lbl.text = "Home Ease (ms)"
+	home_ease_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(home_ease_lbl, UITheme.WHITE_SOFT, 14, false)
+	home_ease_row.add_child(home_ease_lbl)
+
+	_home_ease_input = LineEdit.new()
+	_home_ease_input.text = "2000"
+	_home_ease_input.custom_minimum_size = Vector2(100, 0)
+	_home_ease_input.placeholder_text = "2000"
+	_style_line_edit(_home_ease_input)
+	home_ease_row.add_child(_home_ease_input)
+
+	var home_ease_hint_lbl: Label = Label.new()
+	home_ease_hint_lbl.text = "ms"
+	_style_label(home_ease_hint_lbl, UITheme.SEPARATOR, 12, false)
+	home_ease_row.add_child(home_ease_hint_lbl)
+
+	_home_ease_input.text_changed.connect(func(_t: String) -> void:
+		_save_settings()
+	)
+
+	var home_hint: Label = Label.new()
+	home_hint.text = "L0 target position when playback pauses or stops. Secondary axes always return to centre."
+	home_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(home_hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(home_hint)
 
 	# ── Storyboard Filler section (built entirely in code) ────────────────────
 	var filler_section: VBoxContainer = VBoxContainer.new()
@@ -418,6 +491,7 @@ func _apply_theme() -> void:
 	_style_toggle(_fs_toggle,   false)
 	_style_toggle(_auto_toggle, false)
 	_style_toggle(_serial_auto_toggle, false)
+	_style_button(_bp_test_btn,        UITheme.PURPLE_MID)
 	_style_button(_serial_refresh_btn, UITheme.PURPLE_MID)
 	_style_button(_serial_connect_btn, UITheme.PURPLE_BRIGHT)
 	_style_button(_serial_test_btn,    UITheme.PURPLE_MID)
@@ -633,6 +707,15 @@ func _load_settings() -> void:
 		_range_min_lbl.text = "MIN: %d" % roundi(range_lo)
 		_range_max_lbl.text = "MAX: %d" % roundi(range_hi)
 
+	var home_pos: int = SettingsService.get_home_position()
+	var home_ease: int = SettingsService.get_home_ease_ms()
+	if _home_slider != null:
+		_home_slider.value = home_pos
+		_home_value_lbl.text = str(home_pos)
+	if _home_ease_input != null:
+		_home_ease_input.text = str(home_ease)
+	FunscriptPlayer.SetHomePosition(home_pos, home_ease)
+
 	# Load the filler range slider FIRST so that if the toggle or speed-input
 	# signals fire _save_settings() below, the slider already holds the correct
 	# values and won't overwrite them with the initialisation defaults (0/100).
@@ -676,6 +759,15 @@ func _save_settings() -> void:
 		SettingsService.set_range_min(roundi(_range_slider.lo))
 		SettingsService.set_range_max(roundi(_range_slider.hi))
 
+	if _home_slider != null:
+		var hp: int = roundi(_home_slider.value)
+		var he: int = _home_ease_input.text.to_int()
+		if he <= 0:
+			he = 2000
+		SettingsService.set_home_position(hp)
+		SettingsService.set_home_ease_ms(he)
+		FunscriptPlayer.SetHomePosition(hp, he)
+
 	if _filler_toggle != null:
 		SettingsService.set_filler_enabled(_filler_toggle.button_pressed)
 		var filler_spd: int = _filler_speed_input.text.to_int()
@@ -714,6 +806,8 @@ func _connect_signals() -> void:
 	_connect_btn.pressed.connect(_on_connect_pressed)
 	_scan_btn.pressed.connect(_on_scan_pressed)
 	_device_dropdown.item_selected.connect(_on_device_selected)
+
+	_bp_test_btn.pressed.connect(_on_bp_test_pressed)
 
 	_output_mode_dropdown.item_selected.connect(_on_output_mode_selected)
 	_serial_refresh_btn.pressed.connect(_refresh_serial_ports)
@@ -790,6 +884,30 @@ func _on_scan_pressed() -> void:
 	ButtplugService.StartScan()
 
 
+func _on_bp_test_pressed() -> void:
+	if not ButtplugService.BpConnected:
+		_set_status("● NOT CONNECTED", UITheme.ERROR)
+		return
+	var idx: int = ButtplugService.GetSelectedDeviceIndex()
+	if idx < 0:
+		_set_status("● NO DEVICE SELECTED", UITheme.ERROR)
+		return
+	_bp_test_btn.disabled = true
+	if ButtplugService.DeviceSupportsLinear(idx):
+		# Linear stroker: full stroke up, full stroke down, return to centre.
+		ButtplugService.SendLinear(idx, 600, 1.0)
+		await get_tree().create_timer(0.7).timeout
+		ButtplugService.SendLinear(idx, 600, 0.0)
+		await get_tree().create_timer(0.7).timeout
+		ButtplugService.SendLinear(idx, 400, 0.5)
+	else:
+		# Vibrator: pulse at full intensity then stop.
+		ButtplugService.SendVibrate(idx, 1.0)
+		await get_tree().create_timer(0.7).timeout
+		ButtplugService.SendVibrate(idx, 0.0)
+	_bp_test_btn.disabled = not ButtplugService.BpConnected or _device_dropdown.item_count == 0
+
+
 func _on_bp_connected() -> void:
 	_is_connected = true
 	_set_connected_ui(true)
@@ -805,6 +923,7 @@ func _on_bp_disconnected() -> void:
 func _on_bp_device_added(name: String, _index: int) -> void:
 	_device_dropdown.add_item(name)
 	_device_dropdown.disabled = false
+	_bp_test_btn.disabled = false
 	if name == SettingsService.get_selected_device():
 		_device_dropdown.selected = _device_dropdown.item_count - 1
 
@@ -829,7 +948,9 @@ func _on_bp_device_removed(index: int) -> void:
 		if _device_dropdown.get_item_id(i) == index:
 			_device_dropdown.remove_item(i)
 			break
-	_device_dropdown.disabled = _device_dropdown.item_count == 0
+	var no_devices: bool = _device_dropdown.item_count == 0
+	_device_dropdown.disabled = no_devices
+	_bp_test_btn.disabled     = no_devices
 
 
 func _on_bp_scan_finished() -> void:
@@ -855,6 +976,7 @@ func _on_bp_error(message: String) -> void:
 func _set_connected_ui(connected: bool) -> void:
 	_connect_btn.disabled = false
 	_scan_btn.disabled    = not connected
+	_bp_test_btn.disabled = not connected or _device_dropdown.item_count == 0
 	if connected:
 		_style_button(_connect_btn, UITheme.MAGENTA)
 		_connect_btn.text = "> DISCONNECT"
