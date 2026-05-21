@@ -96,13 +96,27 @@ func _show_storyboard_screen(sb_data: Dictionary) -> void:
 	_is_overlay_open = true
 	_video.paused = true
 	FunscriptPlayer.Pause()
+	_start_storyboard_filler()
 	var sb: Control = StoryboardScene.instantiate()
 	sb.completed.connect(_on_storyboard_completed)
 	add_child(sb)
 	sb.setup(sb_data)
 
 
+func _start_storyboard_filler() -> void:
+	var cfg: ConfigFile = ConfigFile.new()
+	if cfg.load("user://settings.cfg") != OK:
+		return
+	if not cfg.get_value("storyboard_filler", "enabled", false):
+		return
+	var lo:  int = roundi(float(cfg.get_value("storyboard_filler", "lo",  0)))
+	var hi:  int = roundi(float(cfg.get_value("storyboard_filler", "hi",  100)))
+	var spd: int = roundi(float(cfg.get_value("storyboard_filler", "half_cycle_ms", 2000)))
+	FunscriptPlayer.StartFiller(lo, hi, spd)
+
+
 func _on_storyboard_completed(coins: int) -> void:
+	FunscriptPlayer.StopFiller()
 	_is_overlay_open = false
 	if coins > 0:
 		CoinService.AddCoins(coins)

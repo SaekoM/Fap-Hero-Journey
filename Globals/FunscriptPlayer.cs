@@ -21,6 +21,17 @@ public partial class FunscriptPlayer : Node
 	private int _rangeMin = 0;
 	private int _rangeMax = 100;
 
+	// Storyboard filler — alternating stroke played while a storyboard screen is
+	// open so the device doesn't sit idle. Independent of _playing / the funscript.
+	private bool   _fillerActive        = false;
+	private double _fillerElapsedMs     = 0.0;
+	private int    _fillerHalfCycleMs   = 2000; // ms per half-stroke (hi→lo or lo→hi)
+	private int    _fillerLo            = 0;
+	private int    _fillerHi            = 100;
+	private bool   _fillerGoingToLo     = false; // false = first command goes to hi
+	private double _fillerVibTickMs     = 0.0;
+	private const  double FillerVibTickIntervalMs = 50.0;
+
 	// Ease-in state — blends output from neutral (50) toward the script position
 	// at the start of each round, journey, or resume-from-pause.
 	private bool   _easing          = false;
@@ -104,14 +115,39 @@ public partial class FunscriptPlayer : Node
 
 	public void Stop()
 	{
-		_playing = false;
-		_easing  = false;
+		_playing      = false;
+		_easing       = false;
+		_fillerActive = false; // cancel any storyboard filler that may still be running
 		EaseToNeutral();
 		_positionMs = 0.0;
 		_actionIndex = 0;
 		_isLinearDevice = null;
 		_deviceIndex = -1;
 		_outputResolved = false;
+	}
+
+	// Begin the storyboard filler: alternating hi→lo→hi strokes at the given
+	// half-cycle speed. Respects the device range clamp but not inventory effects.
+	// lo/hi are in the same 0–100 scale as funscript positions.
+	public void StartFiller(int lo, int hi, int halfCycleMs)
+	{
+		_fillerLo        = lo;
+		_fillerHi        = hi;
+		_fillerHalfCycleMs = Math.Max(100, halfCycleMs);
+		_fillerElapsedMs = 0.0;
+		_fillerGoingToLo = false; // first stroke goes to hi, then alternates
+		_fillerVibTickMs = 0.0;
+		_fillerActive    = true;
+		ResolveOutput();
+		_SendFillerCommand(); // fire immediately so there's no leading silence
+	}
+
+	// Stop the filler and ease the device back to neutral.
+	public void StopFiller()
+	{
+		if (!_fillerActive) return;
+		_fillerActive = false;
+		EaseToNeutral();
 	}
 
 	// Compute ease-in parameters from the first upcoming script action.
@@ -167,25 +203,85 @@ public partial class FunscriptPlayer : Node
 
 	public override void _Process(double delta)
 	{
-		if (!_playing || _actions.Count == 0)
-			return;
-
-		// When synced to a video clock, SyncTo already set _positionMs this frame.
-		// Only accumulate delta in free-running mode (no video / funscript-only).
-		if (_syncedThisFrame)
-			_syncedThisFrame = false;
-		else
-			_positionMs += delta * 1000.0;
-
-		while (_actionIndex < _actions.Count)
+		if (_playing && _actions.Count > 0)
 		{
-			if (_actions[_actionIndex].AtMs > _positionMs)
-				break;
+			// When synced to a video clock, SyncTo already set _positionMs this frame.
+			// Only accumulate delta in free-running mode (no video / funscript-only).
+			if (_syncedThisFrame)
+				_syncedThisFrame = false;
+			else
+				_positionMs += delta * 1000.0;
 
-			SendCommand(_actionIndex);
-			_actionIndex++;
+			while (_actionIndex < _actions.Count)
+			{
+				if (_actions[_actionIndex].AtMs > _positionMs)
+					break;
+
+				SendCommand(_actionIndex);
+				_actionIndex++;
+			}
 		}
 
+		// Storyboard filler runs independently of normal funscript playback.
+		if (_fillerActive)
+		{
+			_fillerElapsedMs += delta * 1000.0;
+			if (_fillerElapsedMs >= _fillerHalfCycleMs)
+			{
+				_fillerElapsedMs -= _fillerHalfCycleMs;
+				_fillerGoingToLo  = !_fillerGoingToLo;
+				_SendFillerCommand();
+			}
+
+			// Vibrators can't interpolate, so update them frequently with a
+			// triangle-wave intensity that mirrors the linear stroke position.
+			if (_isLinearDevice == false)
+			{
+				_fillerVibTickMs += delta * 1000.0;
+				if (_fillerVibTickMs >= FillerVibTickIntervalMs)
+				{
+					_fillerVibTickMs = 0.0;
+					_SendFillerVibrateTick();
+				}
+			}
+		}
+	}
+
+	// Send a single linear command to the device for the current filler direction.
+	private void _SendFillerCommand()
+	{
+		int target = _fillerGoingToLo ? _fillerLo : _fillerHi;
+		target = Math.Clamp(target, _rangeMin, _rangeMax);
+		uint dur = (uint)_fillerHalfCycleMs;
+
+		if (_outputMode == OutputMode.Serial)
+		{
+			var serial = GetNode<SerialDeviceService>("/root/SerialDeviceService");
+			if (serial != null && serial.SerialConnected)
+				serial.SendLinear(dur, target / 100.0);
+			return;
+		}
+
+		var bp = GetNode<ButtplugService>("/root/ButtplugService");
+		if (bp == null || !bp.BpConnected || _deviceIndex < 0) return;
+
+		if (_isLinearDevice == true)
+			bp.SendLinear(_deviceIndex, dur, target / 100.0);
+		// Vibrators are handled by _SendFillerVibrateTick, not here.
+	}
+
+	// Compute current triangle-wave intensity for a vibrator and send it.
+	private void _SendFillerVibrateTick()
+	{
+		double t       = Math.Clamp(_fillerElapsedMs / _fillerHalfCycleMs, 0.0, 1.0);
+		double fromPos = _fillerGoingToLo ? _fillerHi : _fillerLo;
+		double toPos   = _fillerGoingToLo ? _fillerLo : _fillerHi;
+		double pos     = fromPos + (toPos - fromPos) * t;
+		pos = Math.Clamp(pos, _rangeMin, _rangeMax);
+
+		var bp = GetNode<ButtplugService>("/root/ButtplugService");
+		if (bp == null || !bp.BpConnected || _deviceIndex < 0) return;
+		bp.SendVibrate(_deviceIndex, pos / 100.0);
 	}
 
 	private void ResolveOutput()

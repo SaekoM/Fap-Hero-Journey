@@ -64,6 +64,12 @@ var _range_slider:  RangeSlider = null
 var _range_min_lbl: Label       = null
 var _range_max_lbl: Label       = null
 
+var _filler_toggle:     Button      = null
+var _filler_speed_input: LineEdit   = null
+var _filler_range_slider:  RangeSlider = null
+var _filler_range_min_lbl: Label       = null
+var _filler_range_max_lbl: Label       = null
+
 
 func _ready() -> void:
 	_apply_layout()
@@ -234,6 +240,117 @@ func _apply_layout() -> void:
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(hint, UITheme.SEPARATOR, 11, false)
 	range_section.add_child(hint)
+
+	# ── Storyboard Filler section (built entirely in code) ────────────────────
+	var filler_section: VBoxContainer = VBoxContainer.new()
+	filler_section.add_theme_constant_override("separation", 12)
+	_content_vbox.add_child(filler_section)
+
+	var filler_header: Label = Label.new()
+	filler_header.text = "STORYBOARD FILLER"
+	_style_label(filler_header, UITheme.PURPLE_BRIGHT, 13, true)
+	filler_section.add_child(filler_header)
+
+	var filler_divider: HSeparator = HSeparator.new()
+	filler_divider.add_theme_stylebox_override("separator", _make_separator_style())
+	filler_section.add_child(filler_divider)
+
+	# Enable row
+	var filler_enable_row: HBoxContainer = HBoxContainer.new()
+	filler_enable_row.add_theme_constant_override("separation", 16)
+	filler_section.add_child(filler_enable_row)
+
+	var filler_enable_lbl: Label = Label.new()
+	filler_enable_lbl.text = "Enable Filler"
+	filler_enable_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(filler_enable_lbl, UITheme.WHITE_SOFT, 14, false)
+	filler_enable_row.add_child(filler_enable_lbl)
+
+	_filler_toggle = Button.new()
+	_filler_toggle.toggle_mode = true
+	_filler_toggle.focus_mode  = Control.FOCUS_NONE
+	_style_toggle(_filler_toggle, false)
+	filler_enable_row.add_child(_filler_toggle)
+
+	# Speed row
+	var filler_speed_row: HBoxContainer = HBoxContainer.new()
+	filler_speed_row.add_theme_constant_override("separation", 16)
+	filler_section.add_child(filler_speed_row)
+
+	var filler_speed_lbl: Label = Label.new()
+	filler_speed_lbl.text = "Stroke Speed (ms)"
+	filler_speed_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(filler_speed_lbl, UITheme.WHITE_SOFT, 14, false)
+	filler_speed_row.add_child(filler_speed_lbl)
+
+	_filler_speed_input = LineEdit.new()
+	_filler_speed_input.text = "2000"
+	_filler_speed_input.custom_minimum_size = Vector2(100, 0)
+	_filler_speed_input.placeholder_text = "2000"
+	_style_line_edit(_filler_speed_input)
+	filler_speed_row.add_child(_filler_speed_input)
+
+	var filler_speed_hint: Label = Label.new()
+	filler_speed_hint.text = "ms per half-stroke"
+	_style_label(filler_speed_hint, UITheme.SEPARATOR, 12, false)
+	filler_speed_row.add_child(filler_speed_hint)
+
+	# Range row
+	var filler_range_row: HBoxContainer = HBoxContainer.new()
+	filler_range_row.add_theme_constant_override("separation", 16)
+	filler_section.add_child(filler_range_row)
+
+	var filler_range_lbl: Label = Label.new()
+	filler_range_lbl.text = "Stroke Range"
+	filler_range_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(filler_range_lbl, UITheme.WHITE_SOFT, 14, false)
+	filler_range_row.add_child(filler_range_lbl)
+
+	var filler_slider_col: VBoxContainer = VBoxContainer.new()
+	filler_slider_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filler_slider_col.add_theme_constant_override("separation", 4)
+	filler_range_row.add_child(filler_slider_col)
+
+	_filler_range_slider = RangeSlider.new()
+	_filler_range_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filler_slider_col.add_child(_filler_range_slider)
+
+	var filler_val_row: HBoxContainer = HBoxContainer.new()
+	filler_val_row.add_theme_constant_override("separation", 0)
+	filler_slider_col.add_child(filler_val_row)
+
+	_filler_range_min_lbl = Label.new()
+	_filler_range_min_lbl.text = "MIN: 0"
+	_style_label(_filler_range_min_lbl, UITheme.PURPLE_MID, 11, true)
+	filler_val_row.add_child(_filler_range_min_lbl)
+
+	var filler_val_spacer: Control = Control.new()
+	filler_val_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filler_val_row.add_child(filler_val_spacer)
+
+	_filler_range_max_lbl = Label.new()
+	_filler_range_max_lbl.text = "MAX: 100"
+	_style_label(_filler_range_max_lbl, UITheme.PURPLE_MID, 11, true)
+	filler_val_row.add_child(_filler_range_max_lbl)
+
+	_filler_range_slider.range_changed.connect(func(lo: float, hi: float) -> void:
+		_filler_range_min_lbl.text = "MIN: %d" % roundi(lo)
+		_filler_range_max_lbl.text = "MAX: %d" % roundi(hi)
+		_save_settings()
+	)
+	_filler_toggle.toggled.connect(func(pressed: bool) -> void:
+		_style_toggle(_filler_toggle, pressed)
+		_save_settings()
+	)
+	_filler_speed_input.text_changed.connect(func(_t: String) -> void:
+		_save_settings()
+	)
+
+	var filler_hint: Label = Label.new()
+	filler_hint.text = "Keeps the device active during storyboard scenes with a repeating alternating stroke. Respects the Position Clamp above."
+	filler_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(filler_hint, UITheme.SEPARATOR, 11, false)
+	filler_section.add_child(filler_hint)
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +640,22 @@ func _load_settings() -> void:
 		_range_min_lbl.text = "MIN: %d" % roundi(range_lo)
 		_range_max_lbl.text = "MAX: %d" % roundi(range_hi)
 
+	var filler_enabled: bool = _config.get_value("storyboard_filler", "enabled", false)
+	if _filler_toggle != null:
+		_filler_toggle.button_pressed = filler_enabled
+		_style_toggle(_filler_toggle, filler_enabled)
+
+	var filler_speed: int = _config.get_value("storyboard_filler", "half_cycle_ms", 2000)
+	if _filler_speed_input != null:
+		_filler_speed_input.text = str(filler_speed)
+
+	var filler_lo: float = float(_config.get_value("storyboard_filler", "lo",  0))
+	var filler_hi: float = float(_config.get_value("storyboard_filler", "hi",  100))
+	if _filler_range_slider != null:
+		_filler_range_slider.set_range_values(filler_lo, filler_hi)
+		_filler_range_min_lbl.text = "MIN: %d" % roundi(filler_lo)
+		_filler_range_max_lbl.text = "MAX: %d" % roundi(filler_hi)
+
 
 func _apply_defaults() -> void:
 	_master_slider.value = 1.0
@@ -557,6 +690,15 @@ func _save_settings() -> void:
 	if _range_slider != null:
 		_config.set_value("device", "range_min", _range_slider.lo)
 		_config.set_value("device", "range_max", _range_slider.hi)
+
+	if _filler_toggle != null:
+		_config.set_value("storyboard_filler", "enabled", _filler_toggle.button_pressed)
+		var filler_spd: int = _filler_speed_input.text.to_int()
+		if filler_spd <= 0:
+			filler_spd = 2000
+		_config.set_value("storyboard_filler", "half_cycle_ms", filler_spd)
+		_config.set_value("storyboard_filler", "lo", _filler_range_slider.lo)
+		_config.set_value("storyboard_filler", "hi", _filler_range_slider.hi)
 
 	_config.save(SETTINGS_PATH)
 
