@@ -598,6 +598,20 @@ public partial class FunscriptPlayer : Node
             return rawPos;
 
         float pos = rawPos;
+
+        // Reverse: flip pos = 100 - pos before scale/clamp so those transforms
+        // operate on the already-inverted value. Multiple reverse effects cancel;
+        // count them and invert only if the count is odd.
+        int reverseCount = 0;
+        foreach (var effect in effects)
+        {
+            var d = effect.AsGodotDictionary();
+            if (d.ContainsKey("kind") && d["kind"].AsString() == "reverse")
+                reverseCount++;
+        }
+        if (reverseCount % 2 != 0)
+            pos = 100f - pos;
+
         foreach (var effect in effects)
         {
             var effectProp = effect.AsGodotDictionary();

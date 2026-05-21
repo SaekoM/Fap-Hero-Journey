@@ -311,6 +311,12 @@ func _on_round_ended() -> void:
 	FunscriptPlayer.Stop()
 
 	var coins: int = GameState.CurrentRound().get("coins", 0)
+	# Apply any active coin_jackpot multipliers before awarding.
+	var jackpot_factor: float = 1.0
+	for fx: Dictionary in InventoryService.GetActiveEffects():
+		if fx.get("kind", "") == "coin_jackpot":
+			jackpot_factor *= float(fx.get("factor", 1.0))
+	coins = roundi(coins * jackpot_factor)
 	if coins > 0:
 		CoinService.AddCoins(coins)
 
@@ -481,8 +487,12 @@ func _refresh_coin_label() -> void:
 func _refresh_effect_chips() -> void:
 	for child in _chips_row.get_children():
 		child.queue_free()
+	var has_blackout: bool = false
 	for effect: Dictionary in InventoryService.GetActiveEffects():
 		_chips_row.add_child(_make_chip(effect))
+		if effect.get("kind", "") == "blackout":
+			has_blackout = true
+	_video.visible = not has_blackout
 
 
 func _make_chip(effect: Dictionary) -> Control:

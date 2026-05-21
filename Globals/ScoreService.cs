@@ -31,6 +31,28 @@ public partial class ScoreService : Node
 	private RoundData _current;
 	private double _multiplier = 1.0;
 
+	public override void _Ready()
+	{
+		var inv = GetNode<InventoryService>("/root/InventoryService");
+		inv.ActiveEffectsChanged += _SyncMultiplier;
+	}
+
+	// Recompute the score multiplier from active score_multiplier effects.
+	// Called whenever the active-effect list changes so the multiplier is always
+	// current without polling every frame.
+	private void _SyncMultiplier()
+	{
+		var inv = GetNode<InventoryService>("/root/InventoryService");
+		double mult = 1.0;
+		foreach (var fx in inv.GetActiveEffects())
+		{
+			var d = fx.AsGodotDictionary();
+			if (d.ContainsKey("kind") && d["kind"].AsString() == "score_multiplier" && d.ContainsKey("factor"))
+				mult *= d["factor"].AsDouble();
+		}
+		SetMultiplier(mult);
+	}
+
 	public int TotalScore   => _rounds.Sum(r => r.Score) + _current.Score;
 	public int TotalStrokes => _rounds.Sum(r => r.SmallStrokes + r.MediumStrokes + r.LargeStrokes)
 	                         + _current.SmallStrokes + _current.MediumStrokes + _current.LargeStrokes;

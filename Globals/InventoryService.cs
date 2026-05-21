@@ -120,6 +120,48 @@ public partial class InventoryService : Node
 			["min"]         = 0,
 			["max"]         = 50,
 		};
+		_registry["mirror"] = new Dictionary
+		{
+			["id"]          = "mirror",
+			["name"]        = "Mirror",
+			["description"] = "Inverts all stroke positions for 30 seconds. Up becomes down.",
+			["category"]    = "modifier",
+			["price"]       = 30,
+			["duration_ms"] = 30000,
+			["kind"]        = "reverse",
+		};
+		_registry["blackout"] = new Dictionary
+		{
+			["id"]          = "blackout",
+			["name"]        = "Blackout",
+			["description"] = "Hides the video for 30 seconds. The device keeps going in the dark.",
+			["category"]    = "modifier",
+			["price"]       = 20,
+			["duration_ms"] = 30000,
+			["kind"]        = "blackout",
+		};
+		_registry["score_rush"] = new Dictionary
+		{
+			["id"]          = "score_rush",
+			["name"]        = "Score Rush",
+			["description"] = "Doubles score earned from every stroke for 30 seconds.",
+			["category"]    = "modifier",
+			["price"]       = 40,
+			["duration_ms"] = 30000,
+			["kind"]        = "score_multiplier",
+			["factor"]      = 2.0f,
+		};
+		_registry["jackpot"] = new Dictionary
+		{
+			["id"]          = "jackpot",
+			["name"]        = "Jackpot",
+			["description"] = "Doubles the coin reward at the end of this round.",
+			["category"]    = "modifier",
+			["price"]       = 50,
+			["duration_ms"] = 300000,
+			["kind"]        = "coin_jackpot",
+			["factor"]      = 2.0f,
+		};
 	}
 
 	// --- Registry access -------------------------------------------------------
