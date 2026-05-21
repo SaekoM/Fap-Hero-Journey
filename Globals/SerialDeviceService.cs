@@ -37,8 +37,8 @@ public partial class SerialDeviceService : Node
 	public Godot.Collections.Array<string> GetAvailablePorts()
 	{
 		var result = new Godot.Collections.Array<string>();
-		foreach (var p in SerialPort.GetPortNames())
-			result.Add(p);
+		foreach (var port in SerialPort.GetPortNames())
+			result.Add(port);
 		return result;
 	}
 
@@ -74,6 +74,7 @@ public partial class SerialDeviceService : Node
 	{
 		if (_port == null)
 			return;
+
 		try
 		{
 			if (_port.IsOpen)
@@ -83,17 +84,20 @@ public partial class SerialDeviceService : Node
 		{
 			GD.PrintErr($"SerialDeviceService: error closing port: {e.Message}");
 		}
+
 		_port = null;
 		Callable.From(() => EmitSignal(SignalName.Disconnected)).CallDeferred();
 	}
 
 	// position: 0.0-1.0, durationMs: how long the device should take to reach the target.
+	// TCode expects 0-9999 pos.
 	public void SendLinear(uint durationMs, double position)
 	{
 		if (!SerialConnected) 
 			return;
 
 		int posInt = Math.Clamp((int)Math.Round(position * 9999.0), 0, 9999);
+
 		TryWrite($"L0{posInt:D4}I{durationMs}\n");
 	}
 
@@ -110,7 +114,9 @@ public partial class SerialDeviceService : Node
 	// Immediately stop all axes.
 	public void StopAll()
 	{
-		if (!SerialConnected) return;
+		if (!SerialConnected) 
+			return;
+
 		TryWrite("DSTOP\n");
 	}
 

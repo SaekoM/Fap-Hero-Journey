@@ -218,9 +218,13 @@ func _on_back_pressed() -> void:
 
 
 func _on_viewport_files_dropped(files: PackedStringArray) -> void:
-	# Anywhere on the viewport accepts an image drop as the journey cover.
-	# Item-level drops (video / funscript / round images) are handled by their
-	# own DropZone controls which intercept the event first.
+	# Only treat a viewport-level image drop as the journey cover when the
+	# journey-info panel is visible (no node selected). When a node IS selected
+	# its own DropZone controls are connected to the same signal and handle the
+	# drop themselves — without this guard their drop would also overwrite the
+	# cover path.
+	if not _selected_item.is_empty():
+		return
 	for f: String in files:
 		if f.get_extension().to_lower() in IMAGE_EXTENSIONS:
 			_cover_path = f
@@ -394,13 +398,20 @@ func _on_save_pressed() -> void:
 	var abs_dir: String     = ProjectSettings.globalize_path(journey_dir)
 	DirAccess.make_dir_recursive_absolute(abs_dir)
 
-	# Tracks images already copied this save: source_path → dest_filename.
-	# Prevents duplicating a file when the same image is referenced multiple times.
+	# All images (cover + storyboard backgrounds + line images + fork path
+	# illustrations) live in a dedicated media/ subfolder so the journey root
+	# only contains journey.json and per-round subdirectories.
+	var abs_media_dir: String = abs_dir + "/media"
+	DirAccess.make_dir_recursive_absolute(abs_media_dir)
+
+	# Tracks images already copied this save: source_path → dest_filename
+	# (relative to abs_media_dir). Prevents duplicating a file when the same
+	# image is referenced multiple times.
 	var copied_images: Dictionary = {}
 
 	if _cover_path != "":
 		var ext: String = _cover_path.get_extension().to_lower()
-		_copy_image_deduped(_cover_path, abs_dir, "cover." + ext, copied_images)
+		_copy_image_deduped(_cover_path, abs_media_dir, "cover." + ext, copied_images)
 
 	var modal: Control = null
 	if not transcode_plan.is_empty():
@@ -432,7 +443,8 @@ func _on_save_pressed() -> void:
 			var sb_img_fname: String = ""
 			if sb_img_src != "":
 				var sb_ext: String = sb_img_src.get_extension().to_lower()
-				sb_img_fname = _copy_image_deduped(sb_img_src, abs_dir, sb_slug + "." + sb_ext, copied_images)
+				var sb_f: String = _copy_image_deduped(sb_img_src, abs_media_dir, sb_slug + "." + sb_ext, copied_images)
+				sb_img_fname = "media/" + sb_f if sb_f != "" else ""
 			var sb_lines_json: Array = []
 			for sb_li_idx in (it.get("lines", []) as Array).size():
 				var sb_li: Dictionary = it["lines"][sb_li_idx]
@@ -440,7 +452,8 @@ func _on_save_pressed() -> void:
 				var li_img_fname: String = ""
 				if li_img_src != "":
 					var li_ext: String = li_img_src.get_extension().to_lower()
-					li_img_fname = _copy_image_deduped(li_img_src, abs_dir, sb_slug + "_line_%d.%s" % [sb_li_idx, li_ext], copied_images)
+					var li_f: String = _copy_image_deduped(li_img_src, abs_media_dir, sb_slug + "_line_%d.%s" % [sb_li_idx, li_ext], copied_images)
+					li_img_fname = "media/" + li_f if li_f != "" else ""
 				sb_lines_json.append({
 					"Speaker": sb_li.get("speaker", ""),
 					"Text":    sb_li.get("text",    ""),
@@ -462,13 +475,16 @@ func _on_save_pressed() -> void:
 			DirAccess.make_dir_recursive_absolute(round_dir)
 
 			var fs_src: String = it.get("funscript_path","")
-			_copy_file(fs_src, round_dir + "/" + round_name + "." + fs_src.get_extension())
+			var fs_dst_name: String = round_name + "." + fs_src.get_extension()
+			_copy_file(fs_src, round_dir + "/" + fs_dst_name)
+			_delete_stale_files(round_dir, fs_dst_name, JourneyData.FUNSCRIPT_EXTENSIONS)
 
 			var vid_src: String = it.get("video_path","")
 			if vid_src != "":
 				if i in transcode_plan:
 					var info: Dictionary = transcode_plan[i]
-					var vid_dst: String  = round_dir + "/" + vid_src.get_file().get_basename() + ".mp4"
+					var vid_dst_name: String = vid_src.get_file().get_basename() + ".mp4"
+					var vid_dst: String      = round_dir + "/" + vid_dst_name
 					_update_modal_round(modal, rorder, total_main_rounds, round_name, info["codec"])
 					var ok: bool = await _transcode_video(vid_src, vid_dst, info["duration"], modal)
 					if not ok:
@@ -476,8 +492,19 @@ func _on_save_pressed() -> void:
 						_show_status("Transcoding cancelled. Journey not saved.", true)
 						_save_btn.disabled = false
 						return
+					_delete_stale_files(round_dir, vid_dst_name, JourneyData.VIDEO_EXTENSIONS)
 				else:
-					_copy_file(vid_src, round_dir + "/" + vid_src.get_file())
+					var vid_dst_name: String = vid_src.get_file()
+					_copy_file(vid_src, round_dir + "/" + vid_dst_name)
+					_delete_stale_files(round_dir, vid_dst_name, JourneyData.VIDEO_EXTENSIONS)
+
+			# If this round was renamed, remove the old folder now that all files
+			# have been written to the new one.
+			var orig_folder: String = it.get("original_folder", "")
+			if orig_folder != "":
+				var orig_abs: String = ProjectSettings.globalize_path(orig_folder)
+				if orig_abs != round_dir and DirAccess.dir_exists_absolute(orig_abs):
+					_delete_dir_recursive(orig_abs)
 
 			rounds_json.append({
 				"Name":         round_name,
@@ -488,7 +515,7 @@ func _on_save_pressed() -> void:
 		else:
 			# Fork — recursively save the fork and all nested forks.
 			var slug_prefix: String = "fork%d" % forks_json.size()
-			forks_json.append(_save_fork(it, abs_dir, last_rorder, slug_prefix, copied_images))
+			forks_json.append(_save_fork(it, abs_dir, abs_media_dir, last_rorder, slug_prefix, copied_images))
 
 	if modal:
 		modal.queue_free()
@@ -519,7 +546,7 @@ func _on_save_pressed() -> void:
 
 # Recursively serializes a fork item to JSON. Calls _save_path for each path.
 # `slug_prefix` makes nested-storyboard filenames unique across the journey.
-func _save_fork(fork_item: Dictionary, abs_dir: String, after_order: int, slug_prefix: String, copied_images: Dictionary) -> Dictionary:
+func _save_fork(fork_item: Dictionary, abs_dir: String, abs_media_dir: String, after_order: int, slug_prefix: String, copied_images: Dictionary) -> Dictionary:
 	var fork_entry: Dictionary = {
 		"AfterOrder":  after_order,
 		"Title":       fork_item.get("title",""),
@@ -529,18 +556,19 @@ func _save_fork(fork_item: Dictionary, abs_dir: String, after_order: int, slug_p
 	for pi in (fork_item.get("paths", []) as Array).size():
 		var path_data: Dictionary = fork_item["paths"][pi]
 		var path_slug: String = "%s_p%d" % [slug_prefix, pi]
-		fork_entry["Paths"].append(_save_path(path_data, abs_dir, path_slug, copied_images))
+		fork_entry["Paths"].append(_save_path(path_data, abs_dir, abs_media_dir, path_slug, copied_images))
 	return fork_entry
 
 
 # Recursively serializes a single fork path to JSON, splitting its items into
 # Rounds, Shops, Storyboards, and (nested) Forks arrays.
-func _save_path(path_data: Dictionary, abs_dir: String, slug_prefix: String, copied_images: Dictionary) -> Dictionary:
+func _save_path(path_data: Dictionary, abs_dir: String, abs_media_dir: String, slug_prefix: String, copied_images: Dictionary) -> Dictionary:
 	var img_src: String  = path_data.get("image_path", "")
 	var img_fname: String = ""
 	if img_src != "":
 		var safe_name: String = JourneyData.sanitize_folder_name(path_data.get("name", slug_prefix))
-		img_fname = _copy_image_deduped(img_src, abs_dir, safe_name + "_cover." + img_src.get_extension().to_lower(), copied_images)
+		var img_f: String = _copy_image_deduped(img_src, abs_media_dir, safe_name + "_cover." + img_src.get_extension().to_lower(), copied_images)
+		img_fname = "media/" + img_f if img_f != "" else ""
 
 	var path_entry: Dictionary = {
 		"Name":        path_data.get("name", ""),
@@ -572,7 +600,8 @@ func _save_path(path_data: Dictionary, abs_dir: String, slug_prefix: String, cop
 				var psb_img_fname: String = ""
 				if psb_img_src != "":
 					var psb_ext: String = psb_img_src.get_extension().to_lower()
-					psb_img_fname = _copy_image_deduped(psb_img_src, abs_dir, psb_slug + "." + psb_ext, copied_images)
+					var psb_f: String = _copy_image_deduped(psb_img_src, abs_media_dir, psb_slug + "." + psb_ext, copied_images)
+					psb_img_fname = "media/" + psb_f if psb_f != "" else ""
 				var psb_lines_json: Array = []
 				for psb_li_idx in (pi_item.get("lines",[]) as Array).size():
 					var psb_li: Dictionary = pi_item["lines"][psb_li_idx]
@@ -580,7 +609,8 @@ func _save_path(path_data: Dictionary, abs_dir: String, slug_prefix: String, cop
 					var psb_li_img_fname: String = ""
 					if psb_li_img_src != "":
 						var psb_li_ext: String = psb_li_img_src.get_extension().to_lower()
-						psb_li_img_fname = _copy_image_deduped(psb_li_img_src, abs_dir, psb_slug + "_line_%d.%s" % [psb_li_idx, psb_li_ext], copied_images)
+						var psb_li_f: String = _copy_image_deduped(psb_li_img_src, abs_media_dir, psb_slug + "_line_%d.%s" % [psb_li_idx, psb_li_ext], copied_images)
+						psb_li_img_fname = "media/" + psb_li_f if psb_li_f != "" else ""
 					psb_lines_json.append({
 						"Speaker": psb_li.get("speaker",""),
 						"Text":    psb_li.get("text",""),
@@ -597,7 +627,7 @@ func _save_path(path_data: Dictionary, abs_dir: String, slug_prefix: String, cop
 				# after the last round/storyboard authored before it in this path.
 				var nested_slug: String = "%s_f%d" % [slug_prefix, nested_fork_count]
 				nested_fork_count += 1
-				path_entry["Forks"].append(_save_fork(pi_item, abs_dir, pr_last_order, nested_slug, copied_images))
+				path_entry["Forks"].append(_save_fork(pi_item, abs_dir, abs_media_dir, pr_last_order, nested_slug, copied_images))
 			_:
 				# Round
 				pr_order += 1
@@ -607,10 +637,19 @@ func _save_path(path_data: Dictionary, abs_dir: String, slug_prefix: String, cop
 				DirAccess.make_dir_recursive_absolute(pr_dir)
 				var pr_fs: String = pi_item.get("funscript_path","")
 				if pr_fs != "":
-					_copy_file(pr_fs, pr_dir + "/" + pr_name + "." + pr_fs.get_extension())
+					var pr_fs_dst_name: String = pr_name + "." + pr_fs.get_extension()
+					_copy_file(pr_fs, pr_dir + "/" + pr_fs_dst_name)
+					_delete_stale_files(pr_dir, pr_fs_dst_name, JourneyData.FUNSCRIPT_EXTENSIONS)
 				var pr_vid: String = pi_item.get("video_path","")
 				if pr_vid != "":
-					_copy_file(pr_vid, pr_dir + "/" + pr_vid.get_file())
+					var pr_vid_dst_name: String = pr_vid.get_file()
+					_copy_file(pr_vid, pr_dir + "/" + pr_vid_dst_name)
+					_delete_stale_files(pr_dir, pr_vid_dst_name, JourneyData.VIDEO_EXTENSIONS)
+				var pr_orig_folder: String = pi_item.get("original_folder", "")
+				if pr_orig_folder != "":
+					var pr_orig_abs: String = ProjectSettings.globalize_path(pr_orig_folder)
+					if pr_orig_abs != pr_dir and DirAccess.dir_exists_absolute(pr_orig_abs):
+						_delete_dir_recursive(pr_orig_abs)
 				path_entry["Rounds"].append({
 					"Name":         pr_name,
 					"Order":        pr_order,
@@ -652,7 +691,14 @@ func _get_video_codec(path: String) -> String:
 	]
 	if OS.execute(_ffmpeg_binary("ffprobe"), args, out, true, false) != 0 or out.is_empty():
 		return ""
-	return (out[0] as String).strip_edges().to_lower()
+	# out[0] may contain multiple lines (stderr is merged in with read_stderr=true,
+	# and some ffprobe versions emit extra lines). Take only the first non-empty
+	# line so "h264\n..." doesn't fail the H264_NAMES membership check.
+	for raw_line: String in (out[0] as String).split("\n"):
+		var line: String = raw_line.strip_edges().to_lower()
+		if line != "":
+			return line
+	return ""
 
 
 func _video_duration_seconds(path: String) -> float:
@@ -876,3 +922,43 @@ func _copy_file(src: String, dst: String) -> void:
 		return
 	dst_file.store_buffer(bytes)
 	dst_file.close()
+
+
+# Recursively deletes a directory and all its contents. Used to remove a round
+# folder after the round has been renamed and its files written to the new one.
+func _delete_dir_recursive(path: String) -> void:
+	var da: DirAccess = DirAccess.open(path)
+	if da == null:
+		return
+	da.list_dir_begin()
+	var fname: String = da.get_next()
+	while fname != "":
+		var child: String = path + "/" + fname
+		if da.current_is_dir():
+			_delete_dir_recursive(child)
+		else:
+			DirAccess.remove_absolute(child)
+		fname = da.get_next()
+	da.list_dir_end()
+	DirAccess.remove_absolute(path)
+
+
+# Removes files inside `dir_path` whose extension is in `extensions` but whose
+# filename is NOT `keep_filename`. Called after writing a replacement funscript
+# or video so the old file doesn't linger as a duplicate.
+func _delete_stale_files(dir_path: String, keep_filename: String, extensions: Array) -> void:
+	var da: DirAccess = DirAccess.open(dir_path)
+	if da == null:
+		return
+	da.list_dir_begin()
+	var to_delete: PackedStringArray = []
+	var fname: String = da.get_next()
+	while fname != "":
+		if not da.current_is_dir() \
+				and fname.get_extension().to_lower() in extensions \
+				and fname != keep_filename:
+			to_delete.append(dir_path + "/" + fname)
+		fname = da.get_next()
+	da.list_dir_end()
+	for p: String in to_delete:
+		DirAccess.remove_absolute(p)

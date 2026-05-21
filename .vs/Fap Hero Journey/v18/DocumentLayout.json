@@ -3,16 +3,12 @@
   "WorkspaceRootPath": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\inventoryservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\inventoryservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\gamestate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\gamestate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\buttplugservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\buttplugservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\funscriptplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -27,8 +23,12 @@
       "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\serialdeviceservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\buttplugservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\buttplugservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\gamestate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\gamestate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\Mason\\Documents\\fap-hero-journey\\scripts\\main\\Main.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -45,36 +45,37 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 2,
+          "SelectedChildIndex": 0,
           "Children": [
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 0,
               "Title": "InventoryService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\InventoryService.cs",
               "RelativeDocumentMoniker": "Globals\\InventoryService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\InventoryService.cs",
               "RelativeToolTip": "Globals\\InventoryService.cs",
-              "ViewState": "AgIAAAsAAAAAAAAAAAAQwJEAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAMoAAAAAAAAAAAAYwPIAAAACAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-05-19T12:28:48.943Z",
               "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 4,
+              "DocumentIndex": 3,
               "Title": "CoinService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\CoinService.cs",
               "RelativeDocumentMoniker": "Globals\\CoinService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\CoinService.cs",
               "RelativeToolTip": "Globals\\CoinService.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAACMAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAB8AAAAOAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-19T01:12:42.492Z"
+              "WhenOpened": "2026-05-19T01:12:42.492Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 0,
+              "DocumentIndex": 5,
               "Title": "ScoreService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\ScoreService.cs",
               "RelativeDocumentMoniker": "Globals\\ScoreService.cs",
@@ -87,19 +88,20 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 5,
+              "DocumentIndex": 4,
               "Title": "SerialDeviceService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\SerialDeviceService.cs",
               "RelativeDocumentMoniker": "Globals\\SerialDeviceService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\SerialDeviceService.cs",
               "RelativeToolTip": "Globals\\SerialDeviceService.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAEAAAALAAAAAAAAAA==",
+              "ViewState": "AgIAABIAAAAAAAAAAAA5wDwAAABIAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T16:42:55.155Z"
+              "WhenOpened": "2026-05-18T16:42:55.155Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 6,
               "Title": "GameState.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\GameState.cs",
               "RelativeDocumentMoniker": "Globals\\GameState.cs",
@@ -107,24 +109,24 @@
               "RelativeToolTip": "Globals\\GameState.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABIAAABLAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T16:42:53.814Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-05-18T16:42:53.814Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 6,
+              "DocumentIndex": 1,
               "Title": "ButtplugService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\ButtplugService.cs",
               "RelativeDocumentMoniker": "Globals\\ButtplugService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\ButtplugService.cs",
               "RelativeToolTip": "Globals\\ButtplugService.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAJoAAAAAAAAAAAAYwLkAAAAgAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T16:42:53.895Z"
+              "WhenOpened": "2026-05-18T16:42:53.895Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 2,
               "Title": "FunscriptPlayer.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\FunscriptPlayer.cs",
               "RelativeDocumentMoniker": "Globals\\FunscriptPlayer.cs",

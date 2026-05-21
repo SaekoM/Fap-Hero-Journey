@@ -28,6 +28,7 @@ public partial class CoinService : Node
 
 		Balance -= amount;
 		EmitSignal(SignalName.BalanceChanged, Balance);
+
 		return true;
 	}
 

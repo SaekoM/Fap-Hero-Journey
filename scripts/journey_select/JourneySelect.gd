@@ -622,6 +622,20 @@ func _parse_fork(raw_fork: Dictionary, journey_path: String) -> Dictionary:
 
 
 func _find_cover_image(path: String) -> String:
+	# New journeys store all images inside a media/ subfolder. Check there first.
+	var media_path: String = path + "/media"
+	var media_dir: DirAccess = DirAccess.open(media_path)
+	if media_dir != null:
+		media_dir.list_dir_begin()
+		var mfname: String = media_dir.get_next()
+		while mfname != "":
+			if not media_dir.current_is_dir() and mfname.get_extension().to_lower() in ["png", "jpg", "jpeg", "webp"]:
+				media_dir.list_dir_end()
+				return media_path + "/" + mfname
+			mfname = media_dir.get_next()
+		media_dir.list_dir_end()
+
+	# Fallback: old journeys stored the cover at the journey root.
 	var dir: DirAccess = DirAccess.open(path)
 	if dir == null:
 		return ""

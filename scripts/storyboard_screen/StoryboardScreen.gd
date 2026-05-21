@@ -58,7 +58,7 @@ func _show_line() -> void:
 	_dialogue.text   = line.get("text", "")
 
 	var is_last: bool = _line_idx >= _lines.size() - 1
-	_hint.text = "▶ CLICK, SPACE OR ESC TO COMPLETE" if is_last else "▶ CLICK, SPACE OR ESC TO CONTINUE"
+	_hint.text = "▶ CLICK OR SPACE TO COMPLETE" if is_last else "▶ CLICK OR SPACE TO CONTINUE"
 
 
 func _load_bg_image(path: String) -> void:
@@ -88,6 +88,10 @@ func _load_bg_image(path: String) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		get_viewport().set_input_as_handled()
+		Transition.change_scene("res://scenes/main/Main.tscn")
+		return
 	if not _can_advance:
 		return
 	if event is InputEventMouseButton:
@@ -98,7 +102,7 @@ func _input(event: InputEvent) -> void:
 				return
 			_advance()
 			get_viewport().set_input_as_handled()
-	elif event.is_action_pressed("ui_accept") or event.is_action_pressed("ui_cancel"):
+	elif event.is_action_pressed("ui_accept"):
 		_advance()
 		get_viewport().set_input_as_handled()
 

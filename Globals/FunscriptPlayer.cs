@@ -21,8 +21,28 @@ public partial class FunscriptPlayer : Node
 	private int _rangeMin = 0;
 	private int _rangeMax = 100;
 
+	// Ease-in state — blends output from neutral (50) toward the script position
+	// at the start of each round, journey, or resume-from-pause.
+	private bool   _easing          = false;
+	private double _easeStartMs     = 0.0;
+	private double _easeDurationMs  = 0.0;
+	private const float  EaseFromPos         = 50f;
+	private const float  EaseSpeedUnitsPerMs = 40f / 1000f; // 40 units/sec
+	private const double EaseMinMs           = 50.0;
+	private const double EaseMaxMs           = 1500.0;
+
 	public bool Playing     => _playing;
 	public int  ActionCount => _actions.Count;
+
+	/// Push updated range-clamp values directly into the player.
+	/// Called by the Options screen on every slider change so mid-playback
+	/// adjustments take effect on the very next SendCommand without needing
+	/// a round restart.
+	public void SetRangeClamp(int min, int max)
+	{
+		_rangeMin = min;
+		_rangeMax = max;
+	}
 
 	public void LoadFunscript(string path)
 	{
@@ -63,25 +83,53 @@ public partial class FunscriptPlayer : Node
 	private const uint EaseDurationMs = 500;
 	private const double CenterPosition = 0.5;
 
-	public void Play() => _playing = true;
+	public void Play()
+	{
+		_playing = true;
+		_StartEaseIn();
+	}
 
 	public void Pause()
 	{
 		_playing = false;
+		_easing  = false;
 		EaseToNeutral();
 	}
 
-	public void Resume() => _playing = true;
+	public void Resume()
+	{
+		_playing = true;
+		_StartEaseIn();
+	}
 
 	public void Stop()
 	{
 		_playing = false;
+		_easing  = false;
 		EaseToNeutral();
 		_positionMs = 0.0;
 		_actionIndex = 0;
 		_isLinearDevice = null;
 		_deviceIndex = -1;
 		_outputResolved = false;
+	}
+
+	// Compute ease-in parameters from the first upcoming script action.
+	// Duration is proportional to how far that position is from neutral (50),
+	// so the device always approaches at a consistent speed regardless of gap size.
+	private void _StartEaseIn()
+	{
+		if (_actions.Count == 0) return;
+		int idx = Math.Min(_actionIndex, _actions.Count - 1);
+		float gap = Math.Abs(_actions[idx].Pos - EaseFromPos);
+		if (gap <= 2f)
+		{
+			_easing = false;
+			return;
+		}
+		_easeDurationMs = Math.Clamp(gap / EaseSpeedUnitsPerMs, EaseMinMs, EaseMaxMs);
+		_easeStartMs    = _positionMs;
+		_easing         = true;
 	}
 
 	// Send a gentle "go to neutral" command so the device doesn't stay
@@ -191,6 +239,21 @@ public partial class FunscriptPlayer : Node
 		// Runs after inventory effects so shop modifiers compose correctly with the limit.
 		currentPos = Math.Clamp(currentPos, _rangeMin, _rangeMax);
 		nextPos    = Math.Clamp(nextPos,    _rangeMin, _rangeMax);
+
+		// Ease-in blend: interpolate from neutral (50) toward the script positions
+		// over the computed ease duration. Both current and next are blended so the
+		// device doesn't receive an inconsistent target during the blend window.
+		if (_easing)
+		{
+			double elapsed = _positionMs - _easeStartMs;
+			float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
+			// Smoothstep (ease-in-out Hermite) — feels natural for device motion.
+			float smooth = t * t * (3f - 2f * t);
+			currentPos = (int)Math.Round(EaseFromPos + (currentPos - EaseFromPos) * smooth);
+			nextPos    = (int)Math.Round(EaseFromPos + (nextPos    - EaseFromPos) * smooth);
+			if (elapsed >= _easeDurationMs)
+				_easing = false;
+		}
 
 		if (index + 1 < _actions.Count)
 		{

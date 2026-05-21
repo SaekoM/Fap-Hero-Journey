@@ -66,11 +66,12 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		seq.append({
 			"key":  (r.get("order", 0) as int) * 3,
 			"data": {
-				"type":           "round",
-				"name":           r.get("name", ""),
-				"funscript_path": r.get("funscript_path", ""),
-				"video_path":     find_video_in_round(r.get("folder", "")),
-				"coins":          r.get("coins", 0),
+				"type":            "round",
+				"name":            r.get("name", ""),
+				"funscript_path":  r.get("funscript_path", ""),
+				"video_path":      find_video_in_round(r.get("folder", "")),
+				"coins":           r.get("coins", 0),
+				"original_folder": r.get("folder", ""),
 			},
 		})
 	for sb: Dictionary in storyboards:
@@ -140,11 +141,12 @@ static func _build_path_items(p: Dictionary) -> Array:
 		sub.append({
 			"key":  (pr.get("order", 0) as int) * 3,
 			"data": {
-				"type":           "round",
-				"name":           pr.get("name", ""),
-				"funscript_path": pr.get("funscript_path", ""),
-				"video_path":     find_video_in_round(pr.get("folder", "")),
-				"coins":          pr.get("coins", 0),
+				"type":            "round",
+				"name":            pr.get("name", ""),
+				"funscript_path":  pr.get("funscript_path", ""),
+				"video_path":      find_video_in_round(pr.get("folder", "")),
+				"coins":           pr.get("coins", 0),
+				"original_folder": pr.get("folder", ""),
 			},
 		})
 	for psb: Dictionary in p.get("storyboards", []):

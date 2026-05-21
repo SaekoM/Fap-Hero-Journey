@@ -95,10 +95,13 @@ public partial class ButtplugService : Node
 	public Godot.Collections.Array<string> GetDeviceNames()
 	{
 		var result = new Godot.Collections.Array<string>();
+
 		if (_client == null)
 			return result;
+
 		foreach (var device in _client.Devices)
 			result.Add(device.Name);
+
 		return result;
 	}
 
@@ -109,6 +112,7 @@ public partial class ButtplugService : Node
 
 		var config = new ConfigFile();
 		string selectedName = "";
+
 		if (config.Load("user://settings.cfg") == Error.Ok)
 			selectedName = config.GetValue("intiface", "selected_device", Variant.From("")).AsString();
 

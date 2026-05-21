@@ -31,12 +31,11 @@ public partial class InventoryService : Node
 
 		if (FileAccess.FileExists(RegistryPath))
 		{
-			using var f = FileAccess.Open(RegistryPath, FileAccess.ModeFlags.Read);
-			if (f != null)
+			using var registryFile = FileAccess.Open(RegistryPath, FileAccess.ModeFlags.Read);
+			if (registryFile != null)
 			{
 				var json = new Json();
-				if (json.Parse(f.GetAsText()) == Error.Ok &&
-				    json.Data.VariantType == Variant.Type.Array)
+				if (json.Parse(registryFile.GetAsText()) == Error.Ok && json.Data.VariantType == Variant.Type.Array)
 				{
 					foreach (var item in json.Data.AsGodotArray())
 					{
@@ -47,9 +46,11 @@ public partial class InventoryService : Node
 						if (id != "")
 							_registry[id] = d;
 					}
+
 					GD.Print($"InventoryService: loaded {_registry.Count} items from {RegistryPath}");
 					return;
 				}
+
 				GD.PrintErr($"InventoryService: failed to parse {RegistryPath} — using hardcoded defaults.");
 			}
 		}
@@ -127,8 +128,10 @@ public partial class InventoryService : Node
 	public Array GetAllItemIds()
 	{
 		var ids = new Array();
+
 		foreach (var key in _registry.Keys)
 			ids.Add(key);
+
 		return ids;
 	}
 
@@ -164,6 +167,7 @@ public partial class InventoryService : Node
 				removed = true;
 			}
 		}
+
 		if (removed)
 			EmitSignal(SignalName.ActiveEffectsChanged);
 	}
@@ -183,13 +187,16 @@ public partial class InventoryService : Node
 		var arr = new Array();
 		foreach (var item in _items)
 			arr.Add(item);
+
 		return arr;
 	}
 
 	public void AddItem(string id)
 	{
 		var data = GetItemData(id);
-		if (data.Count == 0) return;
+		if (data.Count == 0) 
+			return;
+
 		_items.Add(data);
 		EmitSignal(SignalName.InventoryChanged);
 	}
@@ -231,6 +238,7 @@ public partial class InventoryService : Node
 		var arr = new Array();
 		foreach (var fx in _active)
 			arr.Add(fx);
+
 		return arr;
 	}
 

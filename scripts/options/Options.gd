@@ -220,10 +220,11 @@ func _apply_layout() -> void:
 	_style_label(_range_max_lbl, UITheme.PURPLE_MID, 11, true)
 	val_row.add_child(_range_max_lbl)
 
-	# Update labels + auto-save whenever a handle is moved
+	# Update labels, push live into the player, and auto-save whenever a handle is moved.
 	_range_slider.range_changed.connect(func(lo: float, hi: float) -> void:
 		_range_min_lbl.text = "MIN: %d" % roundi(lo)
 		_range_max_lbl.text = "MAX: %d" % roundi(hi)
+		FunscriptPlayer.SetRangeClamp(roundi(lo), roundi(hi))
 		_save_settings()
 	)
 

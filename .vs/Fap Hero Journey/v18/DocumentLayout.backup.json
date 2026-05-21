@@ -3,24 +3,24 @@
   "WorkspaceRootPath": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\funscriptplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\funscriptplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\inventoryservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\inventoryservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\coinservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\coinservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\gamestate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\gamestate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\scoreservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\funscriptplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\funscriptplayer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\coinservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|solutionrelative:globals\\coinservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{943CFDDA-AB65-4711-B4F3-5C6184B203CE}|Fap Hero Journey.csproj|c:\\users\\mason\\documents\\fap-hero-journey\\globals\\serialdeviceservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
@@ -45,7 +45,7 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 6,
+          "SelectedChildIndex": 2,
           "Children": [
             {
               "$type": "Document",
@@ -55,14 +55,14 @@
               "RelativeDocumentMoniker": "Globals\\InventoryService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\InventoryService.cs",
               "RelativeToolTip": "Globals\\InventoryService.cs",
-              "ViewState": "AgIAAAUAAAAAAAAAAAAxwCwAAAAYAAAAAAAAAA==",
+              "ViewState": "AgIAAAsAAAAAAAAAAAAQwJEAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-05-19T12:28:48.943Z",
               "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 4,
               "Title": "CoinService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\CoinService.cs",
               "RelativeDocumentMoniker": "Globals\\CoinService.cs",
@@ -74,15 +74,16 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 4,
+              "DocumentIndex": 0,
               "Title": "ScoreService.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\ScoreService.cs",
               "RelativeDocumentMoniker": "Globals\\ScoreService.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\ScoreService.cs",
               "RelativeToolTip": "Globals\\ScoreService.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAACsAAAACAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABMAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T17:13:11.489Z"
+              "WhenOpened": "2026-05-18T17:13:11.489Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
@@ -98,15 +99,16 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 2,
               "Title": "GameState.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\GameState.cs",
               "RelativeDocumentMoniker": "Globals\\GameState.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\GameState.cs",
               "RelativeToolTip": "Globals\\GameState.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABIAAABLAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-05-18T16:42:53.814Z"
+              "WhenOpened": "2026-05-18T16:42:53.814Z",
+              "EditorCaption": ""
             },
             {
               "$type": "Document",
@@ -122,13 +124,13 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 0,
+              "DocumentIndex": 3,
               "Title": "FunscriptPlayer.cs",
               "DocumentMoniker": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\FunscriptPlayer.cs",
               "RelativeDocumentMoniker": "Globals\\FunscriptPlayer.cs",
               "ToolTip": "C:\\Users\\Mason\\Documents\\fap-hero-journey\\Globals\\FunscriptPlayer.cs",
               "RelativeToolTip": "Globals\\FunscriptPlayer.cs",
-              "ViewState": "AgIAAJcAAAAAAAAAAAAwwN4AAAARAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABoAAAATAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-05-18T16:42:53.897Z",
               "EditorCaption": ""
