@@ -75,6 +75,15 @@ public partial class FunscriptPlayer : Node
     private const double EaseMinMs = 50.0;
     private const double EaseMaxMs = 1500.0;
 
+    // Mirror-ease state — the "mirror" shop item flips position to 100-pos.
+    // Toggling it on/off is eased through the centre rather than snapped: an
+    // instant reversal into the opposite direction is jarring and unsafe on a
+    // linear device. _mirrorBlend lerps 0↔1; at 0.5 every position maps to 50,
+    // so the device passes through neutral instead of jumping extreme-to-extreme.
+    private float _mirrorBlend = 0f;
+    private double _mirrorClockMs = double.NaN; // last clock the blend advanced from
+    private const double MirrorEaseMs = 700.0;
+
     public bool Playing => _playing;
     public int ActionCount => _actions.Count;
 
@@ -688,6 +697,10 @@ public partial class FunscriptPlayer : Node
         var inv = _inventory;
         var effects = inv?.GetActiveEffects();
 
+        // Advance the eased mirror factor before any block early-out so it keeps
+        // settling toward its target even while a block effect suppresses output.
+        UpdateMirrorBlend(effects);
+
         if (effects != null && HasBlockEffect(effects))
             return;
 
@@ -780,27 +793,50 @@ public partial class FunscriptPlayer : Node
         return false;
     }
 
-    // Scale around centre, then remap into clamp range. Multiple effects of the
-    // same kind stack multiplicatively (scale) or successively (clamp).
-    private static int TransformPos(int rawPos, Godot.Collections.Array effects)
+    // Advances the eased mirror factor toward its target — 1 when an odd number
+    // of "reverse" effects are active (even counts cancel), else 0. Driven by the
+    // playback clock so the ease freezes with playback and never jumps across a
+    // pause; seeks / clock resets snap straight to the target.
+    private void UpdateMirrorBlend(Godot.Collections.Array effects)
     {
-        if (effects == null || effects.Count == 0) 
-            return rawPos;
+        int reverseCount = 0;
+        if (effects != null)
+        {
+            foreach (var e in effects)
+            {
+                var d = e.AsGodotDictionary();
+                if (d.ContainsKey("kind") && d["kind"].AsString() == "reverse")
+                    reverseCount++;
+            }
+        }
+        float target = (reverseCount % 2 != 0) ? 1f : 0f;
 
+        double dt = double.IsNaN(_mirrorClockMs) ? 0.0 : _positionMs - _mirrorClockMs;
+        _mirrorClockMs = _positionMs;
+        // A negative or larger-than-ease-window gap is a seek/reset — treat the
+        // ease as already elapsed so the blend snaps rather than crawling.
+        if (dt < 0.0 || dt > MirrorEaseMs)
+            dt = MirrorEaseMs;
+
+        _mirrorBlend = Mathf.MoveToward(_mirrorBlend, target, (float)(dt / MirrorEaseMs));
+    }
+
+    // Mirror, then scale around centre, then remap into clamp range. Multiple
+    // effects of the same kind stack multiplicatively (scale) or successively
+    // (clamp). The mirror flip uses the eased _mirrorBlend factor so it is never
+    // an instant reversal — see UpdateMirrorBlend.
+    private int TransformPos(int rawPos, Godot.Collections.Array effects)
+    {
         float pos = rawPos;
 
-        // Reverse: flip pos = 100 - pos before scale/clamp so those transforms
-        // operate on the already-inverted value. Multiple reverse effects cancel;
-        // count them and invert only if the count is odd.
-        int reverseCount = 0;
-        foreach (var effect in effects)
-        {
-            var d = effect.AsGodotDictionary();
-            if (d.ContainsKey("kind") && d["kind"].AsString() == "reverse")
-                reverseCount++;
-        }
-        if (reverseCount % 2 != 0)
-            pos = 100f - pos;
+        // Mirror: blend toward 100 - pos. Applied before the early-out so a
+        // mirror ease still settling after the effect ended is honoured even
+        // when no effects remain.
+        if (_mirrorBlend > 0f)
+            pos = Mathf.Lerp(pos, 100f - pos, _mirrorBlend);
+
+        if (effects == null || effects.Count == 0)
+            return (int)Math.Round(Math.Clamp(pos, 0f, 100f));
 
         foreach (var effect in effects)
         {

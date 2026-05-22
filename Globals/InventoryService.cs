@@ -162,6 +162,28 @@ public partial class InventoryService : Node
 			["kind"]        = "coin_jackpot",
 			["factor"]      = 2.0f,
 		};
+		_registry["pleasure_band"] = new Dictionary
+		{
+			["id"]          = "pleasure_band",
+			["name"]        = "Pleasure Band Clamp",
+			["description"] = "Confines the script to the middle 30-70% of the stroke range.",
+			["category"]    = "modifier",
+			["price"]       = 35,
+			["duration_ms"] = 25000,
+			["kind"]        = "clamp",
+			["min"]         = 30,
+			["max"]         = 70,
+		};
+		_registry["wildcard"] = new Dictionary
+		{
+			["id"]          = "wildcard",
+			["name"]        = "Wildcard",
+			["description"] = "Activates a random modifier - could be anything. A cheap gamble.",
+			["category"]    = "modifier",
+			["price"]       = 20,
+			["duration_ms"] = 30000,
+			["kind"]        = "wildcard",
+		};
 	}
 
 	// --- Registry access -------------------------------------------------------
@@ -274,25 +296,60 @@ public partial class InventoryService : Node
 		var item = _items[slotIndex];
 		_items.RemoveAt(slotIndex);
 
+		// Wildcard resolves to a random concrete modifier at activation time: the
+		// rolled effect supplies the kind + params, the displayed name reveals
+		// what was rolled. Every other item is its own effect source.
+		var source = item;
+		string displayName = item.ContainsKey("name") ? item["name"].AsString() : "";
+		if (item.ContainsKey("kind") && item["kind"].AsString() == "wildcard")
+		{
+			var rolled = _RollWildcard();
+			if (rolled.Count > 0)
+			{
+				source = rolled;
+				string rolledName = rolled.ContainsKey("name") ? rolled["name"].AsString() : "";
+				if (rolledName != "")
+					displayName = $"Wildcard: {rolledName}";
+			}
+		}
+
 		int duration = item.ContainsKey("duration_ms") ? item["duration_ms"].AsInt32() : 0;
 		var effect = new Dictionary
 		{
 			["id"]            = item.ContainsKey("id")   ? item["id"]   : "",
-			["name"]          = item.ContainsKey("name") ? item["name"] : "",
-			["kind"]          = item.ContainsKey("kind") ? item["kind"] : "",
+			["name"]          = displayName,
+			["kind"]          = source.ContainsKey("kind") ? source["kind"] : "",
 			["duration_ms"]   = duration,
 			["end_time_ms"]   = _nowMs + duration,
 			["start_time_ms"] = _nowMs,
 		};
-		// Copy effect params used by FunscriptPlayer.
-		if (item.ContainsKey("factor")) effect["factor"] = item["factor"];
-		if (item.ContainsKey("min"))    effect["min"]    = item["min"];
-		if (item.ContainsKey("max"))    effect["max"]    = item["max"];
+		// Copy effect params used by FunscriptPlayer from the resolved source.
+		if (source.ContainsKey("factor")) effect["factor"] = source["factor"];
+		if (source.ContainsKey("min"))    effect["min"]    = source["min"];
+		if (source.ContainsKey("max"))    effect["max"]    = source["max"];
 
 		_active.Add(effect);
 		EmitSignal(SignalName.InventoryChanged);
 		EmitSignal(SignalName.ActiveEffectsChanged);
 		return true;
+	}
+
+	// Picks a random modifier dict from the registry for the Wildcard item.
+	// Excludes the wildcard itself and coin_jackpot — the latter's payout relies
+	// on a long lifetime that the wildcard's shorter duration would cut short.
+	private Dictionary _RollWildcard()
+	{
+		var pool = new List<Dictionary>();
+		foreach (var key in _registry.Keys)
+		{
+			var d = _registry[key].AsGodotDictionary();
+			string kind = d.ContainsKey("kind") ? d["kind"].AsString() : "";
+			if (kind != "" && kind != "wildcard" && kind != "coin_jackpot")
+				pool.Add(d);
+		}
+		if (pool.Count == 0)
+			return new Dictionary();
+		return pool[(int)(GD.Randi() % (uint)pool.Count)];
 	}
 
 	// --- Active effects -------------------------------------------------------

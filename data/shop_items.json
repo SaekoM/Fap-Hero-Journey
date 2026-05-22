@@ -87,5 +87,25 @@
 		"duration_ms":  300000,
 		"kind":         "coin_jackpot",
 		"factor":       2.0
+	},
+	{
+		"id":           "pleasure_band",
+		"name":         "Pleasure Band Clamp",
+		"description":  "Confines the script to the middle 30-70% of the stroke range.",
+		"category":     "modifier",
+		"price":        35,
+		"duration_ms":  25000,
+		"kind":         "clamp",
+		"min":          30,
+		"max":          70
+	},
+	{
+		"id":           "wildcard",
+		"name":         "Wildcard",
+		"description":  "Activates a random modifier - could be anything. A cheap gamble.",
+		"category":     "modifier",
+		"price":        20,
+		"duration_ms":  30000,
+		"kind":         "wildcard"
 	}
 ]
