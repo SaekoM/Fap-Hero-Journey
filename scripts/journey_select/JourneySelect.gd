@@ -12,6 +12,9 @@ const GRID_TOP_MARGIN:  int = 16
 const GRID_PADDING:     int = 40
 const GRID_SEPARATION:  int = 24
 const CARD_MIN_WIDTH:   int = 280
+# Inset around the card grid so hover-scaled cards on the outer edge have room
+# to expand without being clipped by the scroll viewport.
+const HOVER_MARGIN:     int = 12
 const MODAL_MIN_WIDTH:  int = 980
 const MODAL_MIN_HEIGHT: int = 600
 const MODAL_COVER_W:    int = 280
@@ -176,6 +179,18 @@ func _apply_layout() -> void:
 	_grid.add_theme_constant_override("v_separation", GRID_SEPARATION)
 	_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
+	# Wrap the grid in a MarginContainer so hover-scaled cards along the grid's
+	# outer edge expand into this inset instead of being clipped by the scroll.
+	var grid_mc: MarginContainer = MarginContainer.new()
+	grid_mc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid_mc.add_theme_constant_override("margin_left",   HOVER_MARGIN)
+	grid_mc.add_theme_constant_override("margin_right",  HOVER_MARGIN)
+	grid_mc.add_theme_constant_override("margin_top",    HOVER_MARGIN)
+	grid_mc.add_theme_constant_override("margin_bottom", HOVER_MARGIN)
+	_scroll.remove_child(_grid)
+	grid_mc.add_child(_grid)
+	_scroll.add_child(grid_mc)
+
 	_empty_lbl.anchor_right  = 1.0
 	_empty_lbl.anchor_bottom = 1.0
 	_empty_lbl.offset_top    = TOP_BAR_HEIGHT + GRID_TOP_MARGIN
@@ -220,7 +235,9 @@ func _apply_layout() -> void:
 
 
 func _update_grid_columns() -> void:
-	var available: float = _scroll.size.x
+	# Subtract the margin inset on both sides — the grid no longer spans the
+	# full scroll width now that it lives inside a MarginContainer.
+	var available: float = _scroll.size.x - 2.0 * HOVER_MARGIN
 	if available <= 0:
 		return
 	var cols: int = max(1, int((available + GRID_SEPARATION) / (CARD_MIN_WIDTH + GRID_SEPARATION)))
@@ -727,6 +744,7 @@ func _add_seq_to_list(
 			"round":
 				var round_data: Dictionary = item["data"]
 				var order: int = round_data.get("order", 0)
+				var is_boss: bool = round_data.get("round_type", "normal") == "boss"
 				var row: HBoxContainer = HBoxContainer.new()
 				row.add_theme_constant_override("separation", 12)
 				var order_lbl: Label = Label.new()
@@ -736,9 +754,10 @@ func _add_seq_to_list(
 				order_lbl.add_theme_font_size_override("font_size", 12)
 				row.add_child(order_lbl)
 				var name_lbl: Label = Label.new()
-				name_lbl.text = (round_data.get("name", "") as String).to_upper()
+				var round_name_text: String = (round_data.get("name", "") as String).to_upper()
+				name_lbl.text = ("⚔  " + round_name_text) if is_boss else round_name_text
 				name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+				name_lbl.add_theme_color_override("font_color", UITheme.DANGER if is_boss else UITheme.WHITE_SOFT)
 				name_lbl.add_theme_font_size_override("font_size", 13)
 				row.add_child(name_lbl)
 				var dur_secs: int = (round_data.get("length_ms", 0) as int) / 1000

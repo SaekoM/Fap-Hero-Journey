@@ -48,6 +48,17 @@ var _flickering:      bool  = false
 var _flicker_elapsed: float = 0.0
 var _border_alpha:    float = 1.0
 
+# Plays the entrance animation only once per app session — replaying it on every
+# return to the menu gets tiresome. Static, so it survives scene reloads but
+# resets on app restart ("first startup").
+static var _intro_played: bool = false
+
+# True once the entrance animation has finished — gates the tagline blink and
+# button hover effects so they don't fight the intro tweens.
+var _intro_done:  bool       = false
+# Per-button hover scale tween, so a fast re-hover replaces rather than stacks.
+var _btn_tweens:  Dictionary = {}
+
 
 func _ready() -> void:
 	MusicService.play()
@@ -55,17 +66,25 @@ func _ready() -> void:
 	_apply_layout()
 	_apply_theme()
 	_connect_buttons()
+	if _intro_played:
+		# Already played this session — show the menu fully formed.
+		_intro_done = true
+	else:
+		_intro_played = true
+		_play_intro()
 
 
 func _process(delta: float) -> void:
-	# Tagline blink
-	_blink_timer += delta
-	if _blink_timer >= BLINK_INTERVAL:
-		_blink_timer   = 0.0
-		_blink_visible = not _blink_visible
-		var c: Color   = _tagline.modulate
-		c.a            = 1.0 if _blink_visible else 0.0
-		_tagline.modulate = c
+	# Tagline blink — held off until the entrance animation finishes (the intro
+	# owns the tagline's alpha until then).
+	if _intro_done:
+		_blink_timer += delta
+		if _blink_timer >= BLINK_INTERVAL:
+			_blink_timer   = 0.0
+			_blink_visible = not _blink_visible
+			var c: Color   = _tagline.modulate
+			c.a            = 1.0 if _blink_visible else 0.0
+			_tagline.modulate = c
 
 	# Neon border flicker
 	_flicker_timer += delta
@@ -217,6 +236,70 @@ func _connect_buttons() -> void:
 	_options_btn.pressed.connect(_on_options_pressed)
 	_build_btn.pressed.connect(_on_build_pressed)
 	_quit_btn.pressed.connect(_on_quit_pressed)
+	for btn: Button in [_start_btn, _options_btn, _build_btn, _quit_btn]:
+		btn.mouse_entered.connect(_hover_btn.bind(btn, true))
+		btn.mouse_exited.connect(_hover_btn.bind(btn, false))
+
+
+# ---------------------------------------------------------------------------
+# Entrance animation + hover
+# ---------------------------------------------------------------------------
+
+# Staged entrance: the title section pops in, the buttons cascade up one at a
+# time, then the tagline fades in. Buttons are locked until it finishes.
+func _play_intro() -> void:
+	var btns: Array = [_start_btn, _options_btn, _build_btn, _quit_btn]
+	_title_section.modulate.a = 0.0
+	_tagline.modulate.a       = 0.0
+	for btn: Button in btns:
+		btn.modulate.a = 0.0
+		btn.disabled   = true
+
+	# Let layout settle (for scale pivots) and the scene transition clear.
+	await get_tree().process_frame
+	await get_tree().create_timer(0.2).timeout
+
+	# Title section — fade + pop.
+	_title_section.pivot_offset = _title_section.size / 2.0
+	_title_section.scale = Vector2(0.85, 0.85)
+	var t1: Tween = create_tween().set_parallel()
+	t1.tween_property(_title_section, "modulate:a", 1.0, 0.30)
+	t1.tween_property(_title_section, "scale", Vector2.ONE, 0.40) \
+		.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	await t1.finished
+
+	# Buttons — cascade up.
+	for i: int in btns.size():
+		var b: Button = btns[i]
+		b.pivot_offset = b.size / 2.0
+		b.scale = Vector2(0.9, 0.9)
+		var bt: Tween = create_tween().set_parallel()
+		bt.tween_property(b, "modulate:a", 1.0, 0.25).set_delay(i * 0.07)
+		bt.tween_property(b, "scale", Vector2.ONE, 0.30) \
+			.set_delay(i * 0.07).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	await get_tree().create_timer(0.30 + btns.size() * 0.07).timeout
+
+	# Tagline.
+	create_tween().tween_property(_tagline, "modulate:a", 1.0, 0.30)
+
+	for btn: Button in btns:
+		btn.disabled = false
+	_intro_done = true
+
+
+# Smoothly scales a menu button on hover. Ignored until the intro finishes so
+# it never competes with the cascade tweens.
+func _hover_btn(btn: Button, hovering: bool) -> void:
+	if not _intro_done:
+		return
+	var prev: Tween = _btn_tweens.get(btn)
+	if prev != null and prev.is_running():
+		prev.kill()
+	btn.pivot_offset = btn.size / 2.0
+	var tw: Tween = create_tween()
+	tw.tween_property(btn, "scale", Vector2(1.04, 1.04) if hovering else Vector2.ONE, 0.10) \
+		.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	_btn_tweens[btn] = tw
 
 
 func _on_start_pressed() -> void:

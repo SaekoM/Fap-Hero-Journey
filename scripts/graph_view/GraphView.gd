@@ -307,9 +307,10 @@ func _place_insert_btn(arr: Array, idx: int, x_center: float, mid_y: float) -> v
 # is_terminal: true when this node ends the run (no path leads beyond it).
 func _make_node(item: Dictionary, arr: Array, idx: int, is_terminal: bool = false) -> Control:
 	var t: String = item.get("type", "round")
-	# Terminal nodes use AMBER as their accent to stand out clearly.
-	var accent: Color = UITheme.AMBER if is_terminal else _type_color(t)
-	var icon: String = _type_icon(t)
+	var is_boss: bool = t == "round" and item.get("round_type", "normal") == "boss"
+	# Terminal nodes use AMBER; boss rounds use DANGER red; else the type colour.
+	var accent: Color = UITheme.AMBER if is_terminal else (UITheme.DANGER if is_boss else _type_color(t))
+	var icon: String = "⚔" if is_boss else _type_icon(t)
 	var primary: String = _type_label(item)
 	var secondary: String = _type_sublabel(item)
 	if is_terminal:
@@ -490,7 +491,8 @@ func _type_sublabel(item: Dictionary) -> String:
 	match t:
 		"round":
 			var c: int = item.get("coins", 0)
-			return "ROUND   ♦ %d" % c if c > 0 else "ROUND"
+			var rlabel: String = "BOSS ROUND" if item.get("round_type", "normal") == "boss" else "ROUND"
+			return "%s   ♦ %d" % [rlabel, c] if c > 0 else rlabel
 		"shop":
 			return "SHOP"
 		"storyboard":

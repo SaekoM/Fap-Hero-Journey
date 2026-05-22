@@ -40,6 +40,17 @@ const VIB_CHANNELS_INFO: Array = [
 	{"key": "vib2", "label": "VIB2  —  CHANNEL 1  (secondary motor)"},
 ]
 
+# Forced-modifier kinds a boss round can impose. Parallel arrays: KINDS feeds the
+# saved data, LABELS feeds the editor dropdown.
+const BOSS_MODIFIER_KINDS:  Array = ["scale", "clamp", "reverse", "blackout", "score_multiplier"]
+const BOSS_MODIFIER_LABELS: Array = [
+	"SCALE  —  STROKE LENGTH",
+	"CLAMP  —  POSITION RANGE",
+	"REVERSE  —  MIRROR",
+	"BLACKOUT  —  HIDE VIDEO",
+	"SCORE MULTIPLIER",
+]
+
 var _owner: JourneyBuilder
 
 
@@ -468,6 +479,9 @@ func _make_side_round_editor(arr: Array, idx: int, graph: Control, reselect: Cal
 
 	col.add_child(_side_section_separator())
 	col.add_child(_make_vib_expander(arr, idx))
+
+	col.add_child(_side_section_separator())
+	col.add_child(_make_boss_expander(arr, idx))
 
 	col.add_child(_side_section_separator())
 	col.add_child(_side_action_row(arr, idx, graph, reselect))
@@ -1058,3 +1072,212 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 	)
 
 	return wrapper
+
+
+# ── Boss round expander ──────────────────────────────────────────────────────
+
+# A "BOSS ROUND" toggle that, when on, marks the round as a boss and reveals its
+# config: an optional intro image, an optional tagline, and a list of forced
+# modifiers the player cannot remove. Toggling off reverts it to a normal round.
+func _make_boss_expander(arr: Array, idx: int) -> Control:
+	if not arr[idx].has("round_type"):
+		arr[idx]["round_type"] = "normal"
+	if not arr[idx].has("boss_modifiers"):
+		arr[idx]["boss_modifiers"] = []
+
+	var is_boss: bool = arr[idx]["round_type"] == "boss"
+
+	var wrapper: VBoxContainer = VBoxContainer.new()
+	wrapper.add_theme_constant_override("separation", 6)
+
+	var toggle_btn: Button = Button.new()
+	toggle_btn.text = ("▼  BOSS ROUND" if is_boss else "▶  BOSS ROUND")
+	toggle_btn.toggle_mode = true
+	toggle_btn.button_pressed = is_boss
+	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(toggle_btn, UITheme.MAGENTA)
+	wrapper.add_child(toggle_btn)
+
+	var boss_panel: VBoxContainer = VBoxContainer.new()
+	boss_panel.add_theme_constant_override("separation", 8)
+	boss_panel.visible = is_boss
+	wrapper.add_child(boss_panel)
+
+	var hint: Label = Label.new()
+	hint.text = "BOSS ROUNDS DISABLE ITEM USE, APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE, AND OPEN WITH A TELEGRAPHED INTRO CARD."
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.uppercase = true
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	boss_panel.add_child(hint)
+
+	# Intro image (optional).
+	boss_panel.add_child(_side_field_label("BOSS IMAGE  (OPTIONAL)"))
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions   = JourneyData.IMAGE_EXTENSIONS.duplicate()
+	img_zone.picker_title          = "Select Boss Image"
+	img_zone.picker_filters        = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	boss_panel.add_child(img_zone)
+	if arr[idx].get("boss_image", "") != "":
+		img_zone.call_deferred("set_file", arr[idx]["boss_image"])
+	img_zone.file_dropped.connect(func(p: String) -> void:
+		arr[idx]["boss_image"] = p
+	)
+
+	# Intro tagline (optional).
+	boss_panel.add_child(_side_field_label("INTRO TAGLINE  (OPTIONAL)"))
+	var tagline: LineEdit = LineEdit.new()
+	tagline.placeholder_text = "A threat, a theme line..."
+	tagline.text             = arr[idx].get("boss_tagline", "")
+	UITheme.style_line_edit(tagline)
+	tagline.text_changed.connect(func(val: String) -> void:
+		arr[idx]["boss_tagline"] = val
+	)
+	boss_panel.add_child(tagline)
+
+	# Forced modifiers list.
+	boss_panel.add_child(_side_field_label("FORCED MODIFIERS"))
+	var mods_list: VBoxContainer = VBoxContainer.new()
+	mods_list.add_theme_constant_override("separation", 6)
+	boss_panel.add_child(mods_list)
+	_rebuild_boss_modifiers(arr, idx, mods_list)
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "+ ADD MODIFIER"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(func() -> void:
+		(arr[idx]["boss_modifiers"] as Array).append(_default_boss_modifier("scale"))
+		_rebuild_boss_modifiers(arr, idx, mods_list)
+	)
+	boss_panel.add_child(add_btn)
+
+	toggle_btn.toggled.connect(func(pressed: bool) -> void:
+		toggle_btn.text = ("▼  BOSS ROUND" if pressed else "▶  BOSS ROUND")
+		arr[idx]["round_type"] = "boss" if pressed else "normal"
+		boss_panel.visible = pressed
+	)
+
+	return wrapper
+
+
+# Returns a fresh modifier dict for `kind` seeded with sensible default params.
+func _default_boss_modifier(kind: String) -> Dictionary:
+	match kind:
+		"scale":            return {"kind": "scale", "factor": 1.2}
+		"clamp":            return {"kind": "clamp", "min": 0, "max": 50}
+		"score_multiplier": return {"kind": "score_multiplier", "factor": 2.0}
+		_:                  return {"kind": kind}
+
+
+# Rebuilds the forced-modifier rows from scratch — called on add / remove / kind
+# change so each row's parameter fields always match its kind.
+func _rebuild_boss_modifiers(arr: Array, idx: int, list: VBoxContainer) -> void:
+	for child in list.get_children():
+		child.queue_free()
+	var mods: Array = arr[idx].get("boss_modifiers", [])
+	if mods.is_empty():
+		var empty: Label = Label.new()
+		empty.text = "NO MODIFIERS — THE BOSS PLAYS ITS SCRIPT AS-IS."
+		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_font_size_override("font_size", 10)
+		empty.uppercase = true
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		list.add_child(empty)
+		return
+	for m_idx: int in mods.size():
+		list.add_child(_make_boss_modifier_row(arr, idx, list, m_idx))
+
+
+# Builds one forced-modifier row: a kind dropdown, kind-specific parameter
+# fields, and a remove button.
+func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: int) -> Control:
+	var mod: Dictionary = arr[idx]["boss_modifiers"][m_idx]
+	var kind: String = mod.get("kind", "scale")
+
+	var panel: PanelContainer = PanelContainer.new()
+	var s: StyleBoxFlat = StyleBoxFlat.new()
+	s.bg_color            = UITheme.CARD_BG
+	s.border_color        = UITheme.PURPLE_MID
+	s.border_width_left   = 1; s.border_width_right  = 1
+	s.border_width_top    = 1; s.border_width_bottom = 1
+	s.content_margin_left = 8; s.content_margin_right  = 8
+	s.content_margin_top  = 6; s.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", s)
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	panel.add_child(col)
+
+	# Row 1 — kind dropdown + remove button.
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 6)
+	col.add_child(head)
+
+	var kind_dd: OptionButton = OptionButton.new()
+	for label: String in BOSS_MODIFIER_LABELS:
+		kind_dd.add_item(label)
+	kind_dd.selected = BOSS_MODIFIER_KINDS.find(kind)
+	kind_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(kind_dd)
+	head.add_child(kind_dd)
+	kind_dd.item_selected.connect(func(sel: int) -> void:
+		arr[idx]["boss_modifiers"][m_idx] = _default_boss_modifier(BOSS_MODIFIER_KINDS[sel])
+		_rebuild_boss_modifiers(arr, idx, list)
+	)
+
+	var remove_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.DANGER)
+	remove_btn.pressed.connect(func() -> void:
+		(arr[idx]["boss_modifiers"] as Array).remove_at(m_idx)
+		_rebuild_boss_modifiers(arr, idx, list)
+	)
+	head.add_child(remove_btn)
+
+	# Row 2 — kind-specific parameters.
+	match kind:
+		"scale", "score_multiplier":
+			var prow: HBoxContainer = HBoxContainer.new()
+			prow.add_theme_constant_override("separation", 6)
+			var plbl: Label = _side_field_label("FACTOR")
+			plbl.custom_minimum_size = Vector2(60, 0)
+			prow.add_child(plbl)
+			var pedit: LineEdit = LineEdit.new()
+			pedit.text = str(mod.get("factor", 1.0))
+			pedit.custom_minimum_size = Vector2(70, 0)
+			UITheme.style_line_edit(pedit)
+			pedit.text_changed.connect(func(val: String) -> void:
+				arr[idx]["boss_modifiers"][m_idx]["factor"] = maxf(0.0, val.to_float())
+			)
+			prow.add_child(pedit)
+			col.add_child(prow)
+		"clamp":
+			var crow: HBoxContainer = HBoxContainer.new()
+			crow.add_theme_constant_override("separation", 6)
+			crow.add_child(_side_field_label("MIN"))
+			var min_edit: LineEdit = LineEdit.new()
+			min_edit.text = str(mod.get("min", 0))
+			min_edit.custom_minimum_size = Vector2(56, 0)
+			UITheme.style_line_edit(min_edit)
+			min_edit.text_changed.connect(func(val: String) -> void:
+				arr[idx]["boss_modifiers"][m_idx]["min"] = clampi(val.to_int(), 0, 100)
+			)
+			crow.add_child(min_edit)
+			crow.add_child(_side_field_label("MAX"))
+			var max_edit: LineEdit = LineEdit.new()
+			max_edit.text = str(mod.get("max", 100))
+			max_edit.custom_minimum_size = Vector2(56, 0)
+			UITheme.style_line_edit(max_edit)
+			max_edit.text_changed.connect(func(val: String) -> void:
+				arr[idx]["boss_modifiers"][m_idx]["max"] = clampi(val.to_int(), 0, 100)
+			)
+			crow.add_child(max_edit)
+			col.add_child(crow)
+		_:
+			var none_lbl: Label = Label.new()
+			none_lbl.text = "NO PARAMETERS"
+			none_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+			none_lbl.add_theme_font_size_override("font_size", 10)
+			col.add_child(none_lbl)
+
+	return panel

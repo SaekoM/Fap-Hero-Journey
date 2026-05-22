@@ -38,6 +38,11 @@ public partial class FunscriptPlayer : Node
     private enum OutputMode { Buttplug, Serial }
 
     private List<Action> _actions = new List<Action>();
+
+    // "V motion" beats — local minima in the L0 track — for the optional beat-bar
+    // visualiser. Each entry is (AtMs, depth) where depth is the 0–100 dip size.
+    private readonly List<Vector2> _beats = new List<Vector2>();
+
     private bool _playing = false;
     private double _positionMs = 0.0;
     private int _actionIndex = 0;
@@ -72,6 +77,10 @@ public partial class FunscriptPlayer : Node
 
     public bool Playing => _playing;
     public int ActionCount => _actions.Count;
+
+    /// Current playback clock in milliseconds — used by the beat-bar HUD so it
+    /// stays in sync with the device whether video-driven or free-running.
+    public double PositionMs => _positionMs;
 
     // Cached autoload references — resolved once instead of looked up per-call
     // (some were hit every frame, per axis, inside _Process). FunscriptPlayer is
@@ -140,6 +149,35 @@ public partial class FunscriptPlayer : Node
                 Pos = a.ContainsKey("pos") ? a["pos"].AsInt32() : 0,
             });
         }
+
+        _ExtractBeats();
+    }
+
+    // Finds every "V motion" — a local minimum where the track dips and rises
+    // again — and records its timestamp and dip depth for the beat-bar HUD.
+    private void _ExtractBeats()
+    {
+        _beats.Clear();
+        for (int i = 1; i < _actions.Count - 1; i++)
+        {
+            int prev = _actions[i - 1].Pos;
+            int cur  = _actions[i].Pos;
+            int next = _actions[i + 1].Pos;
+            if (prev > cur && cur < next)
+            {
+                float depth = Math.Min(prev, next) - cur;
+                _beats.Add(new Vector2(_actions[i].AtMs, depth));
+            }
+        }
+    }
+
+    /// Returns the V-motion beats as Vector2(timeMs, depth 0-100) for the beat bar.
+    public Godot.Collections.Array GetBeats()
+    {
+        var arr = new Godot.Collections.Array();
+        foreach (var b in _beats)
+            arr.Add(b);
+        return arr;
     }
 
     // Home-position config — updated live by Options via SetHomePosition().

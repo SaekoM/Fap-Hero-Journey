@@ -194,6 +194,12 @@ public partial class InventoryService : Node
 	// Active effects: one entry per activation, with absolute end time on engine clock (ms).
 	private readonly List<Dictionary> _active = new();
 
+	// Boss-round forced effects. These never expire on the timer — they are added
+	// when a boss round begins and removed wholesale via ClearBossEffects() when it
+	// ends. GetActiveEffects() returns them alongside _active so every consumer
+	// (FunscriptPlayer, ScoreService, the HUD chips) sees them transparently.
+	private readonly List<Dictionary> _bossEffects = new();
+
 	private double _nowMs = 0.0;
 
 	// When true, the effect clock is frozen — _nowMs stops advancing so active
@@ -230,6 +236,7 @@ public partial class InventoryService : Node
 	{
 		_items.Clear();
 		_active.Clear();
+		_bossEffects.Clear();
 		// Clear any stale pause state — a player can quit to menu mid-pause,
 		// which would otherwise leave the effect clock frozen for the next journey.
 		_paused = false;
@@ -295,8 +302,42 @@ public partial class InventoryService : Node
 		var activeEffects = new Array();
 		foreach (var fx in _active)
 			activeEffects.Add(fx);
+		foreach (var fx in _bossEffects)
+			activeEffects.Add(fx);
 
 		return activeEffects;
+	}
+
+	// Clears player-activated effects only — leaves boss effects and owned
+	// inventory items untouched. Used to give a boss round a clean slate.
+	public void ClearActiveEffects()
+	{
+		if (_active.Count == 0)
+			return;
+		_active.Clear();
+		EmitSignal(SignalName.ActiveEffectsChanged);
+	}
+
+	// Installs a set of boss-round forced effects. Each entry must be a complete
+	// effect dictionary (kind + params + display name). They apply for the whole
+	// boss round and are removed with ClearBossEffects().
+	public void AddBossEffects(Array effects)
+	{
+		foreach (var fx in effects)
+		{
+			if (fx.VariantType == Variant.Type.Dictionary)
+				_bossEffects.Add(fx.AsGodotDictionary());
+		}
+		EmitSignal(SignalName.ActiveEffectsChanged);
+	}
+
+	// Removes all boss-round forced effects. Called when a boss round ends.
+	public void ClearBossEffects()
+	{
+		if (_bossEffects.Count == 0)
+			return;
+		_bossEffects.Clear();
+		EmitSignal(SignalName.ActiveEffectsChanged);
 	}
 
 	// Immediately removes every active effect of the given kind. Used by GameLoop

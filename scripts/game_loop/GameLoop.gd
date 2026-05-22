@@ -5,6 +5,7 @@ const ForkScene            = preload("res://scenes/fork_screen/ForkScreen.tscn")
 const ShopScene            = preload("res://scenes/shop_screen/ShopScreen.tscn")
 const StoryboardScene      = preload("res://scenes/storyboard_screen/StoryboardScreen.tscn")
 const InventoryPanelScene  = preload("res://scenes/inventory/InventoryPanel.tscn")
+const BeatBarScript        = preload("res://scripts/game_loop/BeatBar.gd")
 
 # ---------------------------------------------------------------------------
 # GameLoop.gd  –  Round controller and video player
@@ -25,6 +26,17 @@ const VIDEO_EXTS:      Array = ["mp4", "mkv", "webm", "avi", "mov", "ogv"]
 # Sequence-boundary fade timings (~1.2s total).
 const TRANSITION_FADE_TIME: float = 0.45
 const TRANSITION_HOLD_TIME: float = 0.30
+
+# Boss rounds: the red frame pulses during the round's final stretch.
+const BOSS_CLIMAX_SECS: float = 30.0
+# Boss forced-modifier kind → HUD chip label.
+const BOSS_EFFECT_NAMES: Dictionary = {
+	"scale":            "SCALE",
+	"clamp":            "CLAMP",
+	"reverse":          "REVERSE",
+	"blackout":         "BLACKOUT",
+	"score_multiplier": "SCORE ×",
+}
 
 @onready var _bg:          ColorRect         = $Background
 @onready var _video:       VideoStreamPlayer = $VideoPlayer
@@ -51,11 +63,21 @@ var _inventory_panel: Control = null
 # Used to suppress gameplay hotkeys that should not fire through an overlay.
 var _is_overlay_open: bool = false
 
+# True for the duration of a boss round (set when the round loads, cleared at
+# round end). Drives item lockout, the red frame, and the climax pulse.
+var _is_boss_round: bool  = false
+var _boss_frame:    Panel = null
+
+# Optional beat-bar visualiser — created only when the setting is enabled.
+var _beat_bar: Control = null
+
 
 func _ready() -> void:
 	MusicService.stop()
 	_apply_layout()
 	_apply_theme()
+	_build_boss_frame()
+	_build_beat_bar()
 	_connect_signals()
 	ScoreService.Reset()
 	CoinService.Reset()
@@ -77,6 +99,10 @@ func _process(_delta: float) -> void:
 		# Keep funscript in sync with video clock
 		FunscriptPlayer.SyncTo(_video.stream_position)
 	_update_chip_countdowns()
+	if _is_boss_round:
+		_update_boss_frame()
+	if _beat_bar != null:
+		_beat_bar.set_time(FunscriptPlayer.PositionMs)
 
 
 # ---------------------------------------------------------------------------
@@ -183,19 +209,34 @@ func _load_current_round() -> void:
 
 	var total: int = GameState.TotalRounds()
 	var num:   int = GameState.RoundNumber
-	_round_lbl.text = "ROUND %d / %d  —  %s" % [num, total,
-		(round.get("name", "") as String).to_upper()]
 
 	_progress.value = 0.0
 	_paused = false
 	_pause_btn.text = "|| PAUSE"
 
+	_is_boss_round = round.get("round_type", "normal") == "boss"
+	if _is_boss_round:
+		_round_lbl.text = "⚔  BOSS  %d / %d  —  %s" % [num, total,
+			(round.get("name", "") as String).to_upper()]
+		# Telegraph the boss — playback begins only when the player commits.
+		_show_boss_intro(round)
+	else:
+		_round_lbl.text = "ROUND %d / %d  —  %s" % [num, total,
+			(round.get("name", "") as String).to_upper()]
+		_begin_round(round)
+
+
+# Loads the round's scripts + video and starts playback. For boss rounds this
+# runs after the intro card's BEGIN; for normal rounds, immediately.
+func _begin_round(round: Dictionary) -> void:
 	ScoreService.StartRound()
 
 	var fs_path: String = round.get("funscript_path", "")
 	if fs_path != "":
 		FunscriptPlayer.LoadFunscript(fs_path)
 		ScoreService.SetRoundActions(FunscriptPlayer.ActionCount)
+		if _beat_bar != null:
+			_beat_bar.set_beats(FunscriptPlayer.GetBeats())
 
 	# Load secondary axis scripts (serial devices only; FunscriptPlayer ignores
 	# them if output mode is Buttplug). Clear first so stale axes from a prior
@@ -218,9 +259,211 @@ func _load_current_round() -> void:
 			var channel: int = 0 if ch_key == "vib1" else 1
 			FunscriptPlayer.LoadVibScript(channel, vib_path)
 
+	# Boss setup must run before _load_video → FunscriptPlayer.Play() so the
+	# forced modifiers are already active on the first dispatched stroke.
+	if _is_boss_round:
+		_enter_boss_mode(round)
+
 	var folder: String = round.get("folder", "")
 	var video_path: String = _find_video(folder)
 	_load_video(video_path)
+
+
+# ---------------------------------------------------------------------------
+# Boss rounds
+# ---------------------------------------------------------------------------
+
+# Telegraphed intro card. The round's scripts/video do not load and playback
+# does not start until the player clicks BEGIN.
+func _show_boss_intro(round: Dictionary) -> void:
+	_is_overlay_open = true  # suppress gameplay hotkeys while the card is up
+
+	var overlay: Control = Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(overlay)
+
+	var backdrop: ColorRect = ColorRect.new()
+	backdrop.color = Color(0, 0, 0, 0.92)
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(backdrop)
+
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color = UITheme.PANEL_BG
+	ps.border_color = UITheme.DANGER
+	ps.border_width_left = 3; ps.border_width_right = 3
+	ps.border_width_top = 3; ps.border_width_bottom = 3
+	ps.content_margin_left = 48; ps.content_margin_right = 48
+	ps.content_margin_top = 36;  ps.content_margin_bottom = 36
+	panel.add_theme_stylebox_override("panel", ps)
+	center.add_child(panel)
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 16)
+	panel.add_child(col)
+
+	var banner: Label = Label.new()
+	banner.text = "⚔   B O S S   R O U N D   ⚔"
+	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	banner.add_theme_color_override("font_color", UITheme.DANGER)
+	banner.add_theme_font_size_override("font_size", 28)
+	col.add_child(banner)
+
+	var boss_image: String = round.get("boss_image", "")
+	if boss_image != "":
+		var img: Image = JourneyData.load_image_smart(boss_image)
+		if img != null:
+			var tex: TextureRect = TextureRect.new()
+			tex.texture = ImageTexture.create_from_image(img)
+			tex.custom_minimum_size = Vector2(380, 240)
+			tex.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
+			tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			col.add_child(tex)
+
+	var name_lbl: Label = Label.new()
+	name_lbl.text = (round.get("name", "") as String).to_upper()
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", 22)
+	col.add_child(name_lbl)
+
+	var tagline: String = round.get("boss_tagline", "")
+	if tagline.strip_edges() != "":
+		var tag_lbl: Label = Label.new()
+		tag_lbl.text = tagline
+		tag_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		tag_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		tag_lbl.custom_minimum_size = Vector2(440, 0)
+		tag_lbl.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
+		tag_lbl.add_theme_font_size_override("font_size", 14)
+		col.add_child(tag_lbl)
+
+	var rules_lbl: Label = Label.new()
+	rules_lbl.text = "NO ITEMS  ·  FORCED MODIFIERS"
+	rules_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rules_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rules_lbl.add_theme_font_size_override("font_size", 11)
+	col.add_child(rules_lbl)
+
+	var begin_btn: Button = Button.new()
+	begin_btn.text = "⚔  BEGIN"
+	begin_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	UITheme.style_button(begin_btn, UITheme.DANGER, 32, 14)
+	col.add_child(begin_btn)
+	begin_btn.pressed.connect(func() -> void:
+		overlay.queue_free()
+		_is_overlay_open = false
+		_begin_round(round)
+	)
+
+
+# Clean slate, forced modifiers, item lockout, red frame on.
+func _enter_boss_mode(round: Dictionary) -> void:
+	# Clean slate — drop any effects the player activated before the boss.
+	InventoryService.ClearActiveEffects()
+
+	# Inject the designer's forced modifiers as boss effects.
+	var fx: Array = []
+	for mod: Dictionary in round.get("boss_modifiers", []):
+		fx.append(_make_boss_effect(mod))
+	if not fx.is_empty():
+		InventoryService.AddBossEffects(fx)
+
+	# Item use is disabled for the whole boss round.
+	if is_instance_valid(_inventory_panel):
+		_inventory_panel.close()
+	_inv_btn.disabled = true
+
+	if _boss_frame != null:
+		_boss_frame.visible    = true
+		_boss_frame.modulate.a = 0.5
+
+
+# Tears down boss state at round end. Safe to call on non-boss rounds.
+func _exit_boss_mode() -> void:
+	if not _is_boss_round:
+		return
+	_is_boss_round = false
+	InventoryService.ClearBossEffects()
+	_inv_btn.disabled = false
+	if _boss_frame != null:
+		_boss_frame.visible = false
+
+
+# Converts a saved boss modifier ({kind, factor?, min?, max?}) into a full
+# effect dict the active-effects pipeline understands.
+func _make_boss_effect(mod: Dictionary) -> Dictionary:
+	var kind: String = mod.get("kind", "")
+	var fx: Dictionary = {
+		"id":   "boss_" + kind,
+		"name": BOSS_EFFECT_NAMES.get(kind, kind.to_upper()),
+		"kind": kind,
+		"boss": true,
+	}
+	if mod.has("factor"):
+		fx["factor"] = mod["factor"]
+	if mod.has("min"):
+		fx["min"] = mod["min"]
+	if mod.has("max"):
+		fx["max"] = mod["max"]
+	return fx
+
+
+func _build_beat_bar() -> void:
+	if not SettingsService.get_beat_bar_enabled():
+		return
+	_beat_bar = BeatBarScript.new()
+	_beat_bar.anchor_left   = 0.0
+	_beat_bar.anchor_right  = 1.0
+	_beat_bar.anchor_top    = 1.0
+	_beat_bar.anchor_bottom = 1.0
+	_beat_bar.offset_left   = 0.0
+	_beat_bar.offset_right  = 0.0
+	_beat_bar.offset_top    = -120.0
+	_beat_bar.offset_bottom = -56.0
+	add_child(_beat_bar)
+
+
+func _build_boss_frame() -> void:
+	_boss_frame = Panel.new()
+	_boss_frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_boss_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_boss_frame.visible = false
+	var s: StyleBoxFlat = StyleBoxFlat.new()
+	s.bg_color = Color(0, 0, 0, 0)
+	s.border_color = UITheme.DANGER
+	s.border_width_left = 6; s.border_width_right  = 6
+	s.border_width_top  = 6; s.border_width_bottom = 6
+	_boss_frame.add_theme_stylebox_override("panel", s)
+	add_child(_boss_frame)
+
+
+# Holds the boss frame at a subtle level, then pulses it in the final stretch.
+func _update_boss_frame() -> void:
+	if _boss_frame == null:
+		return
+	var remaining: float = _round_time_left()
+	if remaining > 0.0 and remaining <= BOSS_CLIMAX_SECS:
+		var t: float = Time.get_ticks_msec() / 1000.0
+		_boss_frame.modulate.a = 0.55 + 0.45 * (0.5 + 0.5 * sin(t * TAU * 1.5))
+	else:
+		_boss_frame.modulate.a = 0.5
+
+
+# Seconds left in the current round — from the video clock, or the no-video
+# fallback timer. Returns -1 when unknown.
+func _round_time_left() -> float:
+	if _video.is_playing():
+		var vlen: float = _video.get_stream_length()
+		if vlen > 0.0:
+			return vlen - _video.stream_position
+	if not _end_timer.is_stopped():
+		return _end_timer.time_left
+	return -1.0
 
 
 func _find_video(folder: String) -> String:
@@ -319,6 +562,8 @@ func _on_round_ended() -> void:
 	GameState.set_meta("_round_names", _names)
 	ScoreService.EndRound()
 	FunscriptPlayer.Stop()
+	# Tear down boss state (forced modifiers, item lockout, red frame) if active.
+	_exit_boss_mode()
 
 	var coins: int = GameState.CurrentRound().get("coins", 0)
 	# Apply any active coin_jackpot multipliers, then consume them so a single
@@ -437,8 +682,8 @@ func _input(event: InputEvent) -> void:
 						_toggle_pause()
 						get_viewport().set_input_as_handled()
 				KEY_TAB:
-					# Tab: toggle inventory panel at any time during a round.
-					if not _is_overlay_open:
+					# Tab: toggle inventory panel — disabled during boss rounds.
+					if not _is_overlay_open and not _is_boss_round:
 						_on_inventory_pressed()
 						get_viewport().set_input_as_handled()
 				KEY_ESCAPE:
@@ -515,10 +760,12 @@ func _refresh_effect_chips() -> void:
 
 
 func _make_chip(effect: Dictionary) -> Control:
+	# Boss forced modifiers get a red chip; player-activated effects stay amber.
+	var accent: Color = UITheme.DANGER if effect.get("boss", false) else UITheme.AMBER
 	var chip: PanelContainer = PanelContainer.new()
 	var s: StyleBoxFlat = StyleBoxFlat.new()
-	s.bg_color            = Color(UITheme.AMBER.r, UITheme.AMBER.g, UITheme.AMBER.b, 0.12)
-	s.border_color        = UITheme.AMBER
+	s.bg_color            = Color(accent.r, accent.g, accent.b, 0.12)
+	s.border_color        = accent
 	s.border_width_left   = 1
 	s.border_width_right  = 1
 	s.border_width_top    = 1
@@ -530,7 +777,7 @@ func _make_chip(effect: Dictionary) -> Control:
 	chip.add_theme_stylebox_override("panel", s)
 
 	var lbl: Label = Label.new()
-	lbl.add_theme_color_override("font_color", UITheme.AMBER)
+	lbl.add_theme_color_override("font_color", accent)
 	lbl.add_theme_font_size_override("font_size", 11)
 	lbl.set_meta("effect_id", effect.get("id", ""))
 	_update_chip_text(lbl, effect)
@@ -541,6 +788,10 @@ func _make_chip(effect: Dictionary) -> Control:
 
 func _update_chip_text(lbl: Label, effect: Dictionary) -> void:
 	var name_str: String = (effect.get("name", "") as String).to_upper()
+	# Boss forced modifiers last the whole round — no countdown.
+	if effect.get("boss", false):
+		lbl.text = name_str
+		return
 	var remaining: float = InventoryService.GetRemainingSeconds(effect)
 	lbl.text = "%s  %ds" % [name_str, int(ceil(remaining))]
 

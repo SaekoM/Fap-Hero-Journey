@@ -143,12 +143,27 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 			if rel != "":
 				vib_scripts[ch_key] = path + "/" + rel
 
+		# Boss-round config — RoundType plus optional intro image / tagline /
+		# forced modifiers. Absent fields fall back to a plain ("normal") round.
+		var round_type: String = (raw.get("RoundType", "Normal") as String).to_lower()
+		var boss_image: String = raw.get("BossImage", "")
+		if boss_image != "":
+			boss_image = path + "/" + boss_image
+		var boss_modifiers: Array = []
+		for raw_mod in raw.get("BossModifiers", []):
+			if raw_mod is Dictionary:
+				boss_modifiers.append(_parse_boss_modifier(raw_mod))
+
 		var round_data: Dictionary = {
 			"name":           round_name,
 			"folder":         round_folder,
 			"funscript_path": fs["path"],
 			"axis_scripts":   axis_scripts,
 			"vib_scripts":    vib_scripts,
+			"round_type":     round_type,
+			"boss_image":     boss_image,
+			"boss_tagline":   raw.get("BossTagline", ""),
+			"boss_modifiers": boss_modifiers,
 			"coins":          raw.get("CoinsAwarded", 0),
 			"order":          raw.get("Order", 0),
 			"action_count":   fs["count"],
@@ -209,12 +224,25 @@ static func parse_fork(raw_fork: Dictionary, journey_path: String) -> Dictionary
 				if rel != "":
 					pr_vib_scripts[ch_key] = journey_path + "/" + rel
 
+			var pr_round_type: String = (raw_pr.get("RoundType", "Normal") as String).to_lower()
+			var pr_boss_image: String = raw_pr.get("BossImage", "")
+			if pr_boss_image != "":
+				pr_boss_image = journey_path + "/" + pr_boss_image
+			var pr_boss_modifiers: Array = []
+			for raw_mod in raw_pr.get("BossModifiers", []):
+				if raw_mod is Dictionary:
+					pr_boss_modifiers.append(_parse_boss_modifier(raw_mod))
+
 			path_entry["rounds"].append({
 				"name":           pr_name,
 				"folder":         pr_folder,
 				"funscript_path": pr_fs["path"],
 				"axis_scripts":   pr_axis_scripts,
 				"vib_scripts":    pr_vib_scripts,
+				"round_type":     pr_round_type,
+				"boss_image":     pr_boss_image,
+				"boss_tagline":   raw_pr.get("BossTagline", ""),
+				"boss_modifiers": pr_boss_modifiers,
 				"coins":          raw_pr.get("CoinsAwarded", raw_pr.get("coins", 0)),
 				"order":          raw_pr.get("Order",        raw_pr.get("order", 0)),
 				"action_count":   pr_fs["count"],
@@ -259,6 +287,19 @@ static func parse_fork(raw_fork: Dictionary, journey_path: String) -> Dictionary
 			path_entry["forks"].append(parse_fork(raw_nf, journey_path))
 		fork_entry["paths"].append(path_entry)
 	return fork_entry
+
+
+# Converts a boss-modifier entry from journey.json (PascalCase) into the
+# lowercase internal effect form. Only the keys relevant to the kind are kept.
+static func _parse_boss_modifier(raw_mod: Dictionary) -> Dictionary:
+	var mod: Dictionary = {"kind": raw_mod.get("Kind", raw_mod.get("kind", ""))}
+	if raw_mod.has("Factor") or raw_mod.has("factor"):
+		mod["factor"] = raw_mod.get("Factor", raw_mod.get("factor", 1.0))
+	if raw_mod.has("Min") or raw_mod.has("min"):
+		mod["min"] = raw_mod.get("Min", raw_mod.get("min", 0))
+	if raw_mod.has("Max") or raw_mod.has("max"):
+		mod["max"] = raw_mod.get("Max", raw_mod.get("max", 100))
+	return mod
 
 
 # Finds the journey cover image. New journeys keep all images in a media/

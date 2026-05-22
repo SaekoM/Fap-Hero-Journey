@@ -585,6 +585,16 @@ func _on_save_pressed() -> void:
 				_delete_stale_vib_files(round_dir, ch_key, vib_dst_name)
 				vib_scripts_rel[ch_key] = round_name + "/" + vib_dst_name
 
+			# Boss-round config — copy the optional intro image into the round folder.
+			var round_type: String = it.get("round_type", "normal")
+			var boss_image_rel: String = ""
+			if round_type == "boss":
+				var boss_src: String = it.get("boss_image", "")
+				if boss_src != "":
+					var boss_dst_name: String = round_name + "_boss." + boss_src.get_extension()
+					_copy_file(boss_src, round_dir + "/" + boss_dst_name)
+					boss_image_rel = round_name + "/" + boss_dst_name
+
 			var vid_src: String = it.get("video_path","")
 			if vid_src != "":
 				if i in transcode_plan:
@@ -632,7 +642,10 @@ func _on_save_pressed() -> void:
 				"Name":           round_name,
 				"Order":          rorder,
 				"CoinsAwarded":   it.get("coins",0) as int,
-				"RoundType":      "Normal",
+				"RoundType":      "Boss" if round_type == "boss" else "Normal",
+				"BossImage":      boss_image_rel,
+				"BossTagline":    it.get("boss_tagline", ""),
+				"BossModifiers":  _boss_modifiers_json(it.get("boss_modifiers", [])),
 				"FunscriptPath":  round_name + "/" + fs_dst_name,
 				"AxisScripts":    axis_scripts_rel,
 				"VibScripts":     vib_scripts_rel,
@@ -825,6 +838,14 @@ func _save_path(path_data: Dictionary, abs_dir: String, abs_media_dir: String, s
 					_copy_file(vib_src, pr_dir + "/" + vib_dst_name)
 					_delete_stale_vib_files(pr_dir, ch_key, vib_dst_name)
 					pr_vib_rel[ch_key] = pr_name + "/" + vib_dst_name
+				var pr_round_type: String = pi_item.get("round_type", "normal")
+				var pr_boss_image_rel: String = ""
+				if pr_round_type == "boss":
+					var pr_boss_src: String = pi_item.get("boss_image", "")
+					if pr_boss_src != "":
+						var pr_boss_dst_name: String = pr_name + "_boss." + pr_boss_src.get_extension()
+						_copy_file(pr_boss_src, pr_dir + "/" + pr_boss_dst_name)
+						pr_boss_image_rel = pr_name + "/" + pr_boss_dst_name
 				var pr_orig_folder: String = pi_item.get("original_folder", "")
 				if pr_orig_folder != "":
 					var pr_orig_abs: String = ProjectSettings.globalize_path(pr_orig_folder)
@@ -834,6 +855,10 @@ func _save_path(path_data: Dictionary, abs_dir: String, abs_media_dir: String, s
 					"Name":          pr_name,
 					"Order":         pr_order,
 					"CoinsAwarded":  pi_item.get("coins",0) as int,
+					"RoundType":     "Boss" if pr_round_type == "boss" else "Normal",
+					"BossImage":     pr_boss_image_rel,
+					"BossTagline":   pi_item.get("boss_tagline", ""),
+					"BossModifiers": _boss_modifiers_json(pi_item.get("boss_modifiers", [])),
 					"FunscriptPath": pr_name + "/" + pr_fs_dst_name if pr_fs_dst_name != "" else "",
 					"AxisScripts":   pr_axis_rel,
 					"VibScripts":    pr_vib_rel,
@@ -1287,6 +1312,24 @@ func _delete_stale_axis_files(dir_path: String, axis: String, keep_filename: Str
 	da.list_dir_end()
 	for p: String in to_delete:
 		DirAccess.remove_absolute(p)
+
+
+# Converts the internal boss-modifier model ({kind, factor, min, max}) into the
+# PascalCase form written to journey.json, keeping only the keys each kind uses.
+func _boss_modifiers_json(modifiers: Array) -> Array:
+	var out: Array = []
+	for mod in modifiers:
+		if not mod is Dictionary:
+			continue
+		var entry: Dictionary = {"Kind": mod.get("kind", "")}
+		if mod.has("factor"):
+			entry["Factor"] = mod["factor"]
+		if mod.has("min"):
+			entry["Min"] = mod["min"]
+		if mod.has("max"):
+			entry["Max"] = mod["max"]
+		out.append(entry)
+	return out
 
 
 # Removes stale vibrator-channel funscript files for a specific channel key

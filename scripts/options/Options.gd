@@ -83,6 +83,7 @@ var _max_speed_slider:    HSlider = null
 var _max_speed_value_lbl: Label   = null
 var _hud_delay_slider:    HSlider = null
 var _hud_delay_value_lbl: Label   = null
+var _beat_bar_toggle:     Button  = null
 
 var _filler_toggle:     Button      = null
 var _filler_speed_input: LineEdit   = null
@@ -264,6 +265,33 @@ func _apply_layout() -> void:
 		_hud_delay_value_lbl.text = "%.1fs" % v
 		_save_settings()
 	)
+
+	# ── Beat Bar row (code-generated, appended to DisplaySection) ────────────
+	var beat_row: HBoxContainer = HBoxContainer.new()
+	beat_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(beat_row)
+
+	var beat_lbl: Label = Label.new()
+	beat_lbl.text = "BEAT BAR"
+	beat_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_label(beat_lbl, UITheme.WHITE_SOFT, 14, false)
+	beat_row.add_child(beat_lbl)
+
+	_beat_bar_toggle = Button.new()
+	_beat_bar_toggle.toggle_mode = true
+	_beat_bar_toggle.focus_mode  = Control.FOCUS_NONE
+	_style_toggle(_beat_bar_toggle, false)
+	beat_row.add_child(_beat_bar_toggle)
+	_beat_bar_toggle.toggled.connect(func(pressed: bool) -> void:
+		_style_toggle(_beat_bar_toggle, pressed)
+		_save_settings()
+	)
+
+	var beat_hint: Label = Label.new()
+	beat_hint.text = "Shows upcoming stroke beats as orbs scrolling toward a hit-line during play."
+	beat_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(beat_hint, UITheme.SEPARATOR, 11, false)
+	display_section.add_child(beat_hint)
 
 	for label_path in [
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeLabel",
@@ -1065,6 +1093,11 @@ func _load_settings() -> void:
 		_hud_delay_slider.value = hud_delay
 		_hud_delay_value_lbl.text = "%.1fs" % hud_delay
 
+	if _beat_bar_toggle != null:
+		var beat_on: bool = SettingsService.get_beat_bar_enabled()
+		_beat_bar_toggle.button_pressed = beat_on
+		_style_toggle(_beat_bar_toggle, beat_on)
+
 	# Load the filler range slider FIRST so that if the toggle or speed-input
 	# signals fire _save_settings() below, the slider already holds the correct
 	# values and won't overwrite them with the initialisation defaults (0/100).
@@ -1140,6 +1173,9 @@ func _save_settings() -> void:
 
 	if _hud_delay_slider != null:
 		SettingsService.set_hud_hide_delay(_hud_delay_slider.value)
+
+	if _beat_bar_toggle != null:
+		SettingsService.set_beat_bar_enabled(_beat_bar_toggle.button_pressed)
 
 	if _filler_toggle != null:
 		SettingsService.set_filler_enabled(_filler_toggle.button_pressed)

@@ -39,6 +39,7 @@ const DEFAULT_LATENCY_OFFSET_MS: int    = 0
 const DEFAULT_VIBE_INTENSITY:    int    = 100
 const DEFAULT_MAX_STROKE_SPEED:  int    = 0     # 0 = unlimited (units/sec)
 const DEFAULT_HUD_HIDE_DELAY:    float  = 3.0   # seconds
+const DEFAULT_BEAT_BAR_ENABLED:  bool   = false
 const DEFAULT_FILLER_ENABLED:    bool   = false
 const DEFAULT_FILLER_HALF_CYCLE: int    = 2000
 const DEFAULT_FILLER_LO:         int    = 0
@@ -117,6 +118,9 @@ func get_max_stroke_speed() -> int:
 func get_hud_hide_delay() -> float:
 	return float(_config.get_value("display", "hud_hide_delay", DEFAULT_HUD_HIDE_DELAY))
 
+func get_beat_bar_enabled() -> bool:
+	return bool(_config.get_value("display", "beat_bar_enabled", DEFAULT_BEAT_BAR_ENABLED))
+
 func get_filler_enabled() -> bool:
 	return bool(_config.get_value("storyboard_filler", "enabled", DEFAULT_FILLER_ENABLED))
 
@@ -189,6 +193,9 @@ func set_max_stroke_speed(v: int) -> void:
 
 func set_hud_hide_delay(v: float) -> void:
 	_config.set_value("display", "hud_hide_delay", v)
+
+func set_beat_bar_enabled(v: bool) -> void:
+	_config.set_value("display", "beat_bar_enabled", v)
 
 func set_filler_enabled(v: bool) -> void:
 	_config.set_value("storyboard_filler", "enabled", v)
