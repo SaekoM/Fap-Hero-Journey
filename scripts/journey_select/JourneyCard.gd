@@ -82,7 +82,7 @@ func setup(journey: Dictionary) -> void:
 	_build_difficulty_pill(journey.get("difficulty", ""))
 	_build_tag_overlay(journey.get("tags", []))
 
-	var round_count: int = (journey.get("rounds", []) as Array).size()
+	var round_count: int = journey.get("total_rounds", (journey.get("rounds", []) as Array).size())
 	var total_secs:  int = (journey.get("total_length_ms", 0) as int) / 1000
 	_footer.text = "%d %s  ·  %s" % [
 		round_count,

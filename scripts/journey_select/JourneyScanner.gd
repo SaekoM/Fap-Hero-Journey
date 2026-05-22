@@ -73,16 +73,14 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		"tags":            TagRegistry.sanitize(data.get("Tags", [])),
 		"total_actions":   0,
 		"total_length_ms": 0,
+		"total_rounds":    0,
 		"modified_time":   FileAccess.get_modified_time(json_path),
 	}
 
 	var raw_shops: Array = data.get("Shops", [])
 	for raw_shop in raw_shops:
 		if raw_shop is Dictionary:
-			journey["shops"].append({
-				"after_order": raw_shop.get("AfterOrder", raw_shop.get("after_order", 0)),
-				"title":       raw_shop.get("Title",       raw_shop.get("title",       "")),
-			})
+			journey["shops"].append(_parse_shop(raw_shop))
 		else:
 			# Legacy format: bare int order number.
 			journey["shops"].append({"after_order": int(raw_shop), "title": ""})
@@ -173,11 +171,20 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		journey["total_length_ms"] = (journey["total_length_ms"] as int) + (fs["length_ms"] as int)
 		journey["rounds"].append(round_data)
 
+	journey["total_rounds"] = (journey["rounds"] as Array).size()
+
 	var raw_forks: Array = data.get("Forks", [])
 	var parsed_forks: Array = []
 	for raw_fork: Dictionary in raw_forks:
 		parsed_forks.append(parse_fork(raw_fork, path))
 	journey["forks"] = parsed_forks
+
+	# Accumulate the longest-path contribution from each fork.
+	for fork: Dictionary in journey["forks"]:
+		var lps: Dictionary = _longest_path_stats(fork)
+		journey["total_actions"]   = (journey["total_actions"] as int)   + (lps["count"] as int)
+		journey["total_length_ms"] = (journey["total_length_ms"] as int) + (lps["length_ms"] as int)
+		journey["total_rounds"]    = (journey["total_rounds"] as int)    + (lps["round_count"] as int)
 
 	return journey
 
@@ -251,10 +258,7 @@ static func parse_fork(raw_fork: Dictionary, journey_path: String) -> Dictionary
 		var raw_pr_shops: Array = raw_path.get("Shops", raw_path.get("shops", []))
 		for raw_ps in raw_pr_shops:
 			if raw_ps is Dictionary:
-				path_entry["shops"].append({
-					"after_order": raw_ps.get("AfterOrder", raw_ps.get("after_order", 0)),
-					"title":       raw_ps.get("Title",      raw_ps.get("title",       "")),
-				})
+				path_entry["shops"].append(_parse_shop(raw_ps))
 			else:
 				path_entry["shops"].append({"after_order": int(raw_ps), "title": ""})
 		var raw_pr_sbs: Array = raw_path.get("Storyboards", raw_path.get("storyboards", []))
@@ -289,6 +293,24 @@ static func parse_fork(raw_fork: Dictionary, journey_path: String) -> Dictionary
 	return fork_entry
 
 
+# Parses a shop entry from journey.json (PascalCase) into the catalogue model.
+# Accepts the legacy lowercase keys as a fallback so old journeys still load.
+#   mode: "pool" — draw `count` random items from `items` (or all items if empty)
+#         "fixed" — show exactly `items`
+static func _parse_shop(raw: Dictionary) -> Dictionary:
+	var items: Array = []
+	for it in raw.get("Items", raw.get("items", [])):
+		items.append(str(it))
+	return {
+		"after_order":      raw.get("AfterOrder", raw.get("after_order", 0)),
+		"title":            raw.get("Title",      raw.get("title",       "")),
+		"mode":             raw.get("Mode",       raw.get("mode",        "pool")),
+		"count":            int(raw.get("Count",  raw.get("count",       3))),
+		"items":            items,
+		"price_multiplier": float(raw.get("PriceMultiplier", raw.get("price_multiplier", 1.0))),
+	}
+
+
 # Converts a boss-modifier entry from journey.json (PascalCase) into the
 # lowercase internal effect form. Only the keys relevant to the kind are kept.
 static func _parse_boss_modifier(raw_mod: Dictionary) -> Dictionary:
@@ -300,6 +322,32 @@ static func _parse_boss_modifier(raw_mod: Dictionary) -> Dictionary:
 	if raw_mod.has("Max") or raw_mod.has("max"):
 		mod["max"] = raw_mod.get("Max", raw_mod.get("max", 100))
 	return mod
+
+
+# Returns {count, length_ms, round_count} for the longest path through a fork.
+# "Longest" is determined by total length_ms; ties broken by action count.
+# Recurses into nested forks within each path.
+static func _longest_path_stats(fork: Dictionary) -> Dictionary:
+	var best_count: int  = 0
+	var best_ms: int     = 0
+	var best_rounds: int = 0
+	for path: Dictionary in fork.get("paths", []):
+		var path_count: int  = 0
+		var path_ms: int     = 0
+		var path_rounds: int = (path.get("rounds", []) as Array).size()
+		for r: Dictionary in path.get("rounds", []):
+			path_count += (r.get("action_count", 0) as int)
+			path_ms    += (r.get("length_ms",    0) as int)
+		for nested_fork: Dictionary in path.get("forks", []):
+			var nested: Dictionary = _longest_path_stats(nested_fork)
+			path_count  += (nested["count"] as int)
+			path_ms     += (nested["length_ms"] as int)
+			path_rounds += (nested["round_count"] as int)
+		if path_ms > best_ms or (path_ms == best_ms and path_count > best_count):
+			best_ms     = path_ms
+			best_count  = path_count
+			best_rounds = path_rounds
+	return {"count": best_count, "length_ms": best_ms, "round_count": best_rounds}
 
 
 # Finds the journey cover image. New journeys keep all images in a media/

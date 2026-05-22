@@ -58,6 +58,7 @@ const BOSS_EFFECT_NAMES: Dictionary = {
 
 var _paused: bool = false
 var _inventory_panel: Control = null
+var _cover_applied: bool = false
 
 # True while a full-screen overlay (shop / fork / storyboard) is active.
 # Used to suppress gameplay hotkeys that should not fire through an overlay.
@@ -98,6 +99,8 @@ func _process(_delta: float) -> void:
 			_progress.value = _video.stream_position / len
 		# Keep funscript in sync with video clock
 		FunscriptPlayer.SyncTo(_video.stream_position)
+		if not _cover_applied:
+			_fit_video_cover()
 	_update_chip_countdowns()
 	if _is_boss_round:
 		_update_boss_frame()
@@ -466,6 +469,28 @@ func _round_time_left() -> float:
 	return -1.0
 
 
+func _fit_video_cover() -> void:
+	var tex := _video.get_video_texture()
+	if tex == null:
+		return
+	var vs := tex.get_size()
+	if vs.x <= 0.0 or vs.y <= 0.0:
+		return
+	_cover_applied = true
+	var screen := get_viewport_rect().size
+	var video_ar := vs.x / vs.y
+	var screen_ar := screen.x / screen.y
+	var scaled: Vector2
+	if video_ar > screen_ar:
+		# Wider than screen — fit width, letterbox top/bottom
+		scaled = Vector2(screen.x, screen.x / video_ar)
+	else:
+		# Taller than screen — fit height, letterbox sides
+		scaled = Vector2(screen.y * video_ar, screen.y)
+	_video.position = (screen - scaled) / 2.0
+	_video.size = scaled
+
+
 func _find_video(folder: String) -> String:
 	if folder == "":
 		return ""
@@ -484,6 +509,9 @@ func _find_video(folder: String) -> String:
 
 
 func _load_video(path: String) -> void:
+	_cover_applied = false
+	_video.position = Vector2.ZERO
+	_video.size = get_viewport_rect().size
 	if path == "":
 		push_warning("GameLoop: no video found for this round — funscript-only fallback")
 		_start_no_video_fallback()
@@ -823,12 +851,16 @@ func _apply_layout() -> void:
 	_bg.offset_right  = 0
 	_bg.offset_bottom = 0
 
-	_video.anchor_right  = 1.0
-	_video.anchor_bottom = 1.0
+	_video.anchor_left   = 0.0
+	_video.anchor_top    = 0.0
+	_video.anchor_right  = 0.0
+	_video.anchor_bottom = 0.0
 	_video.offset_left   = 0
 	_video.offset_top    = 0
 	_video.offset_right  = 0
 	_video.offset_bottom = 0
+	_video.position      = Vector2.ZERO
+	_video.size          = get_viewport_rect().size
 
 	_hud.anchor_right  = 1.0
 	_hud.anchor_bottom = 1.0

@@ -510,8 +510,12 @@ func _on_save_pressed() -> void:
 		var it_type: String = it.get("type","round")
 		if it_type == "shop":
 			shops_json.append({
-				"AfterOrder": last_rorder,
-				"Title":      it.get("title",""),
+				"AfterOrder":      last_rorder,
+				"Title":           it.get("title",""),
+				"Mode":            it.get("mode", "pool"),
+				"Count":           it.get("count", 3),
+				"Items":           it.get("items", []),
+				"PriceMultiplier": it.get("price_multiplier", 1.0),
 			})
 			continue
 		if it_type == "storyboard":
@@ -745,8 +749,12 @@ func _save_path(path_data: Dictionary, abs_dir: String, abs_media_dir: String, s
 		match pi_type:
 			"shop":
 				path_entry["Shops"].append({
-					"AfterOrder": pr_last_order,
-					"Title":      pi_item.get("title",""),
+					"AfterOrder":      pr_last_order,
+					"Title":           pi_item.get("title",""),
+					"Mode":            pi_item.get("mode", "pool"),
+					"Count":           pi_item.get("count", 3),
+					"Items":           pi_item.get("items", []),
+					"PriceMultiplier": pi_item.get("price_multiplier", 1.0),
 				})
 			"storyboard":
 				pr_order += 1

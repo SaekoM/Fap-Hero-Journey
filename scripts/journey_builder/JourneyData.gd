@@ -8,7 +8,7 @@ extends RefCounted
 #
 # The "model" is a flat Array of item dicts where each item is one of:
 #   { type: "round",      name, funscript_path, video_path, coins }
-#   { type: "shop",       title }
+#   { type: "shop",       title, mode, count, items, price_multiplier }
 #   { type: "storyboard", coins, image, lines }
 #   { type: "fork",       title, description, paths: [ {name, description, image_path, items: [...]} ] }
 # Nested forks are stored inside a path's `items` array (recursive).
@@ -96,10 +96,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 	for sh: Dictionary in shops:
 		seq.append({
 			"key":  (sh.get("after_order", 0) as int) * 3 + 1,
-			"data": {
-				"type":  "shop",
-				"title": sh.get("title", ""),
-			},
+			"data": _build_shop_item(sh),
 		})
 	for f: Dictionary in forks:
 		seq.append({
@@ -126,6 +123,18 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 # Recursively converts a parsed-journey fork dict into the builder _items model
 # (which uses a single mixed items[] array per path rather than separate
 # rounds/storyboards/shops/forks arrays).
+# Inflates a scanned shop dict into the builder's shop item model.
+static func _build_shop_item(sh: Dictionary) -> Dictionary:
+	return {
+		"type":             "shop",
+		"title":            sh.get("title", ""),
+		"mode":             sh.get("mode", "pool"),
+		"count":            int(sh.get("count", 3)),
+		"items":            (sh.get("items", []) as Array).duplicate(),
+		"price_multiplier": float(sh.get("price_multiplier", 1.0)),
+	}
+
+
 static func _build_fork_item(f: Dictionary) -> Dictionary:
 	var paths_out: Array = []
 	for p: Dictionary in f.get("paths", []):
@@ -178,10 +187,7 @@ static func _build_path_items(p: Dictionary) -> Array:
 	for ps: Dictionary in p.get("shops", []):
 		sub.append({
 			"key":  (ps.get("after_order", 0) as int) * 3 + 1,
-			"data": {
-				"type":  "shop",
-				"title": ps.get("title", ""),
-			},
+			"data": _build_shop_item(ps),
 		})
 	for nf: Dictionary in p.get("forks", []):
 		sub.append({

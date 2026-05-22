@@ -152,11 +152,33 @@ func show_journey_info_panel() -> void:
 		cover_preview.texture = _owner._cover_texture
 	cover_border.add_child(cover_preview)
 
-	var cover_btn: Button = Button.new()
-	cover_btn.text = "DROP IMAGE OR CLICK TO BROWSE" if _owner._cover_path == "" else "CHANGE COVER"
-	UITheme.style_button(cover_btn, UITheme.PURPLE_MID)
-	cover_btn.pressed.connect(_owner._on_cover_pressed)
-	side_vbox.add_child(cover_btn)
+	if _owner._cover_path != "":
+		var cover_row: HBoxContainer = HBoxContainer.new()
+		cover_row.add_theme_constant_override("separation", 6)
+		var change_btn: Button = Button.new()
+		change_btn.text = "CHANGE COVER"
+		change_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(change_btn, UITheme.PURPLE_MID)
+		change_btn.pressed.connect(_owner._on_cover_pressed)
+		cover_row.add_child(change_btn)
+		var cover_rm_btn: Button = Button.new()
+		cover_rm_btn.text = "✕ REMOVE"
+		cover_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(cover_rm_btn, UITheme.MAGENTA)
+		cover_rm_btn.pressed.connect(func() -> void:
+			_delete_saved_image(_owner._cover_path)
+			_owner._cover_path = ""
+			_owner._cover_texture = null
+			show_journey_info_panel()
+		)
+		cover_row.add_child(cover_rm_btn)
+		side_vbox.add_child(cover_row)
+	else:
+		var cover_btn: Button = Button.new()
+		cover_btn.text = "DROP IMAGE OR CLICK TO BROWSE"
+		UITheme.style_button(cover_btn, UITheme.PURPLE_MID)
+		cover_btn.pressed.connect(_owner._on_cover_pressed)
+		side_vbox.add_child(cover_btn)
 
 	side_vbox.add_child(_side_section_separator())
 
@@ -490,6 +512,18 @@ func _make_side_round_editor(arr: Array, idx: int, graph: Control, reselect: Cal
 
 func _make_side_shop_editor(arr: Array, idx: int, graph: Control, reselect: Callable) -> Control:
 	var shop_data: Dictionary = arr[idx]
+	# Backfill config defaults so first-time edits have keys to write to.
+	if not shop_data.has("mode"):             shop_data["mode"] = "pool"
+	if not shop_data.has("count"):            shop_data["count"] = 3
+	if not shop_data.has("items"):            shop_data["items"] = []
+	if not shop_data.has("price_multiplier"): shop_data["price_multiplier"] = 1.0
+
+	# Item registry — also bounds the pool-draw count, since a draw can never
+	# yield more distinct items than exist. Clamp any stale/out-of-range count.
+	var all_item_ids: Array = InventoryService.GetAllItemIds()
+	var item_count: int = all_item_ids.size()
+	shop_data["count"] = clampi(int(shop_data.get("count", 3)), 1, max(1, item_count))
+
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 6)
 
@@ -502,6 +536,99 @@ func _make_side_shop_editor(arr: Array, idx: int, graph: Control, reselect: Call
 		arr[idx]["title"] = val
 	)
 	col.add_child(title_edit)
+
+	# Selection mode — random pool draw vs. a fixed authored lineup.
+	col.add_child(_side_section_separator())
+	col.add_child(_side_field_label("ITEM SELECTION"))
+	var mode_dd: OptionButton = OptionButton.new()
+	mode_dd.add_item("RANDOM FROM POOL")   # index 0 → "pool"
+	mode_dd.add_item("FIXED LINEUP")       # index 1 → "fixed"
+	mode_dd.selected = 1 if shop_data.get("mode", "pool") == "fixed" else 0
+	mode_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(mode_dd)
+	col.add_child(mode_dd)
+
+	# Item count — only consulted in pool mode; disabled in fixed mode where the
+	# lineup length is the checklist itself. Clamped to [1, item registry size].
+	col.add_child(_side_field_label("ITEMS SHOWN (POOL MODE)"))
+	var count_edit: LineEdit = LineEdit.new()
+	count_edit.text             = str(shop_data.get("count", 3))
+	count_edit.max_length       = 3
+	count_edit.placeholder_text = "3"
+	count_edit.editable         = shop_data.get("mode", "pool") == "pool"
+	UITheme.style_line_edit(count_edit)
+	count_edit.text_changed.connect(func(val: String) -> void:
+		arr[idx]["count"] = clampi(val.to_int(), 1, max(1, item_count))
+	)
+	# Snap the displayed text to the clamped value once editing finishes.
+	count_edit.focus_exited.connect(func() -> void:
+		count_edit.text = str(arr[idx]["count"])
+	)
+	col.add_child(count_edit)
+
+	# Fixed-lineup checklist — shown only in fixed mode; pool mode draws from all
+	# items so the list would just be noise there.
+	var items_section: VBoxContainer = VBoxContainer.new()
+	items_section.add_theme_constant_override("separation", 6)
+	items_section.visible = shop_data.get("mode", "pool") == "fixed"
+	col.add_child(items_section)
+
+	items_section.add_child(_side_section_separator())
+	items_section.add_child(_side_field_label("ITEMS"))
+	var hint: Label = Label.new()
+	hint.text = "PICK THE EXACT ITEMS THIS SHOP SELLS."
+	hint.add_theme_color_override("font_color", Color(UITheme.PURPLE_MID.r, UITheme.PURPLE_MID.g, UITheme.PURPLE_MID.b, 0.7))
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.uppercase = true
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	items_section.add_child(hint)
+
+	var item_checks: Array[CheckBox] = []
+	for item_id: String in all_item_ids:
+		var item_data: Dictionary = InventoryService.GetItemData(item_id)
+		var cb: CheckBox = CheckBox.new()
+		cb.text = "%s  (♦%d)" % [item_data.get("name", item_id), item_data.get("price", 0)]
+		cb.button_pressed = item_id in (shop_data.get("items", []) as Array)
+		cb.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+		cb.add_theme_font_size_override("font_size", 12)
+		cb.toggled.connect(func(pressed: bool) -> void:
+			var list: Array = arr[idx]["items"]
+			if pressed and item_id not in list:
+				list.append(item_id)
+			elif not pressed:
+				list.erase(item_id)
+		)
+		item_checks.append(cb)
+		items_section.add_child(cb)
+
+	# Switching back to pool mode hides the list and clears the lineup.
+	mode_dd.item_selected.connect(func(sel: int) -> void:
+		if sel == 1:
+			arr[idx]["mode"] = "fixed"
+			items_section.visible = true
+			count_edit.editable = false
+		else:
+			arr[idx]["mode"] = "pool"
+			items_section.visible = false
+			count_edit.editable = true
+			(arr[idx]["items"] as Array).clear()
+			for cb: CheckBox in item_checks:
+				cb.set_pressed_no_signal(false)
+	)
+
+	# Price multiplier — applied on top of each item's base price.
+	col.add_child(_side_section_separator())
+	col.add_child(_side_field_label("PRICE MULTIPLIER"))
+	var mult_edit: LineEdit = LineEdit.new()
+	mult_edit.text             = str(shop_data.get("price_multiplier", 1.0))
+	mult_edit.max_length       = 6
+	mult_edit.placeholder_text = "1.0"
+	UITheme.style_line_edit(mult_edit)
+	mult_edit.text_changed.connect(func(val: String) -> void:
+		var m: float = val.to_float()
+		arr[idx]["price_multiplier"] = m if m > 0.0 else 1.0
+	)
+	col.add_child(mult_edit)
 
 	col.add_child(_side_section_separator())
 	col.add_child(_side_action_row(arr, idx, graph, reselect))
@@ -534,9 +661,22 @@ func _make_side_storyboard_editor(arr: Array, idx: int, graph: Control, reselect
 	col.add_child(img_zone)
 	if sb_data.get("image", "") != "":
 		img_zone.call_deferred("set_file", sb_data["image"])
+	var sb_rm_btn: Button = Button.new()
+	sb_rm_btn.text = "✕ REMOVE DEFAULT IMAGE"
+	sb_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sb_rm_btn.visible = sb_data.get("image", "") != ""
+	UITheme.style_button(sb_rm_btn, UITheme.MAGENTA)
+	sb_rm_btn.pressed.connect(func() -> void:
+		_delete_saved_image(arr[idx].get("image", ""))
+		arr[idx]["image"] = ""
+		img_zone.call_deferred("set_file", "")
+		sb_rm_btn.visible = false
+	)
 	img_zone.file_dropped.connect(func(p: String) -> void:
 		arr[idx]["image"] = p
+		sb_rm_btn.visible = true
 	)
+	col.add_child(sb_rm_btn)
 
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("DIALOGUE LINES"))
@@ -726,9 +866,22 @@ func _make_side_storyboard_line_block(lines_arr: Array, line_idx: int, refresh_s
 	col.add_child(img_zone)
 	if line_data.get("image", "") != "":
 		img_zone.call_deferred("set_file", line_data["image"])
+	var line_rm_btn: Button = Button.new()
+	line_rm_btn.text = "✕ REMOVE IMAGE"
+	line_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_rm_btn.visible = line_data.get("image", "") != ""
+	UITheme.style_button(line_rm_btn, UITheme.MAGENTA)
+	line_rm_btn.pressed.connect(func() -> void:
+		_delete_saved_image(lines_arr[line_idx].get("image", ""))
+		lines_arr[line_idx]["image"] = ""
+		img_zone.call_deferred("set_file", "")
+		line_rm_btn.visible = false
+	)
 	img_zone.file_dropped.connect(func(p: String) -> void:
 		lines_arr[line_idx]["image"] = p
+		line_rm_btn.visible = true
 	)
+	col.add_child(line_rm_btn)
 
 	# Line action row (move + delete).
 	var row: HBoxContainer = HBoxContainer.new()
@@ -947,9 +1100,22 @@ func _make_path_editor_block(paths_arr: Array, pi: int, graph: Control, reselect
 	sub.add_child(img_zone)
 	if path.get("image_path", "") != "":
 		img_zone.call_deferred("set_file", path["image_path"])
+	var path_rm_btn: Button = Button.new()
+	path_rm_btn.text = "✕ REMOVE IMAGE"
+	path_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	path_rm_btn.visible = path.get("image_path", "") != ""
+	UITheme.style_button(path_rm_btn, UITheme.MAGENTA)
+	path_rm_btn.pressed.connect(func() -> void:
+		_delete_saved_image(paths_arr[pi].get("image_path", ""))
+		paths_arr[pi]["image_path"] = ""
+		img_zone.call_deferred("set_file", "")
+		path_rm_btn.visible = false
+	)
 	img_zone.file_dropped.connect(func(p: String) -> void:
 		paths_arr[pi]["image_path"] = p
+		path_rm_btn.visible = true
 	)
+	sub.add_child(path_rm_btn)
 
 	return panel
 
@@ -1281,3 +1447,16 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 			col.add_child(none_lbl)
 
 	return panel
+
+
+# Deletes an image file only if it lives inside the app's user data directory
+# (i.e. it has already been saved into a journey folder). Staging paths that
+# point to the user's own filesystem are left untouched — only the reference
+# in the data dict is cleared by the caller.
+func _delete_saved_image(path: String) -> void:
+	if path == "":
+		return
+	var abs_path: String = ProjectSettings.globalize_path(path)
+	var user_data: String = ProjectSettings.globalize_path("user://")
+	if abs_path.begins_with(user_data) and FileAccess.file_exists(abs_path):
+		DirAccess.remove_absolute(abs_path)

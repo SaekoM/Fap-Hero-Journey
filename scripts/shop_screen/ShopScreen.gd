@@ -2,7 +2,7 @@ extends Control
 
 signal closed
 
-const CARDS_PER_VISIT: int = 3
+const DEFAULT_COUNT: int = 3
 
 @onready var _backdrop:   ColorRect      = $Backdrop
 @onready var _panel:      PanelContainer = $Panel
@@ -17,6 +17,11 @@ const CARDS_PER_VISIT: int = 3
 
 var _offered_ids: Array = []
 var _purchased:   Dictionary = {}  # id -> true
+var _price_mult:  float = 1.0      # per-shop price multiplier from journey config
+
+# Wrapping grid that replaces the scene's fixed 3-wide CardsRow at runtime so a
+# shop can offer any number of items (built in _apply_layout).
+var _cards_flow:  HFlowContainer = null
 
 
 func _ready() -> void:
@@ -44,24 +49,83 @@ func _animate_in() -> void:
 
 
 # Called by GameLoop after add_child. The shop_data dict comes from
-# GameState.CurrentShop() — currently only carries an optional title.
+# GameState.CurrentShop() and carries the journey-authored shop config:
+# title, mode ("pool"/"fixed"), count, items[], price_multiplier.
 func setup(shop_data: Dictionary) -> void:
 	var title: String = shop_data.get("title", "")
 	if title != "":
 		_title.text = "// %s //" % title.to_upper()
 
-	_offered_ids = _roll_offer(CARDS_PER_VISIT)
+	_price_mult = float(shop_data.get("price_multiplier", 1.0))
+
+	_offered_ids = _resolve_offer(shop_data)
+	var stagger: int = 0
 	for id: String in _offered_ids:
 		var data: Dictionary = InventoryService.GetItemData(id)
 		if data.is_empty():
 			continue
-		_cards_row.add_child(_make_card(id, data))
+		var card: PanelContainer = _make_card(id, data)
+		_cards_flow.add_child(card)
+		# Staggered fade/scale-in; the per-card delay is capped so a large shop
+		# still finishes building in quickly.
+		_animate_card_in(card, min(stagger, 12) * 0.04)
+		stagger += 1
 
 
-func _roll_offer(count: int) -> Array:
-	var pool: Array = InventoryService.GetAllItemIds().duplicate()
+# Fades + scales a freshly-added card in. Waits one frame so the flow container
+# has assigned the card its size before the pivot is computed.
+func _animate_card_in(card: Control, delay: float) -> void:
+	card.modulate.a = 0.0
+	await get_tree().process_frame
+	if not is_instance_valid(card) or not card.is_inside_tree():
+		return
+	card.pivot_offset = card.size / 2.0
+	card.scale = Vector2(0.92, 0.92)
+	var t: Tween = create_tween().set_parallel(true)
+	t.tween_property(card, "modulate:a", 1.0, 0.22).set_delay(delay)
+	t.tween_property(card, "scale", Vector2.ONE, 0.30) \
+		.set_delay(delay).set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+
+
+# Quick scale "pop" used as purchase feedback.
+func _pulse_card(card: Control) -> void:
+	card.pivot_offset = card.size / 2.0
+	var t: Tween = create_tween()
+	t.tween_property(card, "scale", Vector2(1.06, 1.06), 0.10).set_ease(Tween.EASE_OUT)
+	t.tween_property(card, "scale", Vector2.ONE, 0.16) \
+		.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_CUBIC)
+
+
+# Brief scale tick on the coin badge whenever the balance changes.
+func _pulse_coin_badge() -> void:
+	_coin_badge.pivot_offset = _coin_badge.size / 2.0
+	var t: Tween = create_tween()
+	t.tween_property(_coin_badge, "scale", Vector2(1.12, 1.12), 0.09).set_ease(Tween.EASE_OUT)
+	t.tween_property(_coin_badge, "scale", Vector2.ONE, 0.14) \
+		.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_CUBIC)
+
+
+# Resolves which item ids to display from the shop's authored config.
+# "fixed" mode shows exactly the authored list (in registry order for a stable
+# lineup); "pool" mode draws `count` random items from the authored pool, or
+# from all items when no pool was specified. Stale ids are dropped.
+func _resolve_offer(shop_data: Dictionary) -> Array:
+	var all_ids: Array = InventoryService.GetAllItemIds()
+	var configured: Array = shop_data.get("items", [])
+	var valid: Array = configured.filter(func(id: String) -> bool: return id in all_ids)
+
+	if shop_data.get("mode", "pool") == "fixed":
+		return all_ids.filter(func(id: String) -> bool: return id in valid)
+
+	var pool: Array = valid if not valid.is_empty() else all_ids.duplicate()
 	pool.shuffle()
+	var count: int = int(shop_data.get("count", DEFAULT_COUNT))
 	return pool.slice(0, min(count, pool.size()))
+
+
+# Item price after the per-shop multiplier, rounded to a whole coin.
+func _price_of(data: Dictionary) -> int:
+	return int(round(float(data.get("price", 0)) * _price_mult))
 
 
 # --------------------------------------------------------------------------
@@ -69,10 +133,9 @@ func _roll_offer(count: int) -> Array:
 # --------------------------------------------------------------------------
 
 func _make_card(id: String, data: Dictionary) -> Control:
+	# Fixed card size — the HFlowContainer wraps cards into rows at this size.
 	var card: PanelContainer = PanelContainer.new()
 	card.custom_minimum_size = Vector2(240, 340)
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	card.size_flags_vertical   = Control.SIZE_EXPAND_FILL
 	card.add_theme_stylebox_override("panel", _card_stylebox(false))
 
 	var inner: MarginContainer = MarginContainer.new()
@@ -121,7 +184,7 @@ func _make_card(id: String, data: Dictionary) -> Control:
 	col.add_child(dur_lbl)
 
 	# Price row
-	var price: int = data.get("price", 0)
+	var price: int = _price_of(data)
 	var price_row: HBoxContainer = HBoxContainer.new()
 	price_row.add_theme_constant_override("separation", 6)
 	col.add_child(price_row)
@@ -148,18 +211,20 @@ func _on_buy_pressed(id: String, buy: Button, card: PanelContainer) -> void:
 	if _purchased.get(id, false):
 		return
 	var data: Dictionary = InventoryService.GetItemData(id)
-	var price: int = data.get("price", 0)
+	var price: int = _price_of(data)
 	if not CoinService.SpendCoins(price):
 		return
 	InventoryService.AddItem(id)
 	_purchased[id] = true
 	_update_buy_button(id, buy, card)
+	_pulse_card(card)
 
 
 func _on_balance_changed(_balance: int) -> void:
 	_refresh_coins()
+	_pulse_coin_badge()
 	# Re-evaluate every offered card's affordability.
-	for child: Control in _cards_row.get_children():
+	for child: Control in _cards_flow.get_children():
 		var buy: Button = child.find_child("*", true, false) as Button
 		# Fallback: find by walking children (only one Button per card).
 		buy = _first_button(child)
@@ -183,7 +248,7 @@ func _first_button(node: Node) -> Button:
 func _update_buy_button(id: String, buy: Button, card: PanelContainer) -> void:
 	buy.set_meta("item_id", id)
 	var data: Dictionary = InventoryService.GetItemData(id)
-	var price: int = data.get("price", 0)
+	var price: int = _price_of(data)
 
 	if _purchased.get(id, false):
 		buy.text = "✓ OWNED"
@@ -244,8 +309,25 @@ func _apply_layout() -> void:
 
 	_vbox.add_theme_constant_override("separation", 18)
 	_header.add_theme_constant_override("separation", 12)
-	_cards_row.add_theme_constant_override("separation", 16)
-	_cards_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	# Replace the scene's fixed 3-wide CardsRow with a vertically-scrolling
+	# wrapping grid so the shop can present any number of item cards.
+	var cards_scroll: ScrollContainer = ScrollContainer.new()
+	cards_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	cards_scroll.size_flags_horizontal  = Control.SIZE_EXPAND_FILL
+	cards_scroll.size_flags_vertical    = Control.SIZE_EXPAND_FILL
+
+	_cards_flow = HFlowContainer.new()
+	_cards_flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_cards_flow.alignment = FlowContainer.ALIGNMENT_CENTER
+	_cards_flow.add_theme_constant_override("h_separation", 16)
+	_cards_flow.add_theme_constant_override("v_separation", 16)
+	cards_scroll.add_child(_cards_flow)
+
+	var row_idx: int = _cards_row.get_index()
+	_vbox.add_child(cards_scroll)
+	_vbox.move_child(cards_scroll, row_idx)
+	_cards_row.queue_free()
 
 
 # --------------------------------------------------------------------------

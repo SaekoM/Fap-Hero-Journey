@@ -619,7 +619,8 @@ func _populate_modal(journey: Dictionary) -> void:
 		_details_col.move_child(tag_row, _modal_diff.get_index() + 1)
 
 	var rounds: Array = journey.get("rounds", [])
-	_stat_rounds.text  = str(rounds.size()) + " ROUNDS"
+	var total_rounds: int = journey.get("total_rounds", rounds.size())
+	_stat_rounds.text  = str(total_rounds) + " ROUNDS"
 	_stat_actions.text = str(journey.get("total_actions", 0)) + " ACTIONS"
 	var total_secs: int = (journey.get("total_length_ms", 0) as int) / 1000
 	_stat_length.text  = _format_duration(total_secs)
