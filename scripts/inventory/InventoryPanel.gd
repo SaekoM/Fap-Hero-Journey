@@ -16,6 +16,10 @@ const SLIDE_TIME:  float = 0.18
 @onready var _scroll:      ScrollContainer = $Panel/VBox/Scroll
 @onready var _item_list:   VBoxContainer  = $Panel/VBox/Scroll/ItemList
 
+# True while an activation animation is playing — blocks further card clicks
+# until the inventory list rebuilds (cleared in _refresh).
+var _activating: bool = false
+
 
 func _ready() -> void:
 	# The backdrop and root cover the full viewport for slide animation only —
@@ -56,6 +60,7 @@ func _slide_in() -> void:
 # --------------------------------------------------------------------------
 
 func _refresh() -> void:
+	_activating = false
 	for child in _item_list.get_children():
 		child.queue_free()
 
@@ -69,10 +74,11 @@ func _refresh() -> void:
 
 
 func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
+	var cls: Dictionary = _class_info(data.get("kind", ""))
+
 	var card: PanelContainer = PanelContainer.new()
-	card.add_theme_stylebox_override("panel", _row_stylebox())
+	card.add_theme_stylebox_override("panel", _row_stylebox(cls["color"]))
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	card.gui_input.connect(_on_card_input.bind(slot_idx))
 
 	var margin: MarginContainer = MarginContainer.new()
 	margin.add_theme_constant_override("margin_left",   14)
@@ -96,10 +102,17 @@ func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
 	name_lbl.add_theme_font_size_override("font_size", 14)
 	top_row.add_child(name_lbl)
 
+	# Effect class tag — buff / debuff / modifier, colour-coded.
+	var class_lbl: Label = Label.new()
+	class_lbl.text = "%s %s" % [cls["glyph"], cls["label"]]
+	class_lbl.add_theme_color_override("font_color", cls["color"])
+	class_lbl.add_theme_font_size_override("font_size", 10)
+	top_row.add_child(class_lbl)
+
 	var dur_lbl: Label = Label.new()
 	var dur_ms: int = data.get("duration_ms", 0)
 	dur_lbl.text = "%ds" % int(dur_ms / 1000.0)
-	dur_lbl.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
+	dur_lbl.add_theme_color_override("font_color", UITheme.DARK_TEXT)
 	dur_lbl.add_theme_font_size_override("font_size", 11)
 	top_row.add_child(dur_lbl)
 
@@ -118,7 +131,20 @@ func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
 
 	# Let click events fall through every descendant to the card's gui_input.
 	_set_mouse_filter_recursive(margin, Control.MOUSE_FILTER_IGNORE)
+	card.gui_input.connect(_on_card_input.bind(card, use_lbl, slot_idx))
 	return card
+
+
+# Classifies an item by its effect `kind` into a player-facing category.
+# buff = helps the player, debuff = hinders, modifier = neutral change.
+func _class_info(kind: String) -> Dictionary:
+	match kind:
+		"score_multiplier", "coin_jackpot":
+			return {"label": "BUFF",     "color": UITheme.TOXIC_GREEN, "glyph": "▲"}
+		"block", "blackout":
+			return {"label": "DEBUFF",   "color": UITheme.ERROR_SOFT,  "glyph": "▼"}
+		_:
+			return {"label": "MODIFIER", "color": UITheme.AMBER,       "glyph": "◆"}
 
 
 func _set_mouse_filter_recursive(node: Node, filter: int) -> void:
@@ -128,11 +154,33 @@ func _set_mouse_filter_recursive(node: Node, filter: int) -> void:
 		_set_mouse_filter_recursive(child, filter)
 
 
-func _on_card_input(event: InputEvent, slot_idx: int) -> void:
+func _on_card_input(event: InputEvent, card: Control, use_lbl: Label, slot_idx: int) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
-			InventoryService.ActivateItem(slot_idx)
+			_activate_card(card, use_lbl, slot_idx)
+
+
+# Plays the activation feedback — a bright flash, an "ACTIVATED" label swap, and
+# a slide-out — then actually activates the item. A panel-wide guard blocks any
+# further card clicks until the inventory list rebuilds.
+func _activate_card(card: Control, use_lbl: Label, slot_idx: int) -> void:
+	if _activating:
+		return
+	_activating = true
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	use_lbl.text = "✓ ACTIVATED"
+	use_lbl.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
+
+	var tw: Tween = create_tween()
+	# Bright flash.
+	tw.tween_property(card, "modulate", Color(1.8, 1.8, 1.8, 1.0), 0.09)
+	# Slide right + fade out together.
+	tw.tween_property(card, "modulate:a", 0.0, 0.24).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(card, "position:x", card.position.x + 90.0, 0.24) \
+		.set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_CUBIC)
+	# Activate once the card has visually left — InventoryChanged → _refresh().
+	tw.tween_callback(func() -> void: InventoryService.ActivateItem(slot_idx))
 
 
 # --------------------------------------------------------------------------
@@ -188,14 +236,20 @@ func _apply_theme() -> void:
 	_style_close_button(_close_btn)
 
 
-func _row_stylebox() -> StyleBoxFlat:
+# `accent` colours the card outline — a bold left stripe plus a thin border —
+# so the item's effect class (buff / debuff / modifier) reads at a glance.
+func _row_stylebox(accent: Color) -> StyleBoxFlat:
 	var s: StyleBoxFlat = StyleBoxFlat.new()
 	s.bg_color = UITheme.CARD_BG
-	s.border_color        = UITheme.PURPLE_MID
-	s.border_width_left   = 2
+	s.border_color        = accent
+	s.border_width_left   = 4
 	s.border_width_right  = 1
 	s.border_width_top    = 1
 	s.border_width_bottom = 1
+	s.corner_radius_top_left     = 4
+	s.corner_radius_top_right    = 4
+	s.corner_radius_bottom_left  = 4
+	s.corner_radius_bottom_right = 4
 	return s
 
 

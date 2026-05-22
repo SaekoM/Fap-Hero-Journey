@@ -77,6 +77,7 @@ var _tag_filter_idx:  int   = 0  # 0 = all, 1+ = TagRegistry.all()[idx-1]
 var _search_field: LineEdit    = null
 var _diff_filter:  OptionButton = null
 var _tag_filter:   OptionButton = null
+var _count_label:  Label        = null
 
 
 func _ready() -> void:
@@ -109,18 +110,42 @@ func _apply_layout() -> void:
 
 	_top_bar.anchor_right  = 1.0
 	_top_bar.anchor_bottom = 0.0
+	_top_bar.offset_left   = 16
+	_top_bar.offset_right  = -16
 	_top_bar.offset_bottom = TOP_BAR_HEIGHT
-	_top_bar.add_theme_constant_override("separation", 8)
+	_top_bar.add_theme_constant_override("separation", 10)
+
+	# Header background strip — a dark, slightly translucent panel with an accent
+	# underline that grounds the bar and separates it from the grid below.
+	var bar_bg: Panel = Panel.new()
+	var bar_style: StyleBoxFlat = StyleBoxFlat.new()
+	bar_style.bg_color            = UITheme.BAR_BG
+	bar_style.border_width_bottom = 2
+	bar_style.border_color        = UITheme.PURPLE_MID
+	bar_bg.add_theme_stylebox_override("panel", bar_style)
+	bar_bg.anchor_right  = 1.0
+	bar_bg.anchor_bottom = 0.0
+	bar_bg.offset_bottom = TOP_BAR_HEIGHT
+	bar_bg.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+	add_child(bar_bg)
+	# Place just before the TopBar so it renders behind the controls.
+	move_child(bar_bg, _top_bar.get_index())
+
+	# Journey count — sits right after the title; reflects the active filter.
+	_count_label = Label.new()
+	_count_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_top_bar.add_child(_count_label)
+	_top_bar.move_child(_count_label, 2)
 
 	# Search field — expands to fill space between the title and sort controls.
 	# We create it here so it's available for _apply_theme(); move_child positions
-	# it after BackButton(0) + TitleLabel(1), before SortContainer.
+	# it after BackButton(0) + TitleLabel(1) + CountLabel(2).
 	_search_field = LineEdit.new()
 	_search_field.placeholder_text      = "Search journeys…"
 	_search_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_search_field.custom_minimum_size   = Vector2(180, 0)
 	_top_bar.add_child(_search_field)
-	_top_bar.move_child(_search_field, 2)
+	_top_bar.move_child(_search_field, 3)
 
 	# Difficulty filter dropdown
 	_diff_filter = OptionButton.new()
@@ -129,7 +154,7 @@ func _apply_layout() -> void:
 	for d: String in JourneyData.DIFFICULTIES:
 		_diff_filter.add_item(d.to_upper())
 	_top_bar.add_child(_diff_filter)
-	_top_bar.move_child(_diff_filter, 3)
+	_top_bar.move_child(_diff_filter, 4)
 
 	# Tag filter dropdown
 	_tag_filter = OptionButton.new()
@@ -138,7 +163,7 @@ func _apply_layout() -> void:
 	for tag_def: Dictionary in TagRegistry.all():
 		_tag_filter.add_item((tag_def["label"] as String).to_upper())
 	_top_bar.add_child(_tag_filter)
-	_top_bar.move_child(_tag_filter, 4)
+	_top_bar.move_child(_tag_filter, 5)
 
 	_scroll.anchor_right  = 1.0
 	_scroll.anchor_bottom = 1.0
@@ -233,6 +258,7 @@ func _apply_theme() -> void:
 	UITheme.style_line_edit(_search_field)
 	UITheme.style_option_button(_diff_filter)
 	UITheme.style_option_button(_tag_filter)
+	_style_label(_count_label, UITheme.PURPLE_MID, 12, true)
 
 	_style_modal_panel()
 
@@ -332,7 +358,7 @@ func _set_active_sort() -> void:
 
 func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel") and _modal.visible:
-		_modal.visible = false
+		_close_modal()
 		get_viewport().set_input_as_handled()
 
 
@@ -376,7 +402,7 @@ func _on_backdrop_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
-			_modal.visible = false
+			_close_modal()
 
 
 func _on_play_pressed() -> void:
@@ -417,7 +443,7 @@ func _confirm_delete() -> void:
 		JourneyData.delete_dir_recursive(folder)
 	_journeys.erase(_current_journey)
 	_current_journey = {}
-	_modal.visible = false
+	_close_modal()
 	_sort_and_populate()
 
 
@@ -489,17 +515,61 @@ func _populate_grid(journeys: Array) -> void:
 		_empty_lbl.text = "No journeys match your filter." if not _journeys.is_empty() \
 			else "No journeys yet.\nCreate one in the builder!"
 	_empty_lbl.visible = journeys.is_empty()
+
+	# Header count — total catalogue size, or "shown OF total" while filtering.
+	if _count_label != null:
+		var total: int = _journeys.size()
+		var shown: int = journeys.size()
+		_count_label.text = ("%d JOURNEY%s" % [total, "" if total == 1 else "S"]) if shown == total \
+			else "%d OF %d" % [shown, total]
+
+	var idx: int = 0
 	for journey: Dictionary in journeys:
 		var card: PanelContainer = JourneyCardScene.instantiate()
 		_grid.add_child(card)
 		card.setup(journey)
 		card.selected.connect(_on_journey_selected.bind(journey))
+		# Staggered fade/scale-in so the catalogue builds in. The per-card delay
+		# is capped so a large catalogue still finishes quickly.
+		card.animate_in(min(idx, 16) * 0.022)
+		idx += 1
 
 
 func _on_journey_selected(journey: Dictionary) -> void:
 	_current_journey = journey
 	_populate_modal(journey)
-	_modal.visible = true
+	_open_modal()
+
+
+# Fades the backdrop in and scales the panel up from 95% with a slight overshoot.
+func _open_modal() -> void:
+	_modal.visible          = true
+	_backdrop.modulate.a    = 0.0
+	_modal_panel.modulate.a = 0.0
+	# Wait one frame so the panel has its final size before computing the pivot.
+	await get_tree().process_frame
+	_modal_panel.pivot_offset = _modal_panel.size / 2.0
+	_modal_panel.scale        = Vector2(0.95, 0.95)
+	var t: Tween = create_tween().set_parallel(true)
+	t.tween_property(_backdrop,    "modulate:a", 1.0, 0.16)
+	t.tween_property(_modal_panel, "modulate:a", 1.0, 0.16)
+	t.tween_property(_modal_panel, "scale", Vector2.ONE, 0.18) \
+		.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+
+
+# Fades + shrinks the modal out, then hides it and resets the transform.
+func _close_modal() -> void:
+	if not _modal.visible:
+		return
+	var t: Tween = create_tween().set_parallel(true)
+	t.tween_property(_backdrop,    "modulate:a", 0.0, 0.12)
+	t.tween_property(_modal_panel, "modulate:a", 0.0, 0.12)
+	t.tween_property(_modal_panel, "scale", Vector2(0.96, 0.96), 0.12)
+	await t.finished
+	_modal.visible            = false
+	_modal_panel.scale        = Vector2.ONE
+	_modal_panel.modulate.a   = 1.0
+	_backdrop.modulate.a      = 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -180,15 +180,17 @@ public partial class ButtplugService : Node
 
 		try
 		{
-			var features = device.GetFeaturesWithOutput(OutputType.Vibrate).ToList();
-			if (channelIndex < 0 || channelIndex >= features.Count)
+			// ElementAtOrDefault avoids the per-call List allocation that .ToList()
+			// would incur — this runs once per vib action, many times a second.
+			var feature = device.GetFeaturesWithOutput(OutputType.Vibrate).ElementAtOrDefault(channelIndex);
+			if (feature == null)
 			{
-				// Index out of range — fall back to all-channels.
+				// Index out of range (or negative) — fall back to all-channels.
 				await device.RunOutputAsync(DeviceOutput.Vibrate.Percent(intensity), default);
 				return;
 			}
 
-			await features[channelIndex].RunOutputAsync(DeviceOutput.Vibrate.Percent(intensity), default);
+			await feature.RunOutputAsync(DeviceOutput.Vibrate.Percent(intensity), default);
 		}
 		catch (Exception e)
 		{

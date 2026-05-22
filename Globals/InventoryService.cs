@@ -196,8 +196,20 @@ public partial class InventoryService : Node
 
 	private double _nowMs = 0.0;
 
+	// When true, the effect clock is frozen — _nowMs stops advancing so active
+	// effects neither expire nor visibly count down. Driven by GameLoop while the
+	// round is paused (pause button / Options overlay) so timed effects are not
+	// drained while no round is playing.
+	private bool _paused = false;
+
+	// Freeze or resume the active-effect countdown. Idempotent.
+	public void SetPaused(bool paused) => _paused = paused;
+
 	public override void _Process(double delta)
 	{
+		if (_paused)
+			return;
+
 		_nowMs += delta * 1000.0;
 
 		bool removed = false;
@@ -218,6 +230,9 @@ public partial class InventoryService : Node
 	{
 		_items.Clear();
 		_active.Clear();
+		// Clear any stale pause state — a player can quit to menu mid-pause,
+		// which would otherwise leave the effect clock frozen for the next journey.
+		_paused = false;
 		EmitSignal(SignalName.InventoryChanged);
 		EmitSignal(SignalName.ActiveEffectsChanged);
 	}
@@ -282,6 +297,25 @@ public partial class InventoryService : Node
 			activeEffects.Add(fx);
 
 		return activeEffects;
+	}
+
+	// Immediately removes every active effect of the given kind. Used by GameLoop
+	// to consume coin_jackpot effects right after they pay out, so a single
+	// jackpot only ever doubles one round's reward.
+	public void ConsumeEffects(string kind)
+	{
+		bool removed = false;
+		for (int i = _active.Count - 1; i >= 0; i--)
+		{
+			if (_active[i].ContainsKey("kind") && _active[i]["kind"].AsString() == kind)
+			{
+				_active.RemoveAt(i);
+				removed = true;
+			}
+		}
+
+		if (removed)
+			EmitSignal(SignalName.ActiveEffectsChanged);
 	}
 
 	// Remaining seconds for the chip countdown text. Returns 0 if expired.

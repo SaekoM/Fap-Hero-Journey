@@ -166,12 +166,13 @@ func style_option_button(ob: OptionButton) -> void:
 	ob.add_theme_stylebox_override("focus",   StyleBoxEmpty.new())
 
 
-# Read-only tag chip: a small rounded pill, `text` in `accent`, on a faint
-# tinted background with an `accent` border. Used for journey tag display.
+# Read-only tag chip: a small rounded pill, `text` in `accent`, on a near-opaque
+# dark background with an `accent` border. The dark fill keeps the chip legible
+# when overlaid on bright/busy cover art, not just on dark panels.
 func make_tag_chip(text: String, accent: Color) -> Control:
 	var chip: PanelContainer = PanelContainer.new()
 	var s: StyleBoxFlat = StyleBoxFlat.new()
-	s.bg_color            = Color(accent.r, accent.g, accent.b, 0.14)
+	s.bg_color            = Color(0.03, 0.0, 0.05, 0.9)
 	s.border_color        = accent
 	s.border_width_left   = 1; s.border_width_right  = 1
 	s.border_width_top    = 1; s.border_width_bottom = 1

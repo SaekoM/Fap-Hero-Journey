@@ -35,6 +35,10 @@ const DEFAULT_RANGE_MIN:         int    = 0
 const DEFAULT_RANGE_MAX:         int    = 100
 const DEFAULT_HOME_POSITION:     int    = 50
 const DEFAULT_HOME_EASE_MS:      int    = 2000
+const DEFAULT_LATENCY_OFFSET_MS: int    = 0
+const DEFAULT_VIBE_INTENSITY:    int    = 100
+const DEFAULT_MAX_STROKE_SPEED:  int    = 0     # 0 = unlimited (units/sec)
+const DEFAULT_HUD_HIDE_DELAY:    float  = 3.0   # seconds
 const DEFAULT_FILLER_ENABLED:    bool   = false
 const DEFAULT_FILLER_HALF_CYCLE: int    = 2000
 const DEFAULT_FILLER_LO:         int    = 0
@@ -101,6 +105,18 @@ func get_home_position() -> int:
 func get_home_ease_ms() -> int:
 	return int(_config.get_value("device", "home_ease_ms", DEFAULT_HOME_EASE_MS))
 
+func get_latency_offset_ms() -> int:
+	return int(_config.get_value("device", "latency_offset_ms", DEFAULT_LATENCY_OFFSET_MS))
+
+func get_vibe_intensity() -> int:
+	return int(_config.get_value("device", "vibe_intensity", DEFAULT_VIBE_INTENSITY))
+
+func get_max_stroke_speed() -> int:
+	return int(_config.get_value("device", "max_stroke_speed", DEFAULT_MAX_STROKE_SPEED))
+
+func get_hud_hide_delay() -> float:
+	return float(_config.get_value("display", "hud_hide_delay", DEFAULT_HUD_HIDE_DELAY))
+
 func get_filler_enabled() -> bool:
 	return bool(_config.get_value("storyboard_filler", "enabled", DEFAULT_FILLER_ENABLED))
 
@@ -161,6 +177,18 @@ func set_home_position(v: int) -> void:
 
 func set_home_ease_ms(v: int) -> void:
 	_config.set_value("device", "home_ease_ms", v)
+
+func set_latency_offset_ms(v: int) -> void:
+	_config.set_value("device", "latency_offset_ms", v)
+
+func set_vibe_intensity(v: int) -> void:
+	_config.set_value("device", "vibe_intensity", v)
+
+func set_max_stroke_speed(v: int) -> void:
+	_config.set_value("device", "max_stroke_speed", v)
+
+func set_hud_hide_delay(v: float) -> void:
+	_config.set_value("display", "hud_hide_delay", v)
 
 func set_filler_enabled(v: bool) -> void:
 	_config.set_value("storyboard_filler", "enabled", v)

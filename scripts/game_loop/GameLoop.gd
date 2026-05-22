@@ -17,7 +17,6 @@ const InventoryPanelScene  = preload("res://scenes/inventory/InventoryPanel.tscn
 # ---------------------------------------------------------------------------
 
 const HUD_BAR_HEIGHT:  int   = 68
-const HUD_HIDE_DELAY:  float = 3.0
 # Playback-capable formats. Intentionally distinct from JourneyData.VIDEO_EXTENSIONS
 # (the import/transcode set): includes "ogv" (Godot-native, no FFmpeg needed) and
 # omits container types that only matter at import time.
@@ -322,12 +321,14 @@ func _on_round_ended() -> void:
 	FunscriptPlayer.Stop()
 
 	var coins: int = GameState.CurrentRound().get("coins", 0)
-	# Apply any active coin_jackpot multipliers before awarding.
+	# Apply any active coin_jackpot multipliers, then consume them so a single
+	# jackpot only ever doubles one round's reward (matches the item description).
 	var jackpot_factor: float = 1.0
 	for fx: Dictionary in InventoryService.GetActiveEffects():
 		if fx.get("kind", "") == "coin_jackpot":
 			jackpot_factor *= float(fx.get("factor", 1.0))
 	coins = roundi(coins * jackpot_factor)
+	InventoryService.ConsumeEffects("coin_jackpot")
 	if coins > 0:
 		CoinService.AddCoins(coins)
 
@@ -370,6 +371,8 @@ func _go_to_menu() -> void:
 func _on_options_pressed() -> void:
 	_video.paused = true
 	FunscriptPlayer.Pause()
+	# Freeze the active-effect clock while the Options overlay is open.
+	InventoryService.SetPaused(true)
 	var opts: Control = OptionsScene.instantiate()
 	opts.overlay_mode = true
 	opts.tree_exiting.connect(_on_options_closed)
@@ -377,9 +380,12 @@ func _on_options_pressed() -> void:
 
 
 func _on_options_closed() -> void:
+	# Only resume if the round was not separately paused via the pause button —
+	# in that case the effect clock must stay frozen until the player resumes.
 	if not _paused:
 		_video.paused = false
 		FunscriptPlayer.Resume()
+		InventoryService.SetPaused(false)
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +395,8 @@ func _on_options_closed() -> void:
 func _toggle_pause() -> void:
 	_paused = not _paused
 	_video.paused = _paused
+	# Freeze the active-effect clock so timed items don't drain while paused.
+	InventoryService.SetPaused(_paused)
 	if _paused:
 		FunscriptPlayer.Pause()
 		_pause_btn.text = "> RESUME"
@@ -400,7 +408,7 @@ func _toggle_pause() -> void:
 func _show_hud() -> void:
 	_hud.modulate = Color(1, 1, 1, 1)
 	_hud.visible  = true
-	_hide_timer.start(HUD_HIDE_DELAY)
+	_hide_timer.start(SettingsService.get_hud_hide_delay())
 
 
 func _on_hide_timer_timeout() -> void:

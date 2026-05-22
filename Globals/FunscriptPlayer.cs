@@ -43,6 +43,7 @@ public partial class FunscriptPlayer : Node
     private int _actionIndex = 0;
     private bool? _isLinearDevice = null;
     private int _deviceIndex = -1;
+    private int _vibChannelCount = 0; // resolved in ResolveOutput(); 0 for non-vibrators
     private bool _syncedThisFrame = false;
     private OutputMode _outputMode = OutputMode.Buttplug;
     private bool _outputResolved = false;
@@ -155,6 +156,41 @@ public partial class FunscriptPlayer : Node
     {
         _homePosition = Math.Clamp(position, 0, 100);
         _homeEaseMs = (uint)Math.Max(50, easeMs);
+    }
+
+    // Device latency compensation — shifts the funscript clock relative to the
+    // video to offset device/Bluetooth lag. Positive = device acts earlier.
+    private int _latencyOffsetMs = 0;
+
+    // Vibrator output scale (0–1). Applied to every vibration command so the
+    // user can dial overall strength down. No effect on linear devices.
+    private float _vibeIntensity = 1.0f;
+
+    // Max stroke speed for linear (L0) output, in funscript units/sec.
+    // 0 = unlimited. Moves faster than the cap are slowed by stretching duration.
+    private int _maxStrokeSpeed = 0;
+
+    /// Live-update the device latency offset from Options.
+    public void SetLatencyOffset(int offsetMs) => _latencyOffsetMs = offsetMs;
+
+    /// Live-update the vibrator intensity scale from Options (percent 0–100).
+    public void SetVibeIntensity(int percent) => _vibeIntensity = Math.Clamp(percent, 0, 100) / 100f;
+
+    /// Live-update the max stroke speed cap from Options (units/sec, 0 = off).
+    public void SetMaxStrokeSpeed(int unitsPerSec) => _maxStrokeSpeed = Math.Max(0, unitsPerSec);
+
+    // Stretches a linear move's duration when it would exceed the configured
+    // max stroke speed, so aggressive scripts are gently slowed instead of
+    // snapping. _maxStrokeSpeed of 0 disables the cap.
+    private uint _CapDuration(int fromPos, int toPos, uint durationMs)
+    {
+        if (_maxStrokeSpeed <= 0)
+            return durationMs;
+        int distance = Math.Abs(toPos - fromPos);
+        if (distance == 0)
+            return durationMs;
+        uint minMs = (uint)Math.Ceiling(distance * 1000.0 / _maxStrokeSpeed);
+        return Math.Max(durationMs, minMs);
     }
 
     // Load a secondary-axis funscript. Call before Play().
@@ -382,8 +418,7 @@ public partial class FunscriptPlayer : Node
         else if (_vibScripts.Count > 0)
         {
             // Explicitly silence every vibration channel loaded from vib scripts.
-            int vibCount = bp.GetVibrationChannelCount(_deviceIndex);
-            for (int ch = 0; ch < Math.Max(1, vibCount); ch++)
+            for (int ch = 0; ch < Math.Max(1, _vibChannelCount); ch++)
                 bp.SendVibrateChannel(_deviceIndex, ch, 0.0);
         }
         else
@@ -396,13 +431,15 @@ public partial class FunscriptPlayer : Node
     // Only updates _positionMs — _Process is responsible for dispatching due actions.
     public void SyncTo(double videoPositionSec)
     {
-        _positionMs = videoPositionSec * 1000.0;
+        _positionMs = videoPositionSec * 1000.0 + _latencyOffsetMs;
         _syncedThisFrame = true;
     }
 
     public override void _Process(double delta)
     {
-        if (_playing && _actions.Count > 0)
+        // Runs whenever playing — not gated on _actions having content, so vib /
+        // axis scripts still dispatch even if the main L0 script is empty.
+        if (_playing)
         {
             // When synced to a video clock, SyncTo already set _positionMs this frame.
             // Only accumulate delta in free-running mode (no video / funscript-only).
@@ -474,7 +511,6 @@ public partial class FunscriptPlayer : Node
                 var bpVib = _buttplug;
                 if (bpVib != null && bpVib.BpConnected && _deviceIndex >= 0)
                 {
-                    int vibChannelCount = bpVib.GetVibrationChannelCount(_deviceIndex);
                     bool hasCh1 = _vibScripts.ContainsKey(1);
 
                     foreach (var vibEntry in _vibScripts)
@@ -486,11 +522,11 @@ public partial class FunscriptPlayer : Node
                             if (vstate.Actions[vstate.Index].AtMs > _positionMs)
                                 break;
 
-                            double intensity = Math.Clamp(vstate.Actions[vstate.Index].Pos / 100.0, 0.0, 1.0);
+                            double intensity = Math.Clamp(vstate.Actions[vstate.Index].Pos / 100.0, 0.0, 1.0) * _vibeIntensity;
                             bpVib.SendVibrateChannel(_deviceIndex, channel, intensity);
 
                             // Mirror channel 0 → channel 1 when no separate vib2 script.
-                            if (channel == 0 && !hasCh1 && vibChannelCount >= 2)
+                            if (channel == 0 && !hasCh1 && _vibChannelCount >= 2)
                                 bpVib.SendVibrateChannel(_deviceIndex, 1, intensity);
 
                             vstate.Index++;
@@ -559,7 +595,7 @@ public partial class FunscriptPlayer : Node
 
         var bp = _buttplug;
         if (bp == null || !bp.BpConnected || _deviceIndex < 0) return;
-        bp.SendVibrate(_deviceIndex, pos / 100.0);
+        bp.SendVibrate(_deviceIndex, pos / 100.0 * _vibeIntensity);
     }
 
     private void ResolveOutput()
@@ -580,6 +616,12 @@ public partial class FunscriptPlayer : Node
         _homePosition = Math.Clamp(_settings.Call("get_home_position").AsInt32(), 0, 100);
         _homeEaseMs = (uint)Math.Max(50, _settings.Call("get_home_ease_ms").AsInt32());
 
+        // Cache device latency offset and vibrator intensity scale. Both can be
+        // overridden live by Options via their setters, but seed from disk here.
+        _latencyOffsetMs = _settings.Call("get_latency_offset_ms").AsInt32();
+        _vibeIntensity = Math.Clamp(_settings.Call("get_vibe_intensity").AsInt32(), 0, 100) / 100f;
+        _maxStrokeSpeed = Math.Max(0, _settings.Call("get_max_stroke_speed").AsInt32());
+
         if (_outputMode == OutputMode.Serial)
         {
             // Serial T-code devices are always linear; nothing else to resolve.
@@ -593,6 +635,9 @@ public partial class FunscriptPlayer : Node
             {
                 _deviceIndex = bp.GetSelectedDeviceIndex();
                 _isLinearDevice = _deviceIndex >= 0 && bp.DeviceSupportsLinear(_deviceIndex);
+                // Vibration channel count is fixed for the resolved device — cache it
+                // so the per-frame vib dispatch never re-enumerates device features.
+                _vibChannelCount = (_isLinearDevice == false && _deviceIndex >= 0) ? bp.GetVibrationChannelCount(_deviceIndex) : 0;
             }
         }
         _outputResolved = true;
@@ -636,6 +681,9 @@ public partial class FunscriptPlayer : Node
                 _easing = false;
         }
 
+        // Scoring is always driven by the main (L0) funscript's position deltas,
+        // even when vib scripts are loaded and actually driving the device. This
+        // keeps the scoring basis consistent regardless of the connected device.
         if (index + 1 < _actions.Count)
         {
             int amplitude = Math.Abs(nextPos - currentPos);
@@ -654,6 +702,7 @@ public partial class FunscriptPlayer : Node
 
             double targetNormalised = nextPos / 100.0;
             uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
+            durationMs = _CapDuration(currentPos, nextPos, durationMs);
             serial.SendLinear(durationMs, targetNormalised);
 
             return;
@@ -670,6 +719,7 @@ public partial class FunscriptPlayer : Node
 
             double targetNormalised = nextPos / 100.0;
             uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
+            durationMs = _CapDuration(currentPos, nextPos, durationMs);
             bp.SendLinear(_deviceIndex, durationMs, targetNormalised);
         }
         else
@@ -677,7 +727,7 @@ public partial class FunscriptPlayer : Node
             // Vibrators: hold the current keyframe intensity.
             // Skip if vib scripts are loaded — per-channel dispatch runs in _Process().
             if (_vibScripts.Count == 0)
-                bp.SendVibrate(_deviceIndex, currentPos / 100.0);
+                bp.SendVibrate(_deviceIndex, currentPos / 100.0 * _vibeIntensity);
         }
     }
 

@@ -7,12 +7,16 @@ extends Control
 # ---------------------------------------------------------------------------
 
 const TOP_BAR_HEIGHT:  int = 64
+const TAB_BAR_HEIGHT:  int = 48
 const PANEL_HALF_W:    int = 480
 const PANEL_PAD_V:     int = 24
 const BORDER_WIDTH:    int = 3
 const ROW_LABEL_W:     int = 260
 const SLIDER_MIN_W:    int = 260
 const VALUE_LABEL_W:   int = 64
+
+# Tab categories. Each groups a set of sections; only one tab is shown at a time.
+const TAB_NAMES: Array = ["GENERAL", "CONNECTION", "DEVICE", "ABOUT"]
 
 const DEFAULT_BP_ADDRESS:  String = "ws://localhost:12345"
 const DEFAULT_BAUD_RATE:   int    = 115200
@@ -71,11 +75,27 @@ var _home_slider:    HSlider  = null
 var _home_value_lbl: Label    = null
 var _home_ease_input: LineEdit = null
 
+var _latency_slider:    HSlider = null
+var _latency_value_lbl: Label   = null
+var _vibe_slider:       HSlider = null
+var _vibe_value_lbl:    Label   = null
+var _max_speed_slider:    HSlider = null
+var _max_speed_value_lbl: Label   = null
+var _hud_delay_slider:    HSlider = null
+var _hud_delay_value_lbl: Label   = null
+
 var _filler_toggle:     Button      = null
 var _filler_speed_input: LineEdit   = null
 var _filler_range_slider:  RangeSlider = null
 var _filler_range_min_lbl: Label       = null
 var _filler_range_max_lbl: Label       = null
+
+# Tab bar + references to the three code-built sections, needed so tab
+# switching can toggle their visibility alongside the scene-built sections.
+var _tab_bar:         TabBar        = null
+var _range_section:   VBoxContainer = null
+var _filler_section:  VBoxContainer = null
+var _credits_section: VBoxContainer = null
 
 
 func _ready() -> void:
@@ -123,12 +143,14 @@ func _apply_layout() -> void:
 	_content_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_content_panel.offset_left   = -PANEL_HALF_W
 	_content_panel.offset_right  =  PANEL_HALF_W
-	_content_panel.offset_top    = TOP_BAR_HEIGHT + PANEL_PAD_V
+	_content_panel.offset_top    = TOP_BAR_HEIGHT + TAB_BAR_HEIGHT + PANEL_PAD_V
 	_content_panel.offset_bottom = -PANEL_PAD_V
 
 	($ContentPanel/ContentScroll/MarginWrapper as MarginContainer).add_theme_constant_override("margin_right", 24)
 
-	_content_vbox.add_theme_constant_override("separation", 10)
+	# Wider inter-section spacing — the old fixed gap spacer nodes are hidden
+	# below now that each tab shows only a few sections at a time.
+	_content_vbox.add_theme_constant_override("separation", 28)
 
 	for section_path in [
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysSection",
@@ -158,6 +180,17 @@ func _apply_layout() -> void:
 	]:
 		var r: HBoxContainer = get_node(row_path)
 		r.add_theme_constant_override("separation", 16)
+
+	# Hide the fixed gap spacers — sections are now grouped into tabs, so the
+	# old single-scroll inter-section padding is no longer needed.
+	for gap_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/JourneysGap",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputGap",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SectionGap",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SectionGap2",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialGap",
+	]:
+		(get_node(gap_path) as Control).visible = false
 
 	var master_lbl: Label = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/AudioSection/MasterRow/MasterLabel
 	master_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
@@ -199,6 +232,39 @@ func _apply_layout() -> void:
 		_save_settings()
 	)
 
+	# ── HUD Auto-Hide row (code-generated, appended to DisplaySection) ────────
+	var display_section: VBoxContainer = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection
+	var hud_delay_row: HBoxContainer = HBoxContainer.new()
+	hud_delay_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(hud_delay_row)
+
+	var hud_delay_lbl: Label = Label.new()
+	hud_delay_lbl.text = "HUD AUTO-HIDE"
+	hud_delay_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(hud_delay_lbl, UITheme.WHITE_SOFT, 14, false)
+	hud_delay_row.add_child(hud_delay_lbl)
+
+	_hud_delay_slider = HSlider.new()
+	_hud_delay_slider.min_value = 1.0
+	_hud_delay_slider.max_value = 10.0
+	_hud_delay_slider.step = 0.5
+	_hud_delay_slider.value = 3.0
+	_hud_delay_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_hud_delay_slider.custom_minimum_size = Vector2(SLIDER_MIN_W, 0)
+	_style_slider(_hud_delay_slider)
+	hud_delay_row.add_child(_hud_delay_slider)
+
+	_hud_delay_value_lbl = Label.new()
+	_hud_delay_value_lbl.text = "3.0s"
+	_hud_delay_value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
+	_style_label(_hud_delay_value_lbl, UITheme.PURPLE_BRIGHT, 14, false)
+	hud_delay_row.add_child(_hud_delay_value_lbl)
+
+	_hud_delay_slider.value_changed.connect(func(v: float) -> void:
+		_hud_delay_value_lbl.text = "%.1fs" % v
+		_save_settings()
+	)
+
 	for label_path in [
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeLabel",
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection/FullscreenRow/FsLabel",
@@ -219,6 +285,7 @@ func _apply_layout() -> void:
 	var range_section: VBoxContainer = VBoxContainer.new()
 	range_section.add_theme_constant_override("separation", 12)
 	_content_vbox.add_child(range_section)
+	_range_section = range_section
 
 	var range_header: Label = Label.new()
 	range_header.text = "DEVICE RANGE"
@@ -351,10 +418,134 @@ func _apply_layout() -> void:
 	_style_label(home_hint, UITheme.SEPARATOR, 11, false)
 	range_section.add_child(home_hint)
 
+	# ── Latency Offset row ───────────────────────────────────────────────────
+	var latency_row: HBoxContainer = HBoxContainer.new()
+	latency_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(latency_row)
+
+	var latency_lbl: Label = Label.new()
+	latency_lbl.text = "Latency Offset"
+	latency_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(latency_lbl, UITheme.WHITE_SOFT, 14, false)
+	latency_row.add_child(latency_lbl)
+
+	var latency_col: VBoxContainer = VBoxContainer.new()
+	latency_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	latency_col.add_theme_constant_override("separation", 4)
+	latency_row.add_child(latency_col)
+
+	_latency_slider = HSlider.new()
+	_latency_slider.min_value = -500
+	_latency_slider.max_value = 500
+	_latency_slider.step = 10
+	_latency_slider.value = 0
+	_latency_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(_latency_slider)
+	latency_col.add_child(_latency_slider)
+
+	_latency_value_lbl = Label.new()
+	_latency_value_lbl.text = "0 ms"
+	_style_label(_latency_value_lbl, UITheme.PURPLE_MID, 11, true)
+	latency_col.add_child(_latency_value_lbl)
+
+	_latency_slider.value_changed.connect(func(v: float) -> void:
+		_latency_value_lbl.text = "%d ms" % roundi(v)
+		_save_settings()
+	)
+
+	var latency_hint: Label = Label.new()
+	latency_hint.text = "Shifts the funscript relative to the video to compensate for device/Bluetooth lag. Positive = device acts earlier."
+	latency_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(latency_hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(latency_hint)
+
+	# ── Vibration Intensity row ──────────────────────────────────────────────
+	var vibe_row: HBoxContainer = HBoxContainer.new()
+	vibe_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(vibe_row)
+
+	var vibe_lbl: Label = Label.new()
+	vibe_lbl.text = "Vibration Intensity"
+	vibe_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(vibe_lbl, UITheme.WHITE_SOFT, 14, false)
+	vibe_row.add_child(vibe_lbl)
+
+	var vibe_col: VBoxContainer = VBoxContainer.new()
+	vibe_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vibe_col.add_theme_constant_override("separation", 4)
+	vibe_row.add_child(vibe_col)
+
+	_vibe_slider = HSlider.new()
+	_vibe_slider.min_value = 0
+	_vibe_slider.max_value = 100
+	_vibe_slider.step = 1
+	_vibe_slider.value = 100
+	_vibe_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(_vibe_slider)
+	vibe_col.add_child(_vibe_slider)
+
+	_vibe_value_lbl = Label.new()
+	_vibe_value_lbl.text = "100%"
+	_style_label(_vibe_value_lbl, UITheme.PURPLE_MID, 11, true)
+	vibe_col.add_child(_vibe_value_lbl)
+
+	_vibe_slider.value_changed.connect(func(v: float) -> void:
+		_vibe_value_lbl.text = "%d%%" % roundi(v)
+		_save_settings()
+	)
+
+	var vibe_hint: Label = Label.new()
+	vibe_hint.text = "Scales output strength for vibrators. No effect on linear (stroker) devices."
+	vibe_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(vibe_hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(vibe_hint)
+
+	# ── Max Stroke Speed row ─────────────────────────────────────────────────
+	var speed_row: HBoxContainer = HBoxContainer.new()
+	speed_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(speed_row)
+
+	var speed_lbl: Label = Label.new()
+	speed_lbl.text = "Max Stroke Speed"
+	speed_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(speed_lbl, UITheme.WHITE_SOFT, 14, false)
+	speed_row.add_child(speed_lbl)
+
+	var speed_col: VBoxContainer = VBoxContainer.new()
+	speed_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	speed_col.add_theme_constant_override("separation", 4)
+	speed_row.add_child(speed_col)
+
+	_max_speed_slider = HSlider.new()
+	_max_speed_slider.min_value = 0
+	_max_speed_slider.max_value = 1000
+	_max_speed_slider.step = 25
+	_max_speed_slider.value = 0
+	_max_speed_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(_max_speed_slider)
+	speed_col.add_child(_max_speed_slider)
+
+	_max_speed_value_lbl = Label.new()
+	_max_speed_value_lbl.text = "Off"
+	_style_label(_max_speed_value_lbl, UITheme.PURPLE_MID, 11, true)
+	speed_col.add_child(_max_speed_value_lbl)
+
+	_max_speed_slider.value_changed.connect(func(v: float) -> void:
+		_max_speed_value_lbl.text = ("Off" if roundi(v) <= 0 else "%d u/s" % roundi(v))
+		_save_settings()
+	)
+
+	var speed_hint: Label = Label.new()
+	speed_hint.text = "Caps how fast linear devices move — faster strokes are slowed to this limit. Off = unlimited. No effect on vibrators."
+	speed_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(speed_hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(speed_hint)
+
 	# ── Storyboard Filler section (built entirely in code) ────────────────────
 	var filler_section: VBoxContainer = VBoxContainer.new()
 	filler_section.add_theme_constant_override("separation", 12)
 	_content_vbox.add_child(filler_section)
+	_filler_section = filler_section
 
 	var filler_header: Label = Label.new()
 	filler_header.text = "STORYBOARD FILLER"
@@ -463,13 +654,10 @@ func _apply_layout() -> void:
 	filler_section.add_child(filler_hint)
 
 	# ── Credits section ───────────────────────────────────────────────────────
-	var credits_gap: Control = Control.new()
-	credits_gap.custom_minimum_size = Vector2(0, 24)
-	_content_vbox.add_child(credits_gap)
-
 	var credits_section: VBoxContainer = VBoxContainer.new()
 	credits_section.add_theme_constant_override("separation", 12)
 	_content_vbox.add_child(credits_section)
+	_credits_section = credits_section
 
 	var credits_header: Label = Label.new()
 	credits_header.text = "CREDITS"
@@ -484,6 +672,73 @@ func _apply_layout() -> void:
 	credits_music_lbl.text = "Music by Karl Casey @ White Bat Audio"
 	_style_label(credits_music_lbl, UITheme.WHITE_SOFT, 13, false)
 	credits_section.add_child(credits_music_lbl)
+
+	# ── Tab bar — groups all sections above into navigable categories ─────────
+	_build_tabs()
+
+
+# ---------------------------------------------------------------------------
+# Tabs
+# ---------------------------------------------------------------------------
+
+# Builds the category tab bar and shows the first tab. The tab bar floats
+# between the top bar and the content panel; switching tabs toggles the
+# visibility of each section rather than reparenting (the rest of this file
+# addresses sections by absolute node path, which reparenting would break).
+func _build_tabs() -> void:
+	_tab_bar = TabBar.new()
+	for tab_name: String in TAB_NAMES:
+		_tab_bar.add_tab(tab_name)
+	_tab_bar.clip_tabs     = false
+	_tab_bar.tab_alignment = TabBar.ALIGNMENT_CENTER
+	_tab_bar.focus_mode    = Control.FOCUS_NONE
+	_tab_bar.anchor_left   = 0.5
+	_tab_bar.anchor_right  = 0.5
+	_tab_bar.anchor_top    = 0.0
+	_tab_bar.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_tab_bar.offset_left   = -PANEL_HALF_W
+	_tab_bar.offset_right  =  PANEL_HALF_W
+	_tab_bar.offset_top    = TOP_BAR_HEIGHT
+	_tab_bar.offset_bottom = TOP_BAR_HEIGHT + TAB_BAR_HEIGHT
+	_style_tab_bar(_tab_bar)
+	add_child(_tab_bar)
+
+	_tab_bar.tab_changed.connect(_on_tab_changed)
+	_on_tab_changed(0)
+
+
+func _style_tab_bar(tabs: TabBar) -> void:
+	tabs.add_theme_color_override("font_selected_color",   UITheme.PURPLE_BRIGHT)
+	tabs.add_theme_color_override("font_unselected_color", UITheme.PURPLE_MID)
+	tabs.add_theme_color_override("font_hovered_color",    UITheme.WHITE_SOFT)
+	tabs.add_theme_font_size_override("font_size", 14)
+	tabs.add_theme_stylebox_override("tab_selected",   _make_btn_style(UITheme.PURPLE_BRIGHT, UITheme.PURPLE_MID))
+	tabs.add_theme_stylebox_override("tab_unselected", _make_btn_style(UITheme.PURPLE_MID,    UITheme.PURPLE_DARK))
+	tabs.add_theme_stylebox_override("tab_hovered",    _make_btn_style(UITheme.PURPLE_BRIGHT, UITheme.PURPLE_DARK))
+	tabs.add_theme_stylebox_override("tab_focus",      StyleBoxEmpty.new())
+
+
+# Shows the sections that belong to tab `idx` and hides all others.
+func _on_tab_changed(idx: int) -> void:
+	const VBOX: String = "ContentPanel/ContentScroll/MarginWrapper/ContentVBox/"
+	var pages: Array = [
+		# GENERAL
+		[get_node(VBOX + "JourneysSection"), get_node(VBOX + "AudioSection"), get_node(VBOX + "DisplaySection")],
+		# CONNECTION
+		[get_node(VBOX + "OutputSection"), get_node(VBOX + "IntifaceSection"), get_node(VBOX + "SerialSection")],
+		# DEVICE
+		[_range_section, _filler_section],
+		# ABOUT
+		[_credits_section],
+	]
+	for page_idx: int in pages.size():
+		var on_this_tab: bool = page_idx == idx
+		for section: Control in pages[page_idx]:
+			if section != null:
+				section.visible = on_this_tab
+
+	# Reset the scroll so each tab opens at its top.
+	($ContentPanel/ContentScroll as ScrollContainer).scroll_vertical = 0
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +1042,29 @@ func _load_settings() -> void:
 		_home_ease_input.text = str(home_ease)
 	FunscriptPlayer.SetHomePosition(home_pos, home_ease)
 
+	var latency: int = SettingsService.get_latency_offset_ms()
+	if _latency_slider != null:
+		_latency_slider.value = latency
+		_latency_value_lbl.text = "%d ms" % latency
+	FunscriptPlayer.SetLatencyOffset(latency)
+
+	var vibe: int = SettingsService.get_vibe_intensity()
+	if _vibe_slider != null:
+		_vibe_slider.value = vibe
+		_vibe_value_lbl.text = "%d%%" % vibe
+	FunscriptPlayer.SetVibeIntensity(vibe)
+
+	var max_speed: int = SettingsService.get_max_stroke_speed()
+	if _max_speed_slider != null:
+		_max_speed_slider.value = max_speed
+		_max_speed_value_lbl.text = ("Off" if max_speed <= 0 else "%d u/s" % max_speed)
+	FunscriptPlayer.SetMaxStrokeSpeed(max_speed)
+
+	var hud_delay: float = SettingsService.get_hud_hide_delay()
+	if _hud_delay_slider != null:
+		_hud_delay_slider.value = hud_delay
+		_hud_delay_value_lbl.text = "%.1fs" % hud_delay
+
 	# Load the filler range slider FIRST so that if the toggle or speed-input
 	# signals fire _save_settings() below, the slider already holds the correct
 	# values and won't overwrite them with the initialisation defaults (0/100).
@@ -844,6 +1122,24 @@ func _save_settings() -> void:
 		SettingsService.set_home_position(hp)
 		SettingsService.set_home_ease_ms(he)
 		FunscriptPlayer.SetHomePosition(hp, he)
+
+	if _latency_slider != null:
+		var lat: int = roundi(_latency_slider.value)
+		SettingsService.set_latency_offset_ms(lat)
+		FunscriptPlayer.SetLatencyOffset(lat)
+
+	if _vibe_slider != null:
+		var vib: int = roundi(_vibe_slider.value)
+		SettingsService.set_vibe_intensity(vib)
+		FunscriptPlayer.SetVibeIntensity(vib)
+
+	if _max_speed_slider != null:
+		var ms: int = roundi(_max_speed_slider.value)
+		SettingsService.set_max_stroke_speed(ms)
+		FunscriptPlayer.SetMaxStrokeSpeed(ms)
+
+	if _hud_delay_slider != null:
+		SettingsService.set_hud_hide_delay(_hud_delay_slider.value)
 
 	if _filler_toggle != null:
 		SettingsService.set_filler_enabled(_filler_toggle.button_pressed)
