@@ -879,9 +879,23 @@ func _make_side_storyboard_line_block(lines_arr: Array, line_idx: int, refresh_s
 	)
 	img_zone.file_dropped.connect(func(p: String) -> void:
 		lines_arr[line_idx]["image"] = p
-		line_rm_btn.visible = true
+		line_rm_btn.visible = p != ""
 	)
 	col.add_child(line_rm_btn)
+
+	# "Use image from line above" — shown for every line except the first.
+	if line_idx > 0:
+		var ref_btn: Button = Button.new()
+		ref_btn.text = "↑  USE IMAGE FROM LINE ABOVE"
+		ref_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(ref_btn, UITheme.STORYBOARD)
+		ref_btn.pressed.connect(func() -> void:
+			var prev_image: String = lines_arr[line_idx - 1].get("image", "")
+			if prev_image == "":
+				return
+			img_zone.set_file(prev_image)   # emits file_dropped → updates dict + rm btn
+		)
+		col.add_child(ref_btn)
 
 	# Line action row (move + delete).
 	var row: HBoxContainer = HBoxContainer.new()
