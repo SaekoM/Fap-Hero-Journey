@@ -1491,41 +1491,10 @@ func _show_move_confirm(message: String) -> bool:
 # Builds the "MOVING JOURNEYS" modal shown during a move operation. The status
 # label inside is updated via _update_move_modal as each journey is processed.
 func _create_move_modal() -> Control:
-	var modal: Control = Control.new()
-	modal.anchor_right  = 1.0
-	modal.anchor_bottom = 1.0
-	modal.mouse_filter  = Control.MOUSE_FILTER_STOP
-
-	var backdrop: ColorRect = ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.85)
-	backdrop.anchor_right  = 1.0
-	backdrop.anchor_bottom = 1.0
-	modal.add_child(backdrop)
-
-	var panel: PanelContainer = PanelContainer.new()
-	var ps: StyleBoxFlat = StyleBoxFlat.new()
-	ps.bg_color              = UITheme.PANEL_BG
-	ps.border_color          = UITheme.PURPLE_BRIGHT
-	ps.border_width_left     = 2;  ps.border_width_right    = 2
-	ps.border_width_top      = 2;  ps.border_width_bottom   = 2
-	ps.content_margin_left   = 32; ps.content_margin_right  = 32
-	ps.content_margin_top    = 24; ps.content_margin_bottom = 24
-	panel.add_theme_stylebox_override("panel", ps)
-	panel.anchor_left = 0.5; panel.anchor_right  = 0.5
-	panel.anchor_top  = 0.5; panel.anchor_bottom = 0.5
-	panel.offset_left = -300; panel.offset_right  = 300
-	panel.offset_top  = -80;  panel.offset_bottom = 80
-	modal.add_child(panel)
-
-	var vb: VBoxContainer = VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 14)
-	panel.add_child(vb)
-
-	var title: Label = Label.new()
-	title.text = "MOVING JOURNEYS"
-	_style_label(title, UITheme.PURPLE_BRIGHT, 16, true)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(title)
+	var parts: Dictionary    = UITheme.build_centered_modal("MOVING JOURNEYS", UITheme.PURPLE_BRIGHT, Vector2i(600, 160))
+	var modal: Control       = parts["modal"]
+	var vbox:  VBoxContainer = parts["vbox"]
+	vbox.add_theme_constant_override("separation", 14)
 
 	var status: Label = Label.new()
 	status.name = "Status"
@@ -1533,7 +1502,7 @@ func _create_move_modal() -> Control:
 	_style_label(status, UITheme.WHITE_SOFT, 13, false)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status.autowrap_mode        = TextServer.AUTOWRAP_WORD_SMART
-	vb.add_child(status)
+	vbox.add_child(status)
 
 	return modal
 

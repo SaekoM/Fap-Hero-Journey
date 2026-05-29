@@ -24,6 +24,24 @@ const TOP_BAR_HEIGHT:  int = 64
 const H264_NAMES: Array[String] = ["h264", "avc1", "avc"]
 const TRANSCODE_PROGRESS_FILE: String = "user://transcode_progress.txt"
 
+# ── Save error / copy result cause codes ────────────────────────────────────
+# Every SaveError flowing through _show_save_error_modal carries one of these
+# in its `cause` field, and every _copy_file_chunked result carries one in
+# its `reason` field. Centralised as constants so typos surface at parse time
+# (string-literal mismatches in match statements silently fall through to the
+# default arm otherwise) and the full taxonomy is easy to grep.
+const CAUSE_BAD_NAME:           String = "bad_name"
+const CAUSE_NAME_COLLISION:     String = "name_collision"
+const CAUSE_MISSING_SOURCE:     String = "missing_source"
+const CAUSE_NO_ROUNDS:          String = "no_rounds"
+const CAUSE_FORK_UNDERFILLED:   String = "fork_underfilled"
+const CAUSE_FFMPEG_MISSING:     String = "ffmpeg_missing"
+const CAUSE_CANCELLED:          String = "cancelled"
+const CAUSE_SRC_UNREADABLE:     String = "src_unreadable"
+const CAUSE_DST_UNWRITABLE:     String = "dst_unwritable"
+const CAUSE_TRANSCODE_FAILED:   String = "transcode_failed"
+const CAUSE_UNKNOWN_COPY_ERROR: String = "unknown_copy_error"
+
 const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
 @onready var _bg:          ColorRect       = $Background
@@ -434,80 +452,141 @@ func _show_status(msg: String, is_error: bool) -> void:
 
 
 func _on_save_pressed() -> void:
-	_save_btn.disabled       = true
-	_status_lbl.visible      = false
-	_transcode_cancel        = false
-	_save_aborted            = false
-	_save_abort_error        = {}
-	_round_folder_counter    = 0
-
-	# Pre-save validation pass. Walks the entire journey (top-level items plus
-	# every fork path, recursively) and collects every problem in one shot —
-	# missing source files, invalid round/path names, paths that would exceed
-	# Windows MAX_PATH, etc. — so the user sees all issues at once instead of
-	# fixing-and-retrying repeatedly.
-	var presave_issues: Array = _collect_presave_issues()
-	if not presave_issues.is_empty():
-		var headline: String = "Found %d issue%s that prevent saving. Fix the items below and try again." % [
-			presave_issues.size(),
-			"s" if presave_issues.size() != 1 else "",
-		]
-		_show_save_error_modal("CANNOT SAVE JOURNEY", headline, presave_issues)
+	# Top-level orchestrator. Each phase is a named helper returning a clear
+	# success/failure signal so the flow reads as a sequence of steps rather
+	# than 250 lines of nested branches. Helpers that fail are responsible for
+	# their own user-facing error modal and any staging cleanup.
+	_save_btn.disabled = true
+	_reset_save_state()
+	if not await _do_save():
 		_save_btn.disabled = false
-		return
 
-	var journey_name: String = _journey_name.strip_edges()
 
-	# Walks items[] (and nested forks) looking for any round with a video.
+# Returns true on a fully successful save (which transitions the user away
+# from the editor), false on any failure or cancellation. Each helper that
+# returns false has already shown the user a specific error modal. Staging-
+# folder cleanup is centralised here so the per-phase code stays focused on
+# its own responsibility.
+func _do_save() -> bool:
+	if not _validate_presave():
+		return false
+	if not _build_transcode_plan():
+		return false
+
+	var paths: Dictionary = _setup_save_folders()
+	var modal: Control    = _create_save_progress_modal_if_needed()
+
+	var data: Dictionary = await _save_all_items(paths, modal)
+	if modal:
+		modal.queue_free()
+
+	# Any failure past this point (including an empty data return from
+	# _save_all_items) requires wiping the staging folder. Each helper
+	# already showed its own error modal; we just handle the disk cleanup.
+	if data.is_empty():
+		JourneyData.delete_dir_recursive(paths["abs_dir"])
+		return false
+
+	if not _write_journey_json(paths, data):
+		JourneyData.delete_dir_recursive(paths["abs_dir"])
+		return false
+
+	_swap_staging_into_place(paths)
+	_finalize_save_success()
+	return true
+
+
+# Clears all in-flight save state so a previous failed save can't bleed into
+# this one (stale _save_aborted flag, leftover error stash, round counter
+# from a partial walk).
+func _reset_save_state() -> void:
+	_status_lbl.visible   = false
+	_transcode_cancel     = false
+	_save_aborted         = false
+	_save_abort_error     = {}
+	_round_folder_counter = 0
+
+
+# Runs the whole-tree presave validation pass. Returns false (and shows the
+# multi-issue modal) when any problems exist.
+func _validate_presave() -> bool:
+	var issues: Array = _collect_presave_issues()
+	if issues.is_empty():
+		return true
+	var headline: String = "Found %d issue%s that prevent saving. Fix the items below and try again." % [
+		issues.size(),
+		"s" if issues.size() != 1 else "",
+	]
+	_show_save_error_modal("CANNOT SAVE JOURNEY", headline, issues)
+	return false
+
+
+# Populates _transcode_plan by walking every video source in the tree. Returns
+# false (and shows the ffmpeg_missing modal) when ffmpeg is unavailable AND
+# the tree contains videos that probably need transcoding (non-.mp4).
+func _build_transcode_plan() -> bool:
+	_transcode_plan = {}
 	var any_video: bool = JourneyData.items_have_any_video(_items)
 	var ffmpeg_ok: bool = _ffmpeg_available() if any_video else false
 
-	# Transcode plan covers every round in the tree — top-level AND every fork
-	# path at every depth. Keyed by source path so the same video can be looked
-	# up from both the top-level save loop and the recursive _save_path. Same
-	# source dragged into two rounds is probed/transcoded once and the result
-	# is reused (transcode is identity-by-source).
-	_transcode_plan = {}
 	var all_video_sources: Array = []
 	_collect_video_sources(_items, all_video_sources)
 
 	if ffmpeg_ok:
+		# Probe every unique source. Same source dragged into multiple rounds
+		# is identity-by-path so the transcode runs once and the result is
+		# reused at both top-level and fork-path save sites.
 		for src: String in all_video_sources:
 			if _transcode_plan.has(src):
 				continue
 			var codec: String = _get_video_codec(src)
 			if codec != "" and not (codec in H264_NAMES):
 				_transcode_plan[src] = {"codec": codec, "duration": _video_duration_seconds(src)}
-	else:
-		# Without ffprobe we can't verify codecs. Be conservative: any non-.mp4
-		# extension is treated as "needs transcoding" — refuse the save and ask
-		# the user to install ffmpeg or pre-transcode externally. .mp4 files are
-		# trusted to be H.264 (the common case); if a .mp4 turns out to use a
-		# different codec, playback will fail at runtime but we have no way to
-		# detect that here.
-		var non_mp4_sources: Array = []
-		for src: String in all_video_sources:
-			if src.get_extension().to_lower() != "mp4" and not (src in non_mp4_sources):
-				non_mp4_sources.append(src)
-		if not non_mp4_sources.is_empty():
-			_show_save_error_single(
-				"CANNOT SAVE JOURNEY",
-				"ffmpeg_missing",
-				"Journey",
-				"%d video(s) use a non-.mp4 container that likely needs transcoding to H.264, but ffmpeg is not available." % non_mp4_sources.size(),
-				"Install ffmpeg into the project's bin/ folder (or onto your system PATH) and restart the editor. Alternatively, transcode the offending video(s) to H.264 .mp4 outside the editor and re-drag them.")
-			_save_btn.disabled = false
-			return
+		return true
 
+	# No ffprobe → can't verify codecs. Be conservative: any non-.mp4
+	# extension is treated as "needs transcoding". .mp4 files are trusted to
+	# be H.264 (the common case); a .mp4 with a non-H.264 codec will fail at
+	# runtime but we have no way to detect that here.
+	var non_mp4_sources: Array = []
+	for src: String in all_video_sources:
+		if src.get_extension().to_lower() != "mp4" and not (src in non_mp4_sources):
+			non_mp4_sources.append(src)
+	if non_mp4_sources.is_empty():
+		return true
+	_show_save_error_single(
+		"CANNOT SAVE JOURNEY",
+		CAUSE_FFMPEG_MISSING,
+		"Journey",
+		"%d video(s) use a non-.mp4 container that likely needs transcoding to H.264, but ffmpeg is not available." % non_mp4_sources.size(),
+		"Install ffmpeg into the project's bin/ folder (or onto your system PATH) and restart the editor. Alternatively, transcode the offending video(s) to H.264 .mp4 outside the editor and re-drag them.")
+	return false
+
+
+# Computes both staging and final folder paths, creates the staging tree
+# (wiping any leftover from a previous interrupted save), and pre-copies the
+# cover image so the loop has its dedup entry primed.
+#
+# Returns a Dictionary holding everything downstream phases need:
+#   {
+#     journey_name:        String  - sanitized + edge-stripped journey name
+#     staging_journey_dir: String  - user://... path for journey.json writes
+#     abs_dir:             String  - OS-absolute staging root (for file ops)
+#     abs_media_dir:       String  - OS-absolute media/ subfolder
+#     final_abs_dir:       String  - OS-absolute final target for the swap
+#     copied_images:       Dict    - dedup map shared with _save_all_items
+#   }
+func _setup_save_folders() -> Dictionary:
+	var journey_name: String      = _journey_name.strip_edges()
 	var journeys_root: String     = SettingsService.get_journeys_dir()
 	var folder_name: String       = JourneyData.sanitize_folder_name(journey_name)
 	var final_journey_dir: String = journeys_root + "/" + folder_name
 	var final_abs_dir: String     = ProjectSettings.globalize_path(final_journey_dir)
 
-	# Stage the whole save to a sibling temp folder so a mid-save failure or
-	# user cancel can roll back cleanly — the existing journey on disk is never
-	# touched until the swap at the end. The dot prefix makes JourneyScanner
-	# skip leftover staging folders if the app crashes before the swap.
+	# Stage to a sibling temp folder so a mid-save failure or user cancel can
+	# roll back cleanly — the existing journey on disk is never touched until
+	# the swap at the end. The dot prefix makes JourneyScanner skip leftover
+	# staging folders if the app crashes before the swap.
 	var staging_journey_dir: String = journeys_root + "/.~save_" + folder_name
 	var abs_dir: String             = ProjectSettings.globalize_path(staging_journey_dir)
 	if DirAccess.dir_exists_absolute(abs_dir):
@@ -515,26 +594,51 @@ func _on_save_pressed() -> void:
 	DirAccess.make_dir_recursive_absolute(abs_dir)
 
 	# All images (cover + storyboard backgrounds + line images + fork path
-	# illustrations) live in a dedicated media/ subfolder so the journey root
-	# only contains journey.json and per-round subdirectories.
+	# illustrations) live in media/ so the journey root only holds journey.json
+	# and per-round subdirectories.
 	var abs_media_dir: String = abs_dir + "/media"
 	DirAccess.make_dir_recursive_absolute(abs_media_dir)
 
-	# Tracks images already copied this save: source_path → dest_filename
-	# (relative to abs_media_dir). Prevents duplicating a file when the same
-	# image is referenced multiple times.
+	# Dedup map: source_path → dest_filename (relative to abs_media_dir).
+	# Primed with the cover image when present so the same image dropped into
+	# the cover slot AND a storyboard wouldn't get copied twice.
 	var copied_images: Dictionary = {}
-
 	if _cover_path != "":
 		var ext: String = _cover_path.get_extension().to_lower()
 		_copy_image_deduped(_cover_path, abs_media_dir, "cover." + ext, copied_images)
 
-	# Show the progress modal whenever the save will copy or transcode video —
-	# large video copies are streamed and take visible time.
-	var modal: Control = null
-	if any_video:
-		modal = _create_transcode_modal()
-		add_child(modal)
+	return {
+		"journey_name":        journey_name,
+		"staging_journey_dir": staging_journey_dir,
+		"abs_dir":             abs_dir,
+		"abs_media_dir":       abs_media_dir,
+		"final_abs_dir":       final_abs_dir,
+		"copied_images":       copied_images,
+	}
+
+
+# Creates and parents the streaming progress modal IF the save will actually
+# transfer video bytes. Returns null when there are no videos to save (no
+# point in flashing a modal that immediately dismisses).
+func _create_save_progress_modal_if_needed() -> Control:
+	if not JourneyData.items_have_any_video(_items):
+		return null
+	var modal: Control = _create_transcode_modal()
+	add_child(modal)
+	return modal
+
+
+# Walks _items, dispatching each to its per-type handler and accumulating the
+# four output arrays (rounds, forks, shops, storyboards). Returns the
+# journey.json data on success or an empty Dictionary on cancel/I-O failure;
+# in the latter case the user-facing error modal is already shown and the
+# staging folder is already cleaned up.
+func _save_all_items(paths: Dictionary, modal: Control) -> Dictionary:
+	# Pull the paths-dict entries into the locals the loop body already uses,
+	# so the legacy code below doesn't have to be reflowed to dict access.
+	var abs_dir: String       = paths["abs_dir"]
+	var abs_media_dir: String = paths["abs_media_dir"]
+	var copied_images: Dictionary = paths["copied_images"]
 
 	var rounds_json:      Array = []
 	var forks_json:       Array = []
@@ -655,27 +759,25 @@ func _on_save_pressed() -> void:
 					_update_modal_round(modal, rorder, total_main_rounds, round_name, info["codec"])
 					var ok: bool = await _transcode_video(vid_src, vid_dst, info["duration"], modal)
 					if not ok:
-						if modal: modal.queue_free()
-						JourneyData.delete_dir_recursive(abs_dir)
 						# _transcode_cancel distinguishes user cancel from ffmpeg
 						# failure (e.g. bad input file). Same return-value path,
-						# different remediation.
+						# different remediation. Modal + staging cleanup happen
+						# in _do_save when we return {}.
 						if _transcode_cancel:
 							_show_save_error_single(
 								"SAVE CANCELLED",
-								"cancelled",
+								CAUSE_CANCELLED,
 								"Round %d \"%s\"" % [rorder, round_name],
 								"You cancelled the transcode while round \"%s\" was being processed." % round_name,
 								"Press Save again to retry. Nothing on disk was changed.")
 						else:
 							_show_save_error_single(
 								"SAVE FAILED",
-								"transcode_failed",
+								CAUSE_TRANSCODE_FAILED,
 								"Round %d \"%s\"" % [rorder, round_name],
 								"ffmpeg failed to transcode video \"%s\" (codec %s → h264)." % [vid_src.get_file(), info["codec"]],
 								"The source video may be corrupt or use an unsupported variant. Try re-encoding it to H.264 .mp4 outside the editor, then re-drag it into this round.")
-						_save_btn.disabled = false
-						return
+						return {}
 				else:
 					# Short standard filename keyed off the source extension.
 					var vid_dst_name: String = "video." + vid_src.get_extension()
@@ -690,11 +792,8 @@ func _on_save_pressed() -> void:
 							vid_src, vid_dst_path,
 							func(done: int, tot: int) -> void: _update_modal_copy(modal, done, tot))
 						if not copy_result["ok"]:
-							if modal: modal.queue_free()
-							JourneyData.delete_dir_recursive(abs_dir)
 							_show_copy_failure_modal(copy_result, "Round %d \"%s\"" % [rorder, round_name])
-							_save_btn.disabled = false
-							return
+							return {}
 
 			# (Renamed-round cleanup happens implicitly at swap time: the old
 			# journey folder is deleted wholesale, taking any stale round
@@ -725,30 +824,22 @@ func _on_save_pressed() -> void:
 			# (cancel vs source unreadable vs destination unwritable) and the
 			# specific fork-path round that failed.
 			if _save_aborted:
-				if modal: modal.queue_free()
-				JourneyData.delete_dir_recursive(abs_dir)
-				var stashed_result: Dictionary = _save_abort_error.get("result", {"reason": "unknown_copy_error"})
+				var stashed_result: Dictionary = _save_abort_error.get("result", {"reason": CAUSE_UNKNOWN_COPY_ERROR})
 				var stashed_item: String       = _save_abort_error.get("item",   "Fork path video")
 				_show_copy_failure_modal(stashed_result, stashed_item)
-				_save_btn.disabled = false
-				return
-
-	if modal:
-		modal.queue_free()
+				return {}
 
 	# Catches _save_aborted set by a non-video _copy_file (funscript / axis /
 	# vib / boss / storyboard image) during top-level iteration. Fork-path
 	# failures already returned via the inline `if _save_aborted:` block above.
 	if _save_aborted:
-		JourneyData.delete_dir_recursive(abs_dir)
-		var stashed_result: Dictionary = _save_abort_error.get("result", {"reason": "unknown_copy_error"})
+		var stashed_result: Dictionary = _save_abort_error.get("result", {"reason": CAUSE_UNKNOWN_COPY_ERROR})
 		var stashed_item: String       = _save_abort_error.get("item",   "File copy")
 		_show_copy_failure_modal(stashed_result, stashed_item)
-		_save_btn.disabled = false
-		return
+		return {}
 
-	var data: Dictionary = {
-		"Name":        journey_name,
+	return {
+		"Name":        paths["journey_name"],
 		"Author":      _journey_author.strip_edges(),
 		"Description": _journey_desc.strip_edges(),
 		"Difficulty":  JourneyData.DIFFICULTIES[_journey_difficulty_idx],
@@ -759,25 +850,34 @@ func _on_save_pressed() -> void:
 		"Storyboards": storyboards_json,
 	}
 
-	var f: FileAccess = FileAccess.open(staging_journey_dir + "/journey.json", FileAccess.WRITE)
+
+# Writes journey.json into the staging folder. Returns false (showing the
+# dst_unwritable modal) on I/O failure; the caller is responsible for
+# subsequent cleanup of staging in that case.
+func _write_journey_json(paths: Dictionary, data: Dictionary) -> bool:
+	var json_path: String = paths["staging_journey_dir"] + "/journey.json"
+	var f: FileAccess = FileAccess.open(json_path, FileAccess.WRITE)
 	if f == null:
-		JourneyData.delete_dir_recursive(abs_dir)
 		_show_save_error_single(
 			"SAVE FAILED",
-			"dst_unwritable",
+			CAUSE_DST_UNWRITABLE,
 			"journey.json",
-			"Could not create %s." % (staging_journey_dir + "/journey.json"),
+			"Could not create %s." % json_path,
 			"Check that the journeys folder drive isn't full or write-protected, and that no antivirus is blocking the editor. You can change the journeys folder in Options → Storage Location.")
-		_save_btn.disabled = false
-		return
+		return false
 	f.store_string(JSON.stringify(data, "\t"))
 	f.close()
+	return true
 
-	# Swap staging → final. The save wrote everything to a temp sibling folder,
-	# so the existing journey is still on disk and untouched. Now: clear the
-	# final target (in-place edit) and the old-name folder (journey rename),
-	# then rename staging into place. Per-round renames don't need explicit
-	# cleanup — they're subdirs that vanish along with the old journey folder.
+
+# Atomic-ish swap of the staging folder into its final location. The save
+# wrote everything under a hidden sibling folder so the existing journey was
+# untouched; now we clear the destination (in-place edit) and the old-name
+# folder (journey rename), then rename staging into place. Per-round renames
+# vanish implicitly along with the old folder.
+func _swap_staging_into_place(paths: Dictionary) -> void:
+	var abs_dir: String       = paths["abs_dir"]
+	var final_abs_dir: String = paths["final_abs_dir"]
 	if DirAccess.dir_exists_absolute(final_abs_dir):
 		JourneyData.delete_dir_recursive(final_abs_dir)
 	if _original_journey_folder != "":
@@ -786,6 +886,11 @@ func _on_save_pressed() -> void:
 			JourneyData.delete_dir_recursive(old_abs)
 	DirAccess.rename_absolute(abs_dir, final_abs_dir)
 
+
+# Final UX after a clean save: brief success message, then transition back
+# to the journey catalogue. The 1.5s delay gives the user a moment to see
+# the confirmation before the scene changes.
+func _finalize_save_success() -> void:
 	_show_status("Journey saved! Returning to catalogue...", false)
 	await get_tree().create_timer(1.5).timeout
 	Transition.change_scene("res://scenes/journey_select/JourneySelect.tscn")
@@ -919,7 +1024,7 @@ func _save_path(path_data: Dictionary, abs_dir: String, abs_media_dir: String, s
 						if not pr_transcode_ok:
 							_save_aborted = true
 							_save_abort_error = {
-								"result": {"ok": false, "reason": ("cancelled" if _transcode_cancel else "transcode_failed"), "detail": pr_vid},
+								"result": {"ok": false, "reason": (CAUSE_CANCELLED if _transcode_cancel else CAUSE_TRANSCODE_FAILED), "detail": pr_vid},
 								"item":   "%s → Round \"%s\"" % [slug_prefix, pr_name],
 							}
 							return path_entry
@@ -1169,50 +1274,21 @@ func _poll_progress(progress_path: String, duration: float, modal: Control) -> v
 # ---------------------------------------------------------------------------
 
 func _create_transcode_modal() -> Control:
-	var modal: Control = Control.new()
-	modal.name = "TranscodeModal"
-	modal.anchor_right = 1.0
-	modal.anchor_bottom = 1.0
-	modal.mouse_filter = Control.MOUSE_FILTER_STOP
-
-	var backdrop: ColorRect = ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.85)
-	backdrop.anchor_right = 1.0
-	backdrop.anchor_bottom = 1.0
-	modal.add_child(backdrop)
-
-	var panel: PanelContainer = PanelContainer.new()
-	var ps: StyleBoxFlat = StyleBoxFlat.new()
-	ps.bg_color            = UITheme.PANEL_BG
-	ps.border_color        = UITheme.PURPLE_BRIGHT
-	ps.border_width_left   = 2; ps.border_width_right  = 2
-	ps.border_width_top    = 2; ps.border_width_bottom = 2
-	ps.content_margin_left = 32; ps.content_margin_right  = 32
-	ps.content_margin_top  = 24; ps.content_margin_bottom = 24
-	panel.add_theme_stylebox_override("panel", ps)
-	panel.anchor_left = 0.5; panel.anchor_right = 0.5
-	panel.anchor_top = 0.5;  panel.anchor_bottom = 0.5
-	panel.offset_left = -260; panel.offset_right = 260
-	panel.offset_top = -120;  panel.offset_bottom = 120
-	modal.add_child(panel)
-
-	var vb: VBoxContainer = VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 14)
-	panel.add_child(vb)
-
-	var title: Label = Label.new()
-	title.name = "Title"
-	title.text = "SAVING JOURNEY"
-	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 16, true)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(title)
+	var parts: Dictionary    = UITheme.build_centered_modal("SAVING JOURNEY", UITheme.PURPLE_BRIGHT, Vector2i(520, 240))
+	var modal: Control       = parts["modal"]
+	var vbox:  VBoxContainer = parts["vbox"]
+	modal.name           = "TranscodeModal"
+	parts["title"].name  = "Title"
+	# Override the default 12-separation with the transcode modal's looser 14
+	# spacing — the progress bar reads more cleanly with extra breathing room.
+	vbox.add_theme_constant_override("separation", 14)
 
 	var round_lbl: Label = Label.new()
 	round_lbl.name = "RoundLabel"
 	round_lbl.text = ""
 	UITheme.style_label(round_lbl, UITheme.WHITE_SOFT, 13, false)
 	round_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(round_lbl)
+	vbox.add_child(round_lbl)
 
 	var bar: ProgressBar = ProgressBar.new()
 	bar.name = "Bar"
@@ -1226,14 +1302,14 @@ func _create_transcode_modal() -> Control:
 	var bar_fill: StyleBoxFlat = StyleBoxFlat.new()
 	bar_fill.bg_color = UITheme.PURPLE_BRIGHT
 	bar.add_theme_stylebox_override("fill", bar_fill)
-	vb.add_child(bar)
+	vbox.add_child(bar)
 
 	var status_lbl: Label = Label.new()
 	status_lbl.name = "Status"
 	status_lbl.text = "Starting..."
 	UITheme.style_label(status_lbl, UITheme.PURPLE_MID, 12, false)
 	status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(status_lbl)
+	vbox.add_child(status_lbl)
 
 	var cancel_btn: Button = Button.new()
 	cancel_btn.text = "CANCEL"
@@ -1243,7 +1319,7 @@ func _create_transcode_modal() -> Control:
 	var btn_row: HBoxContainer = HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row.add_child(cancel_btn)
-	vb.add_child(btn_row)
+	vbox.add_child(btn_row)
 
 	return modal
 
@@ -1335,7 +1411,7 @@ func _copy_file(src: String, dst: String) -> void:
 		printerr("JourneyBuilder: cannot read: " + src)
 		_save_aborted = true
 		_save_abort_error = {
-			"result": {"ok": false, "reason": "src_unreadable", "detail": src},
+			"result": {"ok": false, "reason": CAUSE_SRC_UNREADABLE, "detail": src},
 			"item":   "File copy",
 		}
 		return
@@ -1346,7 +1422,7 @@ func _copy_file(src: String, dst: String) -> void:
 		printerr("JourneyBuilder: cannot write: " + dst)
 		_save_aborted = true
 		_save_abort_error = {
-			"result": {"ok": false, "reason": "dst_unwritable", "detail": dst},
+			"result": {"ok": false, "reason": CAUSE_DST_UNWRITABLE, "detail": dst},
 			"item":   "File copy",
 		}
 		return
@@ -1380,12 +1456,12 @@ func _copy_file_chunked(src: String, dst: String, progress: Callable = Callable(
 	var src_file: FileAccess = FileAccess.open(src, FileAccess.READ)
 	if src_file == null:
 		printerr("JourneyBuilder: cannot read: " + src)
-		return {"ok": false, "reason": "src_unreadable", "detail": src}
+		return {"ok": false, "reason": CAUSE_SRC_UNREADABLE, "detail": src}
 	var dst_file: FileAccess = FileAccess.open(dst, FileAccess.WRITE)
 	if dst_file == null:
 		printerr("JourneyBuilder: cannot write: " + dst)
 		src_file.close()
-		return {"ok": false, "reason": "dst_unwritable", "detail": dst}
+		return {"ok": false, "reason": CAUSE_DST_UNWRITABLE, "detail": dst}
 
 	var total: int = src_file.get_length()
 	var copied: int = 0
@@ -1395,7 +1471,7 @@ func _copy_file_chunked(src: String, dst: String, progress: Callable = Callable(
 		if _transcode_cancel:
 			src_file.close()
 			dst_file.close()
-			return {"ok": false, "reason": "cancelled", "detail": ""}
+			return {"ok": false, "reason": CAUSE_CANCELLED, "detail": ""}
 		var chunk: PackedByteArray = src_file.get_buffer(COPY_CHUNK_SIZE)
 		if chunk.is_empty():
 			break
@@ -1559,7 +1635,7 @@ func _collect_presave_issues() -> Array:
 	var jn: String = _journey_name.strip_edges()
 	if jn == "":
 		issues.append({
-			"cause":  "bad_name",
+			"cause":  CAUSE_BAD_NAME,
 			"item":   "Journey",
 			"detail": "Journey name is required.",
 			"hint":   "Enter a name in the Journey Info panel (right-side, no node selected).",
@@ -1576,14 +1652,14 @@ func _collect_presave_issues() -> Array:
 			original_abs = ProjectSettings.globalize_path(_original_journey_folder)
 		if target_abs != original_abs and DirAccess.dir_exists_absolute(target_abs):
 			issues.append({
-				"cause":  "name_collision",
+				"cause":  CAUSE_NAME_COLLISION,
 				"item":   "Journey",
 				"detail": "A journey already exists at: %s" % target_abs,
 				"hint":   "Saving with this name would replace that other journey. Pick a different name, or delete the existing journey from the catalogue first.",
 			})
 	if _cover_path != "" and not _save_source_exists(_cover_path):
 		issues.append({
-			"cause":  "missing_source",
+			"cause":  CAUSE_MISSING_SOURCE,
 			"item":   "Journey cover image",
 			"detail": "Cover image no longer exists at: %s" % _cover_path,
 			"hint":   "Re-drag the cover image into the Journey Info panel, or remove it.",
@@ -1592,7 +1668,7 @@ func _collect_presave_issues() -> Array:
 	var has_round: bool = _items.any(func(item: Dictionary) -> bool: return item.get("type", "round") == "round")
 	if not has_round:
 		issues.append({
-			"cause":  "no_rounds",
+			"cause":  CAUSE_NO_ROUNDS,
 			"item":   "Journey",
 			"detail": "A journey needs at least one round at the top level.",
 			"hint":   "Add a round from the side panel.",
@@ -1635,7 +1711,7 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 	# user's identifier for the round in journey.json and the editor.
 	if name == "":
 		issues.append({
-			"cause":  "bad_name",
+			"cause":  CAUSE_BAD_NAME,
 			"item":   ctx,
 			"detail": "Round name is empty.",
 			"hint":   "Give the round a name in the side-panel editor.",
@@ -1645,14 +1721,14 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 	var fs: String = round_data.get("funscript_path", "")
 	if fs == "":
 		issues.append({
-			"cause":  "missing_source",
+			"cause":  CAUSE_MISSING_SOURCE,
 			"item":   label,
 			"detail": "No funscript file selected.",
 			"hint":   "Drag a .funscript or .json file into the Funscript field for this round.",
 		})
 	elif not _save_source_exists(fs):
 		issues.append({
-			"cause":  "missing_source",
+			"cause":  CAUSE_MISSING_SOURCE,
 			"item":   label,
 			"detail": "Funscript file no longer exists at: %s" % fs,
 			"hint":   "The source file may have been moved or deleted. Re-drag it into the editor.",
@@ -1662,7 +1738,7 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 	var vid: String = round_data.get("video_path", "")
 	if vid != "" and not _save_source_exists(vid):
 		issues.append({
-			"cause":  "missing_source",
+			"cause":  CAUSE_MISSING_SOURCE,
 			"item":   label,
 			"detail": "Video file no longer exists at: %s" % vid,
 			"hint":   "The source file may have been moved or deleted. Re-drag it into the editor or remove the video.",
@@ -1674,7 +1750,7 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 		var p: String = axis_scripts[axis]
 		if p != "" and not _save_source_exists(p):
 			issues.append({
-				"cause":  "missing_source",
+				"cause":  CAUSE_MISSING_SOURCE,
 				"item":   label,
 				"detail": "%s axis funscript no longer exists at: %s" % [axis, p],
 				"hint":   "Re-drag the %s funscript in the Extra Axes section." % axis,
@@ -1686,7 +1762,7 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 		var p: String = vib_scripts[ch_key]
 		if p != "" and not _save_source_exists(p):
 			issues.append({
-				"cause":  "missing_source",
+				"cause":  CAUSE_MISSING_SOURCE,
 				"item":   label,
 				"detail": "%s vibrator funscript no longer exists at: %s" % [ch_key, p],
 				"hint":   "Re-drag the %s funscript in the Vibrator Scripts section." % ch_key,
@@ -1696,7 +1772,7 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 	var boss_image: String = round_data.get("boss_image", "")
 	if boss_image != "" and not _save_source_exists(boss_image):
 		issues.append({
-			"cause":  "missing_source",
+			"cause":  CAUSE_MISSING_SOURCE,
 			"item":   label,
 			"detail": "Boss intro image no longer exists at: %s" % boss_image,
 			"hint":   "Re-drag the boss image in the Boss Round section, or disable boss mode.",
@@ -1713,7 +1789,7 @@ func _save_check_storyboard(sb_data: Dictionary, ctx: String, issues: Array) -> 
 	var default_img: String = sb_data.get("image", "")
 	if default_img != "" and not _save_source_exists(default_img):
 		issues.append({
-			"cause":  "missing_source",
+			"cause":  CAUSE_MISSING_SOURCE,
 			"item":   ctx,
 			"detail": "Default image no longer exists at: %s" % default_img,
 			"hint":   "Re-drag the default image into the storyboard, or remove it.",
@@ -1724,7 +1800,7 @@ func _save_check_storyboard(sb_data: Dictionary, ctx: String, issues: Array) -> 
 		var img: String = line.get("image", "")
 		if img != "" and not _save_source_exists(img):
 			issues.append({
-				"cause":  "missing_source",
+				"cause":  CAUSE_MISSING_SOURCE,
 				"item":   "%s, Line %d" % [ctx, li + 1],
 				"detail": "Speaker image no longer exists at: %s" % img,
 				"hint":   "Re-drag the speaker image into this line, or remove it.",
@@ -1735,7 +1811,7 @@ func _save_check_fork(fork_data: Dictionary, ctx: String, issues: Array) -> void
 	var paths: Array = fork_data.get("paths", [])
 	if paths.size() < 2:
 		issues.append({
-			"cause":  "fork_underfilled",
+			"cause":  CAUSE_FORK_UNDERFILLED,
 			"item":   ctx,
 			"detail": "Fork has only %d path(s); needs at least 2." % paths.size(),
 			"hint":   "Add a second path in the fork editor.",
@@ -1752,7 +1828,7 @@ func _save_check_fork(fork_data: Dictionary, ctx: String, issues: Array) -> void
 		# the name is what the player sees on the fork choice screen.
 		if pname == "":
 			issues.append({
-				"cause":  "bad_name",
+				"cause":  CAUSE_BAD_NAME,
 				"item":   path_ctx,
 				"detail": "Path name is empty.",
 				"hint":   "Give the path a name (e.g. \"Adventure\" or \"Reward\", or even \"What's next?\").",
@@ -1761,7 +1837,7 @@ func _save_check_fork(fork_data: Dictionary, ctx: String, issues: Array) -> void
 		var img: String = p.get("image_path", "")
 		if img != "" and not _save_source_exists(img):
 			issues.append({
-				"cause":  "missing_source",
+				"cause":  CAUSE_MISSING_SOURCE,
 				"item":   path_ctx,
 				"detail": "Card image no longer exists at: %s" % img,
 				"hint":   "Re-drag the card image for this path, or remove it.",
@@ -1771,7 +1847,7 @@ func _save_check_fork(fork_data: Dictionary, ctx: String, issues: Array) -> void
 		var has_round: bool = sub_items.any(func(it: Dictionary) -> bool: return it.get("type", "round") == "round")
 		if not has_round:
 			issues.append({
-				"cause":  "no_rounds",
+				"cause":  CAUSE_NO_ROUNDS,
 				"item":   path_ctx,
 				"detail": "This fork path has no rounds.",
 				"hint":   "Add at least one round to the path.",
@@ -1792,54 +1868,22 @@ func _show_save_error_modal(title: String, headline: String, errors: Array) -> v
 	if errors.is_empty():
 		return
 
-	var modal: Control = Control.new()
+	var parts: Dictionary    = UITheme.build_centered_modal(title, UITheme.ERROR_SOFT, Vector2i(720, 520))
+	var modal: Control       = parts["modal"]
+	var vbox:  VBoxContainer = parts["vbox"]
 	modal.name = "SaveErrorModal"
-	modal.anchor_right  = 1.0
-	modal.anchor_bottom = 1.0
-	modal.mouse_filter  = Control.MOUSE_FILTER_STOP
-
-	var backdrop: ColorRect = ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.85)
-	backdrop.anchor_right  = 1.0
-	backdrop.anchor_bottom = 1.0
-	modal.add_child(backdrop)
-
-	var panel: PanelContainer = PanelContainer.new()
-	var ps: StyleBoxFlat = StyleBoxFlat.new()
-	ps.bg_color              = UITheme.PANEL_BG
-	ps.border_color          = UITheme.ERROR_SOFT
-	ps.border_width_left     = 2;  ps.border_width_right    = 2
-	ps.border_width_top      = 2;  ps.border_width_bottom   = 2
-	ps.content_margin_left   = 28; ps.content_margin_right  = 28
-	ps.content_margin_top    = 22; ps.content_margin_bottom = 22
-	panel.add_theme_stylebox_override("panel", ps)
-	panel.anchor_left = 0.5; panel.anchor_right  = 0.5
-	panel.anchor_top  = 0.5; panel.anchor_bottom = 0.5
-	panel.offset_left = -360; panel.offset_right  = 360
-	panel.offset_top  = -260; panel.offset_bottom = 260
-	modal.add_child(panel)
-
-	var vb: VBoxContainer = VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 12)
-	panel.add_child(vb)
-
-	var title_lbl: Label = Label.new()
-	title_lbl.text = title
-	UITheme.style_label(title_lbl, UITheme.ERROR_SOFT, 16, true)
-	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(title_lbl)
 
 	var headline_lbl: Label = Label.new()
 	headline_lbl.text = headline
 	UITheme.style_label(headline_lbl, UITheme.WHITE_SOFT, 13, false)
 	headline_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	headline_lbl.autowrap_mode        = TextServer.AUTOWRAP_WORD_SMART
-	vb.add_child(headline_lbl)
+	vbox.add_child(headline_lbl)
 
 	var scroll: ScrollContainer = ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical   = Control.SIZE_EXPAND_FILL
-	vb.add_child(scroll)
+	vbox.add_child(scroll)
 
 	var list: VBoxContainer = VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1852,7 +1896,7 @@ func _show_save_error_modal(title: String, headline: String, errors: Array) -> v
 	var btn_row: HBoxContainer = HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row.add_theme_constant_override("separation", 12)
-	vb.add_child(btn_row)
+	vbox.add_child(btn_row)
 
 	var copy_btn: Button = Button.new()
 	copy_btn.text = "⎘  COPY DETAILS"
@@ -1947,31 +1991,31 @@ func _show_save_error_single(title: String, cause: String, item: String, detail:
 # on success.
 func _show_copy_failure_modal(copy_result: Dictionary, item: String) -> void:
 	match copy_result.get("reason", ""):
-		"cancelled":
+		CAUSE_CANCELLED:
 			_show_save_error_single(
 				"SAVE CANCELLED",
-				"cancelled",
+				CAUSE_CANCELLED,
 				item,
 				"You cancelled the copy while %s was being processed." % item,
 				"Press Save again to retry. Nothing on disk was changed.")
-		"src_unreadable":
+		CAUSE_SRC_UNREADABLE:
 			_show_save_error_single(
 				"SAVE FAILED",
-				"src_unreadable",
+				CAUSE_SRC_UNREADABLE,
 				item,
 				"Source file became unreadable: %s" % copy_result.get("detail", "?"),
 				"The file may have been moved, deleted, or its drive disconnected since you opened the editor. Re-drag it into this round and try again.")
-		"dst_unwritable":
+		CAUSE_DST_UNWRITABLE:
 			_show_save_error_single(
 				"SAVE FAILED",
-				"dst_unwritable",
+				CAUSE_DST_UNWRITABLE,
 				item,
 				"Could not create the destination file: %s" % copy_result.get("detail", "?"),
 				"Check that the journeys folder drive isn't full or write-protected, and that no antivirus is blocking the editor. You can change the journeys folder in Options → Storage Location.")
 		_:
 			_show_save_error_single(
 				"SAVE FAILED",
-				"unknown_copy_error",
+				CAUSE_UNKNOWN_COPY_ERROR,
 				item,
 				"An unexpected copy failure occurred while processing %s." % item,
 				"Try saving again. If the problem persists, check the Godot debug output for details.")
@@ -2024,41 +2068,9 @@ func _check_for_stale_staging_folders() -> void:
 # a-blue-moon flow and doesn't justify a scene file. Mirrors the SaveError
 # modal style so it feels native.
 func _show_stale_staging_dialog(stale: Array) -> void:
-	var modal: Control = Control.new()
-	modal.anchor_right  = 1.0
-	modal.anchor_bottom = 1.0
-	modal.mouse_filter  = Control.MOUSE_FILTER_STOP
-
-	var backdrop: ColorRect = ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.85)
-	backdrop.anchor_right  = 1.0
-	backdrop.anchor_bottom = 1.0
-	modal.add_child(backdrop)
-
-	var panel: PanelContainer = PanelContainer.new()
-	var ps: StyleBoxFlat = StyleBoxFlat.new()
-	ps.bg_color              = UITheme.PANEL_BG
-	ps.border_color          = UITheme.AMBER
-	ps.border_width_left     = 2;  ps.border_width_right    = 2
-	ps.border_width_top      = 2;  ps.border_width_bottom   = 2
-	ps.content_margin_left   = 28; ps.content_margin_right  = 28
-	ps.content_margin_top    = 22; ps.content_margin_bottom = 22
-	panel.add_theme_stylebox_override("panel", ps)
-	panel.anchor_left = 0.5; panel.anchor_right  = 0.5
-	panel.anchor_top  = 0.5; panel.anchor_bottom = 0.5
-	panel.offset_left = -340; panel.offset_right  = 340
-	panel.offset_top  = -220; panel.offset_bottom = 220
-	modal.add_child(panel)
-
-	var vb: VBoxContainer = VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 12)
-	panel.add_child(vb)
-
-	var title: Label = Label.new()
-	title.text = "UNFINISHED SAVES FOUND"
-	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 16, true)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(title)
+	var parts: Dictionary    = UITheme.build_centered_modal("UNFINISHED SAVES FOUND", UITheme.AMBER, Vector2i(680, 440))
+	var modal: Control       = parts["modal"]
+	var vbox:  VBoxContainer = parts["vbox"]
 
 	var headline: Label = Label.new()
 	headline.text = ("Found %d leftover save folder%s from a previous session that didn't finish (crash, power loss, or force-quit). They take disk space and are normally safe to delete." % [
@@ -2067,12 +2079,12 @@ func _show_stale_staging_dialog(stale: Array) -> void:
 	headline.autowrap_mode        = TextServer.AUTOWRAP_WORD_SMART
 	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_label(headline, UITheme.WHITE_SOFT, 13, false)
-	vb.add_child(headline)
+	vbox.add_child(headline)
 
 	var scroll: ScrollContainer = ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical   = Control.SIZE_EXPAND_FILL
-	vb.add_child(scroll)
+	vbox.add_child(scroll)
 
 	var list: VBoxContainer = VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2093,12 +2105,12 @@ func _show_stale_staging_dialog(stale: Array) -> void:
 	recover_hint.text = "Advanced: to recover one manually, rename its folder to remove the `.~save_` prefix using your file manager. The journey will reappear in the catalogue. Most of the time, just deleting them is fine."
 	recover_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_label(recover_hint, UITheme.SEPARATOR, 11, false)
-	vb.add_child(recover_hint)
+	vbox.add_child(recover_hint)
 
 	var btn_row: HBoxContainer = HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row.add_theme_constant_override("separation", 12)
-	vb.add_child(btn_row)
+	vbox.add_child(btn_row)
 
 	var keep_btn: Button = Button.new()
 	keep_btn.text = "KEEP"

@@ -197,3 +197,68 @@ func make_separator_style(alpha: float = 1.0) -> StyleBoxFlat:
 	s.content_margin_top    = 1
 	s.content_margin_bottom = 1
 	return s
+
+
+# ── Centered modal scaffolding ──────────────────────────────────────────────
+#
+# Every dynamically-built modal in this project shares the same shape: a
+# full-screen semi-opaque backdrop, a centered PanelContainer with an accent
+# bordered StyleBoxFlat, a title label, and a VBoxContainer for body content.
+# This helper builds the scaffolding once so callers can focus on the body.
+#
+# Returns:
+#   {
+#     "modal":  Control          – add as child of the calling node; queue_free to dismiss
+#     "vbox":   VBoxContainer    – append body content to this
+#     "title":  Label            – already populated and styled, exposed so callers can restyle if needed
+#   }
+#
+# Standard panel size is 720×520. Pass `panel_size` to override (e.g. a wider
+# error modal listing many issues, or a narrower confirmation prompt).
+func build_centered_modal(
+		title: String,
+		accent: Color,
+		panel_size: Vector2i = Vector2i(720, 520)) -> Dictionary:
+	var modal: Control = Control.new()
+	modal.anchor_right  = 1.0
+	modal.anchor_bottom = 1.0
+	modal.mouse_filter  = Control.MOUSE_FILTER_STOP
+
+	var backdrop: ColorRect = ColorRect.new()
+	backdrop.color = Color(0.0, 0.0, 0.0, 0.85)
+	backdrop.anchor_right  = 1.0
+	backdrop.anchor_bottom = 1.0
+	modal.add_child(backdrop)
+
+	var panel: PanelContainer = PanelContainer.new()
+	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
+	panel_style.bg_color              = PANEL_BG
+	panel_style.border_color          = accent
+	panel_style.border_width_left     = 2;  panel_style.border_width_right    = 2
+	panel_style.border_width_top      = 2;  panel_style.border_width_bottom   = 2
+	panel_style.content_margin_left   = 28; panel_style.content_margin_right  = 28
+	panel_style.content_margin_top    = 22; panel_style.content_margin_bottom = 22
+	panel.add_theme_stylebox_override("panel", panel_style)
+	panel.anchor_left = 0.5; panel.anchor_right  = 0.5
+	panel.anchor_top  = 0.5; panel.anchor_bottom = 0.5
+	var half_w: int = panel_size.x / 2
+	var half_h: int = panel_size.y / 2
+	panel.offset_left = -half_w; panel.offset_right  = half_w
+	panel.offset_top  = -half_h; panel.offset_bottom = half_h
+	modal.add_child(panel)
+
+	var vbox: VBoxContainer = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 12)
+	panel.add_child(vbox)
+
+	var title_lbl: Label = Label.new()
+	title_lbl.text = title
+	style_label(title_lbl, accent, 16, true)
+	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(title_lbl)
+
+	return {
+		"modal": modal,
+		"vbox":  vbox,
+		"title": title_lbl,
+	}
