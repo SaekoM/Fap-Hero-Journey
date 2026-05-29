@@ -781,10 +781,14 @@ func _connect_signals() -> void:
 
 	# Device-connection signals — surface a banner when the currently selected
 	# output device drops its connection, and clear it on reconnect. We watch
-	# both backends so an output-mode change in Options mid-game also picks up
-	# the correct state via _refresh_device_warning().
+	# both backends so an output-mode change in Options mid-game picks up the
+	# correct state via _refresh_device_warning(). DeviceAdded / DeviceRemoved
+	# matter independently of Connected/Disconnected: a device can drop
+	# (battery, Bluetooth, USB unplug) while Intiface itself stays running.
 	ButtplugService.connect("Connected",      _refresh_device_warning)
 	ButtplugService.connect("Disconnected",   _refresh_device_warning)
+	ButtplugService.connect("DeviceAdded",    func(_n: String, _i: int) -> void: _refresh_device_warning())
+	ButtplugService.connect("DeviceRemoved",  func(_i: int) -> void: _refresh_device_warning())
 	SerialDeviceService.connect("Connected",    _refresh_device_warning)
 	SerialDeviceService.connect("Disconnected", _refresh_device_warning)
 	_refresh_device_warning()
@@ -795,14 +799,23 @@ func _connect_signals() -> void:
 # ---------------------------------------------------------------------------
 
 # Updates the disconnect banner to reflect the currently selected output mode
-# and that mode's connection state. Called from connect/disconnect signals on
-# both backends, plus once at startup so a session that's already disconnected
-# when the game scene loads still shows the warning.
+# and the relevant connection state. Called from connect/disconnect/device
+# signals on both backends, plus once at startup so a session that's already
+# in a bad state when the game scene loads still shows the warning.
 #
-# Visible when: output_mode = buttplug and ButtplugService is not connected,
-# OR output_mode = serial and SerialDeviceService is not connected.
-# Hidden when the selected backend is connected (the other backend's state
-# is irrelevant — switching output modes via Options re-runs this check).
+# Buttplug has three distinct states the banner distinguishes:
+#   • Intiface itself is not connected → reconnect Intiface in Options.
+#   • Intiface connected but no device available → the device has dropped
+#     (battery, Bluetooth, USB unplug). Power it on / re-pair it.
+#   • The user has a specific device selected from a prior session, that
+#     device isn't present, BUT a different device IS — commands are silently
+#     going to the fallback device. Tell the user about the mismatch so they
+#     either connect their preferred device or update their selection.
+# Serial has only one failure mode (port closed) — message stays simple.
+#
+# Hidden when: the selected backend has a device AND either the user has no
+# specific preference (selected_device is empty) or the selected one is
+# present.
 func _refresh_device_warning() -> void:
 	if _device_warning_banner == null:
 		return
@@ -813,8 +826,23 @@ func _refresh_device_warning() -> void:
 		disconnected = not SerialDeviceService.SerialConnected
 		label_text   = "●  SERIAL DEVICE DISCONNECTED  —  RECONNECT IN OPTIONS"
 	else:
-		disconnected = not ButtplugService.BpConnected
-		label_text   = "●  DEVICE DISCONNECTED  —  RECONNECT IN OPTIONS"
+		if not ButtplugService.BpConnected:
+			disconnected = true
+			label_text   = "●  INTIFACE DISCONNECTED  —  RECONNECT IN OPTIONS"
+		else:
+			var selected_name: String = SettingsService.get_selected_device()
+			var active_name: String   = ButtplugService.GetActiveDeviceName()
+			if active_name == "":
+				disconnected = true
+				label_text   = "●  NO DEVICE CONNECTED  —  POWER ON OR RE-PAIR YOUR DEVICE"
+			elif selected_name != "" and selected_name != active_name:
+				# User has an explicit preference that isn't currently present.
+				# Playback still works via the fallback to active_name; the
+				# banner just tells the user it's not the device they picked.
+				disconnected = true
+				label_text   = "●  \"%s\" UNAVAILABLE  —  USING \"%s\" INSTEAD  (CHANGE IN OPTIONS)" % [
+					selected_name.to_upper(), active_name.to_upper(),
+				]
 	if disconnected:
 		_device_warning_label.text = label_text
 	_device_warning_banner.visible = disconnected

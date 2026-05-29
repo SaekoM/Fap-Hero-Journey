@@ -144,6 +144,22 @@ public partial class ButtplugService : Node
 		return -1;
 	}
 
+	// Returns the Name of whichever device GetSelectedDeviceIndex would
+	// currently route commands to (the user's selection if present, otherwise
+	// the fallback). Empty string when no device is available. Used by the
+	// GameLoop disconnect banner to detect "selected device unavailable, using
+	// a fallback instead" and tell the user about the mismatch.
+	public string GetActiveDeviceName()
+	{
+		int idx = GetSelectedDeviceIndex();
+		if (idx < 0)
+			return "";
+		foreach (var device in _client.Devices)
+			if ((int)device.Index == idx)
+				return device.Name;
+		return "";
+	}
+
 	// Treats a device as "linear" (a stroker) if it advertises either of the two
 	// linear output types in Buttplug.Core.Messages.OutputType:
 	//   • HwPositionWithDuration — the classic LinearCmd (target + duration).
