@@ -1625,6 +1625,23 @@ func _save_source_exists(path: String) -> bool:
 	return FileAccess.file_exists(ProjectSettings.globalize_path(path))
 
 
+# Recursively walks an items[] tree (top-level + every fork path at every
+# nesting depth) and returns true if any round exists anywhere. Used by the
+# journey-level "needs at least one round somewhere" check so authors can
+# gate their gameplay behind a fork (e.g. "Cutscene → Choose difficulty fork
+# → each path has its own boss") and still pass validation.
+func _has_any_round_in_tree(items: Array) -> bool:
+	for item: Dictionary in items:
+		var item_type: String = item.get("type", "round")
+		if item_type == "round":
+			return true
+		if item_type == "fork":
+			for p: Dictionary in item.get("paths", []):
+				if _has_any_round_in_tree(p.get("items", []) as Array):
+					return true
+	return false
+
+
 # Walks the entire journey tree (top-level + every fork path recursively) and
 # returns an Array of SaveError dicts for all problems found. An empty array
 # means the journey is safe to save.
@@ -1665,13 +1682,16 @@ func _collect_presave_issues() -> Array:
 			"hint":   "Re-drag the cover image into the Journey Info panel, or remove it.",
 		})
 
-	var has_round: bool = _items.any(func(item: Dictionary) -> bool: return item.get("type", "round") == "round")
-	if not has_round:
+	# "Journey" is loosely defined as "has gameplay somewhere." A round inside
+	# a fork path still counts — e.g. a cutscene-intro storyboard followed by
+	# a "choose your difficulty" fork whose paths all contain rounds. Only
+	# truly round-less journeys (slideshows of storyboards / shops) are blocked.
+	if not _has_any_round_in_tree(_items):
 		issues.append({
 			"cause":  CAUSE_NO_ROUNDS,
 			"item":   "Journey",
-			"detail": "A journey needs at least one round at the top level.",
-			"hint":   "Add a round from the side panel.",
+			"detail": "A journey needs at least one round somewhere — top-level or inside any fork path.",
+			"hint":   "Add a round from the side panel, or add a round inside one of your fork paths.",
 		})
 
 	_save_collect_items_issues(_items, "Top level", issues)
@@ -1843,14 +1863,19 @@ func _save_check_fork(fork_data: Dictionary, ctx: String, issues: Array) -> void
 				"hint":   "Re-drag the card image for this path, or remove it.",
 			})
 
+		# A fork path must contain at least one item of any kind — round,
+		# storyboard, shop, or nested fork. The "narrative-only" path
+		# (storyboards as the consequence of a choice) and "skip-this-section"
+		# patterns are explicit author intents we want to support, so we
+		# don't require a round here. A completely empty path is still
+		# rejected because it would be a button-that-does-nothing UX trap.
 		var sub_items: Array = p.get("items", [])
-		var has_round: bool = sub_items.any(func(it: Dictionary) -> bool: return it.get("type", "round") == "round")
-		if not has_round:
+		if sub_items.is_empty():
 			issues.append({
 				"cause":  CAUSE_NO_ROUNDS,
 				"item":   path_ctx,
-				"detail": "This fork path has no rounds.",
-				"hint":   "Add at least one round to the path.",
+				"detail": "This fork path is empty.",
+				"hint":   "Add at least one round, storyboard, shop, or nested fork to the path.",
 			})
 		_save_collect_items_issues(sub_items, path_ctx, issues)
 
