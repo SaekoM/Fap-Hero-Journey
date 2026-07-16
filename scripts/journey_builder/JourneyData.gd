@@ -703,6 +703,45 @@ static func pool_entry_weights(entries: Array) -> Array:
 	return w
 
 
+# ── Journey identity ─────────────────────────────────────────────────────────
+
+# Minimum FHJ version required to safely open a journey written by this build. Stamped as
+# "MinVersion"; JourneySelect warns when the running app is older. A MAINTAINED FLOOR, not the
+# live app version — bump it only when a save introduces a feature/format an older app can't
+# read, so a plain re-save doesn't inflate the requirement.
+const JOURNEY_MIN_APP_VERSION: String = "0.6.0"
+
+
+# A stable, globally-unique id for a journey, minted ONCE and preserved across every later save
+# (see stamp_journey_identity). Journeys travel between users, so this is 128 bits of randomness
+# rather than anything machine- or counter-derived — two authors must never mint the same id.
+# Prefixed like node ids ("n_…") so it reads unambiguously in journey.json.
+#
+# This exists so other content can refer to a journey durably: Name and FolderName are both
+# user-renameable, so neither can anchor anything.
+static func new_journey_id() -> String:
+	return "j_%08x%08x%08x%08x" % [randi(), randi(), randi(), randi()]
+
+
+# Stamps journey-level identity + version fields onto a journey.json meta dict, in place.
+#
+# Every writer of a permanent journey routes through here (the builder's save and the
+# randomizer's keep) so the two can't drift — the randomizer previously wrote journeys with no
+# version stamps at all because it builds its own meta block.
+#
+# `existing_id` carries the id forward: it MUST be stable for the life of the journey, so it is
+# minted only when absent. Renaming a journey keeps its id (same journey); a fresh save mints a
+# new one.
+static func stamp_journey_identity(meta: Dictionary, existing_id: String = "") -> void:
+	var id: String = existing_id.strip_edges()
+	if id == "":
+		id = new_journey_id()
+	meta["JourneyId"] = id
+	# The exact build that wrote the file (informational) + the floor needed to open it.
+	meta["CreatedWith"] = str(ProjectSettings.get_setting("application/config/version", ""))
+	meta["MinVersion"] = JOURNEY_MIN_APP_VERSION
+
+
 # ── Item templates ───────────────────────────────────────────────────────────
 
 

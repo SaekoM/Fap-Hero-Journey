@@ -85,6 +85,47 @@ func test_coerce_round_fills_baseline_defaults() -> void:
 	assert_bool(out.has("boons")).is_false()
 
 
+# ── Journey identity ─────────────────────────────────────────────────────────
+# The id must be STABLE for the life of a journey: renditions/modules bind to it, and Name /
+# FolderName are both user-renameable, so neither can anchor anything.
+
+
+func test_new_journey_id_shape_and_uniqueness() -> void:
+	var a: String = JourneyData.new_journey_id()
+	assert_str(a).starts_with("j_")
+	assert_int(a.length()).is_equal(34)  # "j_" + 32 hex chars (128 bits)
+	# Ids cross machines, so collisions must be vanishingly unlikely, not merely rare.
+	var seen: Dictionary = {}
+	for _i in 200:
+		seen[JourneyData.new_journey_id()] = true
+	assert_int(seen.size()).is_equal(200)
+
+
+func test_stamp_identity_mints_when_absent() -> void:
+	var meta: Dictionary = {"Name": "J"}
+	JourneyData.stamp_journey_identity(meta)
+	assert_str(str(meta["JourneyId"])).starts_with("j_")
+	assert_str(str(meta["MinVersion"])).is_equal(JourneyData.JOURNEY_MIN_APP_VERSION)
+	assert_bool(meta.has("CreatedWith")).is_true()
+
+
+# The guarantee everything else rests on: re-saving must never re-mint the id.
+func test_stamp_identity_preserves_existing() -> void:
+	var meta: Dictionary = {"Name": "J"}
+	JourneyData.stamp_journey_identity(meta, "j_deadbeefdeadbeefdeadbeefdeadbeef")
+	assert_str(str(meta["JourneyId"])).is_equal("j_deadbeefdeadbeefdeadbeefdeadbeef")
+	# ... and again, simulating a second save.
+	JourneyData.stamp_journey_identity(meta, str(meta["JourneyId"]))
+	assert_str(str(meta["JourneyId"])).is_equal("j_deadbeefdeadbeefdeadbeefdeadbeef")
+
+
+# A blank/whitespace id is treated as absent rather than written through as "".
+func test_stamp_identity_mints_when_blank() -> void:
+	var meta: Dictionary = {}
+	JourneyData.stamp_journey_identity(meta, "   ")
+	assert_str(str(meta["JourneyId"])).starts_with("j_")
+
+
 # A round's optional item reward (award_item) is preserved and stringified on save, so the
 # runtime can grant it at round end (parity with the storyboard reward).
 func test_coerce_round_preserves_award_item() -> void:

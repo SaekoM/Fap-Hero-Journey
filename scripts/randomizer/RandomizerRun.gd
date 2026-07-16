@@ -89,10 +89,15 @@ static func keep(run_folder: String, display_name: String, journeys_dir: String 
 		JourneyData.delete_dir_recursive(dest)
 		return _fail("copy_failed", "")
 
-	# Stamp the display name into the copied journey.json (the run used a generic name).
+	# Stamp the display name into the copied journey.json (the run used a generic name), plus the
+	# journey identity + version fields. This is the moment a throwaway run becomes a permanent,
+	# shareable catalogue journey, so it's where those belong: the generator can't mint the id
+	# itself without breaking its own contract (it is pure and seeded — same seed, same journey —
+	# and a random id would make every generation differ).
 	var data: Dictionary = _read_journey_json(dest)
 	if not data.is_empty():
 		data["Name"] = display_name
+		JourneyData.stamp_journey_identity(data, str(data.get("JourneyId", "")))
 		_write_journey_json(dest, data)
 
 	return {"ok": true, "reason": "", "folder": dest, "folder_name": dest.get_file()}

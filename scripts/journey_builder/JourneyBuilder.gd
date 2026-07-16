@@ -48,12 +48,6 @@ const CAUSE_DANGLING_EDGE: String = "dangling_edge"
 const CAUSE_CYCLE: String = "cycle"
 const CAUSE_UNREACHABLE: String = "unreachable"
 
-# Minimum FHJ version required to safely open a journey saved by this build. Stamped into
-# journey.json as "MinVersion"; JourneySelect warns when the running app is older. This is a
-# MAINTAINED FLOOR, not the live app version — bump it only when a save introduces a
-# feature/format an older app can't handle (so a plain re-save doesn't inflate the requirement).
-const JOURNEY_MIN_APP_VERSION: String = "0.6.0"
-
 const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
 @onready var _bg: ColorRect = $Background
@@ -75,6 +69,9 @@ const SIDE_PANEL_WIDTH: int = 480
 # Journey metadata: stored as member vars since the side-panel editor widgets
 # are created and destroyed dynamically when the user navigates the graph.
 var _journey_name: String = ""
+# The journey's stable id (JourneyData.stamp_journey_identity). Empty for a new journey - minted
+# on first save. Loaded from disk when editing, so a re-save or rename never re-mints it.
+var _journey_id: String = ""
 var _journey_author: String = ""
 var _journey_desc: String = ""
 var _journey_difficulty_idx: int = 0
@@ -2196,6 +2193,9 @@ func _update_cover_preview() -> void:
 func _load_graph(journey: Dictionary) -> void:
 	var parsed: Dictionary = JourneyData.parse_journey(journey)
 	_journey_name = parsed["name"]
+	# Carry the existing id forward so saving an edited journey keeps its identity. Blank for a
+	# journey written before ids existed - it gets one on this save.
+	_journey_id = str(journey.get("journey_id", ""))
 	_journey_author = parsed["author"]
 	_journey_desc = parsed["description"]
 	_journey_difficulty_idx = parsed["difficulty_idx"]
@@ -3118,11 +3118,11 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"MapEnabled": _journey_map_enabled,
 		"MapFog": _journey_map_fog,
 		"MapFogReveal": _journey_map_fog_reveal,
-		# Version stamps: CreatedWith = the exact app build that wrote this file (informational);
-		# MinVersion = the floor needed to open it safely (JourneySelect gates on this).
-		"CreatedWith": str(ProjectSettings.get_setting("application/config/version", "")),
-		"MinVersion": JOURNEY_MIN_APP_VERSION,
 	}
+	# Identity + version stamps. _journey_id is empty for a new journey (minted here) and carries
+	# the loaded id for an existing one, so re-saving — or renaming — never changes it.
+	JourneyData.stamp_journey_identity(result, _journey_id)
+	_journey_id = str(result["JourneyId"])
 	result.merge(node_block)  # adds Format, Start, Nodes
 	result["Comments"] = _serialize_comments(_graph_model.get("comments", []))
 	result["Groups"] = _serialize_groups(_graph_model.get("groups", []))

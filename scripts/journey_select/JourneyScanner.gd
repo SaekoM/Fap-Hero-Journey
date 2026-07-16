@@ -80,6 +80,8 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
+		# Stable journey id; blank on journeys written before ids existed (see _graph_meta).
+		"journey_id": str(data.get("JourneyId", "")),
 		# Redirect overlay (skip/converge/end), composed onto the graph in parse_graph.
 		"redirects": data.get("Redirects", {}),
 		"rounds": [],
@@ -350,6 +352,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
+		# Stable journey id. Blank for journeys written before ids existed; the builder mints one
+		# on the next save. Carried here so a re-save preserves it rather than re-minting.
+		"journey_id": str(data.get("JourneyId", "")),
 		"cover_path": find_cover_image(path),
 		"modified_time": FileAccess.get_modified_time(path + "/journey.json"),
 		"rounds": [],
