@@ -1,32 +1,44 @@
 # Changelog
 
-## v0.6.1
+## v0.6.2
 
-A fix-first release. **v0.6.0's Windows build shipped without its bundled ffmpeg**, which broke
-saving journeys — that's sorted. Along with it: a much faster way to build Pool Rounds, boss
-encounters, reusable round templates, and a couple of long-standing bugs squashed.
+Another big release. Rounds get a **real clip editor** — cut, repeat and rearrange
+a video without leaving FHJ. Images can move. Journeys can count things. And the Handy's delay
+slider actually works again.
 
-### 🛠 The ffmpeg fix — read this if v0.6.0 wouldn't save
-The v0.6.0 Windows download was missing the bundled **ffmpeg / ffprobe**, so saving a journey failed with *"ffmpeg / ffprobe could not be run"* unless you happened to already have ffmpeg installed system-wide. The binaries are back in the Windows build — just update, nothing else to do. Sorry for the run-around.
+### ✂ The clip editor — cut, repeat, rearrange
+Open a round's **📈 PREVIEW & CUT** and you get one window with everything: the stroke curve, the video, and a **timeline** of the cut.
 
-If you worked around it by switching **Auto-Transcode** off, you can safely turn it back on in Options → Transcoding.
+- **Build it from segments.** Mark ⟦IN⟧ and ⟧OUT⟧ at the playhead, hit **+ ADD**, and that window becomes a row. Add as many as you like.
+- **Repeat a section.** Select a row, set a count, hit **⧉ REPEAT** — a great way to stretch out a favourite few seconds. There's no cap; it's your bake time.
+- **Reorder and cut.** Move rows up and down, delete the parts you don't want. The round plays them back to back.
+- **▶ PLAY TIMELINE** previews the whole assembled cut before you commit, and **Ctrl+Z / Ctrl+Y** undo inside the editor.
 
-*Linux:* the Linux build has never bundled ffmpeg and still uses your system one — install it from your package manager (`apt install ffmpeg`, or your distro's equivalent) if saving complains.
+Everything is baked when you save, so playback is completely normal — the round just *is* the cut you built. Heads up though! Once it's saved it becomes a single mp4. Those edited sections won't be available anymore.
 
-### ⚔ Pool Rounds — build them in seconds
-- **Drop a folder in.** Building a pool used to mean adding encounters one at a time. There's now a **drop zone**: drop in a pile of videos — or whole folders — and every video becomes an encounter, with its funscript, extra-axis and vibrator scripts matched up by filename.
-- **Encounters can be bosses.** Any encounter in a pool can be flagged a **boss**, with its own forced modifiers, intro tagline and image. Roll it and the mystery card gives way to the boss intro — open the door, and maybe it's a boss.
-- **Extra axes & vibrator scripts** are now editable per encounter. They were always being loaded and played; you just had no way to see or change them.
+### 🎛 See your modifiers before you test
+The same window now previews what a round will actually feel like:
 
-### ★ Round templates
-Save any round's full definition — media, round type, boss setup, its entire encounter pool — as a named **template**, then apply it to another round in two clicks. No more rebuilding the same pool by hand.
+- **Stroke modifiers** (boss/curse/boon scale and clamp) draw over the curve, and you can drag their strength live.
+- **Sensory effects** — murk, tunnel, strobe, the colour and blur effects, and the audio ones — now run **on the preview video itself**. Drag an intensity slider and see and hear it change, instead of test-playing the round after every tweak.
 
-### 🎁 Round rewards
-Rounds can now **award an item** when they finish, the same way storyboards already could. Pick one from the round's *Item Reward* dropdown and the player gets it — with a toast — as the round ends.
+### 🖼 Images that move
+Boss portraits, storyboard backgrounds and fork cards accept **animated** sources — GIF, MP4, WebM and AV1. They're converted and looped automatically when you save. Sources longer than 60 seconds are trimmed, and the save tells you which ones. No audio is brought over.
 
-### 🔖 Journey version stamps
-Journeys now record the version of FHJ that built them. Open one made for a newer version than you're running and you'll get a clear heads-up instead of a confusing failure.
+### 🔢 Counters
+Journeys can now count things — belt notches, drinks, partners, whatever you like. Any round or fork choice can add to a counter, and **conditional forks can branch on the total**. Mark a counter as shown and players get a little pop when it changes, plus a running tally in their inventory.
+
+### 🎚 Sensory strength (Options → Display)
+The visual and audio effects were harsher than most people wanted. There's now a **strength slider**, and it starts at **50%** — turn it up if you liked them as they were.
+
+### ✦ Rewards you can actually see
+Coins and items used to arrive in silence. Earning coins or being handed an item now pops on screen, so you know it happened.
 
 ### 🐛 Fixes
-- **Fork screens always read "0 ROUNDS"** on every path. They now show how many rounds each branch actually holds.
-- **Journey Audit ignored Pool Rounds.** They counted as zero score and zero length, quietly skewing score totals, run-length estimates and checkpoint spacing. Pool rounds are now measured from their encounters — including the best/worst range across whichever one gets rolled.
+- **The Handy's delay slider did nothing** for most people. Setting a delay before a round started had it silently thrown away. This issue should now be properly addressed.
+- **Number fields lost your edit** unless you pressed Enter. Typing a value and clicking away now keeps it.
+- **The updater now verifies downloads.** A corrupted or mismatched download is rejected instead of being installed.
+- **Item pickers show what items do.** Hover any item in a shop, reward or fork requirement list for its description, price and duration.
+
+### 🔖 Under the hood
+Journeys now carry a permanent ID, which lays the groundwork for optional add-on content built on top of an existing journey. Nothing to do — journeys saved from this version onward get one automatically.

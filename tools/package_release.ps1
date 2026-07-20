@@ -370,6 +370,6 @@ Write-Host "  checksums.txt"
 Write-Host ""
 Write-Host "Release checklist:" -ForegroundColor Yellow
 Write-Host "  1. Tag v$Version  (clean 'v' + dotted - 'v.$Version' mis-parses in UpdateService)"
-Write-Host "  2. Paste the CHANGELOG.md section for this version as the Release body (max 3900 chars for Discord)"
+Write-Host "  2. Paste the CHANGELOG.md section for this version as the Release body (any length; Discord truncates its embed and links back)"
 Write-Host "  3. Attach the zips above AND checksums.txt (it lists each asset under both the"
 Write-Host "     spaced and dotted spellings, so verification works however GitHub names them)"

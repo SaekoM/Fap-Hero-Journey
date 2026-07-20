@@ -98,11 +98,8 @@ jobs:
           $text = ($body -join "`n").Trim()
           if ($text.Length -eq 0) { throw "The '## v$v' section is empty." }
 
-          # discord-release.yml truncates the embed at 3900 chars; warn at build time rather
-          # than discovering it after the post goes out.
-          if ($text.Length -gt 3900) {
-            Write-Host "::warning::Release notes are $($text.Length) chars - the Discord embed truncates at 3900."
-          }
+          # Length is reported, not policed: discord-release.yml truncates its embed at 3900
+          # chars and appends a "continued on GitHub" link, which is an accepted outcome.
           Write-Host "Release notes: $($text.Length) chars"
           # utf8NoBOM (pwsh 7): a BOM would land as a stray glyph at the top of the release body.
           Set-Content -LiteralPath release-notes.md -Value $text -Encoding utf8NoBOM
