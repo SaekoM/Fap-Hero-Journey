@@ -376,12 +376,9 @@ func _on_storyboard_completed(coins: int) -> void:
 	FunscriptPlayer.StopFiller()
 	_is_overlay_open = false
 	_overlay_map_allowed = false
-	if coins > 0:
-		CoinService.AddCoins(coins)
+	_grant_coins(coins)
 	# Optional item reward — read before Advance() moves off the storyboard.
-	var item_id: String = str(GameState.CurrentStoryboard().get("item", ""))
-	if item_id != "":
-		InventoryService.AddItem(item_id)
+	_grant_item(str(GameState.CurrentStoryboard().get("item", "")))
 	GameState.Advance()
 	if GameState.IsSequenceDone():
 		_transition_to_end_screen()
@@ -880,7 +877,9 @@ func _enter_boss_mode(round: Dictionary) -> void:
 	# Optional non-gameplay (visual/audio) modifiers, explicitly authored — same hex
 	# pipeline as a cursed round, but forced (no cleanse). Each surfaces as a red
 	# HUD chip and is torn down by _clear_curse_hexes at round end (_exit_boss_mode).
-	for roll: Dictionary in _catalog_subset(JourneyData.SENSORY_CATALOG, round.get("sensory", [])):
+	for roll: Dictionary in JourneyData.catalog_subset(
+		JourneyData.SENSORY_CATALOG, round.get("sensory", [])
+	):
 		var hx: Dictionary = _make_boss_effect(roll)
 		hx["name"] = roll.get("name", hx["name"])
 		InventoryService.AddBossEffects([hx])
@@ -914,15 +913,17 @@ func _enter_effect_mode(round: Dictionary) -> void:
 	var to_apply: Array = []
 	if not selected.is_empty():
 		if random_mode:
-			var pool: Array = _catalog_subset(JourneyData.gameplay_effects(), selected)
+			var pool: Array = JourneyData.catalog_subset(JourneyData.gameplay_effects(), selected)
 			if sensory_in_pool:
 				pool = pool + JourneyData.SENSORY_CATALOG
 			to_apply = _roll_from(pool)
 		else:
-			to_apply = _catalog_subset(JourneyData.gameplay_effects(), selected)
+			to_apply = JourneyData.catalog_subset(JourneyData.gameplay_effects(), selected)
 
 	# Ticked non-gameplay (sensory) modifiers always apply (deduped against the roll).
-	for s: Dictionary in _catalog_subset(JourneyData.SENSORY_CATALOG, round.get("sensory", [])):
+	for s: Dictionary in JourneyData.catalog_subset(
+		JourneyData.SENSORY_CATALOG, round.get("sensory", [])
+	):
 		if s not in to_apply:
 			to_apply.append(s)
 
@@ -970,13 +971,9 @@ func _apply_effect(roll: Dictionary, round: Dictionary) -> void:
 func _apply_boon(roll: Dictionary, round: Dictionary) -> void:
 	match String(roll.get("kind", "")):
 		"gift":
-			var gift: String = str(round.get("gift_item", ""))
-			if gift != "":
-				InventoryService.AddItem(gift)
+			_grant_item(str(round.get("gift_item", "")))
 		"interest":
-			var gain: int = roundi(CoinService.Balance * float(roll.get("pct", INTEREST_PCT)))
-			if gain > 0:
-				CoinService.AddCoins(gain)
+			_grant_coins(roundi(CoinService.Balance * float(roll.get("pct", INTEREST_PCT))))
 		"lingering":
 			_effect_lingering = true
 			InventoryService.SetPaused(true)  # freeze the effect clock for the round
@@ -1209,15 +1206,6 @@ func _roll_from(pool: Array) -> Array:
 	shuffled.shuffle()
 	var count: int = 2 if (shuffled.size() >= 2 and randf() < DOUBLE_EFFECT_CHANCE) else 1
 	return shuffled.slice(0, count)
-
-
-# Entries of `catalog` whose name is in `names`, preserving catalog order.
-func _catalog_subset(catalog: Array, names: Array) -> Array:
-	var out: Array = []
-	for entry: Dictionary in catalog:
-		if entry.get("name", "") in names:
-			out.append(entry)
-	return out
 
 
 # Floating "cleanse" button shown during a cursed round — outside the HUD so a
@@ -1630,21 +1618,13 @@ func _on_round_ended() -> void:
 	# Endure reward: bonus for carrying a curse to the end (on top of the round
 	# coins, so it survives a Greed penalty).
 	coins += endure_reward
-	if coins > 0:
-		CoinService.AddCoins(coins)
+	_grant_coins(coins)
 	if endure_reward > 0:
 		_show_save_toast("✦  CURSE ENDURED  +♦ %d" % endure_reward)
 
 	# Optional item reward — granted when the round ends (parity with storyboards). Read from
 	# `_cur` (the round captured above, still current — Advance happens inside the transition).
-	# Skip silently if the id no longer resolves (item deleted from the registry after authoring),
-	# so a stale reward never shows a misleading "RECEIVED" toast.
-	var award_item: String = str(_cur.get("award_item", ""))
-	if award_item != "":
-		var award_data: Dictionary = InventoryService.GetItemData(award_item)
-		if not award_data.is_empty():
-			InventoryService.AddItem(award_item)
-			_show_save_toast("✦  RECEIVED: %s" % str(award_data.get("name", award_item)).to_upper())
+	_grant_item(str(_cur.get("award_item", "")))
 
 	if GameState.IsLastRound():
 		_transition_to_end_screen()
@@ -2057,7 +2037,7 @@ func _on_counter_changed(name: String, value: int, delta: int) -> void:
 
 
 # Lowest free vertical slot for a counter pop, so simultaneous changes STACK instead of overlapping.
-# A slot is held for the pop's lifetime and released in _show_counter_pop; freeing the lowest means a
+# A slot is held for the pop's lifetime and released in _show_pop; freeing the lowest means a
 # vanished pop's row is reused top-down (no reflow of the survivors — they hold their place).
 func _alloc_counter_pop_slot() -> int:
 	var i: int = 0
@@ -2067,10 +2047,38 @@ func _alloc_counter_pop_slot() -> int:
 	return i
 
 
-# Slides a "BELT  +1  → 3" chip in from the right, holds, slides out. Non-blocking. Green for a
-# gain, magenta for a loss. Parented to the GameLoop root (not the HUD, which hides during play).
+# A counter changed: "BELT  +1  → 3". Green for a gain, magenta for a loss.
 func _show_counter_pop(name: String, value: int, delta: int) -> void:
-	var accent: Color = UITheme.SUCCESS if delta >= 0 else UITheme.MAGENTA
+	_show_pop(
+		name, "%+d" % delta, "→ %d" % value, UITheme.SUCCESS if delta >= 0 else UITheme.MAGENTA
+	)
+
+
+# Coins awarded: "COINS  +♦ 25  → ♦ 140". Rewards used to land silently, so the only clue was
+# the HUD number ticking — easy to miss mid-round.
+func _grant_coins(amount: int) -> void:
+	if amount <= 0:
+		return
+	CoinService.AddCoins(amount)
+	_show_pop("COINS", "+♦ %d" % amount, "→ ♦ %d" % CoinService.Balance, UITheme.AMBER)
+
+
+# Grants an item and announces it. Returns false when the id no longer resolves (deleted from
+# the registry after authoring) — the caller stays silent rather than showing a misleading pop.
+func _grant_item(item_id: String) -> bool:
+	if item_id == "":
+		return false
+	var data: Dictionary = InventoryService.GetItemData(item_id)
+	if data.is_empty():
+		return false
+	InventoryService.AddItem(item_id)
+	_show_pop("✦ RECEIVED", str(data.get("name", item_id)).to_upper(), "", UITheme.CYAN)
+	return true
+
+
+# Slides a chip in from the right, holds, slides out. Non-blocking. Parented to the GameLoop
+# root (not the HUD, which hides during play). `tail` may be "" for a two-part chip.
+func _show_pop(title: String, detail: String, tail: String, accent: Color) -> void:
 	var slot: int = _alloc_counter_pop_slot()
 
 	var pop: PanelContainer = PanelContainer.new()
@@ -2088,18 +2096,19 @@ func _show_counter_pop(name: String, value: int, delta: int) -> void:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	pop.add_child(row)
-	var name_lbl: Label = Label.new()
-	name_lbl.text = name.to_upper()
-	UITheme.style_label(name_lbl, UITheme.WHITE_SOFT, 13, true)
-	row.add_child(name_lbl)
-	var delta_lbl: Label = Label.new()
-	delta_lbl.text = "%+d" % delta
-	UITheme.style_label(delta_lbl, accent, 13, true)
-	row.add_child(delta_lbl)
-	var val_lbl: Label = Label.new()
-	val_lbl.text = "→ %d" % value
-	UITheme.style_label(val_lbl, UITheme.DARK_TEXT, 13, true)
-	row.add_child(val_lbl)
+	var title_lbl: Label = Label.new()
+	title_lbl.text = title.to_upper()
+	UITheme.style_label(title_lbl, UITheme.WHITE_SOFT, 13, true)
+	row.add_child(title_lbl)
+	var detail_lbl: Label = Label.new()
+	detail_lbl.text = detail
+	UITheme.style_label(detail_lbl, accent, 13, true)
+	row.add_child(detail_lbl)
+	if tail != "":
+		var tail_lbl: Label = Label.new()
+		tail_lbl.text = tail
+		UITheme.style_label(tail_lbl, UITheme.DARK_TEXT, 13, true)
+		row.add_child(tail_lbl)
 
 	add_child(pop)
 	await get_tree().process_frame  # let it size before we place it

@@ -2745,10 +2745,20 @@ func _on_save_pressed() -> void:
 	# success/failure signal so the flow reads as a sequence of steps rather
 	# than 250 lines of nested branches. Helpers that fail are responsible for
 	# their own user-facing error modal and any staging cleanup.
+	_commit_focused_field()
 	_save_btn.disabled = true
 	_reset_save_state()
 	if not await _do_save():
 		_save_btn.disabled = false
+
+
+# Drops focus from whatever side-panel field holds it so its pending edit commits before the
+# save reads the round data. Clicking Save straight from a field would otherwise write the
+# value the field had when it was last committed, not what's on screen.
+func _commit_focused_field() -> void:
+	var focused: Control = get_viewport().gui_get_focus_owner()
+	if focused != null:
+		focused.release_focus()
 
 
 # "Save & Test from here" entry point. Runs the exact same save pipeline as a

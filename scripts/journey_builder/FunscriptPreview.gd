@@ -66,6 +66,16 @@ var _edl_btn: Button = null
 var _edl_playing: bool = false
 var _edl_idx: int = -1
 
+# ── Live sensory preview ────────────────────────────────────────────────────
+# The same SensoryFX the runtime uses, scoped to the video pane instead of the screen, so the
+# author sees and hears what a sensory effect does while dragging its intensity. Rolls are the
+# round's ticked SENSORY_CATALOG entries; `_on_sensory_tune(name, intensity)` persists.
+# Applied UNSCALED by the player's comfort setting — see SensoryFX.apply.
+var _sensory: SensoryFX = null
+var _sensory_rolls: Array = []
+var _sensory_intensity: Dictionary = {}  # catalog name → 0–1, the live edit
+var _on_sensory_tune: Callable = Callable()
+
 
 # Builds and shows the overlay over `parent`. `modifiers` are stroke-affecting effect dicts
 # (each {kind, factor?/min?/max?}); [] for none. `mod_label` names them ("Boss Modifiers" /
@@ -80,11 +90,17 @@ func open(
 	mod_label: String = "Boss Modifiers",
 	segments: Array = [],
 	on_segments_applied: Callable = Callable(),
-	on_tune: Callable = Callable()
+	on_tune: Callable = Callable(),
+	sensory_rolls: Array = [],
+	sensory_intensity: Dictionary = {},
+	on_sensory_tune: Callable = Callable()
 ) -> void:
 	_modifiers = modifiers
 	_mod_label = mod_label
 	_on_tune = on_tune
+	_sensory_rolls = sensory_rolls
+	_sensory_intensity = sensory_intensity.duplicate()
+	_on_sensory_tune = on_sensory_tune
 	_edit_mode = on_segments_applied.is_valid()
 	_segments = segments.duplicate(true)  # edit a copy; APPLY is what commits
 	_on_segments_applied = on_segments_applied
@@ -114,10 +130,12 @@ func _build_ui(round_name: String) -> void:
 	add_child(backdrop)
 
 	var panel: PanelContainer = PanelContainer.new()
-	panel.anchor_left = 0.08
-	panel.anchor_right = 0.92
-	panel.anchor_top = 0.1
-	panel.anchor_bottom = 0.9
+	# Wider/taller than the original preview: this overlay now carries the video, the graph, the
+	# TUNE strip, the sensory sliders and the segment timeline.
+	panel.anchor_left = 0.04
+	panel.anchor_right = 0.96
+	panel.anchor_top = 0.04
+	panel.anchor_bottom = 0.96
 	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
 	panel_style.bg_color = UITheme.PANEL_BG_DEEP
 	panel_style.border_color = UITheme.PURPLE_MID
@@ -233,24 +251,25 @@ func _build_ui(round_name: String) -> void:
 	if _edit_mode:
 		var set_in: Button = UITheme.make_icon_btn("⟦ IN", false, UITheme.TOXIC_GREEN)
 		set_in.tooltip_text = "Mark the window start at the playhead"
-		set_in.pressed.connect(
-			func() -> void:
-				_mark_in = int(_graph.get_playhead())
-				_sync_markers()
-		)
+		set_in.pressed.connect(func() -> void: _set_mark(true))
 		footer.add_child(set_in)
 		var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.AMBER)
 		set_out.tooltip_text = "Mark the window end at the playhead"
-		set_out.pressed.connect(
-			func() -> void:
-				_mark_out = int(_graph.get_playhead())
-				_sync_markers()
-		)
+		set_out.pressed.connect(func() -> void: _set_mark(false))
 		footer.add_child(set_out)
 		var add_btn: Button = UITheme.make_icon_btn("+ ADD", false, UITheme.CYAN)
-		add_btn.tooltip_text = "Add the marked window to the timeline"
+		add_btn.tooltip_text = "Add the marked window to the timeline as a new row"
 		add_btn.pressed.connect(_add_pending_segment)
 		footer.add_child(add_btn)
+		var drop_marks: Button = UITheme.make_icon_btn("✕ MARKS", false, UITheme.AMBER)
+		drop_marks.tooltip_text = "Discard the ⟦IN/OUT⟧ marks (keeps the timeline)"
+		drop_marks.pressed.connect(
+			func() -> void:
+				_mark_in = -1
+				_mark_out = -1
+				_rebuild_rows()
+		)
+		footer.add_child(drop_marks)
 
 		# Repeat: inserts N copies of the selected row. Storage is expanded rows, but nobody
 		# clicks duplicate thirty times — so the AFFORDANCE is a count even though the model
@@ -267,8 +286,8 @@ func _build_ui(round_name: String) -> void:
 		rep_btn.pressed.connect(_repeat_selected)
 		footer.add_child(rep_btn)
 
-		var clear_btn: Button = UITheme.make_icon_btn("✕ CLEAR", false, UITheme.MAGENTA)
-		clear_btn.tooltip_text = "Remove every segment (play the whole clip untouched)"
+		var clear_btn: Button = UITheme.make_icon_btn("✕ CLEAR ALL", false, UITheme.MAGENTA)
+		clear_btn.tooltip_text = ("Remove EVERY segment so the whole clip plays untouched (Ctrl+Z undoes it)")
 		clear_btn.pressed.connect(
 			func() -> void:
 				_push_undo()
@@ -308,8 +327,75 @@ func _build_ui(round_name: String) -> void:
 	footer.add_child(_caption)
 	col.add_child(footer)
 
+	var sensory_strip: Control = _build_sensory_strip()
+	if sensory_strip != null:
+		col.add_child(sensory_strip)
+
 	if _edit_mode:
 		col.add_child(_build_timeline_panel())
+
+
+# One slider per tunable sensory effect on this round, applied live to the video pane as you
+# drag. Returns null when the round has no sensory effects (or none with an intensity — Blinded
+# and Silence are binary, so they preview but can't be tuned).
+func _build_sensory_strip() -> Control:
+	var tunable: Array = []
+	for roll: Dictionary in _sensory_rolls:
+		if roll.has("imin") and roll.has("imax"):
+			tunable.append(roll)
+	if tunable.is_empty():
+		return null
+
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	var lead: Label = Label.new()
+	lead.text = "SENSORY  —  previewed at author strength, before the player's comfort setting"
+	lead.add_theme_font_size_override("font_size", 11)
+	lead.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	box.add_child(lead)
+
+	var rows: HBoxContainer = HBoxContainer.new()
+	rows.add_theme_constant_override("separation", 16)
+	for roll: Dictionary in tunable:
+		rows.add_child(_sensory_slider_row(roll))
+	box.add_child(rows)
+	return box
+
+
+func _sensory_slider_row(roll: Dictionary) -> Control:
+	var nm: String = str(roll.get("name", ""))
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+
+	var lbl: Label = Label.new()
+	lbl.text = nm.to_upper()
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", UITheme.CYAN)
+	row.add_child(lbl)
+
+	var pct: float = float(_sensory_intensity.get(nm, roll.get("idef", 0.5))) * 100.0
+	var value_lbl: Label = Label.new()
+	value_lbl.text = "%d%%" % roundi(pct)
+	value_lbl.add_theme_font_size_override("font_size", 11)
+	value_lbl.custom_minimum_size = Vector2(38, 0)
+
+	var slider: HSlider = HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 100.0
+	slider.step = 1.0
+	slider.custom_minimum_size = Vector2(120, 0)
+	slider.set_value_no_signal(pct)
+	slider.value_changed.connect(
+		func(v: float) -> void:
+			value_lbl.text = "%d%%" % roundi(v)
+			_sensory_intensity[nm] = v / 100.0
+			_refresh_sensory()
+			if _on_sensory_tune.is_valid():
+				_on_sensory_tune.call(nm, v / 100.0)
+	)
+	row.add_child(slider)
+	row.add_child(value_lbl)
+	return row
 
 
 # The segment list: one row per segment, in playback order. A repeated window is simply the
@@ -690,10 +776,35 @@ func _setup_video(path: String) -> void:
 		_apply_audio()
 		_update_play_btn()
 		_apply_aspect()
+		_start_sensory()
 		set_process(true)
 	else:
 		_video_pane.visible = false  # decode failed — stay graph-only
 		_video.stream = null
+
+
+# Stands the sensory engine up over the video pane (not the whole overlay, so murk/tunnel/strobe
+# darken the clip rather than the editor around it). Only once a video is confirmed — every
+# sensory effect acts on the video node or its audio bus, so there's nothing to show without one.
+func _start_sensory() -> void:
+	if _sensory_rolls.is_empty():
+		return
+	_sensory = SensoryFX.new()
+	add_child(_sensory)
+	_sensory.setup(_video, _video_pane)
+	_refresh_sensory()
+
+
+# Re-applies every sensory roll at its current intensity. clear_all() first because apply() is
+# additive — without it, dragging a slider would stack effects instead of replacing them.
+func _refresh_sensory() -> void:
+	if _sensory == null:
+		return
+	_sensory.clear_all()
+	for roll: Dictionary in _sensory_rolls:
+		var nm: String = str(roll.get("name", ""))
+		var intensity: float = float(_sensory_intensity.get(nm, roll.get("idef", 0.5)))
+		_sensory.apply(roll, intensity, false)
 
 
 # Sets the letterbox aspect from the real video dimensions once a frame exists.
@@ -845,6 +956,19 @@ func _source_len_ms() -> int:
 	return int((raw[-1] as Vector2).x) if not raw.is_empty() else 0
 
 
+# Places a mark at the playhead. Dropping the row selection matters: + ADD leaves the new row
+# selected (so ⧉ REPEAT can act on it immediately), and while a row is selected the graph shades
+# THAT window — so without this, placing marks for a second segment showed no feedback at all
+# and looked like the editor was refusing to let you build another one.
+func _set_mark(is_in: bool) -> void:
+	if is_in:
+		_mark_in = int(_graph.get_playhead())
+	else:
+		_mark_out = int(_graph.get_playhead())
+	_sel_row = -1
+	_rebuild_rows()
+
+
 # Commits the ⟦IN/OUT⟧ marks as a row. Unset IN = from the start; unset OUT = to the end,
 # stored as 0 (the open-ended form the pure layer uses).
 func _add_pending_segment() -> void:
@@ -968,14 +1092,16 @@ func _row_btn(text: String, tip: String, cb: Callable) -> Button:
 func _sync_markers() -> void:
 	var start_ms: float = -1.0
 	var end_ms: float = -1.0
-	if _sel_row >= 0 and _sel_row < _segments.size():
+	# Pending marks win over the row selection — while you're placing a window, that's the one
+	# you need to see.
+	if _mark_in >= 0 or _mark_out > 0:
+		start_ms = float(_mark_in) if _mark_in >= 0 else -1.0
+		end_ms = float(_mark_out) if _mark_out > 0 else -1.0
+	elif _sel_row >= 0 and _sel_row < _segments.size():
 		var seg: Dictionary = _segments[_sel_row]
 		var seg_out: int = int(seg.get("out_ms", 0))
 		start_ms = float(int(seg.get("in_ms", 0)))
 		end_ms = float(seg_out) if seg_out > 0 else -1.0
-	else:
-		start_ms = float(_mark_in) if _mark_in >= 0 else -1.0
-		end_ms = float(_mark_out) if _mark_out > 0 else -1.0
 	_graph.set_trim(start_ms, end_ms)
 
 	if _seg_label == null:

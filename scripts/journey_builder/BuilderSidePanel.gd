@@ -1304,7 +1304,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 		# ── Segments (pending; baked at save) ───────────────────────────────────────
 		# One section where trim and section-loop used to be two: both are segment lists now.
 		col.add_child(_side_section_separator())
-		col.add_child(_make_segments_section(arr, idx, reselect))
+		col.add_child(_make_segments_section(arr[idx]))
 
 		# Secondary device scripts (optional, collapsed) — they round out the media group.
 		col.add_child(_side_section_separator())
@@ -1338,6 +1338,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	item_dd.selected = max(0, item_values.find(str(round_data.get("award_item", ""))))
 	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(item_dd)
+	_apply_item_tooltips(item_dd, item_values)
 	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["award_item"] = item_values[i])
 	col.add_child(item_dd)
 
@@ -1583,8 +1584,7 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 # No numeric fields here on purpose. The old ✂ TRIM / 🔁 LOOP SECTION blocks could express one
 # window and one loop; a segment list can't be typed into two text boxes, and keeping partial
 # fields beside the timeline would be two competing spellings of the same cut.
-func _make_segments_section(arr: Array, idx: int, reselect: Callable) -> Control:
-	var round_data: Dictionary = arr[idx]
+func _make_segments_section(round_data: Dictionary) -> Control:
 	var box: VBoxContainer = VBoxContainer.new()
 	box.add_theme_constant_override("separation", 4)
 	box.add_child(_side_field_label("✂ SEGMENTS  (BAKED AT SAVE)"))
@@ -1616,19 +1616,19 @@ func _make_segments_section(arr: Array, idx: int, reselect: Callable) -> Control
 		readout.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
 	box.add_child(readout)
 
-	var edit_btn: Button = UITheme.make_icon_btn(
-		"✂ EDIT TIMELINE", str(round_data.get("funscript_path", "")) == "", UITheme.CYAN
-	)
-	edit_btn.tooltip_text = "Open the clip editor to cut, repeat and rearrange this round"
-	edit_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	edit_btn.pressed.connect(func() -> void: _open_funscript_editor(arr, idx, reselect))
-	box.add_child(edit_btn)
+	# No button here on purpose: the clip editor opens from 📈 PREVIEW & CUT directly above, and
+	# a second button beside this summary was the same action under a different name.
+	var hint: Label = Label.new()
+	hint.text = "EDIT IN 📈 PREVIEW & CUT ABOVE."
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	box.add_child(hint)
 	return box
 
 
-# Opens the round's clip editor. Every entry point routes here so none can pass half the
-# arguments — that's how the old trim entry ended up sending `[]` modifiers, leaving authors
-# cutting against a curve that wasn't the one that plays.
+# Opens the round's clip editor — preview, cut and tune. ONE button opens it (📈 PREVIEW & CUT);
+# the ✂ SEGMENTS block below is a read-only summary. There were briefly two buttons calling this
+# with identical arguments under different names, which read as two different features.
 #
 # `reselect` rebuilds the side panel after the overlay writes back (the summary and the node
 # badge both read the round's data).
@@ -1663,7 +1663,16 @@ func _open_funscript_editor(arr: Array, idx: int, reselect: Callable) -> void:
 			arr[idx].erase("loop_out_ms")
 			arr[idx].erase("loop_count")
 			reselect.call(idx),
-		on_tune
+		on_tune,
+		# Live sensory preview: the round's ticked sensory effects, their current intensities,
+		# and a writer. The side panel keeps its own sliders — the editor needs a funscript to
+		# open, so it can't be the only way in.
+		JourneyData.catalog_subset(
+			JourneyData.SENSORY_CATALOG,
+			JourneyData.normalize_effect_round(arr[idx]).get("sensory", [])
+		),
+		arr[idx].get("sensory_intensity", {}),
+		func(sname: String, value: float) -> void: _set_sensory_intensity(arr, idx, sname, value)
 	)
 
 
@@ -1741,6 +1750,37 @@ func _arrival_stat_row(key_text: String, value_text: String) -> Control:
 # A labelled item-registry checklist section whose checked ids are written to
 # shop_data[key]. Used twice by the shop editor: the fixed lineup ("items") and
 # the pool-mode guaranteed subset ("guaranteed").
+# Hover text for an item: what it does, what it costs, how long it lasts. Every item picker in
+# the builder uses this — the registry has carried a `description` all along and none of them
+# showed it, so authors were picking from names alone.
+func _item_tooltip(item_id: String) -> String:
+	var data: Dictionary = InventoryService.GetItemData(item_id)
+	if data.is_empty():
+		return ""
+	var lines: Array = [str(data.get("name", item_id))]
+	var desc: String = str(data.get("description", ""))
+	if desc != "":
+		lines.append(desc)
+	var facts: Array = ["♦%d" % int(data.get("price", 0))]
+	var ms: int = int(data.get("duration_ms", 0))
+	if ms > 0:
+		facts.append("lasts %ss" % String.num(ms / 1000.0, 1).trim_suffix(".0"))
+	var cat: String = str(data.get("category", ""))
+	if cat != "":
+		facts.append(cat)
+	lines.append("  ·  ".join(facts))
+	return "\n".join(lines)
+
+
+# Fills an item OptionButton's per-entry tooltips. `values` is the parallel id list the dropdown
+# was built from, where index 0 is the "None" entry.
+func _apply_item_tooltips(dd: OptionButton, values: Array) -> void:
+	for i: int in values.size():
+		var id: String = str(values[i])
+		if id != "":
+			dd.set_item_tooltip(i, _item_tooltip(id))
+
+
 func _shop_item_checklist(
 	arr: Array, idx: int, key: String, label: String, hint_text: String, all_item_ids: Array
 ) -> VBoxContainer:
@@ -1763,6 +1803,7 @@ func _shop_item_checklist(
 		var item_data: Dictionary = InventoryService.GetItemData(item_id)
 		var cb: CheckBox = CheckBox.new()
 		cb.text = "%s  (♦%d)" % [item_data.get("name", item_id), item_data.get("price", 0)]
+		cb.tooltip_text = _item_tooltip(item_id)
 		cb.button_pressed = item_id in (arr[idx].get(key, []) as Array)
 		cb.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 		cb.add_theme_font_size_override("font_size", 12)
@@ -1805,6 +1846,7 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	item_dd.selected = max(0, item_values.find(str(sb_data.get("item", ""))))
 	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(item_dd)
+	_apply_item_tooltips(item_dd, item_values)
 	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["item"] = item_values[i])
 	col.add_child(item_dd)
 
@@ -2185,6 +2227,7 @@ func _add_required_item_field(
 	dd.selected = max(0, values.find(str(path.get("required_item", ""))))
 	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(dd)
+	_apply_item_tooltips(dd, values)
 	dd.item_selected.connect(func(i: int) -> void: paths_arr[pi]["required_item"] = values[i])
 	container.add_child(dd)
 
@@ -2992,6 +3035,7 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	gift_dd.selected = max(0, values.find(str(arr[idx].get("gift_item", ""))))
 	gift_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(gift_dd)
+	_apply_item_tooltips(gift_dd, values)
 	gift_dd.item_selected.connect(func(i: int) -> void: arr[idx]["gift_item"] = values[i])
 	wrapper.add_child(gift_dd)
 

@@ -140,6 +140,17 @@ func get_serial_auto_connect() -> bool:
 	return bool(_config.get_value("serial", "auto_connect", DEFAULT_SERIAL_AUTO))
 
 
+# Player-side scale on every sensory (visual/audio) effect, 0.1–1.0. Multiplies the author's
+# per-round intensity, so it softens without overriding which effects a round uses. Defaults
+# below 1.0 — the catalog maxima were tuned harsher than most players want.
+func get_sensory_strength() -> float:
+	return clampf(float(_config.get_value("display", "sensory_strength", 0.50)), 0.1, 1.0)
+
+
+func set_sensory_strength(value: float) -> void:
+	_config.set_value("display", "sensory_strength", clampf(value, 0.1, 1.0))
+
+
 func get_range_min() -> int:
 	return int(_config.get_value("device", "range_min", DEFAULT_RANGE_MIN))
 

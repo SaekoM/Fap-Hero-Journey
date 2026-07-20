@@ -467,6 +467,16 @@ static func effect_param_specs(kind: String) -> Array:
 # round's effect_overrides map (name → {changed params/name/desc}); only present keys win, so
 # untouched params keep the catalog default. Stamps `_ref` = the original catalog name so
 # valence (effect_is_benefit) and re-lookup still work after a custom rename. {} if unknown.
+# The catalog entries a round actually ticked, in catalog order. Shared by the runtime and the
+# builder's live sensory preview.
+static func catalog_subset(catalog: Array, names: Array) -> Array:
+	var out: Array = []
+	for entry: Dictionary in catalog:
+		if entry.get("name", "") in names:
+			out.append(entry)
+	return out
+
+
 static func resolved_effect(name: String, overrides: Dictionary) -> Dictionary:
 	var base: Dictionary = effect_entry(name)
 	if base.is_empty():

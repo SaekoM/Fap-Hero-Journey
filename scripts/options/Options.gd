@@ -119,6 +119,8 @@ var _max_speed_slider: HSlider = null
 var _max_speed_value_lbl: Label = null
 var _hud_delay_slider: HSlider = null
 var _hud_delay_value_lbl: Label = null
+var _sensory_slider: HSlider = null
+var _sensory_value_lbl: Label = null
 var _ui_scale_slider: HSlider = null
 var _ui_scale_value_lbl: Label = null
 var _beat_bar_toggle: Button = null
@@ -386,6 +388,41 @@ func _apply_layout() -> void:
 	_hud_delay_slider.value_changed.connect(
 		func(v: float) -> void:
 			_hud_delay_value_lbl.text = "%.1fs" % v
+			_save_settings()
+	)
+
+	# ── Sensory Strength row (code-generated, appended to DisplaySection) ────
+	# Scales every visual/audio round effect. Softens rather than disables — which effects a
+	# round uses stays the author's call; this is how strongly they land.
+	var sensory_row: HBoxContainer = HBoxContainer.new()
+	sensory_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(sensory_row)
+
+	var sensory_lbl: Label = Label.new()
+	sensory_lbl.text = "SENSORY STRENGTH"
+	sensory_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(sensory_lbl, UITheme.WHITE_SOFT, 14, false)
+	sensory_row.add_child(sensory_lbl)
+
+	_sensory_slider = HSlider.new()
+	_sensory_slider.min_value = 0.1
+	_sensory_slider.max_value = 1.0
+	_sensory_slider.step = 0.05
+	_sensory_slider.value = 0.50
+	_sensory_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sensory_slider.custom_minimum_size = Vector2(SLIDER_MIN_W, 0)
+	_style_slider(_sensory_slider)
+	sensory_row.add_child(_sensory_slider)
+
+	_sensory_value_lbl = Label.new()
+	_sensory_value_lbl.text = "50%"
+	_sensory_value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
+	_style_label(_sensory_value_lbl, UITheme.PURPLE_BRIGHT, 14, false)
+	sensory_row.add_child(_sensory_value_lbl)
+
+	_sensory_slider.value_changed.connect(
+		func(v: float) -> void:
+			_sensory_value_lbl.text = "%d%%" % roundi(v * 100.0)
 			_save_settings()
 	)
 
@@ -1341,6 +1378,11 @@ func _load_settings() -> void:
 		_hud_delay_slider.value = hud_delay
 		_hud_delay_value_lbl.text = "%.1fs" % hud_delay
 
+	var sensory: float = SettingsService.get_sensory_strength()
+	if _sensory_slider != null:
+		_sensory_slider.set_value_no_signal(sensory)
+		_sensory_value_lbl.text = "%d%%" % roundi(sensory * 100.0)
+
 	var ui_scale: float = SettingsService.get_ui_scale()
 	if _ui_scale_slider != null:
 		_ui_scale_slider.set_value_no_signal(ui_scale)
@@ -1445,6 +1487,9 @@ func _save_settings() -> void:
 
 	if _hud_delay_slider != null:
 		SettingsService.set_hud_hide_delay(_hud_delay_slider.value)
+
+	if _sensory_slider != null:
+		SettingsService.set_sensory_strength(_sensory_slider.value)
 
 	if _ui_scale_slider != null:
 		SettingsService.set_ui_scale(_ui_scale_slider.value)

@@ -254,7 +254,18 @@ func _ival(roll: Dictionary, intensity: float) -> float:
 
 # Applies one sensory hex. Returns true when the kind belongs to this component;
 # false means it's a gameplay hex the caller (GameLoop) must handle itself.
-func apply(roll: Dictionary, intensity: float = 1.0) -> bool:
+#
+# The author's `intensity` is scaled by the player's SENSORY STRENGTH setting before anything
+# is mapped through imin/imax — one multiply here covers every effect, since they all read
+# their value from _ival. It softens, it doesn't disable: at the 0.1 floor each effect sits at
+# its catalog minimum, and which effects a round uses stays the author's call.
+# `player_scaled` folds in the player's SENSORY STRENGTH comfort setting. The builder's preview
+# passes false: the author is tuning the round's own intensity, and showing it pre-scaled would
+# have them compensate for a setting only their own install has.
+func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true) -> bool:
+	if player_scaled:
+		intensity *= SettingsService.get_sensory_strength()
+	intensity = clampf(intensity, 0.0, 1.0)
 	match String(roll.get("kind", "")):
 		"mute":
 			_muted = true

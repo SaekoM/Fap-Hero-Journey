@@ -232,6 +232,15 @@ func style_spin_box(spin: SpinBox) -> void:
 	var le: LineEdit = spin.get_line_edit()
 	if le != null:
 		style_line_edit(le)
+		# Commit typed text when focus leaves, not only on Enter — otherwise clicking away
+		# from a field silently discards the edit. Deliberately NOT update_on_text_changed:
+		# that re-clamps on every keystroke, so a field with min_value > 1 rewrites the text
+		# mid-type ("1" → "2" → next digit gives "20").
+		le.focus_exited.connect(func() -> void: spin.apply())
+		# Also commit on teardown. focus_exited alone isn't enough: clicking the graph canvas
+		# doesn't take focus, so the field keeps it — and selecting a node then rebuilds the
+		# side panel, freeing a still-focused spin box with its edit uncommitted.
+		spin.tree_exiting.connect(func() -> void: spin.apply())
 
 
 # TextEdit styling (multi-line).
