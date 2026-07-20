@@ -23,7 +23,31 @@ const DIFFICULTIES: Array = ["Easy", "Medium", "Hard", "Very Hard", "Extreme", "
 
 const VIDEO_EXTENSIONS: Array[String] = ["mp4", "m4v", "mkv", "avi", "mov", "wmv", "webm"]
 const FUNSCRIPT_EXTENSIONS: Array[String] = ["funscript", "json"]
-const IMAGE_EXTENSIONS: Array[String] = ["png", "jpg", "jpeg", "webp"]
+const IMAGE_EXTENSIONS: Array[String] = ["png", "jpg", "jpeg", "webp", "gif"]
+
+# What the IN-GAME image slots accept (boss image, storyboard default + speaker, fork card): stills
+# plus anything the builder can bake to a looping H.264. Past the input filter there's no
+# difference — a GIF is converted to exactly what an .mp4 already is.
+#
+# Deliberately NOT merged into IMAGE_EXTENSIONS: that list also drives the journey COVER and the
+# canvas / side-panel drop handlers, where a dropped .mp4 already means "bulk-import rounds"
+# (VIDEO_EXTENSIONS). Adding video there would make those drops ambiguous. The cover stays on
+# IMAGE_EXTENSIONS: dropping a movie on it is far likelier a slip than intent.
+const ANIMATED_IMAGE_EXTENSIONS: Array[String] = [
+	"png", "jpg", "jpeg", "webp", "gif", "apng", "mp4", "m4v", "webm", "mkv", "mov"
+]
+
+# Bake ceilings for animated images, per surface (see MediaPoolService.bake_animation). Roughly 2x
+# the on-screen size, so UI scaling has headroom without paying for pixels nobody can see — a 1080p
+# GIF dropped into the 380x240 boss slot is ~20x more than is ever displayed. Never upscales: a
+# smaller source is baked at its own size.
+const ANIM_CAP_BOSS: Vector2i = Vector2i(760, 480)  # displayed at 380x240
+const ANIM_CAP_FORK: Vector2i = Vector2i(440, 720)  # fork cards are 220x360
+const ANIM_CAP_STORYBOARD: Vector2i = Vector2i(1920, 1080)  # fullscreen background
+# The cover never animates (it sits in the catalogue grid), but a GIF cover still has to be
+# converted to a still PNG — Godot can't read GIF. Generous: an ordinary PNG/JPG cover isn't
+# downscaled at all, so this only exists to stop an absurd source, and it never upscales.
+const ANIM_CAP_COVER: Vector2i = Vector2i(2048, 2048)
 
 # Secondary T-code axes supported for serial devices (L0 = main stroke, handled separately).
 const EXTRA_AXES: Array[String] = ["L1", "L2", "R0", "R1", "R2"]
@@ -582,10 +606,15 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 	out.erase("type")  # node-level — lives outside data on disk
 	out.erase("node_id")  # node-level — the node's dict key IS its id
 	out.erase("paths")  # legacy tree key; fork choices are out-edges in the graph
-	# A pending trim is CONSUMED by the save (the baked media IS the trim) —
-	# journey.json never carries trim values.
+	# Segments are consumed by the save — the baked media IS the cut, so journey.json never
+	# carries them. The legacy trim / section-loop fields go too, so a migrated round stops
+	# carrying both spellings after its first save.
+	out.erase("segments")
 	out.erase("trim_start_ms")
 	out.erase("trim_end_ms")
+	out.erase("loop_in_ms")
+	out.erase("loop_out_ms")
+	out.erase("loop_count")
 	# Scalars get coercing overwrites (value types — no aliasing). Collection fields (arrays /
 	# dicts) are ALREADY deep-copied into `out`; only fill a default when ABSENT — reassigning
 	# `out[k] = data.get(k, …)` would re-alias the source's live array/dict and let a later
@@ -641,6 +670,16 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["cond_decider"] = str(data.get("cond_decider", "game"))
 			out["default_path"] = int(data.get("default_path", 0))
 			out["after_order"] = int(data.get("after_order", 0))
+			# Which counter a "counter" conditional fork gates on (blank for other metrics).
+			out["cond_counter"] = str(data.get("cond_counter", ""))
+	# Counter deltas can ride on ANY node type (a round bumps "belt", a storyboard bumps "arousal"),
+	# so normalize them here rather than per type. Cleaned to {name:int}; dropped entirely when empty
+	# so the schema stays lean (mirrors how set_flags only appears when non-empty).
+	var counters: Dictionary = clean_counter_deltas(data.get("set_counters", {}))
+	if counters.is_empty():
+		out.erase("set_counters")
+	else:
+		out["set_counters"] = counters
 	return out
 
 
@@ -701,6 +740,40 @@ static func pool_entry_weights(entries: Array) -> Array:
 	for e: Variant in entries:
 		w.append(maxi(1, int((e as Dictionary).get("weight", 1))))
 	return w
+
+
+# Every animated image source the graph references, deduped. `animated_exts` is passed in (the
+# caller owns the "what can ffmpeg bake" question — see MediaPoolService.ANIMATED_EXTENSIONS) so
+# this stays pure data.
+#
+# The builder blocks a save when any of these exist and ffmpeg can't run: an animated image MUST be
+# converted (Godot has no GIF decoder), and unlike video transcoding that isn't optional — an
+# unbaked GIF ships as a blank image.
+static func graph_animated_image_sources(graph: Dictionary, animated_exts: Array) -> Array:
+	var out: Dictionary = {}
+	for id: String in graph.get("nodes", {}):
+		var n: Dictionary = graph["nodes"][id]
+		var d: Dictionary = n.get("data", {})
+		match str(n.get("type", "")):
+			"round":
+				_note_animated(out, str(d.get("boss_image", "")), animated_exts)
+				for pe: Variant in d.get("pool_entries", []):
+					_note_animated(
+						out, str((pe as Dictionary).get("boss_image", "")), animated_exts
+					)
+			"storyboard":
+				_note_animated(out, str(d.get("image", "")), animated_exts)
+				for line: Variant in d.get("lines", []):
+					_note_animated(out, str((line as Dictionary).get("image", "")), animated_exts)
+			"fork":
+				for e: Variant in n.get("out", []):
+					_note_animated(out, str((e as Dictionary).get("image_path", "")), animated_exts)
+	return out.keys()
+
+
+static func _note_animated(out: Dictionary, path: String, animated_exts: Array) -> void:
+	if path != "" and path.get_extension().to_lower() in animated_exts:
+		out[path] = true
 
 
 # ── Journey identity ─────────────────────────────────────────────────────────
@@ -764,6 +837,47 @@ static func clean_flag_list(v: Variant) -> Array:
 		if s != "" and not (s in out):
 			out.append(s)
 	return out
+
+
+# The numeric analogue of clean_flag_list: normalizes a {name: delta} map (from disk or the editor)
+# to {String: int}, dropping blank names and zero deltas (a +0 counter change is a no-op, so it
+# stays out of journey.json). GameState.ApplyCounters reads the result as set_counters.
+static func clean_counter_deltas(v: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (v is Dictionary):
+		return out
+	for k: Variant in v as Dictionary:
+		var name: String = str(k).strip_edges()
+		var delta: int = int((v as Dictionary)[k])
+		if name != "" and delta != 0:
+			out[name] = delta
+	return out
+
+
+# Parses the authoring text field ("belt:1, arousal:2, stress:-1") into a {name: delta} map. Each
+# comma-separated token is "name:delta"; a bare "name" defaults to +1 (the "notch on the belt"
+# case). Round-trips with counter_deltas_to_text.
+static func parse_counter_deltas(text: String) -> Dictionary:
+	var out: Dictionary = {}
+	for token: String in text.split(",", false):
+		var parts: PackedStringArray = token.split(":")
+		var name: String = parts[0].strip_edges()
+		if name == "":
+			continue
+		var delta: int = 1
+		if parts.size() > 1 and parts[1].strip_edges() != "":
+			delta = int(parts[1].strip_edges())
+		if delta != 0:
+			out[name] = delta
+	return out
+
+
+# Renders a {name: delta} map back to the "belt:1, arousal:2, stress:-1" field text.
+static func counter_deltas_to_text(deltas: Dictionary) -> String:
+	var parts: PackedStringArray = []
+	for name: Variant in deltas:
+		parts.append("%s:%d" % [str(name), int(deltas[name])])
+	return ", ".join(parts)
 
 
 # ── Shop offer ───────────────────────────────────────────────────────────────
@@ -1269,10 +1383,18 @@ static func find_video_in_round(folder: String) -> String:
 # multi-GB videos every save. Two rounds reusing the same source file produce the
 # same fingerprint (so they pool to one file); editing the source (new size or
 # mtime) yields a new fingerprint, so a re-save picks up the changed bytes.
-# A pending trim joins the identity (two rounds trimming one source identically
-# still pool to one file; different trims get distinct files). Untrimmed keeps
-# the exact legacy identity string, so existing pooled rels stay stable.
-static func media_fingerprint(src: String, trim_start_ms: int = 0, trim_end_ms: int = 0) -> String:
+# The round's SEGMENTS (see segments_identity) join the identity, because they change the
+# baked output bytes: two rounds cutting one source identically still pool to one file, while
+# different cuts get distinct files. The full-clip and single-window forms reproduce the legacy
+# identity strings EXACTLY, so every pooled rel that exists today stays stable across the
+# upgrade — without that, the first 0.6.2 save of any trimmed journey would re-bake every clip.
+#
+# `variant` does the same job for any other transform that changes the OUTPUT bytes while the
+# source is unchanged — currently the animated-image bake, whose size cap differs per surface. One
+# GIF used as a boss image (760x480) and a storyboard background (1920x1080) must NOT pool to one
+# file; with the same cap on two rounds, it still does. Empty variant = the legacy identity, so
+# every existing pooled rel stays stable.
+static func media_fingerprint(src: String, segments: Array = [], variant: String = "") -> String:
 	var abs: String = ProjectSettings.globalize_path(src)
 	var size: int = 0
 	var f: FileAccess = FileAccess.open(abs, FileAccess.READ)
@@ -1281,8 +1403,11 @@ static func media_fingerprint(src: String, trim_start_ms: int = 0, trim_end_ms: 
 		f.close()
 	var mtime: int = FileAccess.get_modified_time(abs)
 	var identity: String = "%s|%d|%d" % [abs, size, mtime]
-	if trim_start_ms > 0 or trim_end_ms > 0:
-		identity += "|trim:%d-%d" % [trim_start_ms, trim_end_ms]
+	var seg_id: String = segments_identity(segments)
+	if seg_id != "":
+		identity += "|" + seg_id
+	if variant != "":
+		identity += "|" + variant
 	return identity.sha256_text().substr(0, 16)
 
 
@@ -1473,22 +1598,181 @@ static func _pos_at(a: Vector2, b: Vector2, t: float) -> float:
 	return roundf(lerpf(a.y, b.y, (t - a.x) / (b.x - a.x)))
 
 
-# Trims a parsed funscript JSON dict: actions replaced by the trimmed/rebased
-# set (as {at, pos} ints), every other metadata key preserved. Used by the
-# save bake for the main funscript and each axis/vib sibling.
-static func trim_funscript_json(fs: Dictionary, in_ms: int, out_ms: int) -> Dictionary:
+# ── Section looping (legacy — migration only) ──────────────────────────────
+# Section looping used to be its own pair of windows (trim + an inner loop window ×N). It is
+# now expressed as repeated SEGMENTS, so nothing below is part of the live save path: these
+# two survive purely so normalize_segments can recognise a round authored before segments
+# existed and expand it into the equivalent segment list. Don't build on them.
+
+# (The old LOOP_MAX_COUNT ceiling is gone with the spinbox that enforced it — segments have no
+# repeat cap. A long bake is the author's call and their time; it's async and cancellable.)
+
+
+# True when the legacy loop params describe a real repeat (≥2 passes over a non-empty window
+# that sits within the trim). Anything else was never a loop, so it migrates as a plain trim.
+static func has_section_loop(
+	trim_in: int, trim_out: int, loop_in: int, loop_out: int, count: int
+) -> bool:
+	if count < 2 or loop_out <= loop_in:
+		return false
+	var t_out: int = trim_out if trim_out > 0 else (1 << 62)
+	return loop_in >= trim_in and loop_out <= t_out
+
+
+# Appends `seg` (points rebased to 0) shifted by `offset` ms. Collapses a seam duplicate — the
+# boundary anchor trim_action_points leaves at the end of one segment and the start of the next
+# share a timestamp — keeping the later position so the joins stay clean.
+static func _append_shifted_points(out: Array, seg: Array, offset: int) -> void:
+	for p: Vector2 in seg:
+		var at: int = int(p.x) + offset
+		if not out.is_empty() and int((out[-1] as Vector2).x) == at:
+			out[-1] = Vector2(at, p.y)
+			continue
+		out.append(Vector2(at, p.y))
+
+
+# ── Segments (the EDL) ──────────────────────────────────────────────────────
+# A round's video is an ordered list of SOURCE windows: [{in_ms, out_ms}, …], played back to
+# back and concatenated at save. The runtime still sees one plain clip.
+#
+# One list subsumes trim AND section looping: a trim is one segment, a loop is the same window
+# listed N times, a cut is what survives, a rearrangement is list order. No `repeat` field — a
+# repeat IS a duplicated row, which is what makes duplicate, reorder and loop one operation.
+#
+# Windows may overlap and may run out of order. `out_ms <= 0` means "to the end": a pure
+# function can't probe the file, so that's the only open-ended form. Empty list = full clip.
+
+
+# Canonical segment list for a round's editor `data`, migrating the legacy trim/section-loop
+# fields when `segments` isn't present. One-way and idempotent, so load → save → load is
+# stable. The legacy shapes map exactly onto their replacements, so a migrated round bakes to
+# the same bytes it did before.
+static func normalize_segments(data: Dictionary) -> Array:
+	if data.has("segments"):
+		return coerce_segments(data.get("segments", []))
+
+	var trim_in: int = int(data.get("trim_start_ms", 0))
+	var trim_out: int = int(data.get("trim_end_ms", 0))
+	var loop_in: int = int(data.get("loop_in_ms", 0))
+	var loop_out: int = int(data.get("loop_out_ms", 0))
+	var count: int = int(data.get("loop_count", 0))
+
+	if has_section_loop(trim_in, trim_out, loop_in, loop_out, count):
+		var segs: Array = []
+		if loop_in > trim_in:
+			segs.append({"in_ms": trim_in, "out_ms": loop_in})
+		for _k: int in count:
+			segs.append({"in_ms": loop_in, "out_ms": loop_out})
+		# trim_out == 0 legitimately means "to the end", so the finale is only empty when a
+		# real trim_out sits at the loop's out point.
+		if trim_out <= 0 or trim_out > loop_out:
+			segs.append({"in_ms": loop_out, "out_ms": trim_out})
+		return segs
+
+	if trim_in > 0 or trim_out > 0:
+		return [{"in_ms": trim_in, "out_ms": trim_out}]
+	return []
+
+
+# Coerces a raw segments array (JSON loads every number as float — the "coins lesson") and
+# drops entries that can't describe a window: negative starts, or a closed window that ends
+# at or before it begins. An open end (out_ms <= 0) is always kept.
+static func coerce_segments(raw: Variant) -> Array:
+	var out: Array = []
+	if not (raw is Array):
+		return out
+	for s: Variant in raw:
+		if not (s is Dictionary):
+			continue
+		var a: int = maxi(0, int((s as Dictionary).get("in_ms", 0)))
+		var b: int = int((s as Dictionary).get("out_ms", 0))
+		if b > 0 and b <= a:
+			continue
+		out.append({"in_ms": a, "out_ms": maxi(0, b)})
+	return out
+
+
+# Total baked length of a segment list, in ms. `source_len_ms` resolves open-ended segments
+# (out_ms <= 0); pass the probed source duration. An empty list is the whole source.
+static func segments_total_ms(segments: Array, source_len_ms: int) -> int:
+	if segments.is_empty():
+		return maxi(0, source_len_ms)
+	var total: int = 0
+	for seg: Dictionary in segments:
+		var end_ms: int = int(seg.get("out_ms", 0))
+		if end_ms <= 0:
+			end_ms = source_len_ms
+		total += maxi(0, end_ms - int(seg.get("in_ms", 0)))
+	return total
+
+
+# Bakes the action list for a segment list: each window cut and rebased by trim_action_points
+# (keeping its interpolated boundary anchors), then laid end to end. Returns points rebased to
+# 0; an empty list returns `points` untouched.
+#
+# `source_len_ms` resolves open ends, falling back to the last action's timestamp — right for a
+# funscript running to the end of its clip, harmless otherwise (a trailing gap has no actions).
+static func build_edl_action_points(
+	points: Array, segments: Array, source_len_ms: int = 0
+) -> Array:
+	if segments.is_empty():
+		return points
+	var src_end: int = source_len_ms
+	if src_end <= 0 and not points.is_empty():
+		src_end = int((points[-1] as Vector2).x)
+
+	var out: Array = []
+	var at: int = 0  # running offset into the baked timeline
+	for seg: Dictionary in segments:
+		var start_ms: int = int(seg.get("in_ms", 0))
+		var out_ms: int = int(seg.get("out_ms", 0))
+		_append_shifted_points(out, trim_action_points(points, start_ms, out_ms), at)
+		at += maxi(0, (out_ms if out_ms > 0 else src_end) - start_ms)
+	return out
+
+
+# Replaces a parsed funscript's `actions` with the baked EDL set (as {at, pos} ints),
+# preserving every other metadata key. The one funscript rewriter for the save bake — main
+# funscript and axis/vib siblings alike. An empty segment list returns it unchanged.
+static func edl_funscript_json(
+	fs: Dictionary, segments: Array, source_len_ms: int = 0
+) -> Dictionary:
+	if segments.is_empty():
+		return fs.duplicate(true)
 	var points: Array = []
 	for a in fs.get("actions", []):
 		if a is Dictionary:
 			points.append(Vector2(float(a.get("at", 0)), float(a.get("pos", 0))))
 	points.sort_custom(func(p: Vector2, q: Vector2) -> bool: return p.x < q.x)
-	var trimmed: Array = trim_action_points(points, in_ms, out_ms)
+	var built: Array = build_edl_action_points(points, segments, source_len_ms)
 	var out: Dictionary = fs.duplicate(true)
 	var actions: Array = []
-	for p: Vector2 in trimmed:
+	for p: Vector2 in built:
 		actions.append({"at": int(p.x), "pos": int(p.y)})
 	out["actions"] = actions
 	return out
+
+
+# Fingerprint identity suffix for a segment list (see media_fingerprint).
+#
+# The pooled filename derives from this, so changing the SPELLING re-bakes every affected clip.
+# Two forms are byte-identical to what shipped before segments existed, on purpose: an empty
+# list → "", one segment → "trim:a-b". Anything a trim couldn't express gets "edl:".
+static func segments_identity(segments: Array) -> String:
+	if segments.is_empty():
+		return ""
+	if segments.size() == 1:
+		var only: Dictionary = segments[0]
+		var a: int = int(only.get("in_ms", 0))
+		var b: int = int(only.get("out_ms", 0))
+		# One window spanning the whole source IS the full clip — same bytes, same identity.
+		if a <= 0 and b <= 0:
+			return ""
+		return "trim:%d-%d" % [a, b]
+	var parts: PackedStringArray = []
+	for s: Dictionary in segments:
+		parts.append("%d-%d" % [int(s.get("in_ms", 0)), int(s.get("out_ms", 0))])
+	return "edl:" + ",".join(parts)
 
 
 static func read_funscript_stats(path: String) -> Dictionary:

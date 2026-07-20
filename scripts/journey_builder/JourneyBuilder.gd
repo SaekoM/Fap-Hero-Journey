@@ -79,6 +79,7 @@ var _journey_tags: Array = []  # Array[String] of tag ids (see TagRegistry)
 var _journey_map_enabled: bool = true  # author allows the in-play journey map (off = enforce surprise)
 var _journey_map_fog: bool = false  # fog of war: reveal the map as the player discovers it (map must be enabled)
 var _journey_map_fog_reveal: int = 1  # fog reveal depth: ghost levels ahead of the trail (< 0 = whole structure)
+var _journey_shown_counters: Array = []  # Array[String] of counter names surfaced to the player (HUD + inventory)
 
 # Folder the journey was loaded from when editing. If the journey is renamed,
 # the save writes a new folder; this lets us delete the stale original.
@@ -148,6 +149,11 @@ var _transcode_plan: Dictionary = {}
 # funscript {count,length_ms} per fingerprint so a reused script isn't re-parsed.
 var _pooled_media: Dictionary = {}
 var _pooled_fs_stats: Dictionary = {}
+
+# Filenames of animated images clipped to MediaPoolService.ANIM_MAX_SECS during the current save.
+# Collected rather than raised: an over-long decoration is trimmed, not an error — but the author
+# is told, so a silently shortened image can't be mistaken for a bug.
+var _anim_truncated: Array = []
 
 # Count of player run-saves invalidated by this builder save (typically 0 or
 # 1, possibly 2 if both the renamed-from and renamed-to folders had saves).
@@ -591,11 +597,10 @@ func _run_audit() -> Dictionary:
 		var fs_path: String = str(data.get("funscript_path", ""))
 		if fs_path != "" and FileAccess.file_exists(fs_path):
 			var actions: Array = JourneyData.read_funscript_actions(fs_path)
-			# A pending trim ships trimmed — score and time what will actually play.
-			var t_in: int = int(data.get("trim_start_ms", 0))
-			var t_out: int = int(data.get("trim_end_ms", 0))
-			if t_in > 0 or t_out > 0:
-				actions = JourneyData.trim_action_points(actions, t_in, t_out)
+			# Pending segments ship baked — score and time what will actually play.
+			actions = JourneyData.build_edl_action_points(
+				actions, JourneyData.normalize_segments(data)
+			)
 			round_scores[nid] = JourneyAudit.baseline_score(actions)
 			if not actions.is_empty():
 				round_lengths[nid] = int((actions[-1] as Vector2).x)
@@ -2201,6 +2206,7 @@ func _load_graph(journey: Dictionary) -> void:
 	_journey_difficulty_idx = parsed["difficulty_idx"]
 	_journey_tags = (parsed.get("tags", []) as Array).duplicate()
 	_journey_map_enabled = bool(parsed.get("map_enabled", true))
+	_journey_shown_counters = (parsed.get("shown_counters", []) as Array).duplicate()
 	_journey_map_fog = bool(parsed.get("map_fog", false))
 	_journey_map_fog_reveal = int(parsed.get("map_fog_reveal", 1))
 	if (parsed["cover_path"] as String) != "":
@@ -2810,6 +2816,8 @@ func _launch_test_play(paths: Dictionary) -> void:
 func _do_save() -> bool:
 	if not _validate_presave():
 		return false
+	if not _check_animated_images():
+		return false
 	if not _build_transcode_plan():
 		return false
 
@@ -2848,6 +2856,7 @@ func _reset_save_state() -> void:
 	_transcode_cancel = false
 	_save_aborted = false
 	_save_abort_error = {}
+	_anim_truncated.clear()
 	_round_folder_counter = 0
 	_invalidated_save_count = 0
 	_pending_test_location = {}
@@ -2870,13 +2879,13 @@ func _validate_presave() -> bool:
 	return false
 
 
-# The _transcode_plan key for a (source, trim) combo. Untrimmed keeps the bare
-# source path (legacy shape); a pending trim gets its own entry so the same
-# source can be cut differently — or not at all — by different rounds.
-func _transcode_plan_key(src: String, trim_in: int, trim_out: int) -> String:
-	if trim_in <= 0 and trim_out <= 0:
-		return src
-	return "%s|trim:%d-%d" % [src, trim_in, trim_out]
+# The _transcode_plan key for a (source, segments) combo. An uncut source keeps the bare
+# source path (legacy shape); a segment list gets its own entry so the same source can be
+# cut differently — or not at all — by different rounds. Shares JourneyData's identity
+# spelling so the key and the pooled fingerprint always agree on what "the same cut" means.
+func _transcode_plan_key(src: String, segments: Array) -> String:
+	var id: String = JourneyData.segments_identity(segments)
+	return src if id == "" else "%s|%s" % [src, id]
 
 
 # Populates _transcode_plan by probing every (video source, pending trim) combo
@@ -2886,14 +2895,46 @@ func _transcode_plan_key(src: String, trim_in: int, trim_out: int) -> String:
 # seconds off and silently desync the rebased funscript). Trims are baked even
 # with auto-transcode OFF, so ffmpeg is required whenever any trim is pending.
 # Returns false — with an actionable modal — when ffmpeg is needed but can't run.
+# Blocks the save when the journey uses animated images but ffmpeg can't run.
+#
+# Deliberately separate from _build_transcode_plan's gate, which can't cover this: that one returns
+# early when the journey has no video at all (a storyboard-only journey can still use a GIF), and
+# again when Auto-Transcode is off. Baking a GIF is NOT optional the way transcoding a video is —
+# Godot has no GIF decoder, so an unbaked GIF is simply an invisible image. There's no soft
+# fallback either: extracting even its first frame needs ffmpeg.
+func _check_animated_images() -> bool:
+	var sources: Array = JourneyData.graph_animated_image_sources(
+		_graph_model, MediaPoolService.ANIMATED_EXTENSIONS
+	)
+	if _cover_path != "" and MediaPoolService.is_animated_source(_cover_path):
+		sources.append(_cover_path)
+	if sources.is_empty() or MediaPoolService.is_available():
+		return true
+
+	var names: PackedStringArray = []
+	for s: String in sources:
+		names.append((s as String).get_file())
+	_show_save_error_single(
+		"CANNOT SAVE JOURNEY",
+		CAUSE_FFMPEG_MISSING,
+		"Journey",
+		(
+			"This journey uses animated images (%s), but ffmpeg / ffprobe could not be run. Animated images must be converted before the game can show them — unlike video transcoding, this can't be skipped."
+			% ", ".join(names)
+		),
+		"Set a custom ffmpeg location in Options → Transcoding (a folder containing ffmpeg and ffprobe), or install ffmpeg on your PATH. Alternatively, replace the animated images with still ones (PNG / JPG / WebP)."
+	)
+	return false
+
+
 func _build_transcode_plan() -> bool:
 	_transcode_plan = {}
 	if not JourneyData.graph_has_any_video(_graph_model):
 		return true
 
-	# Every round's (source, trim) combo; identical combos plan (and pool) once.
-	var combos: Dictionary = {}  # plan key → {src, trim_in, trim_out}
-	var any_trim: bool = false
+	# Every round's (source, segments) combo; identical combos plan (and pool) once.
+	var combos: Dictionary = {}  # plan key → {src, segments}
+	var any_cut: bool = false
 	for nid: String in _graph_model.get("nodes", {}):
 		var node: Dictionary = _graph_model["nodes"][nid]
 		if str(node.get("type", "")) != "round":
@@ -2901,22 +2942,23 @@ func _build_transcode_plan() -> bool:
 		var data: Dictionary = node.get("data", {})
 		var src: String = str(data.get("video_path", ""))
 		if src != "":
-			var t_in: int = int(data.get("trim_start_ms", 0))
-			var t_out: int = int(data.get("trim_end_ms", 0))
-			any_trim = any_trim or t_in > 0 or t_out > 0
-			combos[_transcode_plan_key(src, t_in, t_out)] = {
-				"src": src, "trim_in": t_in, "trim_out": t_out
-			}
-		# Pool round: each encounter entry's video is its own source (no trim).
+			# A multi-segment round bakes outside this plan (see _pool_video_into) because it
+			# always re-encodes; it still needs to flip any_cut so the ffmpeg gate below fires
+			# even with Auto-Transcode off. A single segment is a plain trim and plans normally.
+			var segs: Array = JourneyData.normalize_segments(data)
+			any_cut = any_cut or not segs.is_empty()
+			if segs.size() <= 1:
+				combos[_transcode_plan_key(src, segs)] = {"src": src, "segments": segs}
+		# Pool round: each encounter entry's video is its own source (never cut).
 		for pe: Variant in data.get("pool_entries", []):
 			var pv: String = str((pe as Dictionary).get("video_path", ""))
 			if pv != "":
-				combos[_transcode_plan_key(pv, 0, 0)] = {"src": pv, "trim_in": 0, "trim_out": 0}
+				combos[_transcode_plan_key(pv, [])] = {"src": pv, "segments": []}
 
 	# Auto-transcode disabled: copy videos verbatim and require nothing of
 	# ffmpeg (the escape hatch for setups where ffmpeg can't run, e.g. some
-	# Wine) — UNLESS a trim is pending, which can only ship as a re-encode.
-	if not SettingsService.get_auto_transcode() and not any_trim:
+	# Wine) — UNLESS a cut is pending, which can only ship as a re-encode.
+	if not SettingsService.get_auto_transcode() and not any_cut:
 		return true
 
 	# Honest fallback: without ffprobe/ffmpeg we can neither verify, convert,
@@ -2937,11 +2979,10 @@ func _build_transcode_plan() -> bool:
 	for key: String in combos:
 		var combo: Dictionary = combos[key]
 		var src: String = str(combo["src"])
-		var t_in: int = int(combo["trim_in"])
-		var t_out: int = int(combo["trim_out"])
-		var is_trim: bool = t_in > 0 or t_out > 0
+		var segs: Array = combo["segments"]
+		var is_trim: bool = not segs.is_empty()
 		if not auto_transcode and not is_trim:
-			continue  # transcode off: only pending trims are baked
+			continue  # transcode off: only pending cuts are baked
 
 		if not src_info.has(src):
 			src_info[src] = MediaPoolService.probe_stream_info(src)
@@ -2956,14 +2997,10 @@ func _build_transcode_plan() -> bool:
 			src_duration[src] = MediaPoolService.probe_duration_seconds(src)
 		var duration: float = float(src_duration[src])
 		if is_trim:
-			# Progress-bar duration = the trimmed window's length.
-			var end_s: float = (t_out / 1000.0) if t_out > 0 else duration
-			if duration > 0.0:
-				end_s = minf(end_s, duration)
-			duration = maxf(0.0, end_s - t_in / 1000.0)
-		_transcode_plan[key] = {
-			"codec": reason, "duration": duration, "trim_in": t_in, "trim_out": t_out
-		}
+			# Progress-bar duration = the baked length (only single-segment combos reach here;
+			# multi-segment rounds bake through _pool_video_into with their own progress).
+			duration = JourneyData.segments_total_ms(segs, roundi(duration * 1000.0)) / 1000.0
+		_transcode_plan[key] = {"codec": reason, "duration": duration, "segments": segs}
 
 	return true
 
@@ -3013,8 +3050,21 @@ func _setup_save_folders() -> Dictionary:
 	# the cover slot AND a storyboard wouldn't get copied twice.
 	var copied_images: Dictionary = {}
 	if _cover_path != "":
-		var ext: String = _cover_path.get_extension().to_lower()
-		_copy_image_deduped(_cover_path, abs_media_dir, "cover." + ext, copied_images)
+		if MediaPoolService.is_animated_source(_cover_path):
+			# The cover deliberately never animates — it sits in the catalogue grid, where N moving
+			# cards would cost real frames for no gain. But Godot can't read a GIF at all, so bake
+			# its first frame to a PNG. Unlike the in-game surfaces this does NOT go to the content
+			# pool: it has to land in media/ named "cover.*", which is where
+			# JourneyScanner.find_cover_image looks for it.
+			MediaPoolService.extract_first_frame(
+				_cover_path,
+				abs_media_dir + "/cover.png",
+				JourneyData.ANIM_CAP_COVER.x,
+				JourneyData.ANIM_CAP_COVER.y
+			)
+		else:
+			var ext: String = _cover_path.get_extension().to_lower()
+			_copy_image_deduped(_cover_path, abs_media_dir, "cover." + ext, copied_images)
 
 	return {
 		"journey_name": journey_name,
@@ -3030,7 +3080,14 @@ func _setup_save_folders() -> Dictionary:
 # transfer video bytes. Returns null when there are no videos to save (no
 # point in flashing a modal that immediately dismisses).
 func _create_save_progress_modal_if_needed() -> Control:
-	if not JourneyData.graph_has_any_video(_graph_model):
+	# Animated images are encodes too, and a journey can have them with no video at all (a
+	# storyboard-only journey) — without this it would bake with no modal and look frozen.
+	var has_anim: bool = not (
+		JourneyData
+		. graph_animated_image_sources(_graph_model, MediaPoolService.ANIMATED_EXTENSIONS)
+		. is_empty()
+	)
+	if not JourneyData.graph_has_any_video(_graph_model) and not has_anim:
 		return null
 	var modal: Control = _create_transcode_modal()
 	add_child(modal)
@@ -3079,12 +3136,12 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 				if saved_data.is_empty():
 					return {}  # transcode/copy failure: modal already shown
 			"storyboard":
-				saved_data = _save_storyboard_node_media(
-					saved_data, data_in, abs_media_dir, id, copied_images
+				saved_data = await _save_storyboard_node_media(
+					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
 				)
 			"fork":
-				saved_out = _save_fork_node_edges(
-					node.get("out", []), abs_media_dir, id, copied_images
+				saved_out = await _save_fork_node_edges(
+					node.get("out", []), abs_dir, abs_media_dir, id, copied_images, modal
 				)
 			"shop":
 				pass  # no media
@@ -3118,6 +3175,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"MapEnabled": _journey_map_enabled,
 		"MapFog": _journey_map_fog,
 		"MapFogReveal": _journey_map_fog_reveal,
+		"ShownCounters": JourneyData.clean_flag_list(_journey_shown_counters),
 	}
 	# Identity + version stamps. _journey_id is empty for a new journey (minted here) and carries
 	# the loaded id for an existing one, so re-saving — or renaming — never changes it.
@@ -3182,32 +3240,36 @@ func _save_round_node_media(
 	# No per-round folder is created; all playback assets pool into content/ by hash.
 	saved_data["folder"] = _next_round_folder_slug()
 
-	# Pending trim (consumed by this save): the video is cut and every script
-	# rebased to the window; journey.json never carries the trim itself.
-	var trim_in: int = int(data_in.get("trim_start_ms", 0))
-	var trim_out: int = int(data_in.get("trim_end_ms", 0))
+	# Pending segments, consumed by this save: the video is cut to them and every script rebased
+	# to match. Empty for an uncut round (the common case). normalize_segments migrates the
+	# legacy trim / section-loop fields, so an older round bakes identically.
+	var segments: Array = JourneyData.normalize_segments(data_in)
+
 	# The round's OWN media (funscript / axis / vib / boss image / video). All empty
 	# for a pool round — its media lives in the entries, pooled below.
-	var fs: Dictionary = _pool_funscript(
-		str(data_in.get("funscript_path", "")), abs_dir, trim_in, trim_out
-	)
+	var fs: Dictionary = _pool_funscript(str(data_in.get("funscript_path", "")), abs_dir, segments)
 	saved_data["funscript_path"] = fs["rel"]
 	saved_data["action_count"] = fs["count"]
 	saved_data["length_ms"] = fs["length_ms"]
 
-	# Secondary-axis + vib scripts — pooled, keyed by channel (suffix preserved),
-	# trim-rebased identically.
+	# Secondary-axis + vib scripts — pooled, keyed by channel (suffix preserved), cut
+	# identically to the main funscript.
 	saved_data["axis_scripts"] = _pool_channels(
-		data_in.get("axis_scripts", {}), abs_dir, JourneyData.AXIS_SUFFIXES, trim_in, trim_out
+		data_in.get("axis_scripts", {}), abs_dir, JourneyData.AXIS_SUFFIXES, segments
 	)
 	saved_data["vib_scripts"] = _pool_channels(
-		data_in.get("vib_scripts", {}), abs_dir, JourneyData.VIB_SUFFIXES, trim_in, trim_out
+		data_in.get("vib_scripts", {}), abs_dir, JourneyData.VIB_SUFFIXES, segments
 	)
 
-	# Boss intro image (boss rounds only) → content pool.
+	# Boss intro image (boss rounds only) → content pool. A GIF is baked to a looping H.264 (or a
+	# PNG if it's single-frame) — Godot can't decode GIF, so it can never ship verbatim.
 	var boss_rel: String = ""
 	if str(saved_data.get("round_type", "normal")) == "boss":
-		boss_rel = _pool_small_file(str(data_in.get("boss_image", "")), abs_dir)
+		var boss_src: String = str(data_in.get("boss_image", ""))
+		var gif: Dictionary = await _store_gif_source(
+			boss_src, abs_dir, JourneyData.ANIM_CAP_BOSS, false, modal
+		)
+		boss_rel = str(gif["rel"]) if gif["handled"] else _pool_small_file(boss_src, abs_dir)
 	saved_data["boss_image"] = boss_rel
 
 	# Video → content pool. Legacy fallback: a pre-VideoPath round carries its video
@@ -3216,30 +3278,20 @@ func _save_round_node_media(
 	if vid_src == "":
 		vid_src = JourneyData.find_video_in_round(str(data_in.get("folder", "")))
 	var vres: Dictionary = await _pool_video_into(
-		vid_src,
-		abs_dir,
-		modal,
-		round_name,
-		'Round "%s"' % round_name,
-		rorder,
-		total,
-		trim_in,
-		trim_out
+		vid_src, abs_dir, modal, round_name, 'Round "%s"' % round_name, rorder, total, segments
 	)
 	if not vres["ok"]:
 		return {}
 	saved_data["video_path"] = vres["rel"]
 
 	# Pool round: pool each encounter entry's media (video + funscript + axis/vib),
-	# rewriting each entry's paths to content/ rels. No trim on entries.
+	# rewriting each entry's paths to content/ rels. Entries are never cut.
 	if str(saved_data.get("round_type", "normal")) == "pool":
 		var entries_out: Array = []
 		for pe: Variant in data_in.get("pool_entries", []):
 			var entry_in: Dictionary = pe
 			var ename: String = str(entry_in.get("name", "")).strip_edges()
-			var e_fs: Dictionary = _pool_funscript(
-				str(entry_in.get("funscript_path", "")), abs_dir, 0, 0
-			)
+			var e_fs: Dictionary = _pool_funscript(str(entry_in.get("funscript_path", "")), abs_dir)
 			var e_vid: Dictionary = await _pool_video_into(
 				str(entry_in.get("video_path", "")),
 				abs_dir,
@@ -3247,9 +3299,7 @@ func _save_round_node_media(
 				ename,
 				'Encounter "%s"' % ename,
 				rorder,
-				total,
-				0,
-				0
+				total
 			)
 			if not e_vid["ok"]:
 				return {}
@@ -3261,12 +3311,10 @@ func _save_round_node_media(
 				"length_ms": e_fs["length_ms"],
 				"axis_scripts":
 				_pool_channels(
-					entry_in.get("axis_scripts", {}), abs_dir, JourneyData.AXIS_SUFFIXES, 0, 0
+					entry_in.get("axis_scripts", {}), abs_dir, JourneyData.AXIS_SUFFIXES
 				),
 				"vib_scripts":
-				_pool_channels(
-					entry_in.get("vib_scripts", {}), abs_dir, JourneyData.VIB_SUFFIXES, 0, 0
-				),
+				_pool_channels(entry_in.get("vib_scripts", {}), abs_dir, JourneyData.VIB_SUFFIXES),
 				"weight": maxi(1, int(entry_in.get("weight", 1))),
 				# Per-entry type (a rolled encounter can be a boss). Boss config rides along;
 				# its intro image is pooled like a boss round's.
@@ -3277,8 +3325,13 @@ func _save_round_node_media(
 					(entry_in.get("boss_modifiers", []) as Array).duplicate(true)
 				)
 				entry_out["boss_tagline"] = str(entry_in.get("boss_tagline", ""))
-				entry_out["boss_image"] = _pool_small_file(
-					str(entry_in.get("boss_image", "")), abs_dir
+				# Same GIF-bake rule as a round-level boss image (Godot can't show a GIF).
+				var e_boss_src: String = str(entry_in.get("boss_image", ""))
+				var e_gif: Dictionary = await _store_gif_source(
+					e_boss_src, abs_dir, JourneyData.ANIM_CAP_BOSS, false, modal
+				)
+				entry_out["boss_image"] = (
+					str(e_gif["rel"]) if e_gif["handled"] else _pool_small_file(e_boss_src, abs_dir)
 				)
 				entry_out["sensory"] = (entry_in.get("sensory", []) as Array).duplicate(true)
 			entries_out.append(entry_out)
@@ -3287,21 +3340,21 @@ func _save_round_node_media(
 	return saved_data
 
 
-# Pools a funscript source into content/ (trim-rebased when trim set), caching stats
-# by fingerprint so a reused source is parsed once. Returns {rel, count, length_ms};
-# empty source → empty rel + zero stats.
-func _pool_funscript(fs_src: String, abs_dir: String, trim_in: int, trim_out: int) -> Dictionary:
+# Pools a funscript source into content/ (rebased to the round's segments when it has any),
+# caching stats by fingerprint so a reused source is parsed once. Returns {rel, count,
+# length_ms}; empty source → empty rel + zero stats.
+func _pool_funscript(fs_src: String, abs_dir: String, segments: Array = []) -> Dictionary:
 	if fs_src == "":
 		return {"rel": "", "count": 0, "length_ms": 0}
-	var pool: Dictionary = _assign_pooled_media(fs_src, fs_src.get_extension(), trim_in, trim_out)
+	var pool: Dictionary = _assign_pooled_media(fs_src, fs_src.get_extension(), segments)
 	var rel: String = pool["rel"]
 	var stats: Dictionary = {"count": 0, "length_ms": 0}
 	if pool["copy"]:
 		var dst: String = abs_dir + "/" + rel
-		if trim_in > 0 or trim_out > 0:
-			_write_trimmed_funscript(fs_src, dst, trim_in, trim_out)
-		else:
+		if segments.is_empty():
 			_copy_file(fs_src, dst)
+		else:
+			_write_edl_funscript(fs_src, dst, segments)
 		stats = JourneyData.read_funscript_stats(dst)
 		_pooled_fs_stats[pool["fingerprint"]] = stats
 	else:
@@ -3312,13 +3365,13 @@ func _pool_funscript(fs_src: String, abs_dir: String, trim_in: int, trim_out: in
 # Pools a {channel: source} map (secondary-axis or vib scripts) into content/, keyed
 # by channel with the suffix preserved. Returns {channel: rel} (skips empty sources).
 func _pool_channels(
-	channels_in: Dictionary, abs_dir: String, suffixes: Dictionary, trim_in: int, trim_out: int
+	channels_in: Dictionary, abs_dir: String, suffixes: Dictionary, segments: Array = []
 ) -> Dictionary:
 	var out: Dictionary = {}
 	for ch: String in channels_in:
 		var src: String = str(channels_in[ch])
 		var rel: String = _pool_small_file(
-			src, abs_dir, _channel_pool_ext(suffixes.get(ch, ""), src), trim_in, trim_out
+			src, abs_dir, _channel_pool_ext(suffixes.get(ch, ""), src), segments
 		)
 		if rel != "":
 			out[ch] = rel
@@ -3338,20 +3391,55 @@ func _pool_video_into(
 	subject: String,
 	rorder: int,
 	total: int,
-	trim_in: int,
-	trim_out: int
+	segments: Array = []
 ) -> Dictionary:
 	if vid_src == "":
 		return {"rel": "", "ok": true}
-	var plan_key: String = _transcode_plan_key(vid_src, trim_in, trim_out)
-	var is_transcode: bool = _transcode_plan.has(plan_key)
-	var vid_ext: String = "mp4" if is_transcode else vid_src.get_extension()
-	var pool: Dictionary = _assign_pooled_media(vid_src, vid_ext, trim_in, trim_out)
+	# One segment is a plain trim and rides the transcode plan as a single ffmpeg cut; two or
+	# more can only be a concat, so they always re-encode and bypass the plan entirely.
+	var is_edl: bool = segments.size() >= 2
+	var trim_in: int = 0
+	var trim_out: int = 0
+	if segments.size() == 1:
+		var only: Dictionary = segments[0]
+		trim_in = int(only.get("in_ms", 0))
+		trim_out = int(only.get("out_ms", 0))
+	var plan_key: String = _transcode_plan_key(vid_src, segments)
+	var is_transcode: bool = (not is_edl) and _transcode_plan.has(plan_key)
+	var vid_ext: String = "mp4" if (is_transcode or is_edl) else vid_src.get_extension()
+	var pool: Dictionary = _assign_pooled_media(vid_src, vid_ext, segments)
 	var rel: String = pool["rel"]
 	if not pool["copy"]:
 		return {"rel": rel, "ok": true}
 	var vid_dst: String = abs_dir + "/" + rel
-	if is_transcode:
+	if is_edl:
+		_update_modal_label(
+			modal, "Round %d / %d — %s  (building segments)" % [rorder, total, display]
+		)
+		_transcode_cancel = false
+		var lok: bool = await MediaPoolService.bake_edl(
+			vid_src,
+			vid_dst,
+			segments,
+			func(frac: float, cur: float, tot: float, spd: String) -> void:
+				_update_modal_progress(modal, frac, cur, tot, spd),
+			func() -> bool: return _transcode_cancel
+		)
+		if not lok:
+			var reason: String = CAUSE_CANCELLED if _transcode_cancel else CAUSE_TRANSCODE_FAILED
+			var headline: String = "SAVE CANCELLED" if _transcode_cancel else "SAVE FAILED"
+			var detail: String = "ffmpeg failed to build the segmented clip for %s." % subject
+			if _transcode_cancel:
+				detail = "You cancelled the segment bake while %s was being processed." % subject
+			_show_save_error_single(
+				headline,
+				reason,
+				subject,
+				detail,
+				"Press Save again to retry. Nothing on disk was changed."
+			)
+			return {"rel": rel, "ok": false}
+	elif is_transcode:
 		var info: Dictionary = _transcode_plan[plan_key]
 		_update_modal_round(modal, rorder, total, display, info["codec"])
 		_transcode_cancel = false
@@ -3406,31 +3494,35 @@ func _pool_video_into(
 func _save_storyboard_node_media(
 	saved_data: Dictionary,
 	data_in: Dictionary,
+	abs_dir: String,
 	abs_media_dir: String,
 	node_id: String,
-	copied_images: Dictionary
+	copied_images: Dictionary,
+	modal: Control
 ) -> Dictionary:
-	var img_src: String = str(data_in.get("image", ""))
-	saved_data["image"] = ""
-	if img_src != "":
-		var ext: String = img_src.get_extension().to_lower()
-		var f: String = _copy_image_deduped(
-			img_src, abs_media_dir, "%s.%s" % [node_id, ext], copied_images
-		)
-		saved_data["image"] = ("media/" + f) if f != "" else ""
+	saved_data["image"] = await _store_journey_image(
+		str(data_in.get("image", "")),
+		abs_dir,
+		abs_media_dir,
+		node_id,
+		copied_images,
+		JourneyData.ANIM_CAP_STORYBOARD,
+		modal
+	)
 
 	var lines_out: Array = []
 	var lines_in: Array = data_in.get("lines", [])
 	for li in lines_in.size():
 		var line: Dictionary = lines_in[li]
-		var li_src: String = str(line.get("image", ""))
-		var li_rel: String = ""
-		if li_src != "":
-			var le: String = li_src.get_extension().to_lower()
-			var lf: String = _copy_image_deduped(
-				li_src, abs_media_dir, "%s_line_%d.%s" % [node_id, li, le], copied_images
-			)
-			li_rel = ("media/" + lf) if lf != "" else ""
+		var li_rel: String = await _store_journey_image(
+			str(line.get("image", "")),
+			abs_dir,
+			abs_media_dir,
+			"%s_line_%d" % [node_id, li],
+			copied_images,
+			JourneyData.ANIM_CAP_STORYBOARD,
+			modal
+		)
 		lines_out.append(
 			{
 				"speaker": str(line.get("speaker", "")),
@@ -3447,19 +3539,25 @@ func _save_storyboard_node_media(
 # (keyed by node id + choice index so paths sharing a name can't collide). The `to` target
 # id is preserved verbatim (it's a node reference, not a path).
 func _save_fork_node_edges(
-	edges: Array, abs_media_dir: String, node_id: String, copied_images: Dictionary
+	edges: Array,
+	abs_dir: String,
+	abs_media_dir: String,
+	node_id: String,
+	copied_images: Dictionary,
+	modal: Control
 ) -> Array:
 	var out: Array = []
 	for ei in edges.size():
 		var e: Dictionary = edges[ei]
-		var img_src: String = str(e.get("image_path", ""))
-		var img_rel: String = ""
-		if img_src != "":
-			var ext: String = img_src.get_extension().to_lower()
-			var f: String = _copy_image_deduped(
-				img_src, abs_media_dir, "%s_e%d_cover.%s" % [node_id, ei, ext], copied_images
-			)
-			img_rel = ("media/" + f) if f != "" else ""
+		var img_rel: String = await _store_journey_image(
+			str(e.get("image_path", "")),
+			abs_dir,
+			abs_media_dir,
+			"%s_e%d_cover" % [node_id, ei],
+			copied_images,
+			JourneyData.ANIM_CAP_FORK,
+			modal
+		)
 		(
 			out
 			. append(
@@ -3474,6 +3572,7 @@ func _save_fork_node_edges(
 					"cost": int(e.get("cost", 0)),
 					"required_flag": str(e.get("required_flag", "")),
 					"set_flags": JourneyData.clean_flag_list(e.get("set_flags", [])),
+					"set_counters": JourneyData.clean_counter_deltas(e.get("set_counters", {})),
 				}
 			)
 		)
@@ -3568,8 +3667,25 @@ func _finalize_save_success() -> void:
 	var message: String = "Journey saved! Returning to catalogue..."
 	if _invalidated_save_count > 0:
 		message = "Journey saved! Existing player save reset. Returning to catalogue..."
+
+	# An animation clipped to the length cap is named rather than silently shortened — otherwise the
+	# author just finds their image mysteriously ending early and assumes it's a bug. Held longer
+	# than the plain confirmation so there's time to actually read it.
+	var hold: float = 1.5
+	if not _anim_truncated.is_empty():
+		message = (
+			"Journey saved — trimmed %d animated image%s to %ds: %s"
+			% [
+				_anim_truncated.size(),
+				"s" if _anim_truncated.size() != 1 else "",
+				int(MediaPoolService.ANIM_MAX_SECS),
+				", ".join(_anim_truncated),
+			]
+		)
+		hold = 4.0
+
 	_show_status(message, false)
-	await get_tree().create_timer(1.5).timeout
+	await get_tree().create_timer(hold).timeout
 	Transition.change_scene("res://scenes/journey_select/JourneySelect.tscn")
 
 
@@ -3646,6 +3762,17 @@ func _update_modal_round(
 		)
 
 
+# Sets the modal's headline to an arbitrary string. _update_modal_round formats a round-specific
+# line ("Round 2 / 5 — …"); an image bake isn't a round, so it needs its own label rather than
+# faking round numbers.
+func _update_modal_label(modal: Control, text: String) -> void:
+	if modal == null:
+		return
+	var lbl: Label = modal.find_child("RoundLabel", true, false) as Label
+	if lbl:
+		lbl.text = text
+
+
 func _update_modal_progress(
 	modal: Control, progress: float, current_s: float, total_s: float, speed: String
 ) -> void:
@@ -3666,15 +3793,6 @@ func _update_modal_progress(
 func _format_time(seconds: float) -> String:
 	var s: int = int(seconds)
 	return "%02d:%02d" % [s / 60, s % 60]
-
-
-# Sets the modal's secondary label to a plain message (no codec suffix).
-func _update_modal_label(modal: Control, text: String) -> void:
-	if modal == null:
-		return
-	var lbl: Label = modal.find_child("RoundLabel", true, false) as Label
-	if lbl:
-		lbl.text = text
 
 
 # Updates the modal bar + status line for a byte-based file copy.
@@ -3720,18 +3838,139 @@ func _copy_image_deduped(
 # (content/m_<fp>.<ext>), `copy` is true only the FIRST time this source is seen —
 # the caller does the actual transcode/copy then and skips it on repeats. `ext`
 # is the destination extension (mp4 for transcoded video, else the source ext).
-# A pending trim joins the fingerprint, so the same source trimmed differently
-# by two rounds pools to two files while identical trims still share one.
+# The pending segments join the fingerprint, so the same source cut differently
+# by two rounds pools to two files while identical cuts still share one.
 # Mirrors JourneyData.plan_media_pool's first-sighting logic with a live map.
 func _assign_pooled_media(
-	src: String, ext: String, trim_in: int = 0, trim_out: int = 0
+	src: String, ext: String, segments: Array = [], variant: String = ""
 ) -> Dictionary:
-	var fp: String = JourneyData.media_fingerprint(src, trim_in, trim_out)
+	var fp: String = JourneyData.media_fingerprint(src, segments, variant)
 	var rel: String = JourneyData.pooled_media_rel(fp, ext)
 	var is_new: bool = not _pooled_media.has(fp)
 	if is_new:
 		_pooled_media[fp] = rel
 	return {"rel": _pooled_media[fp], "copy": is_new, "fingerprint": fp}
+
+
+# ── Animated images (GIF) ────────────────────────────────────────────────────
+
+
+# Converts a GIF into something the runtime can actually display and pools it into content/,
+# beside the journey's other A/V. Returns {handled, rel}: handled=false means `src` isn't a GIF and
+# the caller should store it its normal way; rel is journey-root-relative, or "" if conversion
+# failed outright.
+#
+# Godot has NO GIF decoder, so a GIF can never ship as-is — an animated one becomes a looping
+# H.264, a single-frame one a PNG. `force_static` is for surfaces that accept GIFs but must not
+# animate (the journey cover: it sits in the catalogue grid, where N animating cards would cost
+# real frames for no gain).
+func _store_gif_source(
+	src: String, abs_dir: String, cap: Vector2i, force_static: bool = false, modal: Control = null
+) -> Dictionary:
+	if src == "" or not MediaPoolService.is_animated_source(src):
+		return {"handled": false, "rel": ""}
+
+	# Already exactly what the bake would produce (a baked image from a PRIOR save — a baked GIF is
+	# now an .mp4)? Pool it verbatim instead of re-encoding. This is the fix for "converts every
+	# save": once baked, the source qualifies, so a re-save is a fast copy like the content pool's
+	# other .mp4s. force_static wants a still, so it skips this and extracts a frame.
+	#
+	# The test is is_baked_animation, NOT "is it H.264?" — ordinary clips are H.264 too, and
+	# copying those through shipped their audio and their untruncated length.
+	if not force_static and MediaPoolService.is_baked_animation(src, cap):
+		return {"handled": true, "rel": _pool_small_file(src, abs_dir, "mp4")}
+
+	var animated: bool = not force_static and MediaPoolService.probe_is_animated(src)
+	if animated:
+		var rel: String = await _bake_gif_pooled(src, abs_dir, cap, true, modal)
+		if rel != "":
+			return {"handled": true, "rel": rel}
+		# A CANCELLED bake is not a failed one: falling back to a still here would quietly hand the
+		# author a static image instead of honouring the cancel. Abort the save the same way a
+		# failed copy does — surfaced at the caller's next checkpoint.
+		if _transcode_cancel:
+			_save_aborted = true
+			_save_abort_error = {
+				"result": {"ok": false, "reason": CAUSE_CANCELLED, "detail": src},
+				"item": src.get_file(),
+			}
+			return {"handled": true, "rel": ""}
+		# Genuine failure — fall back to the first frame rather than dropping the image entirely.
+		push_warning(
+			"JourneyBuilder: animation bake failed for '%s' — using its first frame." % src
+		)
+	return {"handled": true, "rel": await _bake_gif_pooled(src, abs_dir, cap, false, modal)}
+
+
+# Stores a journey IMAGE (storyboard background / dialogue line, fork card, cover) and returns its
+# journey-root-relative path, or "" when the source is empty or conversion failed.
+#
+# Two stores, by design: an ordinary image is copied verbatim into media/ (journey images), while a
+# GIF is baked into content/ beside the journey's other A/V — it becomes video, and Godot could
+# never display it as a GIF anyway. `cap` bounds the bake; `force_static` forbids animating.
+func _store_journey_image(
+	src: String,
+	abs_dir: String,
+	abs_media_dir: String,
+	file_base: String,
+	copied_images: Dictionary,
+	cap: Vector2i,
+	modal: Control = null,
+	force_static: bool = false
+) -> String:
+	if src == "":
+		return ""
+	var gif: Dictionary = await _store_gif_source(src, abs_dir, cap, force_static, modal)
+	if gif["handled"]:
+		return str(gif["rel"])  # already journey-root-relative ("content/…"), or "" if it failed
+	var ext: String = src.get_extension().to_lower()
+	var f: String = _copy_image_deduped(
+		src, abs_media_dir, "%s.%s" % [file_base, ext], copied_images
+	)
+	return ("media/" + f) if f != "" else ""
+
+
+# One pooled bake. The size cap joins the fingerprint (see JourneyData.media_fingerprint): the same
+# GIF at the same cap pools to one file, at different caps to different files. Returns "" on
+# failure, without caching the fingerprint — a retry must not inherit a missing file.
+func _bake_gif_pooled(
+	src: String, abs_dir: String, cap: Vector2i, animated: bool, modal: Control = null
+) -> String:
+	var kind: String = "anim" if animated else "still"
+	# No segments: an image is never cut — the size cap is what discriminates the pooled file.
+	var pool: Dictionary = _assign_pooled_media(
+		src, "mp4" if animated else "png", [], "%s:%dx%d" % [kind, cap.x, cap.y]
+	)
+	if not pool["copy"]:
+		return pool["rel"]  # already baked this source+cap during this save
+
+	var dst: String = abs_dir + "/" + str(pool["rel"])
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dst).get_base_dir())
+
+	var ok: bool
+	if animated:
+		# A real encode — drive the same modal the round transcodes use, and honour the same
+		# cancel flag, so a long bake shows progress instead of looking like a freeze.
+		_update_modal_label(modal, "Converting image: %s" % src.get_file())
+		var res: Dictionary = await MediaPoolService.bake_animation(
+			src,
+			dst,
+			cap.x,
+			cap.y,
+			func(frac: float, cur: float, tot: float, spd: String) -> void:
+				_update_modal_progress(modal, frac, cur, tot, spd),
+			func() -> bool: return _transcode_cancel
+		)
+		ok = bool(res["ok"])
+		if bool(res["truncated"]):
+			_anim_truncated.append(src.get_file())
+	else:
+		ok = MediaPoolService.extract_first_frame(src, dst, cap.x, cap.y)  # one frame: instant
+
+	if not ok:
+		_pooled_media.erase(pool["fingerprint"])
+		return ""
+	return str(pool["rel"])
 
 
 # Pools a small file (funscript / axis / vib / boss image) into content/ via the
@@ -3744,26 +3983,27 @@ func _assign_pooled_media(
 # callers never pass trim for images). A copy failure sets _save_aborted
 # (surfaced at the next checkpoint), like the other _copy_file sites.
 func _pool_small_file(
-	src: String, abs_dir: String, ext_override: String = "", trim_in: int = 0, trim_out: int = 0
+	src: String, abs_dir: String, ext_override: String = "", segments: Array = []
 ) -> String:
 	if src == "":
 		return ""
 	var ext: String = ext_override if ext_override != "" else src.get_extension()
-	var pool: Dictionary = _assign_pooled_media(src, ext, trim_in, trim_out)
+	var pool: Dictionary = _assign_pooled_media(src, ext, segments)
 	if pool["copy"]:
-		if trim_in > 0 or trim_out > 0:
-			_write_trimmed_funscript(src, abs_dir + "/" + pool["rel"], trim_in, trim_out)
-		else:
+		if segments.is_empty():
 			_copy_file(src, abs_dir + "/" + pool["rel"])
+		else:
+			_write_edl_funscript(src, abs_dir + "/" + pool["rel"], segments)
 	return pool["rel"]
 
 
-# Writes `src` to `dst` with its actions trimmed to [trim_in, trim_out] and
-# rebased to t=0 (JourneyData.trim_funscript_json; other metadata preserved).
-# An unparseable source is copied verbatim instead — storing the full script
-# beats losing it, and the video bake proceeds regardless. Failure semantics
-# match _copy_file (sets _save_aborted for the next checkpoint).
-func _write_trimmed_funscript(src: String, dst: String, trim_in: int, trim_out: int) -> void:
+# Writes `src` to `dst` with its actions rebuilt from the round's segments — each window cut,
+# rebased and laid end to end (JourneyData.edl_funscript_json; other metadata preserved). This
+# is the one funscript writer: a trim is a single segment, a loop is a repeated one.
+# An unparseable source is copied verbatim instead — storing the full script beats losing it,
+# and the video bake proceeds regardless. Failure semantics match _copy_file (sets
+# _save_aborted for the next checkpoint).
+func _write_edl_funscript(src: String, dst: String, segments: Array) -> void:
 	var f: FileAccess = FileAccess.open(src, FileAccess.READ)
 	if f == null:
 		printerr("JourneyBuilder: cannot read: " + src)
@@ -3777,12 +4017,10 @@ func _write_trimmed_funscript(src: String, dst: String, trim_in: int, trim_out: 
 	f.close()
 	var parser: JSON = JSON.new()
 	if parser.parse(text) != OK or not (parser.data is Dictionary):
-		printerr("JourneyBuilder: funscript unparseable, copying untrimmed: " + src)
+		printerr("JourneyBuilder: funscript unparseable, copying uncut: " + src)
 		_copy_file(src, dst)
 		return
-	var trimmed: Dictionary = JourneyData.trim_funscript_json(
-		parser.data as Dictionary, trim_in, trim_out
-	)
+	var built: Dictionary = JourneyData.edl_funscript_json(parser.data as Dictionary, segments)
 	var out_f: FileAccess = FileAccess.open(dst, FileAccess.WRITE)
 	if out_f == null:
 		printerr("JourneyBuilder: cannot write: " + dst)
@@ -3792,7 +4030,7 @@ func _write_trimmed_funscript(src: String, dst: String, trim_in: int, trim_out: 
 			"item": dst.get_file(),
 		}
 		return
-	out_f.store_string(JSON.stringify(trimmed))
+	out_f.store_string(JSON.stringify(built))
 	out_f.close()
 
 
@@ -4280,35 +4518,22 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 	var name: String = (round_data.get("name", "") as String).strip_edges()
 	var label: String = '%s "%s"' % [ctx, name] if name != "" else ctx
 
-	# A pending trim must be a real window (out after in) that starts inside the
-	# content — a start past the end would bake a near-empty video with an empty
-	# funscript. The funscript's length is the cheap duration proxy here; an
-	# out-point past the end stays fine (ffmpeg simply stops at the end).
-	var trim_in: int = int(round_data.get("trim_start_ms", 0))
-	var trim_out: int = int(round_data.get("trim_end_ms", 0))
-	if trim_out > 0 and trim_in >= trim_out:
-		(
-			issues
-			. append(
-				{
-					"cause": CAUSE_TRIM_INVALID,
-					"item": label,
-					"detail":
-					(
-						"Trim start (%s) is at or past trim end (%s)."
-						% [_audit_mmss(trim_in), _audit_mmss(trim_out)]
-					),
-					"hint": "Fix the trim window in the round editor, or clear the trim.",
-				}
-			)
+	# Every segment must be a real window starting inside the content — a start past the end
+	# bakes a near-empty video with an empty funscript. The funscript's length is the cheap
+	# duration proxy; an out-point past the end is fine (ffmpeg stops at the end). Only the
+	# first offender is reported — a ×30 repeat of a bad window would emit thirty copies.
+	var segments: Array = JourneyData.normalize_segments(round_data)
+	var fs_len: int = int(
+		JourneyData.read_funscript_stats(str(round_data.get("funscript_path", ""))).get(
+			"length_ms", 0
 		)
-	elif trim_in > 0:
-		var fs_len: int = int(
-			JourneyData.read_funscript_stats(str(round_data.get("funscript_path", ""))).get(
-				"length_ms", 0
-			)
-		)
-		if fs_len > 0 and trim_in >= fs_len:
+	)
+	for i: int in segments.size():
+		var seg: Dictionary = segments[i]
+		var s_in: int = int(seg.get("in_ms", 0))
+		var s_out: int = int(seg.get("out_ms", 0))
+		var pos: String = "Segment %d" % (i + 1) if segments.size() > 1 else "The trim"
+		if s_out > 0 and s_in >= s_out:
 			(
 				issues
 				. append(
@@ -4317,13 +4542,31 @@ func _save_check_round(round_data: Dictionary, ctx: String, issues: Array) -> vo
 						"item": label,
 						"detail":
 						(
-							"Trim start (%s) is past the end of the content (%s)."
-							% [_audit_mmss(trim_in), _audit_mmss(fs_len)]
+							"%s starts (%s) at or past its end (%s)."
+							% [pos, _audit_mmss(s_in), _audit_mmss(s_out)]
 						),
-						"hint": "Lower the trim start in the round editor, or clear the trim.",
+						"hint": "Fix the segment in the round editor, or remove it.",
 					}
 				)
 			)
+			break
+		if s_in > 0 and fs_len > 0 and s_in >= fs_len:
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_TRIM_INVALID,
+						"item": label,
+						"detail":
+						(
+							"%s starts (%s) past the end of the content (%s)."
+							% [pos, _audit_mmss(s_in), _audit_mmss(fs_len)]
+						),
+						"hint": "Lower the segment's start in the round editor, or remove it.",
+					}
+				)
+			)
+			break
 
 	# Names are display-only now (see short-folder slug scheme). Any character
 	# is fine — only empty names need to be flagged, since the name is the

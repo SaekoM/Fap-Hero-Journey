@@ -21,6 +21,18 @@ public partial class GameState : Node
     // read by flag-conditional forks (HasFlag), and carried in the save record. Cleared on a fresh start.
     private HashSet<string> _flags = new();
 
+    // Fired when a counter's value changes via set_counters (NOT on save-restore or seeding, which
+    // reinstate values silently). GameLoop shows the transient top-right pop for journey-"shown"
+    // counters from this. `delta` is the signed change; `value` the new total.
+    [Signal]
+    public delegate void CounterChangedEventHandler(string name, int value, int delta);
+
+    // Named integer counters (belt notches, arousal, satisfied partners, …): the numeric sibling of
+    // _flags. Bumped by a node's / fork edge's set_counters ({name: delta}), read by counter-conditional
+    // forks (CounterValue) and optionally shown on the HUD, and carried in the save record. A missing
+    // counter reads as 0, so a threshold works before anything has bumped it. Cleared on a fresh start.
+    private System.Collections.Generic.Dictionary<string, int> _counters = new();
+
     // Node ids the player has landed on this run (added in EnterCurrent). Drives the map's fog-of-war
     // reveal and rides the save record so a resumed run keeps what was found. Cleared on a fresh start —
     // discovery is per-run.
@@ -47,6 +59,7 @@ public partial class GameState : Node
         _roundsEntered = 0;
         _playLog.Clear();
         _flags.Clear();
+        _counters.Clear();
         _discovered.Clear();
         EnterCurrent();
     }
@@ -63,6 +76,7 @@ public partial class GameState : Node
         _roundsEntered = 0;
         _playLog.Clear();
         _flags.Clear();
+        _counters.Clear();
         _discovered.Clear();
         EnterCurrent();
         return true;
@@ -101,7 +115,10 @@ public partial class GameState : Node
         CountIfRound();
         var n = NodeOf(_currentId);
         if (n.ContainsKey("data"))
+        {
             ApplyFlags(n["data"].AsGodotDictionary());
+            ApplyCounters(n["data"].AsGodotDictionary());
+        }
     }
 
     // Adds every name in src["set_flags"] (a node's data, or a fork edge) to the run's flag set.
@@ -115,8 +132,30 @@ public partial class GameState : Node
         }
     }
 
+    // Applies src["set_counters"] ({name: delta}) to the run's counters — the numeric analogue of
+    // ApplyFlags, called for the same node-data and fork-edge sources. Deltas accumulate, so the
+    // same counter bumped on several nodes sums; a delta may be negative.
+    private void ApplyCounters(Dictionary src)
+    {
+        if (!src.ContainsKey("set_counters")) return;
+        var deltas = src["set_counters"].AsGodotDictionary();
+        foreach (var key in deltas.Keys)
+        {
+            var name = key.AsString();
+            if (name == "") continue;
+            var delta = deltas[key].AsInt32();
+            _counters.TryGetValue(name, out var cur);
+            _counters[name] = cur + delta;
+            EmitSignal(SignalName.CounterChanged, name, _counters[name], delta);
+        }
+    }
+
     // Whether a run flag is currently set (used by flag-conditional fork resolution).
     public bool HasFlag(string name) => _flags.Contains(name);
+
+    // The current value of a named counter (0 if never set) — read by counter-conditional forks and
+    // the HUD.
+    public int CounterValue(string name) => _counters.TryGetValue(name, out var v) ? v : 0;
 
     // Test-play: pre-set flags so a Test-From-Here run can exercise flag-gated forks. Adds on top of
     // whatever the start/seek node already set.
@@ -126,6 +165,18 @@ public partial class GameState : Node
         {
             var name = f.AsString();
             if (name != "") _flags.Add(name);
+        }
+    }
+
+    // Test-play companion to SeedFlags: pre-set counter values so a Test-From-Here run can exercise
+    // counter-gated forks. `values` is {name: int}, set absolutely (not added) on top of whatever the
+    // start/seek node already applied.
+    public void SeedCounters(Dictionary values)
+    {
+        foreach (var key in values.Keys)
+        {
+            var name = key.AsString();
+            if (name != "") _counters[name] = values[key].AsInt32();
         }
     }
 
@@ -188,6 +239,7 @@ public partial class GameState : Node
             ["description"] = data.ContainsKey("description") ? data["description"].AsString() : "",
             ["resolution"] = data.ContainsKey("resolution") ? data["resolution"].AsString() : "choice",
             ["cond_metric"] = data.ContainsKey("cond_metric") ? data["cond_metric"].AsString() : "score",
+            ["cond_counter"] = data.ContainsKey("cond_counter") ? data["cond_counter"].AsString() : "",
             ["cond_decider"] = data.ContainsKey("cond_decider") ? data["cond_decider"].AsString() : "game",
             ["default_path"] = data.ContainsKey("default_path") ? data["default_path"].AsInt32() : 0,
             // Carried through so GameLoop._current_map_key can key the fork's map marker.
@@ -229,7 +281,8 @@ public partial class GameState : Node
             ["depth"] = node.ContainsKey("depth") ? node["depth"].AsInt32() : 0,
         });
 
-        ApplyFlags(edge);   // the chosen choice's set_flags ("you chose X")
+        ApplyFlags(edge);      // the chosen choice's set_flags ("you chose X")
+        ApplyCounters(edge);   // …and its set_counters ("+1 notch for that choice")
         _currentId = edge.ContainsKey("to") ? edge["to"].AsString() : "";
         EnterCurrent();
     }
@@ -306,8 +359,18 @@ public partial class GameState : Node
         ["current_node"] = _currentId,
         ["rounds_entered"] = _roundsEntered,
         ["flags"] = FlagsArray(),
+        ["counters"] = CountersDict(),
         ["discovered"] = DiscoveredNodes(),
     };
+
+    // The run's counters as a Godot Dictionary {name: int} — for the save record and the HUD.
+    public Dictionary CountersDict()
+    {
+        var d = new Dictionary();
+        foreach (var kv in _counters)
+            d[kv.Key] = kv.Value;
+        return d;
+    }
 
     // The run's discovered node ids as a Godot Array — the save record above and GameLoop's map fog both
     // read it. Empty until the player has landed on at least the start node.
@@ -340,6 +403,7 @@ public partial class GameState : Node
         _nodes = journeyData.ContainsKey("nodes") ? journeyData["nodes"].AsGodotDictionary() : new Dictionary();
         _playLog.Clear();
         _flags.Clear();
+        _counters.Clear();
         _discovered.Clear();
 
         if (saveData.ContainsKey("current_node") && _nodes.ContainsKey(saveData["current_node"].AsString()))
@@ -353,6 +417,16 @@ public partial class GameState : Node
                     var name = flag.AsString();
                     if (name != "") _flags.Add(name);
                 }
+            // Restore the counters accumulated up to the save point (same rationale as flags).
+            if (saveData.ContainsKey("counters"))
+            {
+                var saved = saveData["counters"].AsGodotDictionary();
+                foreach (var key in saved.Keys)
+                {
+                    var name = key.AsString();
+                    if (name != "") _counters[name] = saved[key].AsInt32();
+                }
+            }
             // Restore the fog-of-war discovery set the same way (per-run, but persists across resume).
             if (saveData.ContainsKey("discovered"))
                 foreach (var d in saveData["discovered"].AsGodotArray())

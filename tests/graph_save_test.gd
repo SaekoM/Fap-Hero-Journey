@@ -85,6 +85,55 @@ func test_coerce_round_fills_baseline_defaults() -> void:
 	assert_bool(out.has("boons")).is_false()
 
 
+# ── Animated images ──────────────────────────────────────────────────────────
+# Drives the presave gate: a GIF MUST be baked (Godot has no GIF decoder), so the save is blocked
+# when ffmpeg can't run and any of these exist. Missing one here = a silently blank image in game.
+
+
+func test_graph_animated_image_sources_finds_every_surface() -> void:
+	var graph := {
+		"nodes":
+		{
+			"r1": {"type": "round", "data": {"boss_image": "a.gif"}, "out": []},
+			"r2":
+			{
+				"type": "round",
+				"data": {"pool_entries": [{"boss_image": "b.gif"}, {"boss_image": "still.png"}]},
+				"out": []
+			},
+			"s1":
+			{
+				"type": "storyboard",
+				"data": {"image": "c.gif", "lines": [{"image": "d.gif"}, {"image": "no.jpg"}]},
+				"out": []
+			},
+			"f1":
+			{"type": "fork", "data": {}, "out": [{"image_path": "e.gif"}, {"image_path": ""}]},
+		}
+	}
+	var found: Array = JourneyData.graph_animated_image_sources(graph, ["gif"])
+	found.sort()
+	assert_array(found).is_equal(["a.gif", "b.gif", "c.gif", "d.gif", "e.gif"])
+
+
+func test_graph_animated_image_sources_dedupes_and_ignores_stills() -> void:
+	var graph := {
+		"nodes":
+		{
+			"r1": {"type": "round", "data": {"boss_image": "same.gif"}, "out": []},
+			"s1": {"type": "storyboard", "data": {"image": "same.gif", "lines": []}, "out": []},
+			"s2": {"type": "storyboard", "data": {"image": "plain.png", "lines": []}, "out": []},
+		}
+	}
+	# One source used twice is one entry; stills never appear.
+	assert_array(JourneyData.graph_animated_image_sources(graph, ["gif"])).is_equal(["same.gif"])
+
+
+func test_graph_animated_image_sources_empty_when_no_gifs() -> void:
+	var graph := {"nodes": {"r1": {"type": "round", "data": {"boss_image": "x.png"}, "out": []}}}
+	assert_array(JourneyData.graph_animated_image_sources(graph, ["gif"])).is_empty()
+
+
 # ── Journey identity ─────────────────────────────────────────────────────────
 # The id must be STABLE for the life of a journey: renditions/modules bind to it, and Name /
 # FolderName are both user-renameable, so neither can anchor anything.

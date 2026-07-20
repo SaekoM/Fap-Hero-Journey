@@ -114,6 +114,37 @@ func test_apply_effects_ignores_non_stroke() -> void:
 	assert_array(_xs(out)).is_equal([0, 100, 0])
 
 
+# ── delay offset (the user's Handy delay, as a timestamp shift) ──────────────
+
+
+# A positive delay pushes every point later — the device acts after the video.
+func test_offset_positive_delays_points() -> void:
+	var out: Array = HandyPoints.offset_points(PTS, 300)
+	assert_array(out.map(func(p: Dictionary) -> int: return int(p["t"]))).is_equal([300, 800, 1300])
+	# positions ride along untouched
+	assert_array(_xs(out)).is_equal([0, 100, 0])
+
+
+# A negative delay pulls points earlier — the device fires ahead of the video.
+func test_offset_negative_advances_points() -> void:
+	var out: Array = HandyPoints.offset_points(PTS, -200)
+	# t=0 → -200 is not a legal timestamp and is already past: dropped.
+	assert_array(out.map(func(p: Dictionary) -> int: return int(p["t"]))).is_equal([300, 800])
+
+
+# Zero is the identity (and the common case — don't rebuild the array for nothing).
+func test_offset_zero_is_identity() -> void:
+	assert_array(HandyPoints.offset_points(PTS, 0)).is_equal(PTS)
+
+
+# The regression this fixes: at a round start video_ms is small, and the old
+# `maxi(0, video_ms - delay)` anchor clamped the delay away entirely. A timestamp
+# shift has no floor — the delay survives at position 0 exactly as it does later.
+func test_offset_applies_fully_at_round_start() -> void:
+	var out: Array = HandyPoints.offset_points([{"t": 0, "x": 50}], 500)
+	assert_int(int((out[0] as Dictionary)["t"])).is_equal(500)
+
+
 # ── server-clock offset (transit-lag compensation) ───────────────────────────
 
 

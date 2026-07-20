@@ -21,11 +21,15 @@ var _can_advance: bool = false
 var _skip_btn: Button = null
 var _map_btn: Button = null
 
+# Draws the storyboard image (still or baked animation) in $BgImage's place — see _setup_bg_image.
+var _bg_view: JourneyImage = null
+
 var show_map_button: bool = true  # GameLoop clears this when the journey hides the map
 
 
 func _ready() -> void:
 	_apply_layout()
+	_setup_bg_image()  # after _apply_layout: it reads $BgImage's finished expand/stretch
 	_apply_theme()
 	_add_map_button()
 	_fade.color = Color.BLACK
@@ -69,45 +73,24 @@ func _show_line() -> void:
 	_hint.text = "▶ CLICK OR SPACE TO COMPLETE" if is_last else "▶ CLICK OR SPACE TO CONTINUE"
 
 
+# Shows a storyboard image — still, or an animation the builder baked to looping H.264.
+#
+# This used to re-implement JourneyData.load_image_smart's magic-byte sniffing inline; it now goes
+# through JourneyImage, which owns both cases (and that sniffing) in one place. $BgImage is left in
+# the scene but retired — see _setup_bg_image.
 func _load_bg_image(path: String) -> void:
-	if path == "":
-		_bg_image.texture = null
-		return
-	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		_bg_image.texture = null
-		return
-	var bytes: PackedByteArray = f.get_buffer(f.get_length())
-	f.close()
-	var img: Image = Image.new()
-	var err: Error
-	if (
-		bytes.size() >= 4
-		and bytes[0] == 0x89
-		and bytes[1] == 0x50
-		and bytes[2] == 0x4E
-		and bytes[3] == 0x47
-	):
-		err = img.load_png_from_buffer(bytes)
-	elif bytes.size() >= 3 and bytes[0] == 0xFF and bytes[1] == 0xD8 and bytes[2] == 0xFF:
-		err = img.load_jpg_from_buffer(bytes)
-	elif (
-		bytes.size() >= 12
-		and bytes[0] == 0x52
-		and bytes[1] == 0x49
-		and bytes[2] == 0x46
-		and bytes[3] == 0x46
-		and bytes[8] == 0x57
-		and bytes[9] == 0x45
-		and bytes[10] == 0x42
-		and bytes[11] == 0x50
-	):
-		err = img.load_webp_from_buffer(bytes)
-	else:
-		err = img.load_jpg_from_buffer(bytes)
-		if err != OK:
-			err = img.load_png_from_buffer(bytes)
-	_bg_image.texture = ImageTexture.create_from_image(img) if err == OK else null
+	_bg_view.show_path(path, _bg_image.expand_mode, _bg_image.stretch_mode)
+
+
+# Puts a JourneyImage exactly where $BgImage sat (same index, so layering is unchanged) and hides
+# the original. Done in code rather than by editing the scene: $BgImage still owns the layout, and
+# its expand/stretch stay the single source of truth for how the image is framed.
+func _setup_bg_image() -> void:
+	_bg_view = JourneyImage.new()
+	_bg_view.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(_bg_view)
+	move_child(_bg_view, _bg_image.get_index())
+	_bg_image.visible = false
 
 
 func _input(event: InputEvent) -> void:

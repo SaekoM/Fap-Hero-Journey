@@ -1016,18 +1016,23 @@ func _type_sublabel(item: Dictionary) -> String:
 			# type (the banner shows before a boss round's intro card).
 			if item.get("is_checkpoint", false):
 				rlabel += "   ◆ CHECKPOINT"
-			# Pending-trim marker (editor only by construction: saved journeys
-			# never carry trim keys — the save consumes them into the media).
-			var t_in: int = int(item.get("trim_start_ms", 0))
-			var t_out: int = int(item.get("trim_end_ms", 0))
-			if t_in > 0 or t_out > 0:
+			# Pending-segments marker (editor only by construction: saved journeys never
+			# carry segment keys — the save consumes them into the media). One segment
+			# reads as the trim it is; several show the count instead of an unreadable
+			# list of windows.
+			var segs: Array = JourneyData.normalize_segments(item)
+			if segs.size() == 1:
+				var s: Dictionary = segs[0]
+				var s_out: int = int(s.get("out_ms", 0))
 				rlabel += (
 					"   ✂ %s–%s"
 					% [
-						JourneyData.ms_to_mmss(t_in),
-						JourneyData.ms_to_mmss(t_out) if t_out > 0 else "END",
+						JourneyData.ms_to_mmss(int(s.get("in_ms", 0))),
+						JourneyData.ms_to_mmss(s_out) if s_out > 0 else "END",
 					]
 				)
+			elif segs.size() > 1:
+				rlabel += "   ✂ %d SEGMENTS" % segs.size()
 			return "%s   ♦ %d" % [rlabel, c] if c > 0 else rlabel
 		"shop":
 			return "SHOP"

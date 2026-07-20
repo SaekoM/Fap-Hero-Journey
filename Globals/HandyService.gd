@@ -156,7 +156,7 @@ func _server_now() -> int:
 func load_actions(actions: Array) -> void:
 	_points = HandyPoints.actions_to_points(actions)
 	_effects = []
-	_transformed = _points
+	_rebuild_transformed()
 	_send_idx = 0
 
 
@@ -168,7 +168,17 @@ func load_actions(actions: Array) -> void:
 func set_effects(effects: Array, hold_pos: int = 50) -> void:
 	_effects = effects
 	_hold_pos = hold_pos
-	_transformed = HandyPoints.apply_effects(_points, effects, hold_pos)
+	_rebuild_transformed()
+
+
+# Rebuilds the streamed script: stroke effects baked in, then the Handy delay as a timestamp
+# shift. Either input can change mid-round (an item fires; the delay slider moves); the caller
+# flush-refeeds via seek() so the device picks it up from the current position.
+func _rebuild_transformed() -> void:
+	_transformed = HandyPoints.offset_points(
+		HandyPoints.apply_effects(_points, _effects, _hold_pos),
+		SettingsService.get_handy_delay_ms()
+	)
 
 
 # ── HSP playback ─────────────────────────────────────────────────────────────
@@ -249,15 +259,14 @@ func stop() -> void:
 		await _api_put("/hsp/stop", {})
 
 
-# The playback anchor for a play/seek at video position `video_ms`, shifted by the
-# user's Handy delay. A POSITIVE delay anchors playback to an EARLIER script position,
-# so the device lands LATER relative to the video — i.e. positive = more delay (the
-# intuitive "delay" direction; a device that runs ahead of its own accord is pulled back
-# with a negative value). With server_time sync the base lag is compensated, so the delay
-# is a fine trim; the shift stays well under LOOKAHEAD_MS so the fed buffer always covers
-# the anchored position.
+# Play/seek anchor: the device's script clock sits level with the video clock. The Handy delay
+# is NOT applied here — it lives in the streamed timestamps (HandyPoints.offset_points).
+#
+# 0.6.0 applied it here as `maxi(0, video_ms - delay)`. start_time can't go negative, so at a
+# round start (video_ms only as large as the connect handshake took) the clamp ate the delay —
+# by an amount that varied with network latency, which is why it worked for some users only.
 func _anchor(video_ms: int) -> int:
-	return maxi(0, video_ms - SettingsService.get_handy_delay_ms())
+	return maxi(0, video_ms)
 
 
 # Re-seats playback at a new position: flush the buffer and replay from
@@ -286,10 +295,13 @@ func seek(video_ms: int) -> void:
 	await _api_put("/hsp/play", play)
 
 
-# Re-anchors playback at the current video position so a live delay change
-# (Quick Settings) takes effect immediately. No-op unless a session is live.
+# Re-times the stream for a live delay change (Quick Settings) and re-seats
+# playback at the current video position so it takes effect immediately. The
+# rebuild is what actually moves the points; the seek flushes the device's buffer
+# of the old timings. No-op unless a session is live.
 func resync_timing() -> void:
 	if _playing:
+		_rebuild_transformed()
 		await seek(_last_video_ms)
 
 

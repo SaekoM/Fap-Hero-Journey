@@ -194,6 +194,24 @@ func show_journey_info_panel() -> void:
 
 	side_vbox.add_child(_side_section_separator())
 
+	# Shown counters — journey-level. Counters listed here are surfaced to the player (a transient
+	# top-right pop when they change + a list in the inventory panel); every other counter stays
+	# hidden and gating-only. Names must match what nodes/choices set via "SETS COUNTERS".
+	side_vbox.add_child(_side_field_label("SHOWN COUNTERS  (comma-separated, player-visible)"))
+	var sc_edit: LineEdit = LineEdit.new()
+	sc_edit.placeholder_text = "e.g. belt, satisfied_partners"
+	sc_edit.text = ", ".join(
+		PackedStringArray(JourneyData.clean_flag_list(_owner._journey_shown_counters))
+	)
+	UITheme.style_line_edit(sc_edit)
+	sc_edit.text_changed.connect(
+		func(v: String) -> void:
+			_owner._journey_shown_counters = JourneyData.clean_flag_list(Array(v.split(",")))
+	)
+	side_vbox.add_child(sc_edit)
+
+	side_vbox.add_child(_side_section_separator())
+
 	# Player map — author switch. Off enforces "surprise": the player can't open
 	# the in-play journey map (◇ MAP / M) for this journey.
 	side_vbox.add_child(_side_field_label("PLAYER MAP"))
@@ -385,10 +403,11 @@ func show_graph_node_editor(node_id: String) -> void:
 			_owner._refresh_graph()  # structural change → re-render the canvas
 			show_graph_node_editor(node_id)
 		_build_side_panel_editor(side_vbox, display, arr, 0, reselect)
-		# Round nodes group SETS FLAGS with Coins inside their editor (Rewards group); shop / storyboard
-		# nodes, whose editors aren't grouped, get it appended here. Read by flag-conditional forks.
+		# Round nodes group SETS FLAGS / COUNTERS with Coins inside their editor (Rewards group); shop /
+		# storyboard nodes, whose editors aren't grouped, get both appended here.
 		if node_type != "round":
 			side_vbox.add_child(_make_set_flags_field(data))
+			side_vbox.add_child(_make_set_counters_field(data))
 		# Divider between the content editor (round types / fields) and the node-operations block
 		# (connect / duplicate / delete / add) below.
 		side_vbox.add_child(_side_divider_line())
@@ -649,6 +668,26 @@ func _make_set_flags_field(target: Dictionary) -> Control:
 	return col
 
 
+# The numeric sibling of _make_set_flags_field: a "belt:1, arousal:2, stress:-1" field writing a
+# {name: delta} map to target["set_counters"]. A bare name means +1 (the "notch on the belt" case).
+# Applied when the node plays / the choice is taken (GameState.ApplyCounters); read by counter forks.
+func _make_set_counters_field(target: Dictionary) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("SETS COUNTERS  (name:delta, comma-separated)"))
+	var edit: LineEdit = LineEdit.new()
+	edit.placeholder_text = "e.g. belt:1, arousal:2, stress:-1"
+	edit.text = JourneyData.counter_deltas_to_text(
+		JourneyData.clean_counter_deltas(target.get("set_counters", {}))
+	)
+	UITheme.style_line_edit(edit)
+	edit.text_changed.connect(
+		func(v: String) -> void: target["set_counters"] = JourneyData.parse_counter_deltas(v)
+	)
+	col.add_child(edit)
+	return col
+
+
 func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callable) -> Control:
 	var data: Dictionary = node.get("data", {})
 	var out: Array = node.get("out", [])
@@ -696,12 +735,13 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	# Conditional sub-config: which metric + the fallback choice.
 	if resolution == "conditional":
 		col.add_child(_side_field_label("CONDITION"))
-		var metric_values: Array = ["score", "coins", "item", "flag"]
+		var metric_values: Array = ["score", "coins", "item", "flag", "counter"]
 		var metric_dd: OptionButton = OptionButton.new()
 		metric_dd.add_item("Last Round Score")
 		metric_dd.add_item("Coin Balance")
 		metric_dd.add_item("Item Owned")
 		metric_dd.add_item("Flag Set")
+		metric_dd.add_item("Counter Value")
 		metric_dd.selected = max(0, metric_values.find(metric))
 		metric_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		UITheme.style_option_button(metric_dd)
@@ -711,6 +751,19 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 				reselect.call(0)
 		)
 		col.add_child(metric_dd)
+
+		# A counter fork gates on one named counter — each choice's threshold then compares against
+		# its value, exactly like score/coins.
+		if metric == "counter":
+			col.add_child(_side_field_label("COUNTER NAME"))
+			var cn_edit: LineEdit = LineEdit.new()
+			cn_edit.placeholder_text = "e.g. belt, arousal, satisfied_partners"
+			cn_edit.text = str(data.get("cond_counter", ""))
+			UITheme.style_line_edit(cn_edit)
+			cn_edit.text_changed.connect(
+				func(v: String) -> void: data["cond_counter"] = v.strip_edges()
+			)
+			col.add_child(cn_edit)
 
 		# Who resolves it: the game auto-spins to the best match, or the player picks among the paths
 		# they've unlocked (the condition gates which choices are selectable).
@@ -826,7 +879,7 @@ func _make_graph_choice_block(
 
 	sub.add_child(_side_field_label("CARD IMAGE"))
 	var img_zone: PanelContainer = DropZoneScript.new()
-	img_zone.accepted_extensions = JourneyData.IMAGE_EXTENSIONS.duplicate()
+	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
 	img_zone.picker_title = "Select Card Image for Choice %d" % (ei + 1)
 	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -876,8 +929,9 @@ func _make_graph_choice_block(
 		var thr_label: String = "ACTIVATES AT ≥  (%s)" % ("SCORE" if metric == "score" else "COINS")
 		_add_path_int_field(sub, out, ei, "threshold", thr_label, 999999)
 
-	# A choice can set flags when it's taken ("you chose mercy").
+	# A choice can set flags and bump counters when it's taken ("you chose mercy" / "+1 resolve").
 	sub.add_child(_make_set_flags_field(edge))
+	sub.add_child(_make_set_counters_field(edge))
 	# LEADS TO — the choice's target node, wired via connect mode.
 	sub.add_child(_side_section_separator())
 	sub.add_child(_side_field_label("LEADS TO"))
@@ -1226,50 +1280,31 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 		_update_funscript_readout(fs_stats_lbl, round_data.get("funscript_path", ""))
 		col.add_child(fs_stats_lbl)
 
-		# Preview the funscript curve (and any stroke modifiers the round applies to it) in a
-		# graph overlay. Effect rounds also tune scale/clamp magnitudes live in there, so the
-		# button advertises it. Enabled once a funscript is attached.
+		# Opens the round's clip editor: the funscript curve, any stroke modifiers the round
+		# applies to it, the synced video, and the cut controls — one overlay
+		# (_open_funscript_editor). Effect rounds also tune scale/clamp magnitudes live in
+		# there, so the button advertises it. Enabled once a funscript is attached.
 		var is_effect_round: bool = (
 			JourneyData.normalize_effect_round(arr[idx]).get("round_type", "") == "effect"
 		)
 		var preview_btn: Button = UITheme.make_icon_btn(
-			"📈 PREVIEW & TUNE FUNSCRIPT" if is_effect_round else "📈 PREVIEW FUNSCRIPT",
+			"📈 PREVIEW, CUT & TUNE" if is_effect_round else "📈 PREVIEW & CUT",
 			round_data.get("funscript_path", "") == "",
 			UITheme.CYAN
 		)
-		if is_effect_round:
-			preview_btn.tooltip_text = "Preview the strokes and drag scale/clamp effects to tune them live."
-		preview_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		preview_btn.pressed.connect(
-			func() -> void:
-				# Effect rounds get live stroke tuning; the callback persists (and prunes to the
-				# catalog default) as the author drags a magnitude in the preview.
-				var on_tune: Callable = Callable()
-				if JourneyData.normalize_effect_round(arr[idx]).get("round_type", "") == "effect":
-					on_tune = func(ref_name: String, key: String, value: Variant) -> void:
-						var def: Variant = JourneyData.effect_entry(ref_name).get(key, null)
-						if def != null and is_equal_approx(float(value), float(def)):
-							_set_effect_override(arr, idx, ref_name, key, null)
-						else:
-							_set_effect_override(arr, idx, ref_name, key, value)
-				FunscriptPreview.new().open(
-					_owner,
-					arr[idx].get("funscript_path", ""),
-					arr[idx].get("video_path", ""),
-					_round_preview_modifiers(arr[idx]),
-					arr[idx].get("name", ""),
-					_round_preview_label(arr[idx]),
-					0,
-					0,
-					Callable(),
-					on_tune
-				)
+		preview_btn.tooltip_text = (
+			"Preview the strokes against the video, set the cut window, and drag scale/clamp effects to tune them live."
+			if is_effect_round
+			else "Preview the strokes against the video and set the cut window."
 		)
+		preview_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		preview_btn.pressed.connect(func() -> void: _open_funscript_editor(arr, idx, reselect))
 		col.add_child(preview_btn)
 
-		# ── Trim (pending; baked at save) ───────────────────────────────────────────
+		# ── Segments (pending; baked at save) ───────────────────────────────────────
+		# One section where trim and section-loop used to be two: both are segment lists now.
 		col.add_child(_side_section_separator())
-		col.add_child(_make_trim_section(arr, idx, reselect))
+		col.add_child(_make_segments_section(arr, idx, reselect))
 
 		# Secondary device scripts (optional, collapsed) — they round out the media group.
 		col.add_child(_side_section_separator())
@@ -1306,9 +1341,11 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["award_item"] = item_values[i])
 	col.add_child(item_dd)
 
-	# Flags this round sets when it plays (read by flag-conditional forks downstream).
+	# Flags + counters this round sets when it plays (read by conditional forks downstream — e.g.
+	# "+1 belt" after each encounter).
 	col.add_child(_side_section_separator())
 	col.add_child(_make_set_flags_field(arr[idx]))
+	col.add_child(_make_set_counters_field(arr[idx]))
 
 	# ── Round behavior (checkpoint + the round types) ────────────────────────────
 	col.add_child(_side_divider_line())
@@ -1538,125 +1575,96 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	return col
 
 
-# ✂ TRIM — a pending per-round video trim, consumed by the next save: the video
-# is cut frame-accurately (ffmpeg re-encode) and every funscript rebased to the
-# window. journey.json never carries the trim; after a save the trimmed copy is
-# the round's new baseline (tighter re-trims possible, widening is not).
-# `reselect` rebuilds the panel after the preview overlay applies a window.
-func _make_trim_section(arr: Array, idx: int, reselect: Callable) -> Control:
+# ✂ SEGMENTS — read-only summary of the round's cut plus the way into the editor. Consumed by
+# the next save: the video is cut to the list and every funscript rebased to match, so
+# journey.json never carries segments. After a save the cut copy is the round's new baseline
+# (tighter re-cuts possible, widening is not).
+#
+# No numeric fields here on purpose. The old ✂ TRIM / 🔁 LOOP SECTION blocks could express one
+# window and one loop; a segment list can't be typed into two text boxes, and keeping partial
+# fields beside the timeline would be two competing spellings of the same cut.
+func _make_segments_section(arr: Array, idx: int, reselect: Callable) -> Control:
 	var round_data: Dictionary = arr[idx]
 	var box: VBoxContainer = VBoxContainer.new()
 	box.add_theme_constant_override("separation", 4)
-	box.add_child(_side_field_label("✂ TRIM  (BAKED AT SAVE)"))
+	box.add_child(_side_field_label("✂ SEGMENTS  (BAKED AT SAVE)"))
 
+	var segs: Array = JourneyData.normalize_segments(round_data)
 	var readout: Label = Label.new()
 	readout.add_theme_font_size_override("font_size", 11)
-	readout.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	readout.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-
-	var row: HBoxContainer = HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
-	var start_edit: LineEdit = LineEdit.new()
-	start_edit.placeholder_text = "0:00"
-	start_edit.tooltip_text = "Trim start (m:ss)"
-	start_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_line_edit(start_edit)
-	var dash: Label = Label.new()
-	dash.text = "–"
-	dash.add_theme_color_override("font_color", UITheme.PURPLE_MID)
-	var end_edit: LineEdit = LineEdit.new()
-	end_edit.placeholder_text = "end"
-	end_edit.tooltip_text = "Trim end (m:ss; empty = to the end)"
-	end_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_line_edit(end_edit)
-	var clear_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
-	clear_btn.tooltip_text = "Clear the trim (keep the full video)"
-	row.add_child(start_edit)
-	row.add_child(dash)
-	row.add_child(end_edit)
-	row.add_child(clear_btn)
-	box.add_child(row)
+	if segs.is_empty():
+		readout.text = "NO CUT — THE FULL CLIP PLAYS."
+		readout.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	else:
+		var total: int = JourneyData.segments_total_ms(segs, int(round_data.get("length_ms", 0)))
+		var first: Dictionary = segs[0]
+		var f_out: int = int(first.get("out_ms", 0))
+		if segs.size() == 1:
+			readout.text = (
+				"CUT %s – %s"
+				% [
+					JourneyData.ms_to_mmss(int(first.get("in_ms", 0))),
+					JourneyData.ms_to_mmss(f_out) if f_out > 0 else "END",
+				]
+			)
+		else:
+			readout.text = (
+				"%d SEGMENTS%s"
+				% [segs.size(), ("  —  %s" % JourneyData.ms_to_mmss(total)) if total > 0 else ""]
+			)
+		readout.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
 	box.add_child(readout)
 
-	var refresh := func() -> void:
-		var t_in: int = int(arr[idx].get("trim_start_ms", 0))
-		var t_out: int = int(arr[idx].get("trim_end_ms", 0))
-		if t_in <= 0 and t_out <= 0:
-			readout.text = "NO TRIM — FULL LENGTH"
-			return
-		var total_ms: int = int(
-			JourneyData.read_funscript_stats(str(arr[idx].get("funscript_path", ""))).get(
-				"length_ms", 0
-			)
-		)
-		var end_ms: int = t_out if t_out > 0 else total_ms
-		var kept: int = maxi(0, end_ms - t_in)
-		var text: String = (
-			"TRIM %s – %s"
-			% [
-				JourneyData.ms_to_mmss(t_in),
-				JourneyData.ms_to_mmss(t_out) if t_out > 0 else "END",
-			]
-		)
-		if kept > 0:
-			text += "  ·  %s KEPT" % JourneyData.ms_to_mmss(kept)
-		if t_out > 0 and t_in >= t_out:
-			text = "⚠ INVALID — START IS AT OR PAST END"
-		readout.text = text
-
-	var apply := func() -> void:
-		arr[idx]["trim_start_ms"] = JourneyData.mmss_to_ms(start_edit.text)
-		arr[idx]["trim_end_ms"] = JourneyData.mmss_to_ms(end_edit.text)
-		refresh.call()
-		_owner._refresh_graph()  # update the node's ✂ pending-trim badge live
-
-	start_edit.text = (
-		JourneyData.ms_to_mmss(int(round_data.get("trim_start_ms", 0)))
-		if int(round_data.get("trim_start_ms", 0)) > 0
-		else ""
+	var edit_btn: Button = UITheme.make_icon_btn(
+		"✂ EDIT TIMELINE", str(round_data.get("funscript_path", "")) == "", UITheme.CYAN
 	)
-	end_edit.text = (
-		JourneyData.ms_to_mmss(int(round_data.get("trim_end_ms", 0)))
-		if int(round_data.get("trim_end_ms", 0)) > 0
-		else ""
-	)
-	start_edit.text_submitted.connect(func(_t: String) -> void: apply.call())
-	start_edit.focus_exited.connect(apply)
-	end_edit.text_submitted.connect(func(_t: String) -> void: apply.call())
-	end_edit.focus_exited.connect(apply)
-	clear_btn.pressed.connect(
-		func() -> void:
-			start_edit.text = ""
-			end_edit.text = ""
-			apply.call()
-	)
-	refresh.call()
-
-	# Visual picking: the funscript preview overlay in trim mode (graph + synced
-	# video where decodable) writes the applied window back and rebuilds the panel.
-	var pick_btn: Button = UITheme.make_icon_btn(
-		"✂ SET IN PREVIEW", str(round_data.get("funscript_path", "")) == "", UITheme.CYAN
-	)
-	pick_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	pick_btn.pressed.connect(
-		func() -> void:
-			FunscriptPreview.new().open(
-				_owner,
-				str(arr[idx].get("funscript_path", "")),
-				str(arr[idx].get("video_path", "")),
-				[],
-				str(arr[idx].get("name", "")),
-				"Modifiers",
-				int(arr[idx].get("trim_start_ms", 0)),
-				int(arr[idx].get("trim_end_ms", 0)),
-				func(t_in: int, t_out: int) -> void:
-					arr[idx]["trim_start_ms"] = t_in
-					arr[idx]["trim_end_ms"] = t_out
-					reselect.call(idx)
-			)
-	)
-	box.add_child(pick_btn)
+	edit_btn.tooltip_text = "Open the clip editor to cut, repeat and rearrange this round"
+	edit_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	edit_btn.pressed.connect(func() -> void: _open_funscript_editor(arr, idx, reselect))
+	box.add_child(edit_btn)
 	return box
+
+
+# Opens the round's clip editor. Every entry point routes here so none can pass half the
+# arguments — that's how the old trim entry ended up sending `[]` modifiers, leaving authors
+# cutting against a curve that wasn't the one that plays.
+#
+# `reselect` rebuilds the side panel after the overlay writes back (the summary and the node
+# badge both read the round's data).
+func _open_funscript_editor(arr: Array, idx: int, reselect: Callable) -> void:
+	# Effect rounds get live stroke tuning; the callback persists (and prunes to the catalog
+	# default) as the author drags a magnitude in the preview.
+	var on_tune: Callable = Callable()
+	if JourneyData.normalize_effect_round(arr[idx]).get("round_type", "") == "effect":
+		on_tune = func(ref_name: String, key: String, value: Variant) -> void:
+			var def: Variant = JourneyData.effect_entry(ref_name).get(key, null)
+			if def != null and is_equal_approx(float(value), float(def)):
+				_set_effect_override(arr, idx, ref_name, key, null)
+			else:
+				_set_effect_override(arr, idx, ref_name, key, value)
+	FunscriptPreview.new().open(
+		_owner,
+		str(arr[idx].get("funscript_path", "")),
+		str(arr[idx].get("video_path", "")),
+		_round_preview_modifiers(arr[idx]),
+		str(arr[idx].get("name", "")),
+		_round_preview_label(arr[idx]),
+		# normalize_segments migrates a round still carrying the legacy trim / section-loop
+		# fields, so opening the editor on an old round shows its cut as segments.
+		JourneyData.normalize_segments(arr[idx]),
+		func(segs: Array) -> void:
+			arr[idx]["segments"] = segs
+			# normalize_segments prefers `segments`, so leaving the legacy keys would leave
+			# stale fields that silently do nothing.
+			arr[idx].erase("trim_start_ms")
+			arr[idx].erase("trim_end_ms")
+			arr[idx].erase("loop_in_ms")
+			arr[idx].erase("loop_out_ms")
+			arr[idx].erase("loop_count")
+			reselect.call(idx),
+		on_tune
+	)
 
 
 # ⚖ ON ARRIVAL — the audit's view of the player state reaching this node:
@@ -1803,7 +1811,7 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("DEFAULT IMAGE"))
 	var img_zone: PanelContainer = DropZoneScript.new()
-	img_zone.accepted_extensions = JourneyData.IMAGE_EXTENSIONS.duplicate()
+	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
 	img_zone.picker_title = "Select Default Image"
 	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2013,7 +2021,7 @@ func _make_side_storyboard_line_block(
 
 	col.add_child(_side_field_label("SPEAKER IMAGE (OPTIONAL)"))
 	var img_zone: PanelContainer = DropZoneScript.new()
-	img_zone.accepted_extensions = JourneyData.IMAGE_EXTENSIONS.duplicate()
+	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
 	img_zone.picker_title = "Select Speaker Image for Line %d" % (line_idx + 1)
 	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2462,7 +2470,7 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	# Intro image (optional).
 	boss_panel.add_child(_side_field_label("BOSS IMAGE  (OPTIONAL)"))
 	var img_zone: PanelContainer = DropZoneScript.new()
-	img_zone.accepted_extensions = JourneyData.IMAGE_EXTENSIONS.duplicate()
+	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
 	img_zone.picker_title = "Select Boss Image"
 	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL

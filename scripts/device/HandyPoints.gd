@@ -84,6 +84,26 @@ static func _mirror(v: float, mirrored: bool) -> float:
 	return 100.0 - v if mirrored else v
 
 
+# Shifts every timestamp by `offset_ms` — how the Handy delay is expressed. A point at t now
+# plays `offset` ms later relative to the video, so POSITIVE = more delay.
+#
+# NOT on /hsp/play's start_time, which is what 0.6.0 did: that anchor was `maxi(0, video_ms -
+# delay)` and start_time can't go negative, so at a round start (where video_ms is small) the
+# clamp silently ate the delay. A timestamp shift has no such floor.
+#
+# A negative offset moves points earlier; any landing before 0 are dropped — already past, and
+# t < 0 isn't a legal HSP timestamp. Costs at most |offset| ms (≤2s) off the front.
+static func offset_points(points: Array, offset_ms: int) -> Array:
+	if offset_ms == 0:
+		return points
+	var out: Array = []
+	for p: Dictionary in points:
+		var t: int = int(p["t"]) + offset_ms
+		if t >= 0:
+			out.append({"t": t, "x": int(p["x"])})
+	return out
+
+
 # Estimates the client→server clock offset from a set of /servertime samples
 # (each {sent, recv, server_time}, all ms). Keeps the lowest-round-trip sample
 # (least queueing noise) and assumes the server stamped at the round-trip

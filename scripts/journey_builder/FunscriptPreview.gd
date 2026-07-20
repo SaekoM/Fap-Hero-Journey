@@ -2,20 +2,19 @@ class_name FunscriptPreview
 extends Control
 
 # ---------------------------------------------------------------------------
-# FunscriptPreview
-# In-builder preview overlay for a round's funscript. Plots the raw stroke curve
-# and — when the round has stroke modifiers (boss / curse / boon) — an overlaid
-# curve showing what those do to it, so the author can see the effect beforehand.
+# FunscriptPreview — THE in-builder clip editor: preview, cut and tune in one overlay.
 #
-# The funscript graph (zoomable, horizontally scrollable, draggable playhead) and
-# the modifier overlay work on any codec and on unsaved edits, since funscripts
-# are tiny JSON read straight from disk. A synced video pane sits above the graph
-# when the source is decodable (H.264 — EIRTeam's limit); otherwise the preview
-# stays graph-only. Video clock ↔ playhead are kept in lockstep both ways.
+# Plots the raw stroke curve plus (when the round has boss/curse/boon modifiers) the
+# curve they produce, with tunable magnitudes draggable in the TUNE strip. Below that,
+# the segment timeline that authors the round's cut.
 #
-# Open with:
-#   FunscriptPreview.new().open(parent, funscript_path, video_path, modifiers, name, mod_label)
-# The overlay frees itself on close.
+# ONE VIEW, deliberately. Both BuilderSidePanel entry points route through
+# _open_funscript_editor and pass every argument; a call site that omits half is how
+# authors ended up cutting against a curve that wasn't the one that plays.
+#
+# Graph and modifier overlay work on any codec (funscripts are tiny JSON); the video
+# pane only appears for H.264, EIRTeam's decode limit. Video clock ↔ playhead stay in
+# lockstep both ways. The overlay frees itself on close.
 # ---------------------------------------------------------------------------
 
 var _graph: _Graph = null
@@ -35,27 +34,43 @@ var _video_aspect: AspectRatioContainer = null
 var _aspect_set: bool = false
 var _video_ok: bool = false
 var _play_btn: Button = null
-# Audio toggle: ON by default in trim mode (cut points often sit on musical
-# beats / scene changes), muted by default in the plain preview (no surprise
-# audio in the builder) — toggleable either way once a video is confirmed.
+# Audio starts muted — every open is a full editor now, and surprise audio is a bad
+# default for this app. One click to enable.
 var _audio_btn: Button = null
 var _audio_on: bool = false
 
-# Trim mode (✂ SET IN PREVIEW): the footer gains IN/OUT/CLEAR/APPLY controls and
-# the graph shades outside the window. `_on_trim_applied` is the round editor's
-# callback (trim_in_ms, trim_out_ms); its validity is what enables the mode.
-var _trim_mode: bool = false
-var _trim_in: int = 0
-var _trim_out: int = 0
-var _on_trim_applied: Callable = Callable()
-var _trim_label: Label = null
+# ── The segment timeline ────────────────────────────────────────────────────
+# `_segments` is the live edit: ordered [{in_ms, out_ms}, …] played back to back. A repeat is
+# a DUPLICATED ROW, not a count — that's what makes duplicate, reorder and loop one operation.
+# A valid `_on_segments_applied` is what enables editing; without one this is a read-only look.
+var _edit_mode: bool = false
+var _segments: Array = []
+var _on_segments_applied: Callable = Callable()
+var _sel_row: int = -1  # selected row, -1 = none
+var _rows_box: VBoxContainer = null
+var _seg_label: Label = null
+var _repeat_spin: SpinBox = null
+
+# The ⟦IN / OUT⟧ marks, before + ADD commits them as a row. -1 = unset.
+var _mark_in: int = -1
+var _mark_out: int = -1
+
+# Undo/redo, local to this overlay and dead when it closes — segments aren't committed until
+# APPLY, so they don't belong on the builder's graph snapshot stack. Entries are tiny.
+var _undo: Array = []
+var _redo: Array = []
+
+# EDL playback walks the segments in order, seeking at each join. _edl_idx = the segment on
+# screen, -1 when not walking.
+var _edl_btn: Button = null
+var _edl_playing: bool = false
+var _edl_idx: int = -1
 
 
-# Builds and shows the overlay over `parent`. `modifiers` are stroke-affecting
-# effect dicts (each {kind, factor?/min?/max?}); pass [] for none. `mod_label`
-# names them ("Boss Modifiers" / "Curse effects" / "Boon effects").
-# video_path may be "" (graph-only) or a non-decodable codec (falls back too).
-# Passing a valid `on_trim_applied` opens in TRIM mode, seeded with trim_in/out.
+# Builds and shows the overlay over `parent`. `modifiers` are stroke-affecting effect dicts
+# (each {kind, factor?/min?/max?}); [] for none. `mod_label` names them ("Boss Modifiers" /
+# "Curse effects"). `video_path` may be "" or a non-decodable codec — both fall back to
+# graph-only. A valid `on_segments_applied` enables timeline editing.
 func open(
 	parent: Control,
 	funscript_path: String,
@@ -63,18 +78,16 @@ func open(
 	modifiers: Array,
 	round_name: String,
 	mod_label: String = "Boss Modifiers",
-	trim_in: int = 0,
-	trim_out: int = 0,
-	on_trim_applied: Callable = Callable(),
+	segments: Array = [],
+	on_segments_applied: Callable = Callable(),
 	on_tune: Callable = Callable()
 ) -> void:
 	_modifiers = modifiers
 	_mod_label = mod_label
 	_on_tune = on_tune
-	_trim_mode = on_trim_applied.is_valid()
-	_trim_in = trim_in
-	_trim_out = trim_out
-	_on_trim_applied = on_trim_applied
+	_edit_mode = on_segments_applied.is_valid()
+	_segments = segments.duplicate(true)  # edit a copy; APPLY is what commits
+	_on_segments_applied = on_segments_applied
 	_build_ui(round_name)
 	parent.add_child(self)
 	move_to_front()  # sit above the builder's graph / side panel siblings
@@ -83,8 +96,8 @@ func open(
 	_graph.set_raw(raw)
 	_refresh_modified()
 	_setup_video(video_path)
-	if _trim_mode:
-		_sync_trim()
+	if _edit_mode:
+		_rebuild_rows()
 
 
 func _build_ui(round_name: String) -> void:
@@ -192,8 +205,11 @@ func _build_ui(round_name: String) -> void:
 	_play_btn.pressed.connect(_toggle_play)
 	footer.add_child(_play_btn)
 
-	# Audio toggle (also disabled until a video confirms).
-	_audio_on = _trim_mode
+	# Audio toggle (also disabled until a video confirms). Starts OFF regardless of mode:
+	# now that every open is a full editor, defaulting it on would mean any preview click
+	# suddenly plays audio — a bad surprise for this app's content. Cutting by ear is one
+	# click away. (Trim mode used to default it on; this is the deliberate change.)
+	_audio_on = false
 	_audio_btn = UITheme.make_icon_btn("🔊", true, UITheme.PURPLE_BRIGHT)
 	_audio_btn.tooltip_text = "Toggle preview audio"
 	_audio_btn.pressed.connect(
@@ -213,45 +229,66 @@ func _build_ui(round_name: String) -> void:
 	zoom_in.pressed.connect(func() -> void: _graph.zoom_by(1.25))
 	footer.add_child(zoom_in)
 
-	# Trim mode: place the window with the playhead, then apply back to the round.
-	if _trim_mode:
+	# Segment editing: mark a window with the playhead, add it as a row, then apply the list.
+	if _edit_mode:
 		var set_in: Button = UITheme.make_icon_btn("⟦ IN", false, UITheme.TOXIC_GREEN)
-		set_in.tooltip_text = "Set the trim start to the playhead"
+		set_in.tooltip_text = "Mark the window start at the playhead"
 		set_in.pressed.connect(
 			func() -> void:
-				_trim_in = int(_graph.get_playhead())
-				_sync_trim()
+				_mark_in = int(_graph.get_playhead())
+				_sync_markers()
 		)
 		footer.add_child(set_in)
 		var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.AMBER)
-		set_out.tooltip_text = "Set the trim end to the playhead"
+		set_out.tooltip_text = "Mark the window end at the playhead"
 		set_out.pressed.connect(
 			func() -> void:
-				_trim_out = int(_graph.get_playhead())
-				_sync_trim()
+				_mark_out = int(_graph.get_playhead())
+				_sync_markers()
 		)
 		footer.add_child(set_out)
-		var trim_clear: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
-		trim_clear.tooltip_text = "Clear the trim window (keep the full video)"
-		trim_clear.pressed.connect(
+		var add_btn: Button = UITheme.make_icon_btn("+ ADD", false, UITheme.CYAN)
+		add_btn.tooltip_text = "Add the marked window to the timeline"
+		add_btn.pressed.connect(_add_pending_segment)
+		footer.add_child(add_btn)
+
+		# Repeat: inserts N copies of the selected row. Storage is expanded rows, but nobody
+		# clicks duplicate thirty times — so the AFFORDANCE is a count even though the model
+		# has none. Deliberately uncapped; a long bake is the author's call.
+		_repeat_spin = SpinBox.new()
+		_repeat_spin.min_value = 2
+		_repeat_spin.max_value = 999
+		_repeat_spin.value = 4
+		_repeat_spin.tooltip_text = "How many total passes the selected row becomes"
+		UITheme.style_spin_box(_repeat_spin)
+		footer.add_child(_repeat_spin)
+		var rep_btn: Button = UITheme.make_icon_btn("⧉ REPEAT", false, UITheme.PURPLE_BRIGHT)
+		rep_btn.tooltip_text = "Repeat the selected row this many times (adds rows)"
+		rep_btn.pressed.connect(_repeat_selected)
+		footer.add_child(rep_btn)
+
+		var clear_btn: Button = UITheme.make_icon_btn("✕ CLEAR", false, UITheme.MAGENTA)
+		clear_btn.tooltip_text = "Remove every segment (play the whole clip untouched)"
+		clear_btn.pressed.connect(
 			func() -> void:
-				_trim_in = 0
-				_trim_out = 0
-				_sync_trim()
+				_push_undo()
+				_segments.clear()
+				_sel_row = -1
+				_rebuild_rows()
 		)
-		footer.add_child(trim_clear)
-		var trim_apply: Button = UITheme.make_icon_btn("✔ APPLY TRIM", false, UITheme.SUCCESS)
-		trim_apply.tooltip_text = "Write this window to the round (baked at the next save)"
-		trim_apply.pressed.connect(
+		footer.add_child(clear_btn)
+		var apply: Button = UITheme.make_icon_btn("✔ APPLY", false, UITheme.SUCCESS)
+		apply.tooltip_text = "Write this timeline to the round (baked at the next save)"
+		apply.pressed.connect(
 			func() -> void:
-				_on_trim_applied.call(_trim_in, _trim_out)
+				_on_segments_applied.call(_segments.duplicate(true))  # hand over a copy, not our live list
 				_close()
 		)
-		footer.add_child(trim_apply)
-		_trim_label = Label.new()
-		_trim_label.add_theme_font_size_override("font_size", 11)
-		_trim_label.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
-		footer.add_child(_trim_label)
+		footer.add_child(apply)
+		_seg_label = Label.new()
+		_seg_label.add_theme_font_size_override("font_size", 11)
+		_seg_label.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
+		footer.add_child(_seg_label)
 
 	if not _modifiers.is_empty():
 		var toggle: CheckButton = CheckButton.new()
@@ -270,6 +307,49 @@ func _build_ui(round_name: String) -> void:
 	_caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_child(_caption)
 	col.add_child(footer)
+
+	if _edit_mode:
+		col.add_child(_build_timeline_panel())
+
+
+# The segment list: one row per segment, in playback order. A repeated window is simply the
+# same row again — that's the model, not a rendering choice, so reordering and duplicating are
+# the same operation on the same list.
+func _build_timeline_panel() -> Control:
+	var panel: VBoxContainer = VBoxContainer.new()
+	panel.add_theme_constant_override("separation", 4)
+
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	var title: Label = Label.new()
+	title.text = "TIMELINE"
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	head.add_child(title)
+
+	# Plays the assembled cut instead of the raw source. The bake concatenates pre-encoded
+	# segments and is seamless, so a hitch seen HERE is a preview artifact the file won't have.
+	_edl_btn = UITheme.make_icon_btn("▶ PLAY TIMELINE", false, UITheme.CYAN)
+	_edl_btn.tooltip_text = "Play the segments in order (the preview seeks at each join)"
+	_edl_btn.pressed.connect(_toggle_edl_playback)
+	head.add_child(_edl_btn)
+
+	var hint: Label = Label.new()
+	hint.text = "Ctrl+Z / Ctrl+Y to undo"
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	head.add_child(hint)
+	panel.add_child(head)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 132)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_rows_box = VBoxContainer.new()
+	_rows_box.add_theme_constant_override("separation", 2)
+	_rows_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_rows_box)
+	panel.add_child(scroll)
+	return panel
 
 
 # Recomputes (or clears) the modifier-applied curve and updates the caption.
@@ -544,12 +624,24 @@ func _input(event: InputEvent) -> void:
 	# Handled here in _input (before the GUI focus pass) and consumed, so the keys
 	# can't reach the still-focused "Preview" button behind us — Space on that
 	# button would otherwise open another preview.
+	# Undo/redo is scoped to this overlay's timeline — see the _undo declaration. Checked before
+	# the plain-key match so Ctrl+Z doesn't fall through to anything else.
+	if _edit_mode and event.ctrl_pressed:
+		match event.keycode:
+			KEY_Z:
+				_undo_step()
+				get_viewport().set_input_as_handled()
+				return
+			KEY_Y:
+				_redo_step()
+				get_viewport().set_input_as_handled()
+				return
 	match event.keycode:
 		KEY_ESCAPE:
 			_close()
 			get_viewport().set_input_as_handled()
 		KEY_SPACE:
-			_toggle_play()  # no-op when there's no playable video
+			_toggle_play()  # no-op without a playable video; stops an EDL walk first
 			get_viewport().set_input_as_handled()
 
 
@@ -623,7 +715,62 @@ func _process(_delta: float) -> void:
 	# (playing AND not paused), and never while the author is scrubbing.
 	if _is_advancing() and not _graph.is_dragging():
 		_graph.set_playhead(_video.stream_position * 1000.0)
+		if _edl_playing:
+			_advance_edl()
 	_update_play_btn()  # keeps the label correct through pause / resume / natural end
+
+
+# ── EDL playback ────────────────────────────────────────────────────────────
+
+
+func _toggle_edl_playback() -> void:
+	if _edl_playing:
+		_stop_edl_playback()
+		return
+	if not _video_ok or _segments.is_empty():
+		_flash_seg_label("Nothing to play — add a segment first")
+		return
+	_edl_playing = true
+	_enter_edl_segment(0)
+	_sync_edl_btn()
+
+
+func _stop_edl_playback() -> void:
+	_edl_playing = false
+	_edl_idx = -1
+	if _video_ok:
+		_video.paused = true
+	_sync_edl_btn()
+	_update_play_btn()
+
+
+func _sync_edl_btn() -> void:
+	if _edl_btn != null:
+		_edl_btn.text = "⏹ STOP TIMELINE" if _edl_playing else "▶ PLAY TIMELINE"
+
+
+# Seeks to segment `i` and plays it. Seeking at every join is only viable because this
+# decoder's seeks measured cheap; if that regresses, this is the one place to change.
+func _enter_edl_segment(i: int) -> void:
+	if i >= _segments.size():
+		_stop_edl_playback()
+		return
+	_edl_idx = i
+	if not _video.is_playing():
+		_video.play()
+	_video.paused = false
+	_video.stream_position = float(int((_segments[i] as Dictionary).get("in_ms", 0))) / 1000.0
+	_update_play_btn()
+
+
+# Per frame while walking: hop to the next row once this window's out point passes.
+func _advance_edl() -> void:
+	if _edl_idx < 0 or _edl_idx >= _segments.size():
+		return
+	var out_ms: int = int((_segments[_edl_idx] as Dictionary).get("out_ms", 0))
+	var end_ms: int = out_ms if out_ms > 0 else _source_len_ms()
+	if _video.stream_position * 1000.0 >= float(end_ms):
+		_enter_edl_segment(_edl_idx + 1)
 
 
 # True while the video is actually advancing. is_playing() stays true while
@@ -635,6 +782,9 @@ func _is_advancing() -> bool:
 func _toggle_play() -> void:
 	if not _video_ok:
 		return
+	# Plain playback and the EDL walk both drive stream_position, so only one runs at a time.
+	if _edl_playing:
+		_stop_edl_playback()
 	if not _video.is_playing():
 		# Finished (or stopped) — restart playback from the current playhead.
 		_video.play()
@@ -660,20 +810,193 @@ func _on_scrubbed(ms: float) -> void:
 		_video.stream_position = ms / 1000.0
 
 
-# Pushes the current trim window to the graph markers + the footer readout.
-func _sync_trim() -> void:
-	_graph.set_trim(float(_trim_in), float(_trim_out) if _trim_out > 0 else -1.0)
-	if _trim_label:
-		if _trim_in <= 0 and _trim_out <= 0:
-			_trim_label.text = "NO TRIM"
-		else:
-			_trim_label.text = (
-				"TRIM %s – %s"
-				% [
-					JourneyData.ms_to_mmss(_trim_in),
-					JourneyData.ms_to_mmss(_trim_out) if _trim_out > 0 else "END",
-				]
-			)
+# ── Timeline editing ────────────────────────────────────────────────────────
+
+
+# Always call before mutating `_segments`.
+func _push_undo() -> void:
+	_undo.append(_segments.duplicate(true))
+	_redo.clear()  # a fresh edit invalidates the redo branch
+
+
+func _undo_step() -> void:
+	if _undo.is_empty():
+		return
+	_redo.append(_segments.duplicate(true))
+	_segments = _undo.pop_back()
+	_sel_row = mini(_sel_row, _segments.size() - 1)
+	_rebuild_rows()
+
+
+func _redo_step() -> void:
+	if _redo.is_empty():
+		return
+	_undo.append(_segments.duplicate(true))
+	_segments = _redo.pop_back()
+	_sel_row = mini(_sel_row, _segments.size() - 1)
+	_rebuild_rows()
+
+
+# Falls back to the funscript's end when the decoder can't report a length.
+func _source_len_ms() -> int:
+	if _video_ok and _video.get_stream_length() > 0.0:
+		return int(_video.get_stream_length() * 1000.0)
+	var raw: Array = _graph.get_raw()
+	return int((raw[-1] as Vector2).x) if not raw.is_empty() else 0
+
+
+# Commits the ⟦IN/OUT⟧ marks as a row. Unset IN = from the start; unset OUT = to the end,
+# stored as 0 (the open-ended form the pure layer uses).
+func _add_pending_segment() -> void:
+	var start_ms: int = maxi(0, _mark_in)
+	var end_ms: int = _mark_out
+	if end_ms > 0 and end_ms <= start_ms:
+		_flash_seg_label("OUT must be after IN")
+		return
+	_push_undo()
+	_segments.append({"in_ms": start_ms, "out_ms": maxi(0, end_ms)})
+	_sel_row = _segments.size() - 1
+	_mark_in = -1
+	_mark_out = -1
+	_rebuild_rows()
+
+
+# Grows the selected row to `_repeat_spin` total passes by inserting copies after it.
+func _repeat_selected() -> void:
+	if _sel_row < 0 or _sel_row >= _segments.size():
+		_flash_seg_label("Select a row first")
+		return
+	var passes: int = int(_repeat_spin.value)
+	if passes < 2:
+		return
+	_push_undo()
+	var row: Dictionary = _segments[_sel_row]
+	for _i: int in passes - 1:
+		_segments.insert(_sel_row + 1, row.duplicate())
+	_rebuild_rows()
+
+
+func _move_row(i: int, delta: int) -> void:
+	var j: int = i + delta
+	if j < 0 or j >= _segments.size():
+		return
+	_push_undo()
+	var row: Dictionary = _segments[i]
+	_segments.remove_at(i)
+	_segments.insert(j, row)
+	_sel_row = j
+	_rebuild_rows()
+
+
+func _delete_row(i: int) -> void:
+	if i < 0 or i >= _segments.size():
+		return
+	_push_undo()
+	_segments.remove_at(i)
+	_sel_row = mini(_sel_row, _segments.size() - 1)
+	_rebuild_rows()
+
+
+func _duplicate_row(i: int) -> void:
+	if i < 0 or i >= _segments.size():
+		return
+	_push_undo()
+	_segments.insert(i + 1, (_segments[i] as Dictionary).duplicate())
+	_sel_row = i + 1
+	_rebuild_rows()
+
+
+# Rebuilds every row from `_segments`. The list is short and edits are user-paced, so a full
+# rebuild is simpler (and less bug-prone) than surgical row patching.
+func _rebuild_rows() -> void:
+	if _rows_box == null:
+		return
+	for child: Node in _rows_box.get_children():
+		child.queue_free()
+
+	var src_len: int = _source_len_ms()
+	for i: int in _segments.size():
+		var seg: Dictionary = _segments[i]
+		var start_ms: int = int(seg.get("in_ms", 0))
+		var end_ms: int = int(seg.get("out_ms", 0))
+		var idx: int = i  # captured by this row's button callbacks
+
+		var row: HBoxContainer = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+
+		var pick: Button = Button.new()
+		pick.toggle_mode = true
+		pick.button_pressed = (i == _sel_row)
+		pick.text = (
+			"%2d.   %s – %s   (%s)"
+			% [
+				i + 1,
+				JourneyData.ms_to_mmss(start_ms),
+				JourneyData.ms_to_mmss(end_ms) if end_ms > 0 else "END",
+				JourneyData.ms_to_mmss(maxi(0, (end_ms if end_ms > 0 else src_len) - start_ms)),
+			]
+		)
+		pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pick.add_theme_font_size_override("font_size", 11)
+		pick.pressed.connect(
+			func() -> void:
+				_sel_row = idx
+				_rebuild_rows()
+		)
+		row.add_child(pick)
+
+		row.add_child(_row_btn("▲", "Move earlier", func() -> void: _move_row(idx, -1)))
+		row.add_child(_row_btn("▼", "Move later", func() -> void: _move_row(idx, 1)))
+		row.add_child(_row_btn("⧉", "Duplicate this row", func() -> void: _duplicate_row(idx)))
+		row.add_child(_row_btn("✕", "Remove this row", func() -> void: _delete_row(idx)))
+		_rows_box.add_child(row)
+
+	_sync_markers()
+
+
+func _row_btn(text: String, tip: String, cb: Callable) -> Button:
+	var b: Button = Button.new()
+	b.text = text
+	b.tooltip_text = tip
+	b.add_theme_font_size_override("font_size", 11)
+	b.pressed.connect(cb)
+	return b
+
+
+# Pushes the graph's shaded window (the selected row, or the pending ⟦IN/OUT⟧ marks when
+# nothing is selected) and refreshes the footer readout.
+func _sync_markers() -> void:
+	var start_ms: float = -1.0
+	var end_ms: float = -1.0
+	if _sel_row >= 0 and _sel_row < _segments.size():
+		var seg: Dictionary = _segments[_sel_row]
+		var seg_out: int = int(seg.get("out_ms", 0))
+		start_ms = float(int(seg.get("in_ms", 0)))
+		end_ms = float(seg_out) if seg_out > 0 else -1.0
+	else:
+		start_ms = float(_mark_in) if _mark_in >= 0 else -1.0
+		end_ms = float(_mark_out) if _mark_out > 0 else -1.0
+	_graph.set_trim(start_ms, end_ms)
+
+	if _seg_label == null:
+		return
+	if _segments.is_empty():
+		_seg_label.text = "NO SEGMENTS — full clip"
+	else:
+		var total: int = JourneyData.segments_total_ms(_segments, _source_len_ms())
+		_seg_label.text = (
+			"%d SEGMENT%s — %s"
+			% [
+				_segments.size(),
+				"" if _segments.size() == 1 else "S",
+				JourneyData.ms_to_mmss(total)
+			]
+		)
+
+
+func _flash_seg_label(msg: String) -> void:
+	if _seg_label != null:
+		_seg_label.text = msg
 
 
 # ===========================================================================

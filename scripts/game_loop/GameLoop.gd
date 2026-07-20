@@ -105,6 +105,14 @@ var _current_overlay: Control = null
 # journey (_map_enabled): an author can disable it to enforce surprise, in which
 # case the map is never built and the buttons never appear.
 var _map_enabled: bool = true  # journey-level: author allows the player map
+# Counter names the author surfaced to the player (journey-level "ShownCounters"). A change to one
+# of these shows the transient top-right pop; the inventory panel lists them. Others stay hidden.
+var _shown_counters: Array = []
+# Occupied vertical slots for counter pops (index -> true) so simultaneous pops stack rather than
+# overlap. See _alloc_counter_pop_slot.
+var _counter_pop_slots: Dictionary = {}
+const COUNTER_POP_BASE_Y: float = 90.0  # first pop sits below the HUD bar
+const COUNTER_POP_STEP: float = 46.0  # one single-row pop's height + gap
 var _map_fog: bool = false  # journey-level: fog of war — reveal the map as it's discovered
 var _map_fog_reveal: int = 1  # ghost levels revealed ahead of the trail (< 0 = whole structure)
 var _map_view: GraphView = null
@@ -209,6 +217,7 @@ func _ready() -> void:
 	_map_enabled = bool(GameState.Journey.get("map_enabled", true))
 	_map_fog = bool(GameState.Journey.get("map_fog", false))
 	_map_fog_reveal = int(GameState.Journey.get("map_fog_reveal", 1))
+	_shown_counters = (GameState.Journey.get("shown_counters", []) as Array)
 	_build_map()
 	_connect_signals()
 	# Resume vs fresh start: when the player picked Resume from the catalogue,
@@ -484,7 +493,16 @@ func _conditional_path(fork_data: Dictionary) -> int:
 			0,
 			Callable(GameState, "HasFlag")
 		)
-	var value: int = ScoreService.LastRoundScore if metric == "score" else CoinService.Balance
+	# score / coins / counter all resolve by threshold in ForkResolver — only the source of the
+	# compared value differs. A "counter" fork names which counter in cond_counter.
+	var value: int
+	match metric:
+		"coins":
+			value = CoinService.Balance
+		"counter":
+			value = GameState.CounterValue(str(fork_data.get("cond_counter", "")))
+		_:
+			value = ScoreService.LastRoundScore
 	return ForkResolver.conditional_path(
 		fork_data.get("paths", []),
 		metric,
@@ -505,6 +523,9 @@ func _conditional_caption(fork_data: Dictionary) -> String:
 			return "BY WHAT YOU CARRY…"
 		"flag":
 			return "BY WHERE YOU'VE BEEN…"
+		"counter":
+			var cn: String = str(fork_data.get("cond_counter", "")).strip_edges()
+			return ("BY YOUR %s…" % cn.to_upper()) if cn != "" else "BY THE TALLY…"
 	return "FATE DECIDES…"
 
 
@@ -796,14 +817,15 @@ func _show_boss_intro(round: Dictionary) -> void:
 
 	var boss_image: String = round.get("boss_image", "")
 	if boss_image != "":
-		var img: Image = JourneyData.load_image_smart(boss_image)
-		if img != null:
-			var tex: TextureRect = TextureRect.new()
-			tex.texture = ImageTexture.create_from_image(img)
-			tex.custom_minimum_size = Vector2(380, 240)
-			tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-			col.add_child(tex)
+		# May be a still or a baked animation (JourneyImage decides from the path); same
+		# expand/stretch either way, so an animated boss portrait frames exactly like a still one.
+		var img_ctl: JourneyImage = JourneyImage.new()
+		img_ctl.custom_minimum_size = Vector2(380, 240)
+		col.add_child(img_ctl)
+		if not img_ctl.show_path(
+			boss_image, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		):
+			img_ctl.queue_free()  # nothing to show — don't leave a 380x240 hole in the card
 
 	var name_lbl: Label = Label.new()
 	name_lbl.text = (round.get("name", "") as String).to_upper()
@@ -2026,6 +2048,90 @@ func _on_save_item_used() -> void:
 		_show_save_toast("✕  SAVE FAILED")
 
 
+# A player-visible counter changed → transient top-right pop. Hidden counters (not in the journey's
+# ShownCounters) fire the signal but show nothing — they gate silently. The persistent value list
+# lives in the inventory panel.
+func _on_counter_changed(name: String, value: int, delta: int) -> void:
+	if name in _shown_counters:
+		_show_counter_pop(name, value, delta)
+
+
+# Lowest free vertical slot for a counter pop, so simultaneous changes STACK instead of overlapping.
+# A slot is held for the pop's lifetime and released in _show_counter_pop; freeing the lowest means a
+# vanished pop's row is reused top-down (no reflow of the survivors — they hold their place).
+func _alloc_counter_pop_slot() -> int:
+	var i: int = 0
+	while _counter_pop_slots.has(i):
+		i += 1
+	_counter_pop_slots[i] = true
+	return i
+
+
+# Slides a "BELT  +1  → 3" chip in from the right, holds, slides out. Non-blocking. Green for a
+# gain, magenta for a loss. Parented to the GameLoop root (not the HUD, which hides during play).
+func _show_counter_pop(name: String, value: int, delta: int) -> void:
+	var accent: Color = UITheme.SUCCESS if delta >= 0 else UITheme.MAGENTA
+	var slot: int = _alloc_counter_pop_slot()
+
+	var pop: PanelContainer = PanelContainer.new()
+	pop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var s: StyleBoxFlat = StyleBoxFlat.new()
+	s.bg_color = Color(
+		UITheme.PANEL_BG_DEEP.r, UITheme.PANEL_BG_DEEP.g, UITheme.PANEL_BG_DEEP.b, 0.92
+	)
+	s.border_color = accent
+	s.set_border_width_all(2)
+	s.set_corner_radius_all(6)
+	s.set_content_margin_all(10)
+	pop.add_theme_stylebox_override("panel", s)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	pop.add_child(row)
+	var name_lbl: Label = Label.new()
+	name_lbl.text = name.to_upper()
+	UITheme.style_label(name_lbl, UITheme.WHITE_SOFT, 13, true)
+	row.add_child(name_lbl)
+	var delta_lbl: Label = Label.new()
+	delta_lbl.text = "%+d" % delta
+	UITheme.style_label(delta_lbl, accent, 13, true)
+	row.add_child(delta_lbl)
+	var val_lbl: Label = Label.new()
+	val_lbl.text = "→ %d" % value
+	UITheme.style_label(val_lbl, UITheme.DARK_TEXT, 13, true)
+	row.add_child(val_lbl)
+
+	add_child(pop)
+	await get_tree().process_frame  # let it size before we place it
+	if not is_instance_valid(pop):
+		_counter_pop_slots.erase(slot)
+		return
+	var screen_w: float = get_viewport_rect().size.x
+	var off_x: float = screen_w + 8.0  # off-screen right
+	var target_x: float = screen_w - pop.size.x - 16.0
+	# Stack downward from below the HUD bar, one row per slot.
+	pop.position = Vector2(off_x, COUNTER_POP_BASE_Y + slot * COUNTER_POP_STEP)
+	pop.modulate.a = 0.0
+
+	var tin: Tween = create_tween().set_parallel(true)
+	tin.tween_property(pop, "position:x", target_x, 0.35).set_trans(Tween.TRANS_BACK).set_ease(
+		Tween.EASE_OUT
+	)
+	tin.tween_property(pop, "modulate:a", 1.0, 0.25)
+	await tin.finished
+	await get_tree().create_timer(1.6).timeout
+	if not is_instance_valid(pop):
+		_counter_pop_slots.erase(slot)
+		return
+	var tout: Tween = create_tween().set_parallel(true)
+	tout.tween_property(pop, "position:x", off_x, 0.3).set_ease(Tween.EASE_IN)
+	tout.tween_property(pop, "modulate:a", 0.0, 0.3)
+	await tout.finished
+	_counter_pop_slots.erase(slot)
+	if is_instance_valid(pop):
+		pop.queue_free()
+
+
 # Brief auto-dismissing notification used after the save_now item fires. Keeps
 # the player in the round instead of pulling them into a modal.
 func _show_save_toast(text: String) -> void:
@@ -2570,6 +2676,7 @@ func _connect_signals() -> void:
 	_inv_btn.mouse_entered.connect(_show_hud)
 	ScoreService.ScoreChanged.connect(_on_score_changed)
 	CoinService.BalanceChanged.connect(_on_coin_balance_changed)
+	GameState.CounterChanged.connect(_on_counter_changed)
 	InventoryService.ActiveEffectsChanged.connect(_refresh_effect_chips)
 	InventoryService.ActiveEffectsChanged.connect(_handy_effects_changed)
 	# save_now utility item: writes a save mid-round so the player can resume

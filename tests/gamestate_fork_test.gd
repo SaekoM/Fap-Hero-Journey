@@ -201,3 +201,83 @@ func test_current_accessors() -> void:
 	assert_str(GameState.CurrentItemType()).is_equal("shop")
 	assert_bool(GameState.CurrentRound().is_empty()).is_true()
 	assert_str(GameState.CurrentShop()["title"]).is_equal("S")
+
+
+# ── Named counters (C# — requires a rebuild to pass, like the fork round_count test) ─────────
+# A raw graph (no migration) so the counter fields sit exactly where the runtime reads them.
+
+
+func _counter_journey() -> Dictionary:
+	return {
+		"start": "a",
+		"nodes":
+		{
+			"a":
+			{
+				"type": "round",
+				"data": {"name": "A", "set_counters": {"belt": 1}},
+				"out": [{"to": "b"}]
+			},
+			"b":
+			{
+				"type": "round",
+				"data": {"name": "B", "set_counters": {"belt": 2, "stress": 1}},
+				"out": [{"to": ""}]
+			},
+		}
+	}
+
+
+# set_counters applies on node entry and ACCUMULATES; an unset counter reads 0.
+func test_counter_accumulates_on_enter() -> void:
+	GameState.StartJourney(_counter_journey())
+	assert_int(GameState.CounterValue("belt")).is_equal(1)  # start node A applied on StartJourney
+	assert_int(GameState.CounterValue("never_set")).is_equal(0)  # default
+	GameState.Advance()  # → B
+	assert_int(GameState.CounterValue("belt")).is_equal(3)  # 1 + 2
+	assert_int(GameState.CounterValue("stress")).is_equal(1)
+
+
+# A fork choice's set_counters applies when the path is taken.
+func test_fork_choice_applies_counters() -> void:
+	(
+		GameState
+		. StartJourney(
+			{
+				"start": "f",
+				"nodes":
+				{
+					"f":
+					{
+						"type": "fork",
+						"data": {"title": "F"},
+						"out": [{"to": "e", "name": "merciful", "set_counters": {"resolve": 2}}]
+					},
+					"e": {"type": "round", "data": {"name": "E"}, "out": [{"to": ""}]},
+				}
+			}
+		)
+	)
+	assert_int(GameState.CounterValue("resolve")).is_equal(0)
+	GameState.ResolveFork(0)
+	assert_int(GameState.CounterValue("resolve")).is_equal(2)
+
+
+# Counters ride the save record and restore to the same values (parity with flags).
+func test_counters_survive_save_restore() -> void:
+	var journey: Dictionary = _counter_journey()
+	GameState.StartJourney(journey)
+	GameState.Advance()  # belt=3, stress=1
+	var save: Dictionary = GameState.CaptureSaveData()
+	GameState.LoadFromSave(journey, save)
+	assert_int(GameState.CounterValue("belt")).is_equal(3)
+	assert_int(GameState.CounterValue("stress")).is_equal(1)
+
+
+# A fresh start clears counters from a prior run.
+func test_counters_reset_on_fresh_start() -> void:
+	GameState.StartJourney(_counter_journey())
+	GameState.Advance()
+	assert_int(GameState.CounterValue("belt")).is_equal(3)
+	GameState.StartJourney(_counter_journey())  # new run
+	assert_int(GameState.CounterValue("belt")).is_equal(1)  # only A's +1, not carried over

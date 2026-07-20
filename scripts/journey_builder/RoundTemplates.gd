@@ -15,8 +15,19 @@ extends RefCounted
 const PATH: String = "user://round_templates.json"
 
 # Node-level keys that must NOT ride along in a template: the id + edges belong to the graph
-# node, and "type" is re-stamped on apply. (Pending trim is an editor-only op, never a def.)
-const _STRIP_KEYS: Array = ["node_id", "type", "trim_start_ms", "trim_end_ms"]
+# node, and "type" is re-stamped on apply. (Pending segments are an editor-only op describing
+# one specific clip, never part of a reusable definition — the legacy trim / section-loop keys
+# they replaced are stripped too, so pre-segments templates stay clean on apply.)
+const _STRIP_KEYS: Array = [
+	"node_id",
+	"type",
+	"segments",
+	"trim_start_ms",
+	"trim_end_ms",
+	"loop_in_ms",
+	"loop_out_ms",
+	"loop_count",
+]
 
 # ── Persistence ──────────────────────────────────────────────────────────────
 
