@@ -34,12 +34,12 @@
 		<div class="report-container">
 			<h1>Testsuite Report</h1>
 			<div>
-				<span class="label">res://tests/funscript_trim_test.gd</span>
+				<span class="label">res://tests/checkpoint_migration_test.gd</span>
 			</div>
 			<div class="summary">
 				<div class="summary-item">
 					<span class="label">Tests</span>
-					<span class="value">11</span>
+					<span class="value">5</span>
 				</div>
 				<div class="summary-item">
 					<span class="label">Skipped</span>
@@ -59,7 +59,7 @@
 				</div>
 				<div class="summary-item">
 					<span class="label">Duration</span>
-					<span class="value">71ms</span>
+					<span class="value">28ms</span>
 				</div>
 				<div class="success-rate">
 					<div class="check-icon status-passed">✓</div>
@@ -73,7 +73,7 @@
 		<div class="breadcrumb">
 			<a href="../index.html"><span>All</span></a>
 			<a href="../path/tests.html"><span>tests</span></a>
-			<a class="active" href="#"><span>funscript_trim_test</span></a>
+			<a class="active" href="#"><span>checkpoint_migration_test</span></a>
 		</div>
 	</header>
 
@@ -94,21 +94,7 @@
 					<tbody>
 						
 								<tr class="testcase-group">
-									<td>test_exact_window_shift</td>
-									<td><span class="status status-passed">PASSED</span></td>
-									<td>0</td>
-									<td>0</td>
-									<td>3ms</td>
-									<td class="report-column">
-										<pre>
-
-										</pre>
-									</td>
-								</tr>
-
-
-								<tr class="testcase-group">
-									<td>test_in_cut_mid_stroke_interpolates</td>
+									<td>test_flag_becomes_node_before_round</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
@@ -122,11 +108,11 @@
 
 
 								<tr class="testcase-group">
-									<td>test_out_cut_mid_stroke_interpolates</td>
+									<td>test_flagged_start_round_moves_start</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
-									<td>4ms</td>
+									<td>0ms</td>
 									<td class="report-column">
 										<pre>
 
@@ -136,11 +122,11 @@
 
 
 								<tr class="testcase-group">
-									<td>test_window_inside_single_stroke</td>
+									<td>test_multiple_inbound_edges_all_reroute</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
-									<td>6ms</td>
+									<td>3ms</td>
 									<td class="report-column">
 										<pre>
 
@@ -150,7 +136,7 @@
 
 
 								<tr class="testcase-group">
-									<td>test_out_zero_keeps_tail</td>
+									<td>test_idempotent_without_flags</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
@@ -164,81 +150,11 @@
 
 
 								<tr class="testcase-group">
-									<td>test_invalid_window_is_empty</td>
+									<td>test_adjacent_flagged_rounds</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
-									<td>5ms</td>
-									<td class="report-column">
-										<pre>
-
-										</pre>
-									</td>
-								</tr>
-
-
-								<tr class="testcase-group">
-									<td>test_mmss_helpers</td>
-									<td><span class="status status-passed">PASSED</span></td>
-									<td>0</td>
-									<td>0</td>
-									<td>8ms</td>
-									<td class="report-column">
-										<pre>
-
-										</pre>
-									</td>
-								</tr>
-
-
-								<tr class="testcase-group">
-									<td>test_fingerprint_trim_awareness</td>
-									<td><span class="status status-passed">PASSED</span></td>
-									<td>0</td>
-									<td>0</td>
-									<td>6ms</td>
-									<td class="report-column">
-										<pre>
-
-										</pre>
-									</td>
-								</tr>
-
-
-								<tr class="testcase-group">
-									<td>test_fingerprint_variant_separates_bakes</td>
-									<td><span class="status status-passed">PASSED</span></td>
-									<td>0</td>
-									<td>0</td>
-									<td>6ms</td>
-									<td class="report-column">
-										<pre>
-
-										</pre>
-									</td>
-								</tr>
-
-
-								<tr class="testcase-group">
-									<td>test_has_section_loop_gating</td>
-									<td><span class="status status-passed">PASSED</span></td>
-									<td>0</td>
-									<td>0</td>
-									<td>5ms</td>
-									<td class="report-column">
-										<pre>
-
-										</pre>
-									</td>
-								</tr>
-
-
-								<tr class="testcase-group">
-									<td>test_legacy_loop_expands_through_edl</td>
-									<td><span class="status status-passed">PASSED</span></td>
-									<td>0</td>
-									<td>0</td>
-									<td>6ms</td>
+									<td>7ms</td>
 									<td class="report-column">
 										<pre>
 

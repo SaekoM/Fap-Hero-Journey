@@ -71,6 +71,38 @@ func is_available() -> bool:
 	return OS.execute(resolve_binary("ffprobe"), ["-version"], out, true, false) == 0
 
 
+# ── Pooled-file reuse (incremental save) ─────────────────────────────────────
+
+
+# True when `path` is a journey's pooled content file (basename m_<hash>.<ext> inside a content/
+# folder). Only these are safe to hardlink on a re-save: they're media the journey already owns.
+# An author's ORIGINAL source is never this, so it always gets an independent byte copy — the
+# journey never shares storage with a file the author might move or edit.
+func is_pooled_content_file(path: String) -> bool:
+	return path.get_file().begins_with("m_") and path.get_base_dir().get_file() == "content"
+
+
+# Attempts an OS hardlink src→dst — instant, no disk, since the two names share one inode. Returns
+# true only when the link file actually appears; a cross-volume refusal or any error returns false
+# so the caller falls back to a byte copy. Windows: mklink /H (no admin). Unix: ln.
+#
+# Safe under the save's atomic swap: the link and the byte copy it replaces are identical content,
+# and deleting the old journey folder just drops one link name — the staging link keeps the data
+# alive until it becomes the new folder. Never overwrites an existing dst.
+func try_hardlink(src: String, dst: String) -> bool:
+	var src_abs: String = ProjectSettings.globalize_path(src)
+	var dst_abs: String = ProjectSettings.globalize_path(dst)
+	if FileAccess.file_exists(dst_abs):
+		return false
+	DirAccess.make_dir_recursive_absolute(dst_abs.get_base_dir())
+	var out: Array = []
+	if OS.get_name() == "Windows":
+		OS.execute("cmd", ["/c", "mklink", "/H", dst_abs, src_abs], out, true, false)
+	else:
+		OS.execute("ln", [src_abs, dst_abs], out, true, false)
+	return FileAccess.file_exists(dst_abs)
+
+
 # ── Probing ──────────────────────────────────────────────────────────────────
 
 

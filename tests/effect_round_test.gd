@@ -101,6 +101,18 @@ func test_normalize_leaves_normal_and_boss() -> void:
 	assert_str(JD.normalize_effect_round({"round_type": "boss"})["round_type"]).is_equal("boss")
 
 
+# A boss can now carry forced gameplay effects — normalize must KEEP them (the normal/boss
+# branch used to drop `effects`, which would wipe the list on every save and load).
+func test_normalize_keeps_boss_effects() -> void:
+	var out := JD.normalize_effect_round({"round_type": "boss", "effects": ["Toll", "Fortune"]})
+	assert_array(out["effects"]).contains(["Toll", "Fortune"])
+
+
+# A normal round with no effects still normalizes to an empty list — the branch is shared.
+func test_normalize_normal_has_no_effects() -> void:
+	assert_array(JD.normalize_effect_round({"round_type": "normal"})["effects"]).is_empty()
+
+
 # ── valence + merged catalog ─────────────────────────────────────────────────
 
 

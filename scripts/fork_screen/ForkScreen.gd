@@ -131,7 +131,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	name_lbl.add_theme_font_size_override("font_size", 22)
+	name_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(22))
 	col.add_child(name_lbl)
 
 	var desc: String = path_data.get("description", "")
@@ -141,7 +141,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 		desc_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		desc_lbl.add_theme_color_override("font_color", UITheme.DARK_TEXT)
-		desc_lbl.add_theme_font_size_override("font_size", 13)
+		desc_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(13))
 		col.add_child(desc_lbl)
 
 	# round_count = rounds reachable down this branch (GameState.CurrentFork fills it from
@@ -153,7 +153,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 	rounds_lbl.text = "%d ROUND%s" % [round_count, "S" if round_count != 1 else ""]
 	rounds_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	rounds_lbl.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
-	rounds_lbl.add_theme_font_size_override("font_size", 13)
+	rounds_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(13))
 	col.add_child(rounds_lbl)
 
 	# Conditional: show each path's requirement so an auto-pick reads as earned,
@@ -165,7 +165,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 			req_lbl.text = req_text
 			req_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			req_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			req_lbl.add_theme_font_size_override("font_size", 14)
+			req_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(14))
 			req_lbl.add_theme_color_override("font_color", UITheme.CYAN)
 			col.add_child(req_lbl)
 
@@ -176,7 +176,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 	if _resolution == "sacrifice":
 		var cost_lbl: Label = Label.new()
 		cost_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		cost_lbl.add_theme_font_size_override("font_size", 14)
+		cost_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(14))
 		if sac_cost <= 0 and sac_req == "":
 			cost_lbl.text = "FREE"
 			cost_lbl.add_theme_color_override("font_color", UITheme.SUCCESS)
@@ -460,13 +460,15 @@ func _apply_layout() -> void:
 
 func _apply_base_theme() -> void:
 	_fork_title.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	_fork_title.add_theme_font_size_override("font_size", 32)
+	_fork_title.add_theme_font_size_override("font_size", UITheme.story_font_size(32))
 	_fork_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_fork_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_fork_title.uppercase = true
 
 	_fork_sub.add_theme_color_override("font_color", UITheme.DARK_TEXT)
-	_fork_sub.add_theme_font_size_override("font_size", 15)
+	_fork_sub.add_theme_font_size_override("font_size", UITheme.story_font_size(15))
 	_fork_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_fork_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 
 # Thin delegate to UITheme — the canonical styling lives there.

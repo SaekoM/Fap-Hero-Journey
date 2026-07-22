@@ -193,11 +193,15 @@ func start(video_ms: int) -> bool:
 	var setup: Dictionary = await _api_put("/hsp/setup", {})
 	if setup.is_empty():
 		return false
-	_send_idx = 0
 	_playing = true
 	_last_feed_ms = -100000
 	_last_video_ms = video_ms
-	var win: Dictionary = HandyPoints.points_in_window(_transformed, 0, video_ms + LOOKAHEAD_MS)
+	# Window from the CURRENT position, not index 0 — otherwise the device is handed the opening
+	# seconds of the script while it plays from video_ms, starves, and lags for seconds.
+	var from_idx: int = HandyPoints.index_at_or_after(_transformed, video_ms)
+	var win: Dictionary = HandyPoints.points_in_window(
+		_transformed, from_idx, video_ms + LOOKAHEAD_MS
+	)
 	_send_idx = int(win["next_idx"])
 	var play: Dictionary = {
 		"start_time": _anchor(video_ms),
@@ -248,9 +252,8 @@ func pause() -> void:
 		await _api_put("/hsp/pause", {})
 
 
-func resume() -> void:
-	if _playing:
-		await _api_put("/hsp/resume", {})
+# (No resume() — GameLoop resumes by seek()ing to the video position, which re-anchors the device
+# to the clock instead of continuing from where the bare /hsp/resume left it drifted.)
 
 
 func stop() -> void:
@@ -275,9 +278,12 @@ func seek(video_ms: int) -> void:
 	if not _playing:
 		return
 	_last_video_ms = video_ms
-	var win: Dictionary = HandyPoints.points_in_window(_transformed, 0, video_ms + LOOKAHEAD_MS)
-	# Rewind the cursor to just past this window (points before video_ms are
-	# skipped by start_time; the batch covers the lookahead).
+	# Batch the lookahead FROM the seek position, not index 0 (see start / index_at_or_after) —
+	# this is what made an effect change or unpause mid-round resume seconds behind.
+	var from_idx: int = HandyPoints.index_at_or_after(_transformed, video_ms)
+	var win: Dictionary = HandyPoints.points_in_window(
+		_transformed, from_idx, video_ms + LOOKAHEAD_MS
+	)
 	_send_idx = int(win["next_idx"])
 	_last_feed_ms = Time.get_ticks_msec()
 	var play: Dictionary = {

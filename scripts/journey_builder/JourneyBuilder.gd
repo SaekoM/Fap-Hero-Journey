@@ -213,6 +213,7 @@ func _setup_graph_view() -> void:
 	_graph = GraphViewScene.instantiate()
 	_graph.anchor_right = 1.0
 	_graph.anchor_bottom = 1.0
+	_graph.keyboard_pan_enabled = true  # arrows / WASD scroll the canvas (builder only)
 	_graph_host.add_child(_graph)
 	# Rendered from _graph_model, populated IN PLACE by _load_graph (existing journey) before this
 	# deferred call fires; empty for a new journey. Selection drives the side panel; a click while
@@ -422,7 +423,7 @@ func _setup_toolbar_buttons() -> void:
 	var fit_btn: Button = Button.new()
 	fit_btn.text = "⊡ FIT"
 	fit_btn.focus_mode = Control.FOCUS_NONE
-	fit_btn.tooltip_text = "Frame the whole journey in view"
+	fit_btn.tooltip_text = UITheme.wrap_tip("Frame the whole journey in view")
 	UITheme.style_button(fit_btn, UITheme.PURPLE_MID)
 	fit_btn.pressed.connect(
 		func() -> void:
@@ -435,7 +436,9 @@ func _setup_toolbar_buttons() -> void:
 	var arrange_btn: Button = Button.new()
 	arrange_btn.text = "⊞ ARRANGE"
 	arrange_btn.focus_mode = Control.FOCUS_NONE
-	arrange_btn.tooltip_text = "Auto-arrange the graph into tidy layers (Sugiyama). Undoable with Ctrl+Z."
+	arrange_btn.tooltip_text = UITheme.wrap_tip(
+		"Auto-arrange the graph into tidy layers (Sugiyama). Undoable with Ctrl+Z."
+	)
 	UITheme.style_button(arrange_btn, UITheme.PURPLE_MID)
 	arrange_btn.pressed.connect(_on_arrange_pressed)
 	_top_bar.add_child(arrange_btn)
@@ -444,7 +447,9 @@ func _setup_toolbar_buttons() -> void:
 	var img_btn: Button = Button.new()
 	img_btn.text = "📷 IMAGE"
 	img_btn.focus_mode = Control.FOCUS_NONE
-	img_btn.tooltip_text = "Export a high-res PNG of the whole journey layout (to share)"
+	img_btn.tooltip_text = UITheme.wrap_tip(
+		"Export a high-res PNG of the whole journey layout (to share)"
+	)
 	UITheme.style_button(img_btn, UITheme.PURPLE_MID)
 	img_btn.pressed.connect(_on_export_image_pressed)
 	_top_bar.add_child(img_btn)
@@ -453,9 +458,11 @@ func _setup_toolbar_buttons() -> void:
 	var audit_btn: Button = Button.new()
 	audit_btn.text = "⚖ AUDIT"
 	audit_btn.focus_mode = Control.FOCUS_NONE
-	audit_btn.tooltip_text = (
-		"Balance report: dead fork paths, unaffordable costs, unobtainable items,"
-		+ " unset flags, and rarely-visited content"
+	audit_btn.tooltip_text = UITheme.wrap_tip(
+		(
+			"Balance report: dead fork paths, unaffordable costs, unobtainable items,"
+			+ " unset flags, and rarely-visited content"
+		)
 	)
 	UITheme.style_button(audit_btn, UITheme.PURPLE_MID)
 	audit_btn.pressed.connect(_on_audit_pressed)
@@ -466,10 +473,12 @@ func _setup_toolbar_buttons() -> void:
 	_traffic_btn.text = "🔥 TRAFFIC"
 	_traffic_btn.toggle_mode = true
 	_traffic_btn.focus_mode = Control.FOCUS_NONE
-	_traffic_btn.tooltip_text = (
-		"Heatmap: tint the graph by how often simulated runs travel each path"
-		+ " (red/thick = extremely common, light green/thin = extremely rare)."
-		+ " Turns off on a structural edit."
+	_traffic_btn.tooltip_text = UITheme.wrap_tip(
+		(
+			"Heatmap: tint the graph by how often simulated runs travel each path"
+			+ " (red/thick = extremely common, light green/thin = extremely rare)."
+			+ " Turns off on a structural edit."
+		)
 	)
 	UITheme.style_button(_traffic_btn, UITheme.PURPLE_MID)
 	_traffic_btn.toggled.connect(_on_traffic_toggled)
@@ -801,7 +810,7 @@ func _audit_finding_row(f: Dictionary, jump: Callable) -> Control:
 	# Whole-row click → jump to the node (labels ignore mouse, so the row gets it).
 	var node_id: String = str(f.get("node_id", ""))
 	row.mouse_filter = Control.MOUSE_FILTER_STOP
-	row.tooltip_text = "Click to locate this node on the canvas"
+	row.tooltip_text = UITheme.wrap_tip("Click to locate this node on the canvas")
 	row.gui_input.connect(
 		func(ev: InputEvent) -> void:
 			if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT and ev.pressed:
@@ -966,7 +975,9 @@ func _audit_endings_bar(endings: Array) -> Control:
 		seg.add_theme_stylebox_override("panel", seg_style)
 		seg.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		seg.size_flags_stretch_ratio = maxf(0.02, float(e["pct"]))
-		seg.tooltip_text = "%s — %.1f%%" % [_audit_node_label(str(e["node_id"])), float(e["pct"])]
+		seg.tooltip_text = UITheme.wrap_tip(
+			"%s — %.1f%%" % [_audit_node_label(str(e["node_id"])), float(e["pct"])]
+		)
 		var lbl: Label = Label.new()
 		lbl.text = "%s  %.0f%%" % [_audit_node_label(str(e["node_id"])), float(e["pct"])]
 		lbl.clip_text = true
@@ -997,7 +1008,7 @@ func _audit_checkpoint_bar(cp_bar: Dictionary) -> Control:
 		if i > 0:
 			var tick: Label = Label.new()
 			tick.text = "◆"
-			tick.tooltip_text = "Checkpoint"
+			tick.tooltip_text = UITheme.wrap_tip("Checkpoint")
 			UITheme.style_label(tick, UITheme.CYAN, 11, false)
 			bar.add_child(tick)
 		var seg: Dictionary = segments[i]
@@ -1014,7 +1025,9 @@ func _audit_checkpoint_bar(cp_bar: Dictionary) -> Control:
 		block.add_theme_stylebox_override("panel", seg_style)
 		block.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		block.size_flags_stretch_ratio = maxf(0.02, float(ms))
-		block.tooltip_text = "%d rounds · %s" % [int(seg["rounds"]), _audit_mmss(ms)]
+		block.tooltip_text = UITheme.wrap_tip(
+			"%d rounds · %s" % [int(seg["rounds"]), _audit_mmss(ms)]
+		)
 		bar.add_child(block)
 	box.add_child(bar)
 	return box
@@ -1064,7 +1077,11 @@ func _show_canvas_context_menu(world_pos: Vector2) -> void:
 
 	# Add-node actions — each drops a fresh node centred on the click.
 	for spec: Array in [
-		["＋ ROUND", "round"], ["＋ SHOP", "shop"], ["＋ STORYBOARD", "storyboard"], ["＋ FORK", "fork"]
+		["＋ ROUND", "round"],
+		["＋ SHOP", "shop"],
+		["＋ STORYBOARD", "storyboard"],
+		["＋ FORK", "fork"],
+		["＋ CHECKPOINT", "checkpoint"],
 	]:
 		var t: String = spec[1]
 		var node_b: Button = _ctx_menu_button(
@@ -1783,7 +1800,8 @@ func _show_shortcuts_overlay() -> void:
 		[
 			"NAVIGATE",
 			[
-				["Middle-drag", "Pan the graph"],
+				["Arrow keys / WASD", "Pan the graph"],
+				["Middle-drag  or  Space + drag", "Pan the graph"],
 				["Mouse wheel", "Zoom in / out"],
 				["⊡ Fit button", "Frame the whole journey"],
 			]
@@ -2135,19 +2153,14 @@ func _bulk_import_graph_rounds(files: PackedStringArray) -> bool:
 	return true
 
 
-# Top-left for the imported round column: just right of the existing graph (so the chain doesn't
-# overlap), or the origin for an empty graph.
+# Top-left for the imported round column: near the CENTRE OF THE CURRENT VIEW, so a new import
+# lands where the author is looking instead of at the far edge of the whole graph (which meant
+# zooming out to find it every time). Offset up-left so the chain grows down into view. An empty
+# graph starts at the origin for a tidy first layout.
 func _bulk_import_origin() -> Vector2:
-	var nodes: Dictionary = _graph_model.get("nodes", {})
-	if nodes.is_empty():
+	if _graph_model.get("nodes", {}).is_empty():
 		return Vector2.ZERO
-	var max_x: float = -INF
-	var min_y: float = INF
-	for id: String in nodes:
-		var p: Vector2 = (nodes[id] as Dictionary).get("pos", Vector2.ZERO)
-		max_x = maxf(max_x, p.x)
-		min_y = minf(min_y, p.y)
-	return Vector2(max_x + BULK_IMPORT_COL_GAP, min_y)
+	return GraphLayout.snap(_graph.view_center_world() + Vector2(-160.0, -80.0))
 
 
 # ---------------------------------------------------------------------------
@@ -3153,7 +3166,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 				saved_out = await _save_fork_node_edges(
 					node.get("out", []), abs_dir, abs_media_dir, id, copied_images, modal
 				)
-			"shop":
+			"shop", "checkpoint":
 				pass  # no media
 
 		# A non-video copy (funscript / axis / vib / boss / image) failed somewhere above.
@@ -3484,6 +3497,14 @@ func _pool_video_into(
 					"The source video may be corrupt or use an unsupported variant. Try re-encoding it to H.264 .mp4 outside the editor, then re-drag it into this round."
 				)
 			return {"rel": rel, "ok": false}
+	# Unchanged video: on a re-save the source is this journey's own pooled file, so hardlink it
+	# into staging instead of byte-copying it (linear in journey size, every save — the real cost
+	# on a large project). An author's original source isn't a pooled file, so it still copies.
+	elif (
+		MediaPoolService.is_pooled_content_file(vid_src)
+		and MediaPoolService.try_hardlink(vid_src, vid_dst)
+	):
+		pass  # reused via hardlink — no copy needed
 	else:
 		_update_modal_label(modal, "Round %d / %d — %s  (copying video)" % [rorder, total, display])
 		var copy_result: Dictionary = await _copy_file_chunked(

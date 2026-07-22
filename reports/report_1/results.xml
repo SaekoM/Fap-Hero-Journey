@@ -1,27 +1,39 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites id="2026-07-20" name="report_1" tests="317" failures="0" skipped="0" flaky="0" time="0.000">
-	<testsuite id="0" name="catalog_test" package="tests" timestamp="2026-07-20T13:46:00" hostname="localhost" tests="5" failures="0" errors="0" skipped="0" flaky="0" time="0.021">
+<testsuites id="2026-07-21" name="report_1" tests="337" failures="0" skipped="0" flaky="0" time="0.000">
+	<testsuite id="0" name="catalog_test" package="tests" timestamp="2026-07-21T19:54:22" hostname="localhost" tests="5" failures="0" errors="0" skipped="0" flaky="0" time="0.019">
 		<testcase name="test_sensory_intensity_fields" classname="catalog_test" time="0.003">
 		</testcase>
-		<testcase name="test_idef_normalized" classname="catalog_test" time="0.002">
+		<testcase name="test_idef_normalized" classname="catalog_test" time="0.003">
 		</testcase>
 		<testcase name="test_audio_kinds_subset" classname="catalog_test" time="0.002">
 		</testcase>
-		<testcase name="test_names_unique_across_catalogs" classname="catalog_test" time="0.003">
+		<testcase name="test_names_unique_across_catalogs" classname="catalog_test" time="0.002">
 		</testcase>
 		<testcase name="test_entries_have_kind_and_name" classname="catalog_test" time="0.003">
 		</testcase>
 	</testsuite>
-	<testsuite id="1" name="counters_test" package="tests" timestamp="2026-07-20T13:46:00" hostname="localhost" tests="8" failures="0" errors="0" skipped="0" flaky="0" time="0.049">
-		<testcase name="test_parse_counter_deltas" classname="counters_test" time="0.001">
+	<testsuite id="1" name="checkpoint_migration_test" package="tests" timestamp="2026-07-21T19:54:22" hostname="localhost" tests="5" failures="0" errors="0" skipped="0" flaky="0" time="0.028">
+		<testcase name="test_flag_becomes_node_before_round" classname="checkpoint_migration_test" time="0.002">
 		</testcase>
-		<testcase name="test_parse_bare_name_is_plus_one" classname="counters_test" time="0.002">
+		<testcase name="test_flagged_start_round_moves_start" classname="checkpoint_migration_test" time="0.000">
+		</testcase>
+		<testcase name="test_multiple_inbound_edges_all_reroute" classname="checkpoint_migration_test" time="0.003">
+		</testcase>
+		<testcase name="test_idempotent_without_flags" classname="checkpoint_migration_test" time="0.007">
+		</testcase>
+		<testcase name="test_adjacent_flagged_rounds" classname="checkpoint_migration_test" time="0.007">
+		</testcase>
+	</testsuite>
+	<testsuite id="2" name="counters_test" package="tests" timestamp="2026-07-21T19:54:22" hostname="localhost" tests="8" failures="0" errors="0" skipped="0" flaky="0" time="0.049">
+		<testcase name="test_parse_counter_deltas" classname="counters_test" time="0.002">
+		</testcase>
+		<testcase name="test_parse_bare_name_is_plus_one" classname="counters_test" time="0.001">
 		</testcase>
 		<testcase name="test_parse_drops_blanks_and_zeros" classname="counters_test" time="0.004">
 		</testcase>
-		<testcase name="test_clean_counter_deltas" classname="counters_test" time="0.007">
+		<testcase name="test_clean_counter_deltas" classname="counters_test" time="0.005">
 		</testcase>
-		<testcase name="test_text_round_trip" classname="counters_test" time="0.006">
+		<testcase name="test_text_round_trip" classname="counters_test" time="0.007">
 		</testcase>
 		<testcase name="test_coerce_prunes_empty_counters" classname="counters_test" time="0.007">
 		</testcase>
@@ -30,8 +42,8 @@
 		<testcase name="test_coerce_fork_cond_counter" classname="counters_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="2" name="device_routing_test" package="tests" timestamp="2026-07-20T13:46:00" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.113">
-		<testcase name="test_parse_actuator_id_valid" classname="device_routing_test" time="0.002">
+	<testsuite id="3" name="device_routing_test" package="tests" timestamp="2026-07-21T19:54:22" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.113">
+		<testcase name="test_parse_actuator_id_valid" classname="device_routing_test" time="0.001">
 		</testcase>
 		<testcase name="test_parse_actuator_id_malformed" classname="device_routing_test" time="0.002">
 		</testcase>
@@ -39,53 +51,53 @@
 		</testcase>
 		<testcase name="test_handy_stroke_target" classname="device_routing_test" time="0.007">
 		</testcase>
-		<testcase name="test_buttplug_stroke_present" classname="device_routing_test" time="0.006">
+		<testcase name="test_buttplug_stroke_present" classname="device_routing_test" time="0.005">
 		</testcase>
-		<testcase name="test_buttplug_stroke_absent_drops" classname="device_routing_test" time="0.005">
+		<testcase name="test_buttplug_stroke_absent_drops" classname="device_routing_test" time="0.006">
 		</testcase>
 		<testcase name="test_stroke_target_must_be_linear" classname="device_routing_test" time="0.006">
 		</testcase>
-		<testcase name="test_vibration_routes_resolve" classname="device_routing_test" time="0.006">
+		<testcase name="test_vibration_routes_resolve" classname="device_routing_test" time="0.007">
 		</testcase>
-		<testcase name="test_vibration_follow_stroke_source" classname="device_routing_test" time="0.006">
+		<testcase name="test_vibration_follow_stroke_source" classname="device_routing_test" time="0.007">
 		</testcase>
-		<testcase name="test_vibration_absent_device_dropped" classname="device_routing_test" time="0.005">
+		<testcase name="test_vibration_absent_device_dropped" classname="device_routing_test" time="0.007">
 		</testcase>
 		<testcase name="test_vibration_channel_out_of_range_dropped" classname="device_routing_test" time="0.006">
 		</testcase>
 		<testcase name="test_vibration_invalid_source_dropped" classname="device_routing_test" time="0.007">
 		</testcase>
-		<testcase name="test_constrict_enabled_present" classname="device_routing_test" time="0.006">
+		<testcase name="test_constrict_enabled_present" classname="device_routing_test" time="0.005">
 		</testcase>
-		<testcase name="test_constrict_disabled_skipped" classname="device_routing_test" time="0.006">
+		<testcase name="test_constrict_disabled_skipped" classname="device_routing_test" time="0.007">
 		</testcase>
 		<testcase name="test_constrict_absent_channel_dropped" classname="device_routing_test" time="0.006">
 		</testcase>
 		<testcase name="test_empty_config" classname="device_routing_test" time="0.006">
 		</testcase>
-		<testcase name="test_full_example" classname="device_routing_test" time="0.007">
+		<testcase name="test_full_example" classname="device_routing_test" time="0.005">
 		</testcase>
 	</testsuite>
-	<testsuite id="3" name="edl_test" package="tests" timestamp="2026-07-20T13:46:00" hostname="localhost" tests="24" failures="0" errors="0" skipped="0" flaky="0" time="0.163">
+	<testsuite id="4" name="edl_test" package="tests" timestamp="2026-07-21T19:54:22" hostname="localhost" tests="24" failures="0" errors="0" skipped="0" flaky="0" time="0.164">
 		<testcase name="test_normalize_untouched_round_has_no_segments" classname="edl_test" time="0.002">
 		</testcase>
 		<testcase name="test_normalize_trim_becomes_one_segment" classname="edl_test" time="0.002">
 		</testcase>
-		<testcase name="test_normalize_open_ended_trim" classname="edl_test" time="0.005">
+		<testcase name="test_normalize_open_ended_trim" classname="edl_test" time="0.004">
 		</testcase>
 		<testcase name="test_normalize_section_loop_expands_to_rows" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_normalize_section_loop_without_intro_or_finale" classname="edl_test" time="0.005">
+		<testcase name="test_normalize_section_loop_without_intro_or_finale" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_normalize_rejects_degenerate_loop" classname="edl_test" time="0.007">
+		<testcase name="test_normalize_rejects_degenerate_loop" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_normalize_is_idempotent" classname="edl_test" time="0.006">
+		<testcase name="test_normalize_is_idempotent" classname="edl_test" time="0.005">
 		</testcase>
 		<testcase name="test_normalize_segments_win_over_legacy_fields" classname="edl_test" time="0.007">
 		</testcase>
 		<testcase name="test_coerce_segments_reinstates_ints" classname="edl_test" time="0.007">
 		</testcase>
-		<testcase name="test_coerce_segments_drops_impossible_windows" classname="edl_test" time="0.006">
+		<testcase name="test_coerce_segments_drops_impossible_windows" classname="edl_test" time="0.005">
 		</testcase>
 		<testcase name="test_build_edl_empty_returns_source" classname="edl_test" time="0.006">
 		</testcase>
@@ -95,17 +107,17 @@
 		</testcase>
 		<testcase name="test_build_edl_honours_list_order_not_source_order" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_build_edl_matches_legacy_loop_output" classname="edl_test" time="0.007">
+		<testcase name="test_build_edl_matches_legacy_loop_output" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_build_edl_open_segment_uses_source_length" classname="edl_test" time="0.007">
+		<testcase name="test_build_edl_open_segment_uses_source_length" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_segments_total_ms" classname="edl_test" time="0.007">
+		<testcase name="test_segments_total_ms" classname="edl_test" time="0.006">
 		</testcase>
 		<testcase name="test_edl_funscript_json_preserves_metadata" classname="edl_test" time="0.006">
 		</testcase>
 		<testcase name="test_identity_empty_is_legacy" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_identity_single_segment_is_legacy_trim_string" classname="edl_test" time="0.006">
+		<testcase name="test_identity_single_segment_is_legacy_trim_string" classname="edl_test" time="0.007">
 		</testcase>
 		<testcase name="test_identity_single_full_span_is_legacy" classname="edl_test" time="0.006">
 		</testcase>
@@ -113,13 +125,13 @@
 		</testcase>
 		<testcase name="test_identity_is_order_sensitive" classname="edl_test" time="0.006">
 		</testcase>
-		<testcase name="test_identity_distinguishes_repeat_counts" classname="edl_test" time="0.006">
+		<testcase name="test_identity_distinguishes_repeat_counts" classname="edl_test" time="0.007">
 		</testcase>
 	</testsuite>
-	<testsuite id="4" name="effect_round_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.115">
+	<testsuite id="5" name="effect_round_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="19" failures="0" errors="0" skipped="0" flaky="0" time="0.128">
 		<testcase name="test_normalize_migrates_cursed" classname="effect_round_test" time="0.002">
 		</testcase>
-		<testcase name="test_normalize_migrates_blessed_and_drops_ward" classname="effect_round_test" time="0.003">
+		<testcase name="test_normalize_migrates_blessed_and_drops_ward" classname="effect_round_test" time="0.002">
 		</testcase>
 		<testcase name="test_normalize_generic_defaults" classname="effect_round_test" time="0.004">
 		</testcase>
@@ -127,13 +139,17 @@
 		</testcase>
 		<testcase name="test_normalize_leaves_normal_and_boss" classname="effect_round_test" time="0.006">
 		</testcase>
-		<testcase name="test_effect_is_benefit" classname="effect_round_test" time="0.005">
+		<testcase name="test_normalize_keeps_boss_effects" classname="effect_round_test" time="0.007">
 		</testcase>
-		<testcase name="test_gameplay_effects_merges_both" classname="effect_round_test" time="0.007">
+		<testcase name="test_normalize_normal_has_no_effects" classname="effect_round_test" time="0.007">
+		</testcase>
+		<testcase name="test_effect_is_benefit" classname="effect_round_test" time="0.006">
+		</testcase>
+		<testcase name="test_gameplay_effects_merges_both" classname="effect_round_test" time="0.006">
 		</testcase>
 		<testcase name="test_normalize_bakes_empty_legacy_pool" classname="effect_round_test" time="0.006">
 		</testcase>
-		<testcase name="test_ward_removed_from_catalog" classname="effect_round_test" time="0.006">
+		<testcase name="test_ward_removed_from_catalog" classname="effect_round_test" time="0.007">
 		</testcase>
 		<testcase name="test_resolved_effect_merges_override" classname="effect_round_test" time="0.006">
 		</testcase>
@@ -145,125 +161,125 @@
 		</testcase>
 		<testcase name="test_normalize_empty_overrides" classname="effect_round_test" time="0.006">
 		</testcase>
-		<testcase name="test_effect_param_routing" classname="effect_round_test" time="0.007">
+		<testcase name="test_effect_param_routing" classname="effect_round_test" time="0.006">
 		</testcase>
-		<testcase name="test_toll_interest_catalog_defaults" classname="effect_round_test" time="0.006">
+		<testcase name="test_toll_interest_catalog_defaults" classname="effect_round_test" time="0.007">
 		</testcase>
 		<testcase name="test_sensory_intensity_survives_rename" classname="effect_round_test" time="0.007">
 		</testcase>
 	</testsuite>
-	<testsuite id="5" name="fork_resolver_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="12" failures="0" errors="0" skipped="0" flaky="0" time="0.078">
+	<testsuite id="6" name="fork_resolver_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="12" failures="0" errors="0" skipped="0" flaky="0" time="0.078">
 		<testcase name="test_weighted_pick_brackets" classname="fork_resolver_test" time="0.002">
 		</testcase>
 		<testcase name="test_weighted_pick_single_and_empty" classname="fork_resolver_test" time="0.003">
 		</testcase>
-		<testcase name="test_weighted_pick_skips_zero_weights" classname="fork_resolver_test" time="0.003">
+		<testcase name="test_weighted_pick_skips_zero_weights" classname="fork_resolver_test" time="0.004">
 		</testcase>
 		<testcase name="test_conditional_highest_met_threshold_wins" classname="fork_resolver_test" time="0.006">
 		</testcase>
 		<testcase name="test_conditional_coins_metric_uses_thresholds" classname="fork_resolver_test" time="0.006">
 		</testcase>
-		<testcase name="test_conditional_no_match_uses_default" classname="fork_resolver_test" time="0.006">
+		<testcase name="test_conditional_no_match_uses_default" classname="fork_resolver_test" time="0.007">
 		</testcase>
-		<testcase name="test_conditional_item_picks_first_owned" classname="fork_resolver_test" time="0.007">
+		<testcase name="test_conditional_item_picks_first_owned" classname="fork_resolver_test" time="0.006">
 		</testcase>
 		<testcase name="test_conditional_empty_paths" classname="fork_resolver_test" time="0.006">
 		</testcase>
-		<testcase name="test_affordable_free_path" classname="fork_resolver_test" time="0.005">
+		<testcase name="test_affordable_free_path" classname="fork_resolver_test" time="0.006">
 		</testcase>
-		<testcase name="test_affordable_coin_cost" classname="fork_resolver_test" time="0.007">
+		<testcase name="test_affordable_coin_cost" classname="fork_resolver_test" time="0.006">
 		</testcase>
-		<testcase name="test_affordable_required_item" classname="fork_resolver_test" time="0.007">
+		<testcase name="test_affordable_required_item" classname="fork_resolver_test" time="0.006">
 		</testcase>
 		<testcase name="test_affordable_coins_and_item" classname="fork_resolver_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="6" name="funscript_intensity_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="6" failures="0" errors="0" skipped="0" flaky="0" time="0.039">
-		<testcase name="test_bucket_boundaries" classname="funscript_intensity_test" time="0.004">
+	<testsuite id="7" name="funscript_intensity_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="6" failures="0" errors="0" skipped="0" flaky="0" time="0.035">
+		<testcase name="test_bucket_boundaries" classname="funscript_intensity_test" time="0.002">
 		</testcase>
-		<testcase name="test_empty_or_single_action_is_gentle" classname="funscript_intensity_test" time="0.002">
+		<testcase name="test_empty_or_single_action_is_gentle" classname="funscript_intensity_test" time="0.001">
 		</testcase>
-		<testcase name="test_average_speed_of_known_script" classname="funscript_intensity_test" time="0.003">
+		<testcase name="test_average_speed_of_known_script" classname="funscript_intensity_test" time="0.004">
 		</testcase>
 		<testcase name="test_faster_script_rates_higher" classname="funscript_intensity_test" time="0.006">
 		</testcase>
 		<testcase name="test_zero_span_is_safe" classname="funscript_intensity_test" time="0.006">
 		</testcase>
-		<testcase name="test_unknown_path_returns_neutral" classname="funscript_intensity_test" time="0.007">
+		<testcase name="test_unknown_path_returns_neutral" classname="funscript_intensity_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="7" name="funscript_trim_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.072">
-		<testcase name="test_exact_window_shift" classname="funscript_trim_test" time="0.002">
+	<testsuite id="8" name="funscript_trim_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.071">
+		<testcase name="test_exact_window_shift" classname="funscript_trim_test" time="0.003">
 		</testcase>
-		<testcase name="test_in_cut_mid_stroke_interpolates" classname="funscript_trim_test" time="0.003">
+		<testcase name="test_in_cut_mid_stroke_interpolates" classname="funscript_trim_test" time="0.002">
 		</testcase>
-		<testcase name="test_out_cut_mid_stroke_interpolates" classname="funscript_trim_test" time="0.005">
+		<testcase name="test_out_cut_mid_stroke_interpolates" classname="funscript_trim_test" time="0.004">
 		</testcase>
 		<testcase name="test_window_inside_single_stroke" classname="funscript_trim_test" time="0.006">
 		</testcase>
-		<testcase name="test_out_zero_keeps_tail" classname="funscript_trim_test" time="0.006">
+		<testcase name="test_out_zero_keeps_tail" classname="funscript_trim_test" time="0.007">
 		</testcase>
-		<testcase name="test_invalid_window_is_empty" classname="funscript_trim_test" time="0.006">
+		<testcase name="test_invalid_window_is_empty" classname="funscript_trim_test" time="0.005">
 		</testcase>
-		<testcase name="test_mmss_helpers" classname="funscript_trim_test" time="0.007">
+		<testcase name="test_mmss_helpers" classname="funscript_trim_test" time="0.008">
 		</testcase>
-		<testcase name="test_fingerprint_trim_awareness" classname="funscript_trim_test" time="0.007">
+		<testcase name="test_fingerprint_trim_awareness" classname="funscript_trim_test" time="0.006">
 		</testcase>
 		<testcase name="test_fingerprint_variant_separates_bakes" classname="funscript_trim_test" time="0.006">
 		</testcase>
-		<testcase name="test_has_section_loop_gating" classname="funscript_trim_test" time="0.006">
+		<testcase name="test_has_section_loop_gating" classname="funscript_trim_test" time="0.005">
 		</testcase>
 		<testcase name="test_legacy_loop_expands_through_edl" classname="funscript_trim_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="8" name="gamestate_fork_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="13" failures="0" errors="0" skipped="0" flaky="0" time="0.094">
+	<testsuite id="9" name="gamestate_fork_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="13" failures="0" errors="0" skipped="0" flaky="0" time="0.093">
 		<testcase name="test_walk_ordering" classname="gamestate_fork_test" time="0.008">
 		</testcase>
 		<testcase name="test_fork_before_shop_keeps_authoring_order" classname="gamestate_fork_test" time="0.003">
 		</testcase>
 		<testcase name="test_fork_unresolved_total_is_longest_path" classname="gamestate_fork_test" time="0.003">
 		</testcase>
-		<testcase name="test_fork_paths_carry_round_count" classname="gamestate_fork_test" time="0.004">
+		<testcase name="test_fork_paths_carry_round_count" classname="gamestate_fork_test" time="0.006">
 		</testcase>
-		<testcase name="test_resolve_fork_enters_chosen_path" classname="gamestate_fork_test" time="0.007">
+		<testcase name="test_resolve_fork_enters_chosen_path" classname="gamestate_fork_test" time="0.006">
 		</testcase>
 		<testcase name="test_resolve_fork_path_selection_and_clamp" classname="gamestate_fork_test" time="0.006">
 		</testcase>
-		<testcase name="test_nested_fork" classname="gamestate_fork_test" time="0.005">
+		<testcase name="test_nested_fork" classname="gamestate_fork_test" time="0.006">
 		</testcase>
-		<testcase name="test_save_restores_position" classname="gamestate_fork_test" time="0.005">
+		<testcase name="test_save_restores_position" classname="gamestate_fork_test" time="0.007">
 		</testcase>
 		<testcase name="test_current_accessors" classname="gamestate_fork_test" time="0.006">
 		</testcase>
-		<testcase name="test_counter_accumulates_on_enter" classname="gamestate_fork_test" time="0.007">
+		<testcase name="test_counter_accumulates_on_enter" classname="gamestate_fork_test" time="0.006">
 		</testcase>
-		<testcase name="test_fork_choice_applies_counters" classname="gamestate_fork_test" time="0.006">
+		<testcase name="test_fork_choice_applies_counters" classname="gamestate_fork_test" time="0.007">
 		</testcase>
 		<testcase name="test_counters_survive_save_restore" classname="gamestate_fork_test" time="0.006">
 		</testcase>
-		<testcase name="test_counters_reset_on_fresh_start" classname="gamestate_fork_test" time="0.007">
+		<testcase name="test_counters_reset_on_fresh_start" classname="gamestate_fork_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="9" name="graph_save_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="20" failures="0" errors="0" skipped="0" flaky="0" time="0.139">
-		<testcase name="test_coerce_round_coerces_int_fields" classname="graph_save_test" time="0.003">
+	<testsuite id="10" name="graph_save_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="22" failures="0" errors="0" skipped="0" flaky="0" time="0.153">
+		<testcase name="test_coerce_round_coerces_int_fields" classname="graph_save_test" time="0.002">
 		</testcase>
-		<testcase name="test_coerce_shop_fields" classname="graph_save_test" time="0.002">
+		<testcase name="test_coerce_shop_fields" classname="graph_save_test" time="0.001">
 		</testcase>
-		<testcase name="test_coerce_storyboard_fields" classname="graph_save_test" time="0.004">
+		<testcase name="test_coerce_storyboard_fields" classname="graph_save_test" time="0.005">
 		</testcase>
 		<testcase name="test_coerce_fork_fields" classname="graph_save_test" time="0.006">
 		</testcase>
-		<testcase name="test_coerce_round_fills_baseline_defaults" classname="graph_save_test" time="0.006">
+		<testcase name="test_coerce_round_fills_baseline_defaults" classname="graph_save_test" time="0.005">
 		</testcase>
-		<testcase name="test_graph_animated_image_sources_finds_every_surface" classname="graph_save_test" time="0.007">
+		<testcase name="test_graph_animated_image_sources_finds_every_surface" classname="graph_save_test" time="0.005">
 		</testcase>
 		<testcase name="test_graph_animated_image_sources_dedupes_and_ignores_stills" classname="graph_save_test" time="0.007">
 		</testcase>
-		<testcase name="test_graph_animated_image_sources_empty_when_no_gifs" classname="graph_save_test" time="0.005">
+		<testcase name="test_graph_animated_image_sources_empty_when_no_gifs" classname="graph_save_test" time="0.007">
 		</testcase>
 		<testcase name="test_new_journey_id_shape_and_uniqueness" classname="graph_save_test" time="0.006">
 		</testcase>
-		<testcase name="test_stamp_identity_mints_when_absent" classname="graph_save_test" time="0.007">
+		<testcase name="test_stamp_identity_mints_when_absent" classname="graph_save_test" time="0.006">
 		</testcase>
 		<testcase name="test_stamp_identity_preserves_existing" classname="graph_save_test" time="0.006">
 		</testcase>
@@ -273,25 +289,29 @@
 		</testcase>
 		<testcase name="test_coerce_strips_node_level_keys" classname="graph_save_test" time="0.006">
 		</testcase>
-		<testcase name="test_coerce_passes_through_extras_and_floats" classname="graph_save_test" time="0.007">
+		<testcase name="test_coerce_passes_through_extras_and_floats" classname="graph_save_test" time="0.006">
 		</testcase>
-		<testcase name="test_coerce_deep_copies_source" classname="graph_save_test" time="0.006">
+		<testcase name="test_coerce_deep_copies_source" classname="graph_save_test" time="0.007">
 		</testcase>
-		<testcase name="test_coerce_prunes_orphan_overrides" classname="graph_save_test" time="0.006">
+		<testcase name="test_coerce_prunes_orphan_overrides" classname="graph_save_test" time="0.007">
 		</testcase>
 		<testcase name="test_graph_has_any_video_false_without_video" classname="graph_save_test" time="0.006">
 		</testcase>
-		<testcase name="test_graph_has_any_video_true_with_video" classname="graph_save_test" time="0.006">
+		<testcase name="test_graph_has_any_video_true_with_video" classname="graph_save_test" time="0.007">
 		</testcase>
-		<testcase name="test_graph_video_sources_dedups_rounds_only" classname="graph_save_test" time="0.007">
+		<testcase name="test_graph_video_sources_dedups_rounds_only" classname="graph_save_test" time="0.006">
+		</testcase>
+		<testcase name="test_round_flags_coerce_to_bools" classname="graph_save_test" time="0.006">
+		</testcase>
+		<testcase name="test_coerce_checkpoint_node" classname="graph_save_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="10" name="handy_points_test" package="tests" timestamp="2026-07-20T13:46:01" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.114">
+	<testsuite id="11" name="handy_points_test" package="tests" timestamp="2026-07-21T19:54:23" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.112">
 		<testcase name="test_actions_to_points_shape" classname="handy_points_test" time="0.002">
 		</testcase>
-		<testcase name="test_window_collects_up_to_time" classname="handy_points_test" time="0.003">
+		<testcase name="test_window_collects_up_to_time" classname="handy_points_test" time="0.001">
 		</testcase>
-		<testcase name="test_window_resumes_from_cursor" classname="handy_points_test" time="0.004">
+		<testcase name="test_window_resumes_from_cursor" classname="handy_points_test" time="0.005">
 		</testcase>
 		<testcase name="test_window_caps_at_max_points" classname="handy_points_test" time="0.006">
 		</testcase>
@@ -301,41 +321,41 @@
 		</testcase>
 		<testcase name="test_apply_effects_reverse" classname="handy_points_test" time="0.006">
 		</testcase>
-		<testcase name="test_apply_effects_clamp" classname="handy_points_test" time="0.007">
+		<testcase name="test_apply_effects_clamp" classname="handy_points_test" time="0.006">
 		</testcase>
 		<testcase name="test_apply_effects_scale_local_centre" classname="handy_points_test" time="0.006">
 		</testcase>
 		<testcase name="test_apply_effects_block_holds" classname="handy_points_test" time="0.006">
 		</testcase>
-		<testcase name="test_apply_effects_ignores_non_stroke" classname="handy_points_test" time="0.005">
+		<testcase name="test_apply_effects_ignores_non_stroke" classname="handy_points_test" time="0.006">
 		</testcase>
-		<testcase name="test_offset_positive_delays_points" classname="handy_points_test" time="0.007">
+		<testcase name="test_offset_positive_delays_points" classname="handy_points_test" time="0.006">
 		</testcase>
 		<testcase name="test_offset_negative_advances_points" classname="handy_points_test" time="0.006">
 		</testcase>
 		<testcase name="test_offset_zero_is_identity" classname="handy_points_test" time="0.006">
 		</testcase>
-		<testcase name="test_offset_applies_fully_at_round_start" classname="handy_points_test" time="0.006">
+		<testcase name="test_offset_applies_fully_at_round_start" classname="handy_points_test" time="0.007">
 		</testcase>
 		<testcase name="test_best_offset_lowest_rtt_wins" classname="handy_points_test" time="0.006">
 		</testcase>
-		<testcase name="test_best_offset_single_sample" classname="handy_points_test" time="0.007">
+		<testcase name="test_best_offset_single_sample" classname="handy_points_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="11" name="import_scanner_test" package="tests" timestamp="2026-07-20T13:46:02" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.116">
+	<testsuite id="12" name="import_scanner_test" package="tests" timestamp="2026-07-21T19:54:24" hostname="localhost" tests="17" failures="0" errors="0" skipped="0" flaky="0" time="0.117">
 		<testcase name="test_axis_main_stroke_is_l0" classname="import_scanner_test" time="0.003">
 		</testcase>
-		<testcase name="test_axis_tcode_code_suffixes" classname="import_scanner_test" time="0.003">
+		<testcase name="test_axis_tcode_code_suffixes" classname="import_scanner_test" time="0.004">
 		</testcase>
 		<testcase name="test_axis_human_name_suffixes" classname="import_scanner_test" time="0.003">
 		</testcase>
 		<testcase name="test_vib_channels" classname="import_scanner_test" time="0.006">
 		</testcase>
-		<testcase name="test_strip_script_suffix" classname="import_scanner_test" time="0.007">
+		<testcase name="test_strip_script_suffix" classname="import_scanner_test" time="0.006">
 		</testcase>
 		<testcase name="test_group_key_pairs_within_a_folder" classname="import_scanner_test" time="0.006">
 		</testcase>
-		<testcase name="test_group_key_separates_folders" classname="import_scanner_test" time="0.005">
+		<testcase name="test_group_key_separates_folders" classname="import_scanner_test" time="0.007">
 		</testcase>
 		<testcase name="test_ensure_import_group_is_idempotent" classname="import_scanner_test" time="0.007">
 		</testcase>
@@ -343,187 +363,191 @@
 		</testcase>
 		<testcase name="test_build_rounds_groups_one_round" classname="import_scanner_test" time="0.006">
 		</testcase>
-		<testcase name="test_build_rounds_skips_funscript_without_video" classname="import_scanner_test" time="0.006">
+		<testcase name="test_build_rounds_skips_funscript_without_video" classname="import_scanner_test" time="0.007">
 		</testcase>
-		<testcase name="test_build_rounds_keeps_first_seen_order" classname="import_scanner_test" time="0.005">
+		<testcase name="test_build_rounds_keeps_first_seen_order" classname="import_scanner_test" time="0.006">
 		</testcase>
 		<testcase name="test_find_sibling_scripts_classifies" classname="import_scanner_test" time="0.007">
 		</testcase>
 		<testcase name="test_find_sibling_video" classname="import_scanner_test" time="0.006">
 		</testcase>
-		<testcase name="test_autofill_fills_empty_slots" classname="import_scanner_test" time="0.007">
+		<testcase name="test_autofill_fills_empty_slots" classname="import_scanner_test" time="0.006">
 		</testcase>
-		<testcase name="test_autofill_never_overwrites_a_set_slot" classname="import_scanner_test" time="0.007">
+		<testcase name="test_autofill_never_overwrites_a_set_slot" classname="import_scanner_test" time="0.006">
 		</testcase>
 		<testcase name="test_expand_dropped_paths_walks_dirs_and_filters" classname="import_scanner_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="12" name="journey_audit_test" package="tests" timestamp="2026-07-20T13:46:02" hostname="localhost" tests="18" failures="0" errors="0" skipped="0" flaky="0" time="0.179">
+	<testsuite id="13" name="journey_audit_test" package="tests" timestamp="2026-07-21T19:54:24" hostname="localhost" tests="18" failures="0" errors="0" skipped="0" flaky="0" time="0.172">
 		<testcase name="test_baseline_score_buckets" classname="journey_audit_test" time="0.002">
 		</testcase>
-		<testcase name="test_coin_interval_linear" classname="journey_audit_test" time="0.006">
+		<testcase name="test_coin_interval_linear" classname="journey_audit_test" time="0.005">
 		</testcase>
-		<testcase name="test_cursed_round_interval" classname="journey_audit_test" time="0.007">
+		<testcase name="test_cursed_round_interval" classname="journey_audit_test" time="0.006">
 		</testcase>
 		<testcase name="test_effect_round_no_effects_is_noop" classname="journey_audit_test" time="0.005">
 		</testcase>
-		<testcase name="test_effect_tuned_toll_interval" classname="journey_audit_test" time="0.007">
+		<testcase name="test_effect_tuned_toll_interval" classname="journey_audit_test" time="0.006">
 		</testcase>
-		<testcase name="test_sacrifice_cost_findings" classname="journey_audit_test" time="0.006">
+		<testcase name="test_sacrifice_cost_findings" classname="journey_audit_test" time="0.005">
 		</testcase>
 		<testcase name="test_conditional_score_gate" classname="journey_audit_test" time="0.010">
 		</testcase>
-		<testcase name="test_flag_gate_upstream_aware" classname="journey_audit_test" time="0.010">
+		<testcase name="test_flag_gate_upstream_aware" classname="journey_audit_test" time="0.009">
 		</testcase>
-		<testcase name="test_item_gate_shop_sources" classname="journey_audit_test" time="0.019">
+		<testcase name="test_item_gate_shop_sources" classname="journey_audit_test" time="0.018">
 		</testcase>
-		<testcase name="test_monte_carlo_weighted_traffic" classname="journey_audit_test" time="0.015">
+		<testcase name="test_monte_carlo_weighted_traffic" classname="journey_audit_test" time="0.014">
 		</testcase>
-		<testcase name="test_statistics" classname="journey_audit_test" time="0.013">
+		<testcase name="test_statistics" classname="journey_audit_test" time="0.012">
 		</testcase>
 		<testcase name="test_pool_round_score_and_length_bounds" classname="journey_audit_test" time="0.003">
 		</testcase>
-		<testcase name="test_round_without_bounds_uses_flat_value" classname="journey_audit_test" time="0.003">
+		<testcase name="test_round_without_bounds_uses_flat_value" classname="journey_audit_test" time="0.002">
 		</testcase>
-		<testcase name="test_flag_unused_coverage" classname="journey_audit_test" time="0.010">
+		<testcase name="test_flag_unused_coverage" classname="journey_audit_test" time="0.008">
 		</testcase>
 		<testcase name="test_item_unused_coverage" classname="journey_audit_test" time="0.006">
 		</testcase>
-		<testcase name="test_checkpoint_gap" classname="journey_audit_test" time="0.007">
+		<testcase name="test_checkpoint_gap" classname="journey_audit_test" time="0.008">
 		</testcase>
 		<testcase name="test_simulation_buys_gate_items" classname="journey_audit_test" time="0.016">
 		</testcase>
-		<testcase name="test_checkpoint_stats_and_bar" classname="journey_audit_test" time="0.004">
+		<testcase name="test_checkpoint_stats_and_bar" classname="journey_audit_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="13" name="journey_graph_serialize_test" package="tests" timestamp="2026-07-20T13:46:02" hostname="localhost" tests="14" failures="0" errors="0" skipped="0" flaky="0" time="0.131">
+	<testsuite id="14" name="journey_graph_serialize_test" package="tests" timestamp="2026-07-21T19:54:24" hostname="localhost" tests="14" failures="0" errors="0" skipped="0" flaky="0" time="0.102">
 		<testcase name="test_to_json_from_json_round_trip" classname="journey_graph_serialize_test" time="0.002">
 		</testcase>
-		<testcase name="test_node_positions_round_trip" classname="journey_graph_serialize_test" time="0.002">
+		<testcase name="test_node_positions_round_trip" classname="journey_graph_serialize_test" time="0.003">
 		</testcase>
-		<testcase name="test_editor_save_load_round_trip" classname="journey_graph_serialize_test" time="0.014">
+		<testcase name="test_editor_save_load_round_trip" classname="journey_graph_serialize_test" time="0.005">
 		</testcase>
 		<testcase name="test_editor_load_seeds_legacy_positions" classname="journey_graph_serialize_test" time="0.009">
 		</testcase>
-		<testcase name="test_disk_round_trip_preserves_fork" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_disk_round_trip_preserves_fork" classname="journey_graph_serialize_test" time="0.005">
 		</testcase>
-		<testcase name="test_disk_round_trip_resolves_paths" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_disk_round_trip_resolves_paths" classname="journey_graph_serialize_test" time="0.004">
 		</testcase>
-		<testcase name="test_parse_graph_migrates_legacy" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_parse_graph_migrates_legacy" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
-		<testcase name="test_parse_graph_preserves_node_ids" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_parse_graph_preserves_node_ids" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
-		<testcase name="test_parse_graph_applies_redirect_skip" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_parse_graph_applies_redirect_skip" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
-		<testcase name="test_parse_graph_applies_redirect_to_end" classname="journey_graph_serialize_test" time="0.009">
+		<testcase name="test_parse_graph_applies_redirect_to_end" classname="journey_graph_serialize_test" time="0.007">
 		</testcase>
-		<testcase name="test_parse_graph_redirect_converges_fork_paths" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_parse_graph_redirect_converges_fork_paths" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
-		<testcase name="test_parse_graph_carries_meta_new_format" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_parse_graph_carries_meta_new_format" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
-		<testcase name="test_parse_graph_legacy_keeps_nested_and_adds_graph" classname="journey_graph_serialize_test" time="0.008">
+		<testcase name="test_parse_graph_legacy_keeps_nested_and_adds_graph" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
-		<testcase name="test_missing_returns_empty" classname="journey_graph_serialize_test" time="0.003">
+		<testcase name="test_missing_returns_empty" classname="journey_graph_serialize_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="14" name="journey_graph_test" package="tests" timestamp="2026-07-20T13:46:02" hostname="localhost" tests="27" failures="0" errors="0" skipped="0" flaky="0" time="0.194">
-		<testcase name="test_migration_walks_each_path_and_rejoins" classname="journey_graph_test" time="0.003">
+	<testsuite id="15" name="journey_graph_test" package="tests" timestamp="2026-07-21T19:54:24" hostname="localhost" tests="27" failures="0" errors="0" skipped="0" flaky="0" time="0.193">
+		<testcase name="test_migration_walks_each_path_and_rejoins" classname="journey_graph_test" time="0.002">
 		</testcase>
-		<testcase name="test_linear_journey" classname="journey_graph_test" time="0.002">
+		<testcase name="test_linear_journey" classname="journey_graph_test" time="0.003">
 		</testcase>
-		<testcase name="test_shop_interleave" classname="journey_graph_test" time="0.004">
+		<testcase name="test_shop_interleave" classname="journey_graph_test" time="0.003">
 		</testcase>
-		<testcase name="test_fork_last_paths_reach_end" classname="journey_graph_test" time="0.007">
+		<testcase name="test_fork_last_paths_reach_end" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_empty_path_goes_straight_to_rejoin" classname="journey_graph_test" time="0.005">
+		<testcase name="test_empty_path_goes_straight_to_rejoin" classname="journey_graph_test" time="0.006">
 		</testcase>
 		<testcase name="test_fork_meta_and_edge_config" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_longest_round_path" classname="journey_graph_test" time="0.007">
+		<testcase name="test_longest_round_path" classname="journey_graph_test" time="0.006">
 		</testcase>
 		<testcase name="test_nested_fork" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_redirect_skips_ahead" classname="journey_graph_test" time="0.007">
+		<testcase name="test_redirect_skips_ahead" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_redirect_to_end" classname="journey_graph_test" time="0.006">
+		<testcase name="test_redirect_to_end" classname="journey_graph_test" time="0.005">
 		</testcase>
-		<testcase name="test_redirect_converges_paths" classname="journey_graph_test" time="0.006">
+		<testcase name="test_redirect_converges_paths" classname="journey_graph_test" time="0.007">
 		</testcase>
-		<testcase name="test_node_depth_tracks_nesting" classname="journey_graph_test" time="0.006">
+		<testcase name="test_node_depth_tracks_nesting" classname="journey_graph_test" time="0.007">
 		</testcase>
-		<testcase name="test_build_graph_honors_stored_node_id" classname="journey_graph_test" time="0.007">
+		<testcase name="test_build_graph_honors_stored_node_id" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_build_graph_honors_stored_ids_through_fork" classname="journey_graph_test" time="0.007">
+		<testcase name="test_build_graph_honors_stored_ids_through_fork" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_build_graph_mints_fallback_when_missing" classname="journey_graph_test" time="0.006">
+		<testcase name="test_build_graph_mints_fallback_when_missing" classname="journey_graph_test" time="0.007">
 		</testcase>
-		<testcase name="test_build_graph_guards_duplicate_ids" classname="journey_graph_test" time="0.008">
+		<testcase name="test_build_graph_guards_duplicate_ids" classname="journey_graph_test" time="0.006">
 		</testcase>
 		<testcase name="test_seed_positions_layers_by_depth" classname="journey_graph_test" time="0.006">
 		</testcase>
 		<testcase name="test_auto_layout_layers_and_no_overlap" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_catalogue_sequence_reconstructs_fork" classname="journey_graph_test" time="0.006">
+		<testcase name="test_catalogue_sequence_reconstructs_fork" classname="journey_graph_test" time="0.007">
 		</testcase>
 		<testcase name="test_catalogue_sequence_fork_without_rejoin" classname="journey_graph_test" time="0.007">
 		</testcase>
 		<testcase name="test_catalogue_sequence_shop_keeps_numbering_contiguous" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_grid_snap" classname="journey_graph_test" time="0.005">
+		<testcase name="test_grid_snap" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_validate_clean_dag_and_empty" classname="journey_graph_test" time="0.007">
+		<testcase name="test_validate_clean_dag_and_empty" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_validate_flags_cycle" classname="journey_graph_test" time="0.007">
+		<testcase name="test_validate_flags_cycle" classname="journey_graph_test" time="0.006">
 		</testcase>
 		<testcase name="test_validate_flags_dangling" classname="journey_graph_test" time="0.006">
 		</testcase>
 		<testcase name="test_validate_flags_no_start" classname="journey_graph_test" time="0.006">
 		</testcase>
-		<testcase name="test_validate_flags_unreachable_not_start" classname="journey_graph_test" time="0.006">
+		<testcase name="test_validate_flags_unreachable_not_start" classname="journey_graph_test" time="0.005">
 		</testcase>
 	</testsuite>
-	<testsuite id="15" name="journey_scan_test" package="tests" timestamp="2026-07-20T13:46:02" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.082">
-		<testcase name="test_top_level_fields" classname="journey_scan_test" time="0.010">
+	<testsuite id="16" name="journey_scan_test" package="tests" timestamp="2026-07-21T19:54:24" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.075">
+		<testcase name="test_top_level_fields" classname="journey_scan_test" time="0.004">
 		</testcase>
-		<testcase name="test_map_enabled_round_trips" classname="journey_scan_test" time="0.008">
+		<testcase name="test_map_enabled_round_trips" classname="journey_scan_test" time="0.005">
 		</testcase>
-		<testcase name="test_cursed_round_fields" classname="journey_scan_test" time="0.005">
+		<testcase name="test_cursed_round_fields" classname="journey_scan_test" time="0.003">
 		</testcase>
-		<testcase name="test_boss_round_fields_and_show_reveal_default" classname="journey_scan_test" time="0.006">
+		<testcase name="test_boss_round_fields_and_show_reveal_default" classname="journey_scan_test" time="0.004">
 		</testcase>
 		<testcase name="test_fork_resolution_fields" classname="journey_scan_test" time="0.004">
 		</testcase>
 		<testcase name="test_fork_path_round_fields" classname="journey_scan_test" time="0.005">
 		</testcase>
-		<testcase name="test_nested_fork" classname="journey_scan_test" time="0.007">
+		<testcase name="test_nested_fork" classname="journey_scan_test" time="0.006">
 		</testcase>
 		<testcase name="test_shop_fields" classname="journey_scan_test" time="0.006">
 		</testcase>
-		<testcase name="test_storyboard_fields" classname="journey_scan_test" time="0.007">
+		<testcase name="test_storyboard_fields" classname="journey_scan_test" time="0.006">
 		</testcase>
-		<testcase name="test_missing_journey_returns_empty" classname="journey_scan_test" time="0.007">
+		<testcase name="test_missing_journey_returns_empty" classname="journey_scan_test" time="0.006">
 		</testcase>
-		<testcase name="test_round_video_explicit_and_folder_fallback" classname="journey_scan_test" time="0.006">
+		<testcase name="test_round_video_explicit_and_folder_fallback" classname="journey_scan_test" time="0.005">
 		</testcase>
 	</testsuite>
-	<testsuite id="16" name="media_pool_test" package="tests" timestamp="2026-07-20T13:46:03" hostname="localhost" tests="5" failures="0" errors="0" skipped="0" flaky="0" time="0.037">
+	<testsuite id="17" name="media_pool_test" package="tests" timestamp="2026-07-21T19:54:24" hostname="localhost" tests="7" failures="0" errors="0" skipped="0" flaky="0" time="0.115">
 		<testcase name="test_pooled_media_rel_shape" classname="media_pool_test" time="0.001">
 		</testcase>
-		<testcase name="test_plan_media_pool_dedups_repeats" classname="media_pool_test" time="0.001">
+		<testcase name="test_plan_media_pool_dedups_repeats" classname="media_pool_test" time="0.002">
 		</testcase>
-		<testcase name="test_plan_media_pool_empty" classname="media_pool_test" time="0.004">
+		<testcase name="test_plan_media_pool_empty" classname="media_pool_test" time="0.003">
 		</testcase>
-		<testcase name="test_media_fingerprint_stability" classname="media_pool_test" time="0.011">
+		<testcase name="test_media_fingerprint_stability" classname="media_pool_test" time="0.006">
 		</testcase>
-		<testcase name="test_media_fingerprint_distinct_paths" classname="media_pool_test" time="0.009">
+		<testcase name="test_media_fingerprint_distinct_paths" classname="media_pool_test" time="0.008">
+		</testcase>
+		<testcase name="test_is_pooled_content_file" classname="media_pool_test" time="0.005">
+		</testcase>
+		<testcase name="test_try_hardlink_shares_data" classname="media_pool_test" time="0.077">
 		</testcase>
 	</testsuite>
-	<testsuite id="17" name="pool_round_test" package="tests" timestamp="2026-07-20T13:46:03" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.072">
-		<testcase name="test_coerce_pool_entry_canonical_shape" classname="pool_round_test" time="0.003">
+	<testsuite id="18" name="pool_round_test" package="tests" timestamp="2026-07-21T19:54:25" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.071">
+		<testcase name="test_coerce_pool_entry_canonical_shape" classname="pool_round_test" time="0.002">
 		</testcase>
-		<testcase name="test_coerce_pool_entry_clamps_weight" classname="pool_round_test" time="0.001">
+		<testcase name="test_coerce_pool_entry_clamps_weight" classname="pool_round_test" time="0.002">
 		</testcase>
-		<testcase name="test_coerce_pool_entry_defaults_normal" classname="pool_round_test" time="0.003">
+		<testcase name="test_coerce_pool_entry_defaults_normal" classname="pool_round_test" time="0.005">
 		</testcase>
 		<testcase name="test_coerce_pool_entry_boss_carries_config" classname="pool_round_test" time="0.006">
 		</testcase>
@@ -531,25 +555,25 @@
 		</testcase>
 		<testcase name="test_pool_entry_weights" classname="pool_round_test" time="0.007">
 		</testcase>
-		<testcase name="test_pool_round_coercion_keeps_entries" classname="pool_round_test" time="0.006">
+		<testcase name="test_pool_round_coercion_keeps_entries" classname="pool_round_test" time="0.007">
 		</testcase>
-		<testcase name="test_non_pool_round_drops_entries" classname="pool_round_test" time="0.007">
+		<testcase name="test_non_pool_round_drops_entries" classname="pool_round_test" time="0.006">
 		</testcase>
-		<testcase name="test_pool_round_show_encounter_toggle" classname="pool_round_test" time="0.005">
+		<testcase name="test_pool_round_show_encounter_toggle" classname="pool_round_test" time="0.006">
 		</testcase>
-		<testcase name="test_pool_entry_paths_resolve_on_scan" classname="pool_round_test" time="0.007">
+		<testcase name="test_pool_entry_paths_resolve_on_scan" classname="pool_round_test" time="0.005">
 		</testcase>
-		<testcase name="test_weighted_pick_favors_heavy_entry" classname="pool_round_test" time="0.007">
+		<testcase name="test_weighted_pick_favors_heavy_entry" classname="pool_round_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="18" name="randomizer_generator_test" package="tests" timestamp="2026-07-20T13:46:03" hostname="localhost" tests="20" failures="0" errors="0" skipped="0" flaky="0" time="0.137">
+	<testsuite id="19" name="randomizer_generator_test" package="tests" timestamp="2026-07-21T19:54:25" hostname="localhost" tests="20" failures="0" errors="0" skipped="0" flaky="0" time="0.137">
 		<testcase name="test_empty_library_fails" classname="randomizer_generator_test" time="0.002">
 		</testcase>
-		<testcase name="test_count_mode_produces_n_rounds" classname="randomizer_generator_test" time="0.002">
+		<testcase name="test_count_mode_produces_n_rounds" classname="randomizer_generator_test" time="0.001">
 		</testcase>
-		<testcase name="test_count_capped_by_library_and_no_repeat" classname="randomizer_generator_test" time="0.002">
+		<testcase name="test_count_capped_by_library_and_no_repeat" classname="randomizer_generator_test" time="0.003">
 		</testcase>
-		<testcase name="test_same_seed_is_deterministic" classname="randomizer_generator_test" time="0.007">
+		<testcase name="test_same_seed_is_deterministic" classname="randomizer_generator_test" time="0.006">
 		</testcase>
 		<testcase name="test_different_seed_changes_order" classname="randomizer_generator_test" time="0.006">
 		</testcase>
@@ -557,35 +581,35 @@
 		</testcase>
 		<testcase name="test_linear_chain_single_end" classname="randomizer_generator_test" time="0.006">
 		</testcase>
-		<testcase name="test_time_mode_respects_budget" classname="randomizer_generator_test" time="0.006">
+		<testcase name="test_time_mode_respects_budget" classname="randomizer_generator_test" time="0.005">
 		</testcase>
 		<testcase name="test_time_mode_takes_at_least_one" classname="randomizer_generator_test" time="0.006">
 		</testcase>
 		<testcase name="test_time_mode_skips_oversized_and_never_overshoots" classname="randomizer_generator_test" time="0.006">
 		</testcase>
-		<testcase name="test_boss_finale_marks_last_round" classname="randomizer_generator_test" time="0.007">
+		<testcase name="test_boss_finale_marks_last_round" classname="randomizer_generator_test" time="0.006">
 		</testcase>
 		<testcase name="test_boss_modifiers_are_valid_kinds" classname="randomizer_generator_test" time="0.006">
 		</testcase>
-		<testcase name="test_effect_pct_full_makes_effect_rounds" classname="randomizer_generator_test" time="0.005">
+		<testcase name="test_effect_pct_full_makes_effect_rounds" classname="randomizer_generator_test" time="0.007">
 		</testcase>
-		<testcase name="test_normal_round_has_no_effects" classname="randomizer_generator_test" time="0.007">
+		<testcase name="test_normal_round_has_no_effects" classname="randomizer_generator_test" time="0.006">
 		</testcase>
-		<testcase name="test_shops_inserted_between_rounds" classname="randomizer_generator_test" time="0.007">
+		<testcase name="test_shops_inserted_between_rounds" classname="randomizer_generator_test" time="0.006">
 		</testcase>
-		<testcase name="test_tag_include_filters_pool" classname="randomizer_generator_test" time="0.006">
+		<testcase name="test_tag_include_filters_pool" classname="randomizer_generator_test" time="0.007">
 		</testcase>
-		<testcase name="test_tag_exclude_drops_matches" classname="randomizer_generator_test" time="0.006">
+		<testcase name="test_tag_exclude_drops_matches" classname="randomizer_generator_test" time="0.007">
 		</testcase>
-		<testcase name="test_no_matches_after_filter_fails" classname="randomizer_generator_test" time="0.006">
+		<testcase name="test_no_matches_after_filter_fails" classname="randomizer_generator_test" time="0.005">
 		</testcase>
 		<testcase name="test_intensity_order_ramps_up" classname="randomizer_generator_test" time="0.006">
 		</testcase>
 		<testcase name="test_content_rels_cover_every_clip" classname="randomizer_generator_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="19" name="randomizer_presets_test" package="tests" timestamp="2026-07-20T13:46:03" hostname="localhost" tests="5" failures="0" errors="0" skipped="0" flaky="0" time="0.028">
-		<testcase name="test_upsert_appends_new" classname="randomizer_presets_test" time="0.002">
+	<testsuite id="20" name="randomizer_presets_test" package="tests" timestamp="2026-07-21T19:54:25" hostname="localhost" tests="5" failures="0" errors="0" skipped="0" flaky="0" time="0.027">
+		<testcase name="test_upsert_appends_new" classname="randomizer_presets_test" time="0.001">
 		</testcase>
 		<testcase name="test_upsert_replaces_in_place" classname="randomizer_presets_test" time="0.002">
 		</testcase>
@@ -593,63 +617,63 @@
 		</testcase>
 		<testcase name="test_without_removes_by_name" classname="randomizer_presets_test" time="0.006">
 		</testcase>
-		<testcase name="test_without_missing_is_noop" classname="randomizer_presets_test" time="0.007">
+		<testcase name="test_without_missing_is_noop" classname="randomizer_presets_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="20" name="randomizer_run_test" package="tests" timestamp="2026-07-20T13:46:03" hostname="localhost" tests="4" failures="0" errors="0" skipped="0" flaky="0" time="0.625">
-		<testcase name="test_materialize_writes_folder_and_content" classname="randomizer_run_test" time="0.252">
+	<testsuite id="21" name="randomizer_run_test" package="tests" timestamp="2026-07-21T19:54:25" hostname="localhost" tests="4" failures="0" errors="0" skipped="0" flaky="0" time="0.448">
+		<testcase name="test_materialize_writes_folder_and_content" classname="randomizer_run_test" time="0.129">
 		</testcase>
-		<testcase name="test_generated_run_loads_through_scanner" classname="randomizer_run_test" time="0.225">
+		<testcase name="test_generated_run_loads_through_scanner" classname="randomizer_run_test" time="0.206">
 		</testcase>
-		<testcase name="test_scanner_resolves_media_to_existing_files" classname="randomizer_run_test" time="0.115">
+		<testcase name="test_scanner_resolves_media_to_existing_files" classname="randomizer_run_test" time="0.088">
 		</testcase>
-		<testcase name="test_missing_pooled_file_fails_cleanly" classname="randomizer_run_test" time="0.024">
+		<testcase name="test_missing_pooled_file_fails_cleanly" classname="randomizer_run_test" time="0.016">
 		</testcase>
 	</testsuite>
-	<testsuite id="21" name="round_templates_test" package="tests" timestamp="2026-07-20T13:46:04" hostname="localhost" tests="7" failures="0" errors="0" skipped="0" flaky="0" time="0.042">
+	<testsuite id="22" name="round_templates_test" package="tests" timestamp="2026-07-21T19:54:25" hostname="localhost" tests="7" failures="0" errors="0" skipped="0" flaky="0" time="0.042">
 		<testcase name="test_upsert_appends_new" classname="round_templates_test" time="0.002">
 		</testcase>
 		<testcase name="test_upsert_replaces_in_place" classname="round_templates_test" time="0.001">
 		</testcase>
-		<testcase name="test_upsert_deep_copies_data" classname="round_templates_test" time="0.003">
+		<testcase name="test_upsert_deep_copies_data" classname="round_templates_test" time="0.004">
 		</testcase>
 		<testcase name="test_without_removes_by_name" classname="round_templates_test" time="0.007">
 		</testcase>
-		<testcase name="test_strip_for_template_drops_node_keys" classname="round_templates_test" time="0.007">
+		<testcase name="test_strip_for_template_drops_node_keys" classname="round_templates_test" time="0.006">
 		</testcase>
-		<testcase name="test_apply_to_overwrites_but_keeps_node_id" classname="round_templates_test" time="0.007">
+		<testcase name="test_apply_to_overwrites_but_keeps_node_id" classname="round_templates_test" time="0.006">
 		</testcase>
-		<testcase name="test_apply_to_is_deep_copy" classname="round_templates_test" time="0.005">
+		<testcase name="test_apply_to_is_deep_copy" classname="round_templates_test" time="0.007">
 		</testcase>
 	</testsuite>
-	<testsuite id="22" name="sanitize_folder_test" package="tests" timestamp="2026-07-20T13:46:04" hostname="localhost" tests="7" failures="0" errors="0" skipped="0" flaky="0" time="0.040">
-		<testcase name="test_spaces_to_underscores" classname="sanitize_folder_test" time="0.003">
+	<testsuite id="23" name="sanitize_folder_test" package="tests" timestamp="2026-07-21T19:54:25" hostname="localhost" tests="7" failures="0" errors="0" skipped="0" flaky="0" time="0.042">
+		<testcase name="test_spaces_to_underscores" classname="sanitize_folder_test" time="0.002">
 		</testcase>
-		<testcase name="test_strips_invalid_chars" classname="sanitize_folder_test" time="0.001">
+		<testcase name="test_strips_invalid_chars" classname="sanitize_folder_test" time="0.002">
 		</testcase>
-		<testcase name="test_strips_trailing_dot" classname="sanitize_folder_test" time="0.004">
+		<testcase name="test_strips_trailing_dot" classname="sanitize_folder_test" time="0.003">
 		</testcase>
 		<testcase name="test_strips_leading_dot" classname="sanitize_folder_test" time="0.006">
 		</testcase>
-		<testcase name="test_trims_surrounding_whitespace" classname="sanitize_folder_test" time="0.006">
+		<testcase name="test_trims_surrounding_whitespace" classname="sanitize_folder_test" time="0.005">
 		</testcase>
 		<testcase name="test_keeps_interior_dot" classname="sanitize_folder_test" time="0.006">
 		</testcase>
-		<testcase name="test_empty_fallback" classname="sanitize_folder_test" time="0.006">
+		<testcase name="test_empty_fallback" classname="sanitize_folder_test" time="0.007">
 		</testcase>
 	</testsuite>
-	<testsuite id="23" name="score_service_test" package="tests" timestamp="2026-07-20T13:46:04" hostname="localhost" tests="9" failures="0" errors="0" skipped="0" flaky="0" time="0.060">
+	<testsuite id="24" name="score_service_test" package="tests" timestamp="2026-07-21T19:54:26" hostname="localhost" tests="9" failures="0" errors="0" skipped="0" flaky="0" time="0.058">
 		<testcase name="test_bucket_thresholds" classname="score_service_test" time="0.003">
 		</testcase>
 		<testcase name="test_total_accumulates_across_rounds" classname="score_service_test" time="0.002">
 		</testcase>
-		<testcase name="test_start_round_resets_current" classname="score_service_test" time="0.003">
+		<testcase name="test_start_round_resets_current" classname="score_service_test" time="0.002">
 		</testcase>
-		<testcase name="test_end_round_banks_and_last_round_score" classname="score_service_test" time="0.007">
+		<testcase name="test_end_round_banks_and_last_round_score" classname="score_service_test" time="0.006">
 		</testcase>
 		<testcase name="test_penalize_clamps_at_zero_current_only" classname="score_service_test" time="0.006">
 		</testcase>
-		<testcase name="test_penalize_ignores_nonpositive" classname="score_service_test" time="0.006">
+		<testcase name="test_penalize_ignores_nonpositive" classname="score_service_test" time="0.005">
 		</testcase>
 		<testcase name="test_penalize_emits_score_changed" classname="score_service_test" time="0.006">
 		</testcase>
@@ -658,32 +682,52 @@
 		<testcase name="test_save_roundtrip" classname="score_service_test" time="0.006">
 		</testcase>
 	</testsuite>
-	<testsuite id="24" name="sensory_fx_test" package="tests" timestamp="2026-07-20T13:46:04" hostname="localhost" tests="6" failures="0" errors="0" skipped="0" flaky="0" time="0.062">
-		<testcase name="test_ival_normal_range" classname="sensory_fx_test" time="0.002">
+	<testsuite id="25" name="sensory_fx_test" package="tests" timestamp="2026-07-21T19:54:26" hostname="localhost" tests="6" failures="0" errors="0" skipped="0" flaky="0" time="0.062">
+		<testcase name="test_ival_normal_range" classname="sensory_fx_test" time="0.001">
 		</testcase>
 		<testcase name="test_ival_inverted_range" classname="sensory_fx_test" time="0.014">
 		</testcase>
-		<testcase name="test_ival_clamps_intensity" classname="sensory_fx_test" time="0.012">
+		<testcase name="test_ival_clamps_intensity" classname="sensory_fx_test" time="0.013">
 		</testcase>
-		<testcase name="test_ival_missing_fields" classname="sensory_fx_test" time="0.013">
+		<testcase name="test_ival_missing_fields" classname="sensory_fx_test" time="0.014">
 		</testcase>
-		<testcase name="test_intensity_for_override_and_default" classname="sensory_fx_test" time="0.007">
+		<testcase name="test_intensity_for_override_and_default" classname="sensory_fx_test" time="0.006">
 		</testcase>
-		<testcase name="test_intensity_for_clamps_override" classname="sensory_fx_test" time="0.006">
+		<testcase name="test_intensity_for_clamps_override" classname="sensory_fx_test" time="0.007">
 		</testcase>
 	</testsuite>
-	<testsuite id="25" name="shop_offer_test" package="tests" timestamp="2026-07-20T13:46:04" hostname="localhost" tests="6" failures="0" errors="0" skipped="0" flaky="0" time="0.035">
+	<testsuite id="26" name="shop_offer_test" package="tests" timestamp="2026-07-21T19:54:26" hostname="localhost" tests="11" failures="0" errors="0" skipped="0" flaky="0" time="0.070">
 		<testcase name="test_fixed_mode_exact_lineup" classname="shop_offer_test" time="0.002">
 		</testcase>
-		<testcase name="test_pool_mode_guarantees_present" classname="shop_offer_test" time="0.002">
+		<testcase name="test_pool_mode_guarantees_present" classname="shop_offer_test" time="0.003">
 		</testcase>
-		<testcase name="test_pool_count_never_trims_guaranteed" classname="shop_offer_test" time="0.002">
+		<testcase name="test_pool_count_never_trims_guaranteed" classname="shop_offer_test" time="0.004">
 		</testcase>
 		<testcase name="test_pool_mode_plain_draw" classname="shop_offer_test" time="0.006">
 		</testcase>
 		<testcase name="test_stale_guaranteed_dropped" classname="shop_offer_test" time="0.007">
 		</testcase>
 		<testcase name="test_guaranteed_and_possible_queries" classname="shop_offer_test" time="0.006">
+		</testcase>
+		<testcase name="test_excluded_never_drawn" classname="shop_offer_test" time="0.006">
+		</testcase>
+		<testcase name="test_guaranteed_survives_exclusion" classname="shop_offer_test" time="0.006">
+		</testcase>
+		<testcase name="test_exclusions_can_shrink_the_lineup" classname="shop_offer_test" time="0.006">
+		</testcase>
+		<testcase name="test_exclusions_ignored_in_fixed_mode" classname="shop_offer_test" time="0.006">
+		</testcase>
+		<testcase name="test_possible_ids_respect_exclusions" classname="shop_offer_test" time="0.006">
+		</testcase>
+	</testsuite>
+	<testsuite id="27" name="ui_theme_test" package="tests" timestamp="2026-07-21T19:54:26" hostname="localhost" tests="4" failures="0" errors="0" skipped="0" flaky="0" time="0.020">
+		<testcase name="test_wrap_tip_leaves_short_text" classname="ui_theme_test" time="0.002">
+		</testcase>
+		<testcase name="test_wrap_tip_breaks_long_line" classname="ui_theme_test" time="0.002">
+		</testcase>
+		<testcase name="test_wrap_tip_preserves_newlines" classname="ui_theme_test" time="0.004">
+		</testcase>
+		<testcase name="test_wrap_tip_keeps_oversized_word" classname="ui_theme_test" time="0.006">
 		</testcase>
 	</testsuite>
 </testsuites>

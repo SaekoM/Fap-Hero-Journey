@@ -566,7 +566,12 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 			card_header = _nonblank(str(src.get("card_header", "")), "EFFECT")
 			card_icon = _nonblank(str(src.get("card_icon", "")), "✦")
 			show_border = bool(src.get("show_border", false))  # new rounds: border off by default
-		_:  # normal / boss — effect fields defaulted (unused).
+		_:  # normal / boss
+			# A BOSS can carry forced gameplay effects (kept from source); a normal round has
+			# none, so an empty source list leaves this empty and unused. The framing / reveal
+			# fields stay defaulted — a boss draws its own intro card, not the effect card.
+			for n: Variant in src.get("effects", []):
+				effects.append(str(n))
 			effect_random = bool(src.get("effect_random", true))
 			resolvable = bool(src.get("resolvable", false))
 			endure_reward = int(src.get("endure_reward", 0))
@@ -635,7 +640,10 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			# action_count/length_ms + folder are overwritten afterwards by _save_round_node_media.
 			out["coins"] = int(data.get("coins", 0))
 			out["award_item"] = str(data.get("award_item", ""))  # optional item id granted at round end
-			out["is_checkpoint"] = bool(data.get("is_checkpoint", false))
+			# is_checkpoint is RETIRED — converted to a checkpoint node on load
+			# (JourneyGraph._migrate_checkpoint_flags) and stripped from the round below with the
+			# other legacy keys, so a re-save never carries it.
+			out["is_warmup"] = bool(data.get("is_warmup", false))
 			out["boss_tagline"] = str(data.get("boss_tagline", ""))
 			_fill_default(out, "boss_modifiers", [])  # lowercase {kind,…}; deep-copied pass-through
 			# Effect-round fields, migrated from any legacy cursed/blessed schema. Drop the retired
@@ -643,7 +651,13 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			# normalize_effect_round then supplies the canonical set (round_type, effects,
 			# resolvable, sensory layer, framing colours, …). "theme" is a retired interim key.
 			for legacy: String in [
-				"curses", "boons", "curse_random", "boon_random", "curse_reward", "theme"
+				"curses",
+				"boons",
+				"curse_random",
+				"boon_random",
+				"curse_reward",
+				"theme",
+				"is_checkpoint",  # retired — checkpoints are their own node type now
 			]:
 				out.erase(legacy)
 			out.merge(normalize_effect_round(data), true)
@@ -668,6 +682,7 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["price_multiplier"] = float(data.get("price_multiplier", 1.0))
 			_fill_default(out, "items", [])
 			_fill_default(out, "guaranteed", [])
+			_fill_default(out, "excluded", [])
 		"storyboard":
 			# image + lines are overwritten by _save_storyboard_node_media.
 			out["coins"] = int(data.get("coins", 0))
@@ -682,6 +697,9 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["after_order"] = int(data.get("after_order", 0))
 			# Which counter a "counter" conditional fork gates on (blank for other metrics).
 			out["cond_counter"] = str(data.get("cond_counter", ""))
+		"checkpoint":
+			# A save point between rounds — its only field is the banner label.
+			out["name"] = str(data.get("name", ""))
 	# Counter deltas can ride on ANY node type (a round bumps "belt", a storyboard bumps "arousal"),
 	# so normalize them here rather than per type. Cleaned to {name:int}; dropped entirely when empty
 	# so the schema stays lean (mirrors how set_flags only appears when non-empty).
@@ -907,7 +925,12 @@ static func resolve_shop_offer(
 		return shop_fixed_ids(shop_data, all_ids)
 
 	var guaranteed: Array = shop_guaranteed_ids(shop_data, all_ids)
-	var rest: Array = all_ids.filter(func(id: String) -> bool: return not (id in guaranteed))
+	# `excluded` bars items from the RANDOM draw only — a guaranteed item is explicit intent and
+	# still appears, so ticking one in both lists isn't a contradiction the roll has to resolve.
+	var excluded: Array = shop_data.get("excluded", [])
+	var rest: Array = all_ids.filter(
+		func(id: String) -> bool: return not (id in guaranteed) and not (id in excluded)
+	)
 	if rng != null:
 		# Fisher-Yates with the injected rng (Array.shuffle only uses the global one).
 		for i: int in range(rest.size() - 1, 0, -1):
@@ -932,12 +955,18 @@ static func shop_guaranteed_ids(shop_data: Dictionary, all_ids: Array) -> Array:
 	return all_ids.filter(func(id: String) -> bool: return id in g)
 
 
-# The item ids a shop MIGHT offer: the fixed lineup, or (pool mode) the whole
-# registry — pool draws fill from every non-guaranteed item.
+# The item ids a shop MIGHT offer: the fixed lineup, or (pool mode) everything the draw can
+# reach. Excluded items are unreachable, so they're dropped — the auditor models item ownership
+# from this, and counting a barred item as obtainable would wrongly clear a fork that requires it.
+# A guaranteed item survives exclusion (see resolve_shop_offer).
 static func shop_possible_ids(shop_data: Dictionary, all_ids: Array) -> Array:
 	if str(shop_data.get("mode", "pool")) == "fixed":
 		return shop_fixed_ids(shop_data, all_ids)
-	return all_ids.duplicate()
+	var excluded: Array = shop_data.get("excluded", [])
+	var guaranteed: Array = shop_guaranteed_ids(shop_data, all_ids)
+	return all_ids.filter(
+		func(id: String) -> bool: return (id in guaranteed) or not (id in excluded)
+	)
 
 
 # The authored fixed lineup filtered to ids that still exist, in registry order.
@@ -964,6 +993,9 @@ static func new_item(type: String) -> Dictionary:
 			}
 		"shop":
 			return {"type": "shop", "title": "", "node_id": new_node_id()}
+		"checkpoint":
+			# A save point between rounds — no media, no gameplay. `name` labels its banner.
+			return {"type": "checkpoint", "name": "", "node_id": new_node_id()}
 		"storyboard":
 			# coins / item: optional reward granted when the storyboard is finished.
 			return {
@@ -1062,6 +1094,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 			"axis_scripts": r.get("axis_scripts", {}),
 			"vib_scripts": r.get("vib_scripts", {}),
 			"is_checkpoint": bool(r.get("is_checkpoint", false)),
+			"is_warmup": bool(r.get("is_warmup", false)),
 			"boss_image": r.get("boss_image", ""),
 			"boss_tagline": r.get("boss_tagline", ""),
 			"boss_modifiers": r.get("boss_modifiers", []),
@@ -1203,6 +1236,7 @@ static func _build_path_items(p: Dictionary) -> Array:
 			"axis_scripts": pr.get("axis_scripts", {}),
 			"vib_scripts": pr.get("vib_scripts", {}),
 			"is_checkpoint": bool(pr.get("is_checkpoint", false)),
+			"is_warmup": bool(pr.get("is_warmup", false)),
 			"boss_image": pr.get("boss_image", ""),
 			"boss_tagline": pr.get("boss_tagline", ""),
 			"boss_modifiers": pr.get("boss_modifiers", []),

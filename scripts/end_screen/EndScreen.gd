@@ -213,8 +213,16 @@ func _populate_score() -> void:
 					rname = entry.get("name", "") as String
 				if rname == "":
 					rname = "Round %d" % round_num
-				name_lbl.text = "R%d  %s" % [round_num, rname.to_upper()]
-				name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+				# A skipped round keeps its place in the route and says so, rather than being
+				# hidden — the run should stay honest about what was actually played.
+				var was_skipped: bool = bool(entry.get("skipped", false))
+				name_lbl.text = (
+					"R%d  %s%s"
+					% [round_num, rname.to_upper(), "   ⏭ SKIPPED" if was_skipped else ""]
+				)
+				name_lbl.add_theme_color_override(
+					"font_color", UITheme.SEPARATOR if was_skipped else UITheme.WHITE_SOFT
+				)
 				name_lbl.add_theme_font_size_override("font_size", 17)
 
 				var time_lbl: Label = Label.new()

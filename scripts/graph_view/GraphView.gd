@@ -42,6 +42,10 @@ var map_mode: bool = false
 var _pan_offset: Vector2 = Vector2(40, 40)
 var _zoom: float = 1.0
 var _panning: bool = false
+# Keyboard panning (builder only — the map/end-screen leave it off). Arrows or WASD scroll the
+# canvas at a steady on-screen rate; screen-space so the feel is the same at any zoom.
+var keyboard_pan_enabled: bool = false
+const KEY_PAN_SPEED: float = 1100.0  # screen px / second
 var _last_mouse: Vector2 = Vector2.ZERO
 var _has_initial_center: bool = false
 
@@ -944,6 +948,8 @@ func _type_color(item_type: String) -> Color:
 			return UITheme.CYAN
 		"fork":
 			return UITheme.MAGENTA
+		"checkpoint":
+			return UITheme.SUCCESS
 	return UITheme.PURPLE_MID
 
 
@@ -957,6 +963,8 @@ func _type_icon(item_type: String) -> String:
 			return "◈"
 		"fork":
 			return "⑂"
+		"checkpoint":
+			return "⚑"
 	return "•"
 
 
@@ -997,6 +1005,9 @@ func _type_label(item: Dictionary) -> String:
 		"fork":
 			var n3: String = item.get("title", "")
 			return n3 if n3 != "" else "Fork"
+		"checkpoint":
+			var cn: String = item.get("name", "")
+			return cn if cn != "" else "Checkpoint"
 	return "?"
 
 
@@ -1012,10 +1023,9 @@ func _type_sublabel(item: Dictionary) -> String:
 					rlabel = "BOSS ROUND"
 				"effect", "cursed", "blessed":
 					rlabel = "✦ EFFECT ROUND"
-			# Checkpoint marker — author-set save point, honoured on every round
-			# type (the banner shows before a boss round's intro card).
-			if item.get("is_checkpoint", false):
-				rlabel += "   ◆ CHECKPOINT"
+			# (Checkpoints are their own node type now — no per-round marker.)
+			if item.get("is_warmup", false):
+				rlabel += "   ⏭ WARMUP"
 			# Pending-segments marker (editor only by construction: saved journeys never
 			# carry segment keys — the save consumes them into the media). One segment
 			# reads as the trim it is; several show the count instead of an unreadable
@@ -1052,6 +1062,8 @@ func _type_sublabel(item: Dictionary) -> String:
 			return (
 				"%s   %d PATHS" % [_fork_type_label(item.get("resolution", "choice")), paths.size()]
 			)
+		"checkpoint":
+			return "SAVE POINT"
 	return ""
 
 
@@ -1526,6 +1538,40 @@ func _handle_frame_resize(event: InputEvent) -> void:
 # ---------------------------------------------------------------------------
 
 
+# Continuous keyboard pan (builder only). Polled rather than event-driven so a held key scrolls
+# smoothly. Stands down while a text field is focused (so typing a node name doesn't pan) and
+# while a modifier is held (so Ctrl+S / Ctrl+D and friends don't also scroll).
+func _process(delta: float) -> void:
+	if not keyboard_pan_enabled or not is_visible_in_tree():
+		return
+	if _text_focused():
+		return
+	if (
+		Input.is_key_pressed(KEY_CTRL)
+		or Input.is_key_pressed(KEY_ALT)
+		or Input.is_key_pressed(KEY_META)
+	):
+		return
+	var dir: Vector2 = Vector2.ZERO
+	if Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_A):
+		dir.x += 1.0
+	if Input.is_key_pressed(KEY_RIGHT) or Input.is_key_pressed(KEY_D):
+		dir.x -= 1.0
+	if Input.is_key_pressed(KEY_UP) or Input.is_key_pressed(KEY_W):
+		dir.y += 1.0
+	if Input.is_key_pressed(KEY_DOWN) or Input.is_key_pressed(KEY_S):
+		dir.y -= 1.0
+	if dir != Vector2.ZERO:
+		_pan_offset += dir.normalized() * KEY_PAN_SPEED * delta
+		_apply_transform()
+
+
+# True when a text-entry control has focus — pan/keys must yield to typing.
+func _text_focused() -> bool:
+	var f: Control = get_viewport().gui_get_focus_owner()
+	return f is LineEdit or f is TextEdit
+
+
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
@@ -1545,10 +1591,15 @@ func _gui_input(event: InputEvent) -> void:
 			canvas_context_menu_requested.emit((mb.position - _canvas.position) / _zoom)
 			accept_event()
 		elif mb.button_index == MOUSE_BUTTON_LEFT:
-			if map_mode:
-				# Map mode has no selection — left-drag pans (like middle button).
-				_panning = mb.pressed
+			# Map mode, or the space-bar "hand tool" in the builder: left-drag pans (like the
+			# middle button) instead of box-selecting.
+			var want_pan: bool = map_mode or Input.is_key_pressed(KEY_SPACE)
+			if mb.pressed and want_pan:
+				_panning = true
 				_last_mouse = mb.position
+				accept_event()
+			elif not mb.pressed and _panning:
+				_panning = false  # end a left-drag pan on release (space may already be released)
 				accept_event()
 			elif mb.pressed:
 				# Left press on empty canvas (not a node) → start a marquee box-select. A press+release

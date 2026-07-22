@@ -63,6 +63,12 @@ const DEFAULT_CONSTRICT_HOLD_ON_PAUSE: bool = true
 const DEFAULT_HUD_HIDE_DELAY: float = 3.0  # seconds
 const DEFAULT_UI_SCALE: float = 1.0  # Window.content_scale_factor multiplier
 const DEFAULT_BEAT_BAR_ENABLED: bool = false
+const DEFAULT_ROUND_TIMER_ENABLED: bool = false  # opt-in, like the beat bar
+const DEFAULT_BEAT_BAR_SHAPE: String = "heart"  # see BeatBar.SHAPES
+# Readability scales, separate from UI_SCALE (which resizes the whole interface, layout and all).
+# These grow TEXT only, in the two places long-form reading actually happens.
+const DEFAULT_STORY_TEXT_SCALE: float = 1.0  # fork / boss / storyboard prose
+const DEFAULT_TOOLTIP_TEXT_SCALE: float = 1.0  # every tooltip, builder included
 const DEFAULT_FILLER_ENABLED: bool = false
 const DEFAULT_FILLER_HALF_CYCLE: int = 2000
 const DEFAULT_FILLER_LO: int = 0
@@ -294,6 +300,52 @@ func get_ui_scale() -> float:
 
 func get_beat_bar_enabled() -> bool:
 	return bool(_config.get_value("display", "beat_bar_enabled", DEFAULT_BEAT_BAR_ENABLED))
+
+
+# Shows time left in the round on the HUD bar. Off by default so the HUD doesn't change under
+# existing players; it hides with the rest of the HUD under a Fog effect.
+func get_round_timer_enabled() -> bool:
+	return bool(_config.get_value("display", "round_timer_enabled", DEFAULT_ROUND_TIMER_ENABLED))
+
+
+func set_round_timer_enabled(value: bool) -> void:
+	_config.set_value("display", "round_timer_enabled", value)
+
+
+# Multiplies the font size of narrative text — fork titles/descriptions, boss intro cards,
+# storyboard dialogue. Layout is unchanged, so very large values can crowd a card; 2.0 is the
+# practical ceiling.
+func get_story_text_scale() -> float:
+	return clampf(
+		float(_config.get_value("display", "story_text_scale", DEFAULT_STORY_TEXT_SCALE)), 1.0, 2.0
+	)
+
+
+func set_story_text_scale(value: float) -> void:
+	_config.set_value("display", "story_text_scale", clampf(value, 1.0, 2.0))
+
+
+# Multiplies tooltip font size app-wide (applied via UITheme.apply_tooltip_scale).
+func get_tooltip_text_scale() -> float:
+	return clampf(
+		float(_config.get_value("display", "tooltip_text_scale", DEFAULT_TOOLTIP_TEXT_SCALE)),
+		1.0,
+		2.0
+	)
+
+
+func set_tooltip_text_scale(value: float) -> void:
+	_config.set_value("display", "tooltip_text_scale", clampf(value, 1.0, 2.0))
+
+
+# Marker shape on the beat bar — "heart" / "orb" / "diamond" / "star" (BeatBar.SHAPES).
+# Unknown values fall back to the default rather than drawing nothing.
+func get_beat_bar_shape() -> String:
+	return str(_config.get_value("display", "beat_bar_shape", DEFAULT_BEAT_BAR_SHAPE))
+
+
+func set_beat_bar_shape(value: String) -> void:
+	_config.set_value("display", "beat_bar_shape", value)
 
 
 func get_filler_enabled() -> bool:

@@ -275,15 +275,16 @@ func _apply_theme() -> void:
 	_vn_bar.add_theme_stylebox_override("panel", bar_style)
 
 	_speaker.add_theme_color_override("font_color", UITheme.CYAN)
-	_speaker.add_theme_font_size_override("font_size", 14)
+	_speaker.add_theme_font_size_override("font_size", UITheme.story_font_size(14))
+	_speaker.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_speaker.uppercase = true
 
 	_dialogue.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	_dialogue.add_theme_font_size_override("font_size", 19)
+	_dialogue.add_theme_font_size_override("font_size", UITheme.story_font_size(19))
 	_dialogue.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	_hint.add_theme_color_override("font_color", UITheme.DARK_TEXT)
-	_hint.add_theme_font_size_override("font_size", 11)
+	_hint.add_theme_font_size_override("font_size", UITheme.story_font_size(11))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 
 	# Skip button — subtle but readable; uses DARK_TEXT so it doesn't compete

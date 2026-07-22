@@ -10,6 +10,9 @@ public partial class InventoryService : Node
     // GameLoop listens and writes a journey save in response. Separate signal
     // from ActiveEffectsChanged because save_now never enters _active.
     [Signal] public delegate void SaveRequestedEventHandler();
+    // Fired when a utility item with kind == "skip_round" is activated. Same shape as
+    // SaveRequested: instantaneous, never enters _active.
+    [Signal] public delegate void SkipRoundRequestedEventHandler();
 
     // ---------------------------------------------------------------------------
     // Item registry
@@ -215,6 +218,18 @@ public partial class InventoryService : Node
             ["duration_ms"] = 0,
             ["kind"] = "key",
         };
+        // Bail Out — ends the current round for nothing. Manually activated, consumed on use.
+        // Mirrors data/shop_items.json.
+        _registry["skip_round"] = new Dictionary
+        {
+            ["id"] = "skip_round",
+            ["name"] = "Bail Out",
+            ["description"] = "Ends the current round immediately. It counts as played, but pays no coins, score or reward. Consumed when used.",
+            ["category"] = "utility",
+            ["price"] = 70,
+            ["duration_ms"] = 0,
+            ["kind"] = "skip_round",
+        };
         // Cleanse — held until used on a cursed round; not manually activatable
         // (see ActivateItem). Mirrors data/shop_items.json.
         _registry["cleanse"] = new Dictionary
@@ -415,6 +430,14 @@ public partial class InventoryService : Node
         if (item.ContainsKey("kind") && item["kind"].AsString() == "save_now")
         {
             EmitSignal(SignalName.SaveRequested);
+            EmitSignal(SignalName.InventoryChanged);
+            return true;
+        }
+
+        // skip_round is the same instantaneous shape: GameLoop ends the round with no payout.
+        if (itemKind == "skip_round")
+        {
+            EmitSignal(SignalName.SkipRoundRequested);
             EmitSignal(SignalName.InventoryChanged);
             return true;
         }

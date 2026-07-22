@@ -445,8 +445,13 @@ func test_item_unused_coverage() -> void:
 	assert_int(_findings_of_kind(self_useful, "item_unused").size()).is_equal(0)
 
 
-# Checkpoint spacing: two 20-min rounds with no checkpoint exceed the 30-min
-# threshold; marking both as checkpoints caps every stretch at one round.
+# A content-less checkpoint node (the graph shape the migration produces).
+func _checkpoint(to: String) -> Dictionary:
+	return {"type": "checkpoint", "data": {"name": ""}, "out": [_edge(to)]}
+
+
+# Checkpoint spacing: two 20-min rounds with no save point exceed the 30-min threshold; a
+# checkpoint node before each round caps every stretch at one round.
 func test_checkpoint_gap() -> void:
 	var graph := {
 		"start": "r1",
@@ -462,9 +467,18 @@ func test_checkpoint_gap() -> void:
 	assert_int(found.size()).is_equal(1)
 	assert_str(str((found[0] as Dictionary)["node_id"])).is_equal("r2")
 
-	(graph["nodes"]["r1"]["data"] as Dictionary)["is_checkpoint"] = true
-	(graph["nodes"]["r2"]["data"] as Dictionary)["is_checkpoint"] = true
-	var saved := _audit(graph, lengths)
+	# Splice a checkpoint node before each round → each round is its own stretch.
+	var saved_graph := {
+		"start": "c1",
+		"nodes":
+		{
+			"c1": _checkpoint("r1"),
+			"r1": {"type": "round", "data": {"coins": 0}, "out": [_edge("c2")]},
+			"c2": _checkpoint("r2"),
+			"r2": _round(0),
+		}
+	}
+	var saved := _audit(saved_graph, lengths)
 	assert_int(_findings_of_kind(saved, "checkpoint_gap").size()).is_equal(0)
 
 
@@ -507,17 +521,18 @@ func test_simulation_buys_gate_items() -> void:
 	assert_float(float(arrive["f"])).is_equal_approx(70.0, 0.01)
 
 
-# Checkpoint statistics + the save-spacing bar: two 20-min rounds, both
-# checkpointed → every stretch is exactly one round (saves fire at round
-# start), and the spacing bar splits the route into two equal segments.
+# Checkpoint statistics + the save-spacing bar: a checkpoint node before each of two 20-min
+# rounds → every stretch is exactly one round, and the spacing bar splits the route into two
+# equal segments.
 func test_checkpoint_stats_and_bar() -> void:
 	var graph := {
-		"start": "r1",
+		"start": "c1",
 		"nodes":
 		{
-			"r1":
-			{"type": "round", "data": {"coins": 0, "is_checkpoint": true}, "out": [_edge("r2")]},
-			"r2": _round(0, {"is_checkpoint": true}),
+			"c1": _checkpoint("r1"),
+			"r1": {"type": "round", "data": {"coins": 0}, "out": [_edge("c2")]},
+			"c2": _checkpoint("r2"),
+			"r2": _round(0),
 		}
 	}
 	var lengths := {"round_lengths": {"r1": 1_200_000, "r2": 1_200_000}}

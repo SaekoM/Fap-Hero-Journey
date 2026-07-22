@@ -49,7 +49,9 @@ static func build_graph(journey: Dictionary) -> Dictionary:
 		counter,
 		0
 	)
-	return {"start": start, "nodes": nodes}
+	var graph: Dictionary = {"start": start, "nodes": nodes}
+	_migrate_checkpoint_flags(graph)
+	return graph
 
 
 # Builds a chain of nodes for one sequence level (the top-level journey or one fork
@@ -386,7 +388,50 @@ static func from_json(data: Dictionary) -> Dictionary:
 			if p.size() >= 2:
 				node["pos"] = Vector2(float(p[0]), float(p[1]))
 		nodes[str(raw.get("id", ""))] = node
-	return {"start": str(data.get("Start", "")), "nodes": nodes}
+	var graph: Dictionary = {"start": str(data.get("Start", "")), "nodes": nodes}
+	_migrate_checkpoint_flags(graph)
+	return graph
+
+
+# Converts the RETIRED per-round `is_checkpoint` flag into standalone checkpoint nodes. Runs on
+# every load (from_json + build_graph), so it covers both the builder and the runtime with one
+# implementation, and it's idempotent — a journey with no flagged rounds is untouched.
+#
+# For each flagged round R: mint a checkpoint node C, reroute every edge that pointed AT R so it
+# points at C instead, then wire C → R. The player now hits the save banner (C) immediately
+# before the round (R), preserving the old "save at the start of this round" semantics. If R was
+# the start node, C becomes the new start. Handles fork rejoins and multiple inbound edges
+# uniformly, because it rewires by target id.
+static func _migrate_checkpoint_flags(graph: Dictionary) -> void:
+	var nodes: Dictionary = graph.get("nodes", {})
+	# Snapshot the flagged round ids first — the loop below grows `nodes`.
+	var flagged: Array = []
+	for id: String in nodes:
+		var n: Dictionary = nodes[id]
+		var data: Dictionary = n.get("data", {})
+		if str(n.get("type", "")) == "round" and bool(data.get("is_checkpoint", false)):
+			flagged.append(id)
+
+	for round_id: String in flagged:
+		var round_node: Dictionary = nodes[round_id]
+		var cp_id: String = JourneyData.new_node_id()
+		# Reroute inbound edges (from any node) BEFORE adding C → R, so the new edge isn't caught.
+		for other_id: String in nodes:
+			for e: Dictionary in (nodes[other_id] as Dictionary).get("out", []):
+				if str(e.get("to", "")) == round_id:
+					e["to"] = cp_id
+		var cp_node: Dictionary = {
+			"type": "checkpoint",
+			"data": {"name": ""},
+			"out": [{"to": round_id}],
+		}
+		# Place C up-and-left of R so it reads as the step before it; the author can re-arrange.
+		if round_node.has("pos"):
+			cp_node["pos"] = (round_node["pos"] as Vector2) + Vector2(-40.0, -150.0)
+		nodes[cp_id] = cp_node
+		if str(graph.get("start", "")) == round_id:
+			graph["start"] = cp_id
+		(round_node.get("data", {}) as Dictionary).erase("is_checkpoint")
 
 
 # True when a parsed journey.json is already the graph format (vs. the legacy tree).

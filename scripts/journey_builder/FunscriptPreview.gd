@@ -229,7 +229,7 @@ func _build_ui(round_name: String) -> void:
 	# click away. (Trim mode used to default it on; this is the deliberate change.)
 	_audio_on = false
 	_audio_btn = UITheme.make_icon_btn("🔊", true, UITheme.PURPLE_BRIGHT)
-	_audio_btn.tooltip_text = "Toggle preview audio"
+	_audio_btn.tooltip_text = UITheme.wrap_tip("Toggle preview audio")
 	_audio_btn.pressed.connect(
 		func() -> void:
 			_audio_on = not _audio_on
@@ -239,30 +239,34 @@ func _build_ui(round_name: String) -> void:
 
 	# Zoom controls — adjust the horizontal time scale of the graph.
 	var zoom_out: Button = UITheme.make_icon_btn("ZOOM −", false, UITheme.PURPLE_BRIGHT)
-	zoom_out.tooltip_text = "Zoom out (show more time)"
+	zoom_out.tooltip_text = UITheme.wrap_tip("Zoom out (show more time)")
 	zoom_out.pressed.connect(func() -> void: _graph.zoom_by(0.8))
 	footer.add_child(zoom_out)
 	var zoom_in: Button = UITheme.make_icon_btn("ZOOM +", false, UITheme.PURPLE_BRIGHT)
-	zoom_in.tooltip_text = "Zoom in (show less time, more detail)"
+	zoom_in.tooltip_text = UITheme.wrap_tip("Zoom in (show less time, more detail)")
 	zoom_in.pressed.connect(func() -> void: _graph.zoom_by(1.25))
 	footer.add_child(zoom_in)
 
 	# Segment editing: mark a window with the playhead, add it as a row, then apply the list.
 	if _edit_mode:
 		var set_in: Button = UITheme.make_icon_btn("⟦ IN", false, UITheme.TOXIC_GREEN)
-		set_in.tooltip_text = "Mark the window start at the playhead"
+		set_in.tooltip_text = UITheme.wrap_tip("Mark the window start at the playhead")
 		set_in.pressed.connect(func() -> void: _set_mark(true))
 		footer.add_child(set_in)
 		var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.AMBER)
-		set_out.tooltip_text = "Mark the window end at the playhead"
+		set_out.tooltip_text = UITheme.wrap_tip("Mark the window end at the playhead")
 		set_out.pressed.connect(func() -> void: _set_mark(false))
 		footer.add_child(set_out)
 		var add_btn: Button = UITheme.make_icon_btn("+ ADD", false, UITheme.CYAN)
-		add_btn.tooltip_text = "Add the marked window to the timeline as a new row"
+		add_btn.tooltip_text = UITheme.wrap_tip(
+			"Add the marked window to the timeline as a new row"
+		)
 		add_btn.pressed.connect(_add_pending_segment)
 		footer.add_child(add_btn)
 		var drop_marks: Button = UITheme.make_icon_btn("✕ MARKS", false, UITheme.AMBER)
-		drop_marks.tooltip_text = "Discard the ⟦IN/OUT⟧ marks (keeps the timeline)"
+		drop_marks.tooltip_text = UITheme.wrap_tip(
+			"Discard the ⟦IN/OUT⟧ marks (keeps the timeline)"
+		)
 		drop_marks.pressed.connect(
 			func() -> void:
 				_mark_in = -1
@@ -278,16 +282,22 @@ func _build_ui(round_name: String) -> void:
 		_repeat_spin.min_value = 2
 		_repeat_spin.max_value = 999
 		_repeat_spin.value = 4
-		_repeat_spin.tooltip_text = "How many total passes the selected row becomes"
+		_repeat_spin.tooltip_text = UITheme.wrap_tip(
+			"How many total passes the selected row becomes"
+		)
 		UITheme.style_spin_box(_repeat_spin)
 		footer.add_child(_repeat_spin)
 		var rep_btn: Button = UITheme.make_icon_btn("⧉ REPEAT", false, UITheme.PURPLE_BRIGHT)
-		rep_btn.tooltip_text = "Repeat the selected row this many times (adds rows)"
+		rep_btn.tooltip_text = UITheme.wrap_tip(
+			"Repeat the selected row this many times (adds rows)"
+		)
 		rep_btn.pressed.connect(_repeat_selected)
 		footer.add_child(rep_btn)
 
 		var clear_btn: Button = UITheme.make_icon_btn("✕ CLEAR ALL", false, UITheme.MAGENTA)
-		clear_btn.tooltip_text = ("Remove EVERY segment so the whole clip plays untouched (Ctrl+Z undoes it)")
+		clear_btn.tooltip_text = UITheme.wrap_tip(
+			"Remove EVERY segment so the whole clip plays untouched (Ctrl+Z undoes it)"
+		)
 		clear_btn.pressed.connect(
 			func() -> void:
 				_push_undo()
@@ -297,7 +307,9 @@ func _build_ui(round_name: String) -> void:
 		)
 		footer.add_child(clear_btn)
 		var apply: Button = UITheme.make_icon_btn("✔ APPLY", false, UITheme.SUCCESS)
-		apply.tooltip_text = "Write this timeline to the round (baked at the next save)"
+		apply.tooltip_text = UITheme.wrap_tip(
+			"Write this timeline to the round (baked at the next save)"
+		)
 		apply.pressed.connect(
 			func() -> void:
 				_on_segments_applied.call(_segments.duplicate(true))  # hand over a copy, not our live list
@@ -416,7 +428,9 @@ func _build_timeline_panel() -> Control:
 	# Plays the assembled cut instead of the raw source. The bake concatenates pre-encoded
 	# segments and is seamless, so a hitch seen HERE is a preview artifact the file won't have.
 	_edl_btn = UITheme.make_icon_btn("▶ PLAY TIMELINE", false, UITheme.CYAN)
-	_edl_btn.tooltip_text = "Play the segments in order (the preview seeks at each join)"
+	_edl_btn.tooltip_text = UITheme.wrap_tip(
+		"Play the segments in order (the preview seeks at each join)"
+	)
 	_edl_btn.pressed.connect(_toggle_edl_playback)
 	head.add_child(_edl_btn)
 
@@ -1081,7 +1095,7 @@ func _rebuild_rows() -> void:
 func _row_btn(text: String, tip: String, cb: Callable) -> Button:
 	var b: Button = Button.new()
 	b.text = text
-	b.tooltip_text = tip
+	b.tooltip_text = UITheme.wrap_tip(tip)
 	b.add_theme_font_size_override("font_size", 11)
 	b.pressed.connect(cb)
 	return b
