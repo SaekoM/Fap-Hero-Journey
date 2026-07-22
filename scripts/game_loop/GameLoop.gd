@@ -115,6 +115,7 @@ var _shown_counters: Array = []
 var _counter_pop_slots: Dictionary = {}
 const COUNTER_POP_BASE_Y: float = 90.0  # first pop sits below the HUD bar
 const COUNTER_POP_STEP: float = 46.0  # one single-row pop's height + gap
+const COUNTER_POP_HOLD_SECS: float = 3.5  # how long a coin/item/counter chip stays fully on screen
 var _map_fog: bool = false  # journey-level: fog of war — reveal the map as it's discovered
 var _map_fog_reveal: int = 1  # ghost levels revealed ahead of the trail (< 0 = whole structure)
 var _map_view: GraphView = null
@@ -2309,7 +2310,7 @@ func _show_pop(title: String, detail: String, tail: String, accent: Color) -> vo
 	)
 	tin.tween_property(pop, "modulate:a", 1.0, 0.25)
 	await tin.finished
-	await get_tree().create_timer(1.6).timeout
+	await get_tree().create_timer(COUNTER_POP_HOLD_SECS).timeout
 	if not is_instance_valid(pop):
 		_counter_pop_slots.erase(slot)
 		return
