@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.2.1 — Early Access
+## v0.6.2.1
 
 An **early-access** build. Its reason to exist is a **fix for Handy (WiFi) timing** — but it also
 carries a batch of new authoring and playback features that are still being tested, so treat it as
