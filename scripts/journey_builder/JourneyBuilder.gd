@@ -2415,39 +2415,69 @@ func _cut_selection() -> void:
 		_delete_selected_nodes()
 
 
-# Ctrl+V — paste the clipboard, cascading the offset on repeated pastes.
+# Ctrl+V — paste the clipboard into the CENTRE OF THE CURRENT VIEW (not back at the copied nodes'
+# original spot, which is often scrolled off-screen), cascading down-right on repeated pastes.
 func _paste_clipboard() -> void:
 	if _clip_kind == "":
 		return
 	_paste_count += 1
 	match _clip_kind:
 		"nodes":
-			_paste_nodes(_node_clipboard, _paste_count)
+			_paste_nodes(_node_clipboard, _view_paste_offset(_clip_positions(_node_clipboard)))
 		"comment":
-			_paste_comment(_clip_comment, _paste_count)
+			var cpos: Vector2 = _clip_comment.get("pos", Vector2.ZERO)
+			_paste_comment(_clip_comment, _view_paste_offset([cpos]))
 
 
-# Ctrl+D — duplicate the active selection in place (without disturbing the clipboard).
+# Ctrl+D — duplicate the active selection in place (a small nudge off the original, so the copy is
+# visible right where the author is working — deliberately NOT recentred on the view like paste).
 func _duplicate_selection() -> void:
 	if _selected_comment_idx >= 0:
 		var comments: Array = _graph_model.get("comments", [])
 		if _selected_comment_idx < comments.size():
-			_paste_comment((comments[_selected_comment_idx] as Dictionary).duplicate(true), 1)
+			_paste_comment(
+				(comments[_selected_comment_idx] as Dictionary).duplicate(true), PASTE_OFFSET
+			)
 	elif not _selected_graph_node_ids.is_empty():
-		_paste_nodes(_snapshot_selection(), 1)
+		_paste_nodes(_snapshot_selection(), PASTE_OFFSET)
 
 
-# Creates fresh nodes from a clipboard-shaped list, offset by `offset_mult` grid steps. Edges between
+# Top-left positions of a clipboard-shaped node list, used to find the group's bounds for centering.
+func _clip_positions(entries: Array) -> Array:
+	var out: Array = []
+	for entry: Dictionary in entries:
+		out.append((entry.get("node", {}) as Dictionary).get("pos", Vector2.ZERO) as Vector2)
+	return out
+
+
+# Offset that lands the pasted group's centre on the current view centre, then cascades down-right on
+# repeat pastes so successive Ctrl+V don't stack exactly. `positions` are the source top-left corners;
+# adding half a node recentres the group on its middle rather than its top-left corner.
+func _view_paste_offset(positions: Array) -> Vector2:
+	if positions.is_empty():
+		return Vector2.ZERO
+	var mn: Vector2 = positions[0]
+	var mx: Vector2 = positions[0]
+	for p: Vector2 in positions:
+		mn = mn.min(p)
+		mx = mx.max(p)
+	var half_node: Vector2 = Vector2(GraphView.NODE_WIDTH, GraphView.NODE_HEIGHT) * 0.5
+	var group_centre: Vector2 = (mn + mx) * 0.5 + half_node
+	var cascade: Vector2 = PASTE_OFFSET * float(_paste_count - 1)
+	return _graph.view_center_world() - group_centre + cascade
+
+
+# Creates fresh nodes from a clipboard-shaped list, translated by `offset` (view-centred on paste, a
+# small nudge on duplicate). Edges between
 # copied nodes are remapped to the new ids; an edge leaving the copied set is dropped (regular node)
 # or unwired (fork choice, so the fork keeps all its slots). Pushes undo and selects the new nodes.
-func _paste_nodes(entries: Array, offset_mult: int) -> void:
+func _paste_nodes(entries: Array, offset: Vector2) -> void:
 	if entries.is_empty():
 		return
 	_push_undo()
 	if not _graph_model.has("nodes"):
 		_graph_model["nodes"] = {}
 	var nodes: Dictionary = _graph_model["nodes"]
-	var offset: Vector2 = PASTE_OFFSET * float(offset_mult)
 	# Fresh id per copied node, so internal edges can be remapped.
 	var id_map: Dictionary = {}
 	for entry: Dictionary in entries:
@@ -2490,8 +2520,9 @@ func _paste_nodes(entries: Array, offset_mult: int) -> void:
 	)
 
 
-# Paste a sticky note from the clipboard, offset by `offset_mult` grid steps; selects it. One undo step.
-func _paste_comment(comment: Dictionary, offset_mult: int) -> void:
+# Paste a sticky note from the clipboard, translated by `offset` (view-centred on paste, a small
+# nudge on duplicate); selects it. One undo step.
+func _paste_comment(comment: Dictionary, offset: Vector2) -> void:
 	if comment.is_empty():
 		return
 	_push_undo()
@@ -2499,9 +2530,7 @@ func _paste_comment(comment: Dictionary, offset_mult: int) -> void:
 		_graph_model["comments"] = []
 	var comments: Array = _graph_model["comments"]
 	var nc: Dictionary = comment.duplicate(true)
-	nc["pos"] = GraphLayout.snap(
-		(comment.get("pos", Vector2.ZERO) as Vector2) + PASTE_OFFSET * float(offset_mult)
-	)
+	nc["pos"] = GraphLayout.snap((comment.get("pos", Vector2.ZERO) as Vector2) + offset)
 	comments.append(nc)
 	_graph.deselect_nodes_silent()
 	_selected_graph_node_ids = []
