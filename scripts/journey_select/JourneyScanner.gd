@@ -540,16 +540,16 @@ static func _fork_merge(
 ) -> String:
 	var out: Array = (graph["nodes"][fork_id] as Dictionary).get("out", [])
 	var reach_count: Dictionary = {}
-	for e: Dictionary in out:
-		for nid: String in _reachable(graph, str(e.get("to", ""))):
+	for edge: Dictionary in out:
+		for nid: String in _reachable(graph, str(edge.get("to", ""))):
 			reach_count[nid] = int(reach_count.get(nid, 0)) + 1
 	var best: String = ""
 	var best_depth: int = 0x7fffffff
 	for nid: String in reach_count:
 		if int(reach_count[nid]) >= 2 and nid != fork_id and not stop.has(nid):
-			var dpt: int = int(depth.get(nid, 0))
-			if dpt < best_depth:
-				best_depth = dpt
+			var node_depth: int = int(depth.get(nid, 0))
+			if node_depth < best_depth:
+				best_depth = node_depth
 				best = nid
 	return best
 
@@ -564,8 +564,8 @@ static func _reachable(graph: Dictionary, from_id: String) -> Dictionary:
 		if id == "" or not nodes.has(id) or seen.has(id):
 			continue
 		seen[id] = true
-		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
-			stack.append(str(e.get("to", "")))
+		for edge: Dictionary in (nodes[id] as Dictionary).get("out", []):
+			stack.append(str(edge.get("to", "")))
 	return seen
 
 
@@ -578,8 +578,8 @@ static func _longest_depths(graph: Dictionary) -> Dictionary:
 		indeg[id] = 0
 		succ[id] = []
 	for id: String in nodes:
-		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
-			var to: String = str(e.get("to", ""))
+		for edge: Dictionary in (nodes[id] as Dictionary).get("out", []):
+			var to: String = str(edge.get("to", ""))
 			if to != "" and nodes.has(to):
 				(succ[id] as Array).append(to)
 				indeg[to] = int(indeg[to]) + 1
@@ -589,10 +589,10 @@ static func _longest_depths(graph: Dictionary) -> Dictionary:
 		if int(indeg[id]) == 0:
 			depth[id] = 0
 			queue.append(id)
-	var qi: int = 0
-	while qi < queue.size():
-		var cur: String = queue[qi]
-		qi += 1
+	var head: int = 0  # index of the next node to pop (queue is never shrunk, just walked)
+	while head < queue.size():
+		var cur: String = queue[head]
+		head += 1
 		for to: String in succ[cur] as Array:
 			depth[to] = maxi(int(depth.get(to, 0)), int(depth[cur]) + 1)
 			indeg[to] = int(indeg[to]) - 1

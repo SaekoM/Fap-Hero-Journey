@@ -2456,21 +2456,21 @@ func _clip_positions(entries: Array) -> Array:
 func _view_paste_offset(positions: Array) -> Vector2:
 	if positions.is_empty():
 		return Vector2.ZERO
-	var mn: Vector2 = positions[0]
-	var mx: Vector2 = positions[0]
+	var top_left: Vector2 = positions[0]
+	var bottom_right: Vector2 = positions[0]
 	for p: Vector2 in positions:
-		mn = mn.min(p)
-		mx = mx.max(p)
+		top_left = top_left.min(p)
+		bottom_right = bottom_right.max(p)
 	var half_node: Vector2 = Vector2(GraphView.NODE_WIDTH, GraphView.NODE_HEIGHT) * 0.5
-	var group_centre: Vector2 = (mn + mx) * 0.5 + half_node
+	var group_centre: Vector2 = (top_left + bottom_right) * 0.5 + half_node
 	var cascade: Vector2 = PASTE_OFFSET * float(_paste_count - 1)
 	return _graph.view_center_world() - group_centre + cascade
 
 
 # Creates fresh nodes from a clipboard-shaped list, translated by `offset` (view-centred on paste, a
-# small nudge on duplicate). Edges between
-# copied nodes are remapped to the new ids; an edge leaving the copied set is dropped (regular node)
-# or unwired (fork choice, so the fork keeps all its slots). Pushes undo and selects the new nodes.
+# small nudge on duplicate). Edges between copied nodes are remapped to the new ids; an edge leaving
+# the copied set is dropped (regular node) or unwired (fork choice, so the fork keeps all its slots).
+# Pushes undo and selects the new nodes.
 func _paste_nodes(entries: Array, offset: Vector2) -> void:
 	if entries.is_empty():
 		return
@@ -2478,29 +2478,33 @@ func _paste_nodes(entries: Array, offset: Vector2) -> void:
 	if not _graph_model.has("nodes"):
 		_graph_model["nodes"] = {}
 	var nodes: Dictionary = _graph_model["nodes"]
-	# Fresh id per copied node, so internal edges can be remapped.
-	var id_map: Dictionary = {}
+	# Fresh id per copied node, so internal edges can be remapped from old id -> new id.
+	var old_to_new_id: Dictionary = {}
 	for entry: Dictionary in entries:
-		id_map[str(entry["id"])] = JourneyData.new_node_id()
+		old_to_new_id[str(entry["id"])] = JourneyData.new_node_id()
 	var pasted_ids: Array = []
 	for entry: Dictionary in entries:
 		var src: Dictionary = entry["node"]
-		var new_id: String = str(id_map[str(entry["id"])])
+		var new_id: String = str(old_to_new_id[str(entry["id"])])
 		var src_type: String = str(src.get("type", "round"))
-		var out: Array = []
+		var out_edges: Array = []
 		if src_type == "fork":
-			for e: Dictionary in src.get("out", []):
-				var ne: Dictionary = (e as Dictionary).duplicate(true)
-				var fto: String = str(e.get("to", ""))
-				ne["to"] = str(id_map[fto]) if id_map.has(fto) else ""
-				out.append(ne)
+			# A fork keeps every slot: an edge to a node outside the copied set is unwired (to = "").
+			for edge: Dictionary in src.get("out", []):
+				var new_edge: Dictionary = (edge as Dictionary).duplicate(true)
+				var target_id: String = str(edge.get("to", ""))
+				new_edge["to"] = (
+					str(old_to_new_id[target_id]) if old_to_new_id.has(target_id) else ""
+				)
+				out_edges.append(new_edge)
 		else:
-			for e: Dictionary in src.get("out", []):
-				var to: String = str(e.get("to", ""))
-				if id_map.has(to):
-					var ne2: Dictionary = (e as Dictionary).duplicate(true)
-					ne2["to"] = str(id_map[to])
-					out.append(ne2)
+			# A regular node just drops any edge leaving the copied set.
+			for edge: Dictionary in src.get("out", []):
+				var target_id: String = str(edge.get("to", ""))
+				if old_to_new_id.has(target_id):
+					var new_edge: Dictionary = (edge as Dictionary).duplicate(true)
+					new_edge["to"] = str(old_to_new_id[target_id])
+					out_edges.append(new_edge)
 		var data: Dictionary = (src.get("data", {}) as Dictionary).duplicate(true)
 		data.erase("type")
 		data.erase("node_id")
@@ -2509,7 +2513,7 @@ func _paste_nodes(entries: Array, offset: Vector2) -> void:
 			"type": src_type,
 			"data": data,
 			"pos": GraphLayout.snap((src.get("pos", Vector2.ZERO) as Vector2) + offset),
-			"out": out,
+			"out": out_edges,
 		}
 		if str(_graph_model.get("start", "")) == "":
 			_graph_model["start"] = new_id
