@@ -155,6 +155,8 @@ var _handy_section: VBoxContainer = null  # The Handy (WiFi) connection block �
 var _stroker_summary_lbl: Label = null
 var _serial_delay_slider: HSlider = null
 var _serial_delay_lbl: Label = null
+var _serial_interp_slider: HSlider = null
+var _serial_interp_lbl: Label = null
 var _intiface_delay_slider: HSlider = null
 var _intiface_delay_lbl: Label = null
 var _transcode_section: VBoxContainer = null
@@ -2283,12 +2285,43 @@ func _build_routing_section() -> void:
 	_style_label(_stroker_summary_lbl, UITheme.CYAN, 12, false)
 	section.add_child(_stroker_summary_lbl)
 
-	var d_intiface: Dictionary = _add_delay_row(section, "Intiface delay")
+	var d_intiface: Dictionary = _add_delay_row(
+		section,
+		"Intiface delay",
+		(
+			"Timing offset for Buttplug / Intiface devices, in milliseconds. Positive = the device "
+			+ "fires later, negative = earlier. Adjust until the device lines up with the video. "
+			+ "Can also be nudged live during play."
+		)
+	)
 	_intiface_delay_slider = d_intiface["slider"]
 	_intiface_delay_lbl = d_intiface["value"]
-	var d_serial: Dictionary = _add_delay_row(section, "Serial delay")
+	var d_serial: Dictionary = _add_delay_row(
+		section,
+		"Serial delay",
+		(
+			"Timing offset for the serial (T-code) stroker, in milliseconds. Positive = the device "
+			+ "fires later, negative = earlier. Adjust until the stroker lines up with the video. "
+			+ "Can also be nudged live during play."
+		)
+	)
 	_serial_delay_slider = d_serial["slider"]
 	_serial_delay_lbl = d_serial["value"]
+
+	# Serial stroke smoothing (the T-code interp interval factor) — a per-device/firmware tuning for
+	# the OSR/SR6 stream. Same row shape as the delays, but a ×factor rather than milliseconds.
+	var d_interp: Dictionary = _add_factor_row(
+		section,
+		"Serial smoothing",
+		(
+			"How smoothly motion is streamed to a T-code stroker (OSR2 / SR6). Higher = smoother, "
+			+ "more fluid strokes; lower = snappier but can look steppy on fast sections. The best "
+			+ "value depends on your device — raise it if the motion looks choppy, lower it if it "
+			+ "feels laggy or soft."
+		)
+	)
+	_serial_interp_slider = d_interp["slider"]
+	_serial_interp_lbl = d_interp["value"]
 
 	_routing_cards_vbox = VBoxContainer.new()
 	_routing_cards_vbox.add_theme_constant_override("separation", 8)
@@ -2305,8 +2338,11 @@ func _build_routing_section() -> void:
 	_intiface_delay_lbl.text = "%d ms" % SettingsService.get_intiface_delay_ms()
 	_serial_delay_slider.value = SettingsService.get_serial_delay_ms()
 	_serial_delay_lbl.text = "%d ms" % SettingsService.get_serial_delay_ms()
+	_serial_interp_slider.value = SettingsService.get_serial_interp_factor()
+	_serial_interp_lbl.text = "%.1f×" % SettingsService.get_serial_interp_factor()
 	_intiface_delay_slider.value_changed.connect(_on_intiface_delay_changed)
 	_serial_delay_slider.value_changed.connect(_on_serial_delay_changed)
+	_serial_interp_slider.value_changed.connect(_on_serial_interp_changed)
 	_refresh_routing_cards()
 
 
@@ -2393,13 +2429,15 @@ func _build_handy_section() -> void:
 	section.add_child(disclosure)
 
 
-func _add_delay_row(parent: VBoxContainer, label_text: String) -> Dictionary:
+func _add_delay_row(parent: VBoxContainer, label_text: String, tip: String = "") -> Dictionary:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 16)
 	parent.add_child(row)
 
 	var lbl: Label = Label.new()
 	lbl.text = label_text
+	if tip != "":
+		lbl.tooltip_text = UITheme.wrap_tip(tip)
 	lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(lbl, UITheme.WHITE_SOFT, 14, false)
 	row.add_child(lbl)
@@ -2408,12 +2446,46 @@ func _add_delay_row(parent: VBoxContainer, label_text: String) -> Dictionary:
 	slider.min_value = -2000
 	slider.max_value = 2000
 	slider.step = 10
+	if tip != "":
+		slider.tooltip_text = UITheme.wrap_tip(tip)  # on the slider too — a Label often won't show a tooltip
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_slider(slider)
 	row.add_child(slider)
 
 	var value_lbl: Label = Label.new()
 	value_lbl.text = "0 ms"
+	value_lbl.custom_minimum_size = Vector2(60, 0)
+	_style_label(value_lbl, UITheme.PURPLE_MID, 11, true)
+	row.add_child(value_lbl)
+
+	return {"slider": slider, "value": value_lbl}
+
+
+# A labelled 1.0–4.0 ×factor slider row (mirrors _add_delay_row's shape). Returns {slider, value};
+# the caller seeds the value, formats the label, and wires value_changed.
+func _add_factor_row(parent: VBoxContainer, label_text: String, tip: String) -> Dictionary:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	parent.add_child(row)
+
+	var lbl: Label = Label.new()
+	lbl.text = label_text
+	lbl.tooltip_text = UITheme.wrap_tip(tip)
+	lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(lbl, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(lbl)
+
+	var slider: HSlider = HSlider.new()
+	slider.min_value = 1.0
+	slider.max_value = 4.0
+	slider.step = 0.1
+	slider.tooltip_text = UITheme.wrap_tip(tip)  # on the slider too — a Label often won't show a tooltip
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(slider)
+	row.add_child(slider)
+
+	var value_lbl: Label = Label.new()
+	value_lbl.text = "1.0×"
 	value_lbl.custom_minimum_size = Vector2(60, 0)
 	_style_label(value_lbl, UITheme.PURPLE_MID, 11, true)
 	row.add_child(value_lbl)
@@ -2645,6 +2717,13 @@ func _on_serial_delay_changed(v: float) -> void:
 	SettingsService.set_serial_delay_ms(roundi(v))
 	SettingsService.save()
 	FunscriptPlayer.SetSerialDelay(roundi(v))
+
+
+func _on_serial_interp_changed(v: float) -> void:
+	_serial_interp_lbl.text = "%.1f×" % v
+	SettingsService.set_serial_interp_factor(v)
+	SettingsService.save()
+	FunscriptPlayer.SetSerialInterpFactor(v)
 
 
 func _update_stroker_summary() -> void:

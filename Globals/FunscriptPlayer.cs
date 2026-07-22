@@ -136,7 +136,24 @@ public partial class FunscriptPlayer : Node
     private int _strokeDeviceIndex = -1;   // Buttplug linear device index when _strokeBackend == Buttplug
     private readonly List<(int Index, int Channel, string Source)> _vibeRoutes = new List<(int Index, int Channel, string Source)>();
     private readonly List<(int Index, int Channel)> _constrictRoutes = new List<(int Index, int Channel)>();
-    private bool _syncedThisFrame = false;
+    // Smooth output clock. The video reports its position a whole frame at a time (~33ms at 30fps)
+    // and micro-jitters; forwarding stroke commands on that raw clock is what jerks the OSR. So our
+    // clock free-runs on real time (advanced in _Process) and SyncTo only NUDGES it toward the
+    // video — snapping only on a large gap (a seek). Output stays smooth while locked to the media.
+    private bool _clockPrimed = false;
+    private const double ClockResyncThresholdMs = 75.0; // gap this large = a seek → snap, don't slew
+    private const double ClockReconcileGain = 0.15;     // fraction of the video-clock error closed per sync
+
+    // Serial stroke interpolation. A bracket cursor into _actions for the current time, plus the last
+    // target sent (for the max-speed slew clamp). The serial stroke position is STREAMED at a steady
+    // high rate by _PhysicsProcess — not forwarded per keyframe — which is what makes an OSR/SR6
+    // glide the way MultiFunPlayer does. Buttplug stays on the per-keyframe path (BLE rate limits).
+    private int _interpIndex = 0;
+    private double _lastSerialTarget = 50.0;
+    // Interval multiple the serial stream sends with (slightly > tick so the OSR keeps gliding toward
+    // a fresh target). Best value varies by device/firmware, so it's a live setting — seeded in
+    // ResolveOutput, overridable via SetSerialInterpFactor (Options).
+    private double _serialInterpFactor = 1.6;
 
     // Constrict auto state machine — driven by smoothed stroke activity (units/sec), updated on a throttle.
     private readonly ConstrictController _constrict = new ConstrictController();
@@ -213,11 +230,16 @@ public partial class FunscriptPlayer : Node
         _score = GetNode<ScoreService>("/root/ScoreService");
         _settings = GetNode("/root/SettingsService");
         _deviceRoutingScript = GD.Load<GDScript>("res://scripts/device/DeviceRouting.gd");
+
+        // Stream serial stroke output at a steady high rate (see _PhysicsProcess), decoupled from
+        // render FPS and the video frame clock. Nothing else in the project uses the physics loop,
+        // so raising this only affects our stroke tick.
+        Engine.PhysicsTicksPerSecond = 120;
     }
 
     /// Push updated range-clamp values directly into the player.
     /// Called by the Options screen on every slider change so mid-playback
-    /// adjustments take effect on the very next SendCommand without needing
+    /// adjustments take effect on the very next command without needing
     /// a round restart.
     public void SetRangeClamp(int min, int max)
     {
@@ -238,6 +260,9 @@ public partial class FunscriptPlayer : Node
         _actions.Clear();
         _actionIndex = 0;
         _positionMs = 0.0;
+        _clockPrimed = false;
+        _interpIndex = 0;
+        _lastSerialTarget = _homePosition;
         _playing = false;
         // Fully invalidate the resolve cache — a new round must rebuild the routing plan.
         // _outputResolved = false forces Play()/Resume() to re-run BuildRoutingPlan even if Options
@@ -365,6 +390,10 @@ public partial class FunscriptPlayer : Node
     /// Live-update the max stroke speed cap from Options (units/sec, 0 = off).
     public void SetMaxStrokeSpeed(int unitsPerSec) => _maxStrokeSpeed = Math.Max(0, unitsPerSec);
 
+    /// Live-update the serial stroke-smoothing interval factor from Options. Clamped to the same
+    /// band as the setting so a slider (or a hand-edited config) can't drive it out of range.
+    public void SetSerialInterpFactor(double factor) => _serialInterpFactor = Math.Clamp(factor, 1.0, 4.0);
+
     // Stretches a linear move's duration when it would exceed the configured
     // max stroke speed, so aggressive scripts are gently slowed instead of
     // snapping. _maxStrokeSpeed of 0 disables the cap.
@@ -485,6 +514,9 @@ public partial class FunscriptPlayer : Node
     {
         _playing = true;
         ResolveOutput();
+        _clockPrimed = false;  // first SyncTo snaps to the real video position
+        _interpIndex = 0;
+        _lastSerialTarget = _homePosition;
         _SendNeutralToUnloadedAxes();
         _StartEaseIn();
     }
@@ -505,6 +537,9 @@ public partial class FunscriptPlayer : Node
         // previous device or the wrong capability branch.
         _outputResolved = false;
         ResolveOutput();
+        _clockPrimed = false;  // re-lock the smooth clock to the resumed video position
+        _interpIndex = 0;
+        _lastSerialTarget = _homePosition;
         _StartEaseIn();
     }
 
@@ -517,6 +552,9 @@ public partial class FunscriptPlayer : Node
         EaseToNeutral();
         _positionMs = 0.0;
         _actionIndex = 0;
+        _clockPrimed = false;
+        _interpIndex = 0;
+        _lastSerialTarget = _homePosition;
 
         foreach (var kv in _axes)
             kv.Value.Index = 0;
@@ -644,12 +682,25 @@ public partial class FunscriptPlayer : Node
     }
 
     // Call this each frame from GameLoop to keep funscript in sync with the video clock.
-    // Only updates _positionMs — _Process is responsible for dispatching due actions.
+    // Only reconciles _positionMs — _Process and _PhysicsProcess dispatch/stream the output.
     public void SyncTo(double videoPositionSec)
     {
-        // Raw playback clock — per-backend delay is applied per stream in _Process, not baked in here.
-        _positionMs = videoPositionSec * 1000.0;
-        _syncedThisFrame = true;
+        // Reconcile our smooth clock toward the video instead of hard-snapping every frame: the raw
+        // video position steps a whole frame at a time and jitters, which the stroker would faithfully
+        // reproduce. The first sample after a (re)start, or any large gap (a seek), snaps; otherwise we
+        // close a fraction of the error, staying locked without inheriting the steps. Per-backend
+        // delay is applied per stream downstream, not baked in here.
+        double videoMs = videoPositionSec * 1000.0;
+        double error = videoMs - _positionMs;
+        if (!_clockPrimed || Math.Abs(error) > ClockResyncThresholdMs)
+        {
+            _positionMs = videoMs;
+            _clockPrimed = true;
+        }
+        else
+        {
+            _positionMs += error * ClockReconcileGain;
+        }
     }
 
     public override void _Process(double delta)
@@ -658,13 +709,10 @@ public partial class FunscriptPlayer : Node
         // axis scripts still dispatch even if the main L0 script is empty.
         if (_playing)
         {
-            // When synced to a video clock, SyncTo already set _positionMs this frame.
-            // Only accumulate delta in free-running mode (no video / funscript-only).
-            if (_syncedThisFrame)
-                _syncedThisFrame = false;
-            else
-                _positionMs += delta * 1000.0;
-
+            // The stroke clock is advanced in _PhysicsProcess at the fixed physics rate (regular,
+            // decoupled from render FPS) — here we only dispatch the per-keyframe work against it:
+            // scoring, activity, follow-stroke vibe, and (Buttplug only) the stroke send. The SERIAL
+            // stroke position is streamed in _PhysicsProcess too.
             // A positive delay holds each action back (fires it LATER); negative fires it ahead.
             double strokeDelay = StrokeDelay();
             while (_actionIndex < _actions.Count)
@@ -672,7 +720,7 @@ public partial class FunscriptPlayer : Node
                 if (_actions[_actionIndex].AtMs > _positionMs - strokeDelay)
                     break;
 
-                SendCommand(_actionIndex);
+                ProcessKeyframe(_actionIndex);
                 _actionIndex++;
             }
 
@@ -682,9 +730,9 @@ public partial class FunscriptPlayer : Node
                 var serial = _serial;
                 if (serial != null && serial.SerialConnected)
                 {
-                    // Compute ease blend factor once for this batch of axis commands.
-                    // _easing may already be false (cleared by L0's SendCommand above),
-                    // which is fine — both axes will stop easing at the same moment.
+                    // Compute ease blend factor once for this batch of axis commands. _easing is
+                    // cleared in _PhysicsProcess once its window elapses, so L0 and the secondary
+                    // axes stop easing together.
                     float easeSmooth = 1f;
                     if (_easing)
                     {
@@ -709,13 +757,13 @@ public partial class FunscriptPlayer : Node
                                 // Each secondary axis has its OWN range window, independent of the
                                 // stroke axis. RESCALE 0–100 → [axisMin,axisMax] so a symmetric
                                 // range compresses the swing around centre. Before the ease, then a
-                                // safety clamp — mirrors SendCommand's order.
+                                // safety clamp — mirrors ProcessedStrokePos's order.
                                 (int axisMin, int axisMax) = GetAxisRange(axis);
                                 nextPos = RescaleToAxisRange(nextPos, axisMin, axisMax);
                                 // Secondary axes always home to centre (50), so blend from 50.
                                 if (_easing || easeSmooth < 1f)
                                     nextPos = (int)Math.Round(50f + (nextPos - 50f) * easeSmooth);
-                                // Safety net: never send out-of-window (mirrors SendCommand).
+                                // Safety net: never send out-of-window (mirrors ProcessedStrokePos).
                                 nextPos = Math.Clamp(nextPos, axisMin, axisMax);
 
                                 double targetNorm = nextPos / 100.0;
@@ -798,6 +846,62 @@ public partial class FunscriptPlayer : Node
         }
     }
 
+    // Streams the SERIAL stroke position at the fixed physics rate. Instead of forwarding raw
+    // keyframes on the coarse, jittery video clock, we sample the script at the current time every
+    // tick and send one interval-move — a steady, high-rate stream the OSR/SR6 glides along. This is
+    // the core of MultiFunPlayer-style smoothness. Serial only: Buttplug/BLE can't take this rate and
+    // stays on the per-keyframe path in ProcessKeyframe.
+    public override void _PhysicsProcess(double delta)
+    {
+        // Advance the smooth stroke clock HERE, at the fixed physics rate: a regular cadence decoupled
+        // from render FPS and the coarse video frame clock, so the interpolated target actually moves
+        // every tick. SyncTo nudges it toward the video; funscript-only (free-run) mode relies on it
+        // entirely. Runs for every backend, before the serial-streaming early-out below.
+        if (_playing)
+        {
+            _positionMs += delta * 1000.0;
+            if (_easing && _positionMs - _easeStartMs >= _easeDurationMs)
+                _easing = false;
+        }
+
+        if (!_playing || _strokeBackend != StrokeBackend.Serial || _actions.Count == 0)
+            return;
+
+        var serial = _serial;
+        if (serial == null || !serial.SerialConnected)
+            return;
+
+        var effects = _inventory?.GetActiveEffects();
+        UpdateMirrorBlend(effects); // clock-driven; advance once per tick, even under block
+
+        if (effects != null && HasBlockEffect(effects))
+            return; // block suppresses output — hold position
+
+        double now = _positionMs - _serialDelayMs;
+
+        // Move the bracket cursor to the segment containing `now` (both directions, so seeks recover).
+        while (_interpIndex + 1 < _actions.Count && _actions[_interpIndex + 1].AtMs <= now)
+            _interpIndex++;
+        while (_interpIndex > 0 && _actions[_interpIndex].AtMs > now)
+            _interpIndex--;
+
+        double target = InterpolatedStrokePos(now, effects);
+
+        // Max stroke speed: cap how far the target can move this tick, so aggressive scripts are
+        // gently slowed rather than snapped (the interp equivalent of _CapDuration).
+        if (_maxStrokeSpeed > 0)
+        {
+            double maxDelta = _maxStrokeSpeed * delta;
+            target = Math.Clamp(target, _lastSerialTarget - maxDelta, _lastSerialTarget + maxDelta);
+        }
+        _lastSerialTarget = target;
+
+        // Interval a touch longer than the tick so the OSR is always still gliding toward a fresh
+        // target instead of finishing early and dwelling (which would re-introduce stepping).
+        uint intervalMs = (uint)Math.Max(1, Math.Round(delta * 1000.0 * _serialInterpFactor));
+        serial.SendLinear(intervalMs, Math.Clamp(target, 0.0, 100.0) / 100.0);
+    }
+
     // Send a single linear command to the device for the current filler direction.
     private void _SendFillerCommand()
     {
@@ -843,7 +947,7 @@ public partial class FunscriptPlayer : Node
         if (_outputResolved)
             return;
 
-        // Cache device range limits so SendCommand doesn't hit disk per-action.
+        // Cache device range limits so per-keyframe processing doesn't hit disk per-action.
         _rangeMin = _settings.Call("get_range_min").AsInt32();
         _rangeMax = _settings.Call("get_range_max").AsInt32();
 
@@ -867,6 +971,7 @@ public partial class FunscriptPlayer : Node
         _intifaceDelayMs = _settings.Call("get_intiface_delay_ms").AsInt32();
         _vibeIntensity = Math.Clamp(_settings.Call("get_vibe_intensity").AsInt32(), 0, 100) / 100f;
         _maxStrokeSpeed = Math.Max(0, _settings.Call("get_max_stroke_speed").AsInt32());
+        _serialInterpFactor = _settings.Call("get_serial_interp_factor").AsDouble();
 
         // Seed the constrict state machine's tuning from settings.
         _constrict.MaxLevel = _settings.Call("get_constrict_max_level").AsInt32();
@@ -989,98 +1094,104 @@ public partial class FunscriptPlayer : Node
         }
     }
 
-    private void SendCommand(int index)
+    // Per-keyframe work shared by every backend: scoring, smoothed activity (for constrict), and
+    // follow-stroke vibe — plus, for Buttplug, the linear stroke send. The SERIAL stroke position is
+    // NOT sent here; it's streamed continuously in _PhysicsProcess. A block effect suppresses
+    // everything (scoring, vibe, send), same as before.
+    private void ProcessKeyframe(int index)
     {
         ResolveOutput();
+        var effects = _inventory?.GetActiveEffects();
 
-        var inv = _inventory;
-        var effects = inv?.GetActiveEffects();
-
-        // Advance the eased mirror factor before any block early-out so it keeps
-        // settling toward its target even while a block effect suppresses output.
-        UpdateMirrorBlend(effects);
+        // Serial advances the eased mirror factor in its physics tick; every other backend advances
+        // it here — before the block early-out, so it keeps settling even while block suppresses output.
+        if (_strokeBackend != StrokeBackend.Serial)
+            UpdateMirrorBlend(effects);
 
         if (effects != null && HasBlockEffect(effects))
             return;
 
-        int currentPos = TransformPos(index, effects);
-        int nextPos = index + 1 < _actions.Count ? TransformPos(index + 1, effects) : currentPos;
-
-        // Score from the post-effects amplitude BEFORE the comfort range-clamp, so narrowing the stroke
-        // range to taste never costs points (range is comfort, not difficulty). Shop/curse effects are
-        // already applied above and still count toward the score.
-        int scoreAmplitude = Math.Abs(nextPos - currentPos);
-
-        // Track smoothed stroke activity (raw script units/sec) for the constrict state machine.
+        // Score + activity from the post-effects amplitude BEFORE the comfort range-clamp, so
+        // narrowing the range to taste never costs points (range is comfort, not difficulty).
         if (index + 1 < _actions.Count)
         {
+            int cur = TransformPos(index, effects);
+            int nxt = TransformPos(index + 1, effects);
+            _score?.AddStroke(Math.Abs(nxt - cur));
+
             double segMs = _actions[index + 1].AtMs - _actions[index].AtMs;
             double speed = segMs > 0.0 ? Math.Abs(_actions[index + 1].Pos - _actions[index].Pos) / (segMs / 1000.0) : 0.0;
             _strokeActivity += (speed - _strokeActivity) * 0.5;
         }
 
-        // Apply the user-configured device range as a RESCALE (lerp 0–100 → [min,max]),
-        // not a hard clamp: strokes keep their shape/rhythm at reduced amplitude rather
-        // than flat-topping and dwelling at the limit. Runs after inventory effects so
-        // shop/curse modifiers compose first, then the whole motion is fit to the window.
-        currentPos = RescaleToRange(currentPos);
-        nextPos = RescaleToRange(nextPos);
-
-        // Ease-in blend: interpolate from neutral (50) toward the script positions
-        // over the computed ease duration. Both current and next are blended so the
-        // device doesn't receive an inconsistent target during the blend window.
-        // Vibrators are exempt — _StartEaseIn() never sets _easing for them, but
-        // guard here too so any stale flag can never affect vibrator output.
-        if (_easing)
-        {
-            double elapsed = _positionMs - _easeStartMs;
-            float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
-            // Smoothstep (ease-in-out Hermite) — feels natural for device motion.
-            float smooth = t * t * (3f - 2f * t);
-            // Blend from the home position (where the device actually is) toward
-            // the script position. Secondary axes still use 50 as their anchor
-            // since they always home to centre.
-            currentPos = (int)Math.Round(_homePosition + (currentPos - _homePosition) * smooth);
-            nextPos = (int)Math.Round(_homePosition + (nextPos - _homePosition) * smooth);
-            if (elapsed >= _easeDurationMs)
-                _easing = false;
-        }
-
-        // Safety net: the device must never receive an out-of-range command. The
-        // rescale above keeps script motion in-window; this hard clamp backstops the
-        // ease-from-home blend (home can sit outside a tight range) and any rounding.
-        currentPos = Math.Clamp(currentPos, _rangeMin, _rangeMax);
-        nextPos = Math.Clamp(nextPos, _rangeMin, _rangeMax);
-
-        // Scoring is always driven by the main (L0) funscript's position deltas,
-        // even when vib scripts are loaded and actually driving the device. This
-        // keeps the scoring basis consistent regardless of the connected device.
-        if (index + 1 < _actions.Count)
-            _score?.AddStroke(scoreAmplitude);
-
         // Follow-stroke vibe actuators track the commanded stroke position as intensity.
+        int currentPos = ProcessedStrokePos(index, effects);
         SendToVibeSource("stroke", currentPos / 100.0 * _vibeIntensity);
 
-        // Stroke → the single stroke target (serial or a Buttplug linear). No target = score/vibe only.
+        // Buttplug linear stroke: one interval-move per keyframe (BLE can't take the serial rate).
+        if (_strokeBackend == StrokeBackend.Buttplug)
+            SendButtplugStroke(index, effects);
+    }
+
+    // Buttplug linear stroke send for one keyframe: move toward the next processed position over the
+    // inter-keyframe interval (capped by max stroke speed).
+    private void SendButtplugStroke(int index, Godot.Collections.Array effects)
+    {
         if (index + 1 >= _actions.Count)
             return;
-
-        double targetNormalised = nextPos / 100.0;
+        int currentPos = ProcessedStrokePos(index, effects);
+        int nextPos = ProcessedStrokePos(index + 1, effects);
         uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
         durationMs = _CapDuration(currentPos, nextPos, durationMs);
 
-        if (_strokeBackend == StrokeBackend.Serial)
-        {
-            var serial = _serial;
-            if (serial != null && serial.SerialConnected)
-                serial.SendLinear(durationMs, targetNormalised);
-        }
-        else if (_strokeBackend == StrokeBackend.Buttplug)
-        {
-            var bp = _buttplug;
-            if (bp != null && bp.BpConnected && _strokeDeviceIndex >= 0)
-                bp.SendLinear(_strokeDeviceIndex, durationMs, targetNormalised);
-        }
+        var bp = _buttplug;
+        if (bp != null && bp.BpConnected && _strokeDeviceIndex >= 0)
+            bp.SendLinear(_strokeDeviceIndex, durationMs, nextPos / 100.0);
+    }
+
+    // The fully-processed device position (0–100) for keyframe `index`: effects → comfort range
+    // (RESCALE, not clamp, so strokes keep their shape at reduced amplitude) → ease-from-home →
+    // safety clamp. Exactly what the device is told to reach at that keyframe; the serial interp tick
+    // lerps between consecutive values of it.
+    private int ProcessedStrokePos(int index, Godot.Collections.Array effects)
+    {
+        int pos = TransformPos(index, effects);
+        pos = RescaleToRange(pos);
+        pos = ApplyEase(pos);
+        return Math.Clamp(pos, _rangeMin, _rangeMax);
+    }
+
+    // Ease-in blend from the home position toward `pos`, over the computed ease window. Time-driven
+    // (reads _positionMs); the flag itself is cleared in _PhysicsProcess once the window elapses, so
+    // this stays a pure map that both the keyframe path and the serial interp tick can call freely.
+    private int ApplyEase(int pos)
+    {
+        if (!_easing)
+            return pos;
+        double elapsed = _positionMs - _easeStartMs;
+        float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
+        float smooth = t * t * (3f - 2f * t); // smoothstep (ease-in-out Hermite) — natural for device motion
+        return (int)Math.Round(_homePosition + (pos - _homePosition) * smooth);
+    }
+
+    // Linearly interpolates the processed stroke position at `now` between the bracketing keyframes
+    // (cursor _interpIndex). Interpolating the PROCESSED endpoints traces the same straight line the
+    // OSR firmware already tweens between keyframes — just sampled continuously — so dense/fast
+    // sections stay smooth and command timing no longer follows the video frame clock.
+    private int InterpolatedStrokePos(double now, Godot.Collections.Array effects)
+    {
+        if (now <= _actions[0].AtMs)
+            return ProcessedStrokePos(0, effects);
+        int i = _interpIndex;
+        if (i + 1 >= _actions.Count)
+            return ProcessedStrokePos(_actions.Count - 1, effects);
+
+        double a = _actions[i].AtMs;
+        double b = _actions[i + 1].AtMs;
+        float frac = b > a ? (float)Math.Clamp((now - a) / (b - a), 0.0, 1.0) : 0f;
+        int pa = ProcessedStrokePos(i, effects);
+        int pb = ProcessedStrokePos(i + 1, effects);
+        return (int)Math.Round(pa + (pb - pa) * frac);
     }
 
     // Fan an intensity (0–1) out to every resolved vibe actuator whose source matches.

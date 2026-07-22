@@ -38,6 +38,10 @@ const DEFAULT_HOME_EASE_MS: int = 2000
 const DEFAULT_LATENCY_OFFSET_MS: int = 0
 const DEFAULT_VIBE_INTENSITY: int = 100
 const DEFAULT_MAX_STROKE_SPEED: int = 0  # 0 = unlimited (units/sec)
+# Serial (T-code) stroke smoothing: the interval FunscriptPlayer streams with, as a multiple of the
+# output tick. >1 keeps the OSR gliding toward a fresh target instead of finishing early and
+# dwelling. Best value varies by device/firmware, so it's tunable. See FunscriptPlayer._PhysicsProcess.
+const DEFAULT_SERIAL_INTERP_FACTOR: float = 1.6
 
 # ── Device routing (one stroker + per-actuator Buttplug vibe/constrict routes) ──
 # Actuator id: "<name>#<occurrence>:<linear|vibrate|constrict>:<channel>". Stroke target is
@@ -200,6 +204,20 @@ func get_vibe_intensity() -> int:
 
 func get_max_stroke_speed() -> int:
 	return int(_config.get_value("device", "max_stroke_speed", DEFAULT_MAX_STROKE_SPEED))
+
+
+# Serial stroke smoothing factor, clamped to a sane band (a value < 1 would make the OSR finish each
+# move early and step; too high softens/lags the motion).
+func get_serial_interp_factor() -> float:
+	return clampf(
+		float(_config.get_value("device", "serial_interp_factor", DEFAULT_SERIAL_INTERP_FACTOR)),
+		1.0,
+		4.0
+	)
+
+
+func set_serial_interp_factor(value: float) -> void:
+	_config.set_value("device", "serial_interp_factor", clampf(value, 1.0, 4.0))
 
 
 # ── Device routing ──
