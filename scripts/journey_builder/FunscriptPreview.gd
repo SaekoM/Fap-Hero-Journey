@@ -30,6 +30,12 @@ var _on_tune: Callable = Callable()
 # when the source can't be decoded.
 var _video: VideoStreamPlayer = null
 var _video_pane: Control = null
+# Draggable divider between the video pane and the curve graph. The split fraction persists
+# (SettingsService.get/set_preview_video_split), so each author's preferred size sticks.
+var _video_split: VSplitContainer = null
+# Draggable divider between the left column (video + graph + playback controls) and the right
+# column (the segment timeline). Built only when editing; persists its own fraction.
+var _columns_split: HSplitContainer = null
 var _video_aspect: AspectRatioContainer = null
 var _aspect_set: bool = false
 var _video_ok: bool = false
@@ -114,6 +120,7 @@ func open(
 	_setup_video(video_path)
 	if _edit_mode:
 		_rebuild_rows()
+		_apply_saved_columns_split()  # place the column divider at the author's saved width
 
 
 func _build_ui(round_name: String) -> void:
@@ -130,18 +137,19 @@ func _build_ui(round_name: String) -> void:
 	add_child(backdrop)
 
 	var panel: PanelContainer = PanelContainer.new()
-	# Wider/taller than the original preview: this overlay now carries the video, the graph, the
-	# TUNE strip, the sensory sliders and the segment timeline.
-	panel.anchor_left = 0.04
-	panel.anchor_right = 0.96
-	panel.anchor_top = 0.04
-	panel.anchor_bottom = 0.96
+	# Near full-screen: this overlay carries the video, the graph, the TUNE strip, the sensory
+	# sliders and the segment timeline. Tight top/bottom margins give the video pane more height.
+	panel.anchor_left = 0.03
+	panel.anchor_right = 0.97
+	panel.anchor_top = 0.025
+	panel.anchor_bottom = 0.975
 	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
 	panel_style.bg_color = UITheme.PANEL_BG_DEEP
 	panel_style.border_color = UITheme.PURPLE_MID
 	panel_style.set_border_width_all(1)
 	panel_style.set_corner_radius_all(6)
 	panel_style.set_content_margin_all(18)
+	panel_style.content_margin_bottom = 8  # keep the button bar flush with the bottom edge
 	panel.add_theme_stylebox_override("panel", panel_style)
 	add_child(panel)
 
@@ -164,16 +172,47 @@ func _build_ui(round_name: String) -> void:
 	header.add_child(close_btn)
 	col.add_child(header)
 
-	# Video pane — hidden until a decodable video confirms it can play (see
-	# _setup_video). When hidden the container skips it and the graph gets the room.
-	# An AspectRatioContainer letterboxes the video inside the black pane so it
-	# isn't stretched; its ratio is set from the real video size once known.
+	# Body: the video, curve graph and playback controls fill the LEFT column; when editing, the
+	# segment timeline gets its own tall column on the RIGHT, split by a draggable, remembered
+	# divider. A view-only open has no timeline, so the left content takes the whole width instead.
+	var left_col: VBoxContainer = _build_left_column()
+	if not _edit_mode:
+		left_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		col.add_child(left_col)
+		return
+
+	var right_col: Control = _build_timeline_column()
+	_columns_split = HSplitContainer.new()
+	_columns_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_columns_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var left_frac: float = SettingsService.get_preview_columns_split()
+	left_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_col.size_flags_stretch_ratio = left_frac
+	left_col.custom_minimum_size = Vector2(360, 0)  # keep the video/graph usable when dragged narrow
+	right_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_col.size_flags_stretch_ratio = 1.0 - left_frac
+	right_col.custom_minimum_size = Vector2(240, 0)  # keep the timeline rows readable
+	_columns_split.add_child(left_col)
+	_columns_split.add_child(right_col)
+	_columns_split.dragged.connect(_on_columns_split_dragged)
+	col.add_child(_columns_split)
+
+
+# The LEFT column: the video pane and the curve graph (a draggable divider between them), the
+# optional TUNE / sensory strips, and the playback / zoom bar that drives them. The segment-editing
+# controls live with the timeline in the right column instead.
+func _build_left_column() -> VBoxContainer:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+
+	# Video pane — hidden until a decodable video confirms it can play (see _setup_video). When
+	# hidden the split skips it and the graph gets the room. An AspectRatioContainer letterboxes the
+	# video inside the black pane so it isn't stretched; its ratio is set from the real size once known.
 	var video_pane: PanelContainer = PanelContainer.new()
 	var vp_style: StyleBoxFlat = StyleBoxFlat.new()
 	vp_style.bg_color = Color(0, 0, 0, 1)
 	video_pane.add_theme_stylebox_override("panel", vp_style)
 	video_pane.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	video_pane.size_flags_stretch_ratio = 1.4
 	video_pane.clip_contents = true
 	video_pane.visible = false
 	_video_aspect = AspectRatioContainer.new()
@@ -185,11 +224,9 @@ func _build_ui(round_name: String) -> void:
 	_video.volume_db = -80.0  # start silent; _apply_audio sets the real state once confirmed
 	_video_aspect.add_child(_video)
 	_video_pane = video_pane
-	col.add_child(video_pane)
 
-	# The graph fills the remaining space and scrolls horizontally — the curve is
-	# drawn at a fixed time scale (px/sec) rather than squashed to fit, so strokes
-	# stay legible on long scripts.
+	# The graph fills the remaining space and scrolls horizontally — the curve is drawn at a fixed
+	# time scale (px/sec) rather than squashed to fit, so strokes stay legible on long scripts.
 	var scroll: ScrollContainer = ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -201,32 +238,56 @@ func _build_ui(round_name: String) -> void:
 	scroll.add_child(_graph)
 	# Redraw on scroll so the floating Y-axis labels track the viewport's left edge.
 	scroll.get_h_scroll_bar().value_changed.connect(func(_v: float) -> void: _graph.queue_redraw())
-	col.add_child(scroll)
 
-	# Scrubbing the graph seeks the video; the graph's playhead and the video clock
-	# stay in lockstep (video → playhead in _process, playhead → video here).
+	# The video pane and the curve graph share the column's flexible height through a draggable
+	# divider, so authors can size the video (or the curve) to taste. Seeded from the saved fraction
+	# via the two children's stretch ratios (split_offset stays 0) and re-saved on drag; the graph
+	# keeps its own 240px minimum, so the divider can never hide it entirely.
+	_video_split = VSplitContainer.new()
+	_video_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_video_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var video_frac: float = SettingsService.get_preview_video_split()
+	video_pane.size_flags_stretch_ratio = video_frac
+	scroll.size_flags_stretch_ratio = 1.0 - video_frac
+	_video_split.add_child(video_pane)
+	_video_split.add_child(scroll)
+	_video_split.dragged.connect(_on_video_split_dragged)
+	box.add_child(_video_split)
+
+	# Scrubbing the graph seeks the video; playhead and video clock stay in lockstep (video →
+	# playhead in _process, playhead → video here).
 	_graph.scrubbed.connect(_on_scrubbed)
 
-	# Live stroke-magnitude tuning (effect rounds): sliders that rewrite the modifier
-	# curve as you drag and persist back to the round. Only when the caller opted in.
+	# Live stroke-magnitude tuning (effect rounds): sliders that rewrite the modifier curve as you
+	# drag and persist back to the round. Only when the caller opted in.
 	if _on_tune.is_valid():
 		var strip: Control = _build_tuning_strip()
 		if strip != null:
-			col.add_child(strip)
+			box.add_child(strip)
 
-	# Footer: play/pause + zoom + modifier toggle + caption.
-	var footer: HBoxContainer = HBoxContainer.new()
-	footer.add_theme_constant_override("separation", 12)
+	var sensory_strip: Control = _build_sensory_strip()
+	if sensory_strip != null:
+		box.add_child(sensory_strip)
+
+	box.add_child(_build_playback_bar())
+	return box
+
+
+# The playback / view controls under the graph: play/pause, audio, zoom, and (when the round has
+# modifiers) the show-modifiers toggle plus the modifier caption. Segment editing lives with the
+# timeline in the right column.
+func _build_playback_bar() -> Control:
+	var bar: HBoxContainer = HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 12)
 
 	# Play / pause (disabled until a video confirms it can play).
 	_play_btn = UITheme.make_icon_btn("▶ PLAY", true, UITheme.SUCCESS)
 	_play_btn.pressed.connect(_toggle_play)
-	footer.add_child(_play_btn)
+	bar.add_child(_play_btn)
 
-	# Audio toggle (also disabled until a video confirms). Starts OFF regardless of mode:
-	# now that every open is a full editor, defaulting it on would mean any preview click
-	# suddenly plays audio — a bad surprise for this app's content. Cutting by ear is one
-	# click away. (Trim mode used to default it on; this is the deliberate change.)
+	# Audio toggle (also disabled until a video confirms). Starts OFF regardless of mode: now that
+	# every open is a full editor, defaulting it on would mean any preview click suddenly plays
+	# audio — a bad surprise for this app's content. Cutting by ear is one click away.
 	_audio_on = false
 	_audio_btn = UITheme.make_icon_btn("🔊", true, UITheme.PURPLE_BRIGHT)
 	_audio_btn.tooltip_text = UITheme.wrap_tip("Toggle preview audio")
@@ -235,91 +296,17 @@ func _build_ui(round_name: String) -> void:
 			_audio_on = not _audio_on
 			_apply_audio()
 	)
-	footer.add_child(_audio_btn)
+	bar.add_child(_audio_btn)
 
-	# Zoom controls — adjust the horizontal time scale of the graph.
+	# Zoom — adjust the graph's horizontal time scale.
 	var zoom_out: Button = UITheme.make_icon_btn("ZOOM −", false, UITheme.PURPLE_BRIGHT)
 	zoom_out.tooltip_text = UITheme.wrap_tip("Zoom out (show more time)")
 	zoom_out.pressed.connect(func() -> void: _graph.zoom_by(0.8))
-	footer.add_child(zoom_out)
+	bar.add_child(zoom_out)
 	var zoom_in: Button = UITheme.make_icon_btn("ZOOM +", false, UITheme.PURPLE_BRIGHT)
 	zoom_in.tooltip_text = UITheme.wrap_tip("Zoom in (show less time, more detail)")
 	zoom_in.pressed.connect(func() -> void: _graph.zoom_by(1.25))
-	footer.add_child(zoom_in)
-
-	# Segment editing: mark a window with the playhead, add it as a row, then apply the list.
-	if _edit_mode:
-		var set_in: Button = UITheme.make_icon_btn("⟦ IN", false, UITheme.TOXIC_GREEN)
-		set_in.tooltip_text = UITheme.wrap_tip("Mark the window start at the playhead")
-		set_in.pressed.connect(func() -> void: _set_mark(true))
-		footer.add_child(set_in)
-		var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.AMBER)
-		set_out.tooltip_text = UITheme.wrap_tip("Mark the window end at the playhead")
-		set_out.pressed.connect(func() -> void: _set_mark(false))
-		footer.add_child(set_out)
-		var add_btn: Button = UITheme.make_icon_btn("+ ADD", false, UITheme.CYAN)
-		add_btn.tooltip_text = UITheme.wrap_tip(
-			"Add the marked window to the timeline as a new row"
-		)
-		add_btn.pressed.connect(_add_pending_segment)
-		footer.add_child(add_btn)
-		var drop_marks: Button = UITheme.make_icon_btn("✕ MARKS", false, UITheme.AMBER)
-		drop_marks.tooltip_text = UITheme.wrap_tip(
-			"Discard the ⟦IN/OUT⟧ marks (keeps the timeline)"
-		)
-		drop_marks.pressed.connect(
-			func() -> void:
-				_mark_in = -1
-				_mark_out = -1
-				_rebuild_rows()
-		)
-		footer.add_child(drop_marks)
-
-		# Repeat: inserts N copies of the selected row. Storage is expanded rows, but nobody
-		# clicks duplicate thirty times — so the AFFORDANCE is a count even though the model
-		# has none. Deliberately uncapped; a long bake is the author's call.
-		_repeat_spin = SpinBox.new()
-		_repeat_spin.min_value = 2
-		_repeat_spin.max_value = 999
-		_repeat_spin.value = 4
-		_repeat_spin.tooltip_text = UITheme.wrap_tip(
-			"How many total passes the selected row becomes"
-		)
-		UITheme.style_spin_box(_repeat_spin)
-		footer.add_child(_repeat_spin)
-		var rep_btn: Button = UITheme.make_icon_btn("⧉ REPEAT", false, UITheme.PURPLE_BRIGHT)
-		rep_btn.tooltip_text = UITheme.wrap_tip(
-			"Repeat the selected row this many times (adds rows)"
-		)
-		rep_btn.pressed.connect(_repeat_selected)
-		footer.add_child(rep_btn)
-
-		var clear_btn: Button = UITheme.make_icon_btn("✕ CLEAR ALL", false, UITheme.MAGENTA)
-		clear_btn.tooltip_text = UITheme.wrap_tip(
-			"Remove EVERY segment so the whole clip plays untouched (Ctrl+Z undoes it)"
-		)
-		clear_btn.pressed.connect(
-			func() -> void:
-				_push_undo()
-				_segments.clear()
-				_sel_row = -1
-				_rebuild_rows()
-		)
-		footer.add_child(clear_btn)
-		var apply: Button = UITheme.make_icon_btn("✔ APPLY", false, UITheme.SUCCESS)
-		apply.tooltip_text = UITheme.wrap_tip(
-			"Write this timeline to the round (baked at the next save)"
-		)
-		apply.pressed.connect(
-			func() -> void:
-				_on_segments_applied.call(_segments.duplicate(true))  # hand over a copy, not our live list
-				_close()
-		)
-		footer.add_child(apply)
-		_seg_label = Label.new()
-		_seg_label.add_theme_font_size_override("font_size", 11)
-		_seg_label.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
-		footer.add_child(_seg_label)
+	bar.add_child(zoom_in)
 
 	if not _modifiers.is_empty():
 		var toggle: CheckButton = CheckButton.new()
@@ -331,20 +318,184 @@ func _build_ui(round_name: String) -> void:
 				_show_modifiers = on
 				_refresh_modified()
 		)
-		footer.add_child(toggle)
+		bar.add_child(toggle)
+
 	_caption = Label.new()
 	_caption.add_theme_font_size_override("font_size", 11)
 	_caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	footer.add_child(_caption)
-	col.add_child(footer)
+	bar.add_child(_caption)
+	return bar
 
-	var sensory_strip: Control = _build_sensory_strip()
-	if sensory_strip != null:
-		col.add_child(sensory_strip)
 
-	if _edit_mode:
-		col.add_child(_build_timeline_panel())
+# The RIGHT column (editing only): the segment timeline. A build toolbar (mark IN/OUT, add, repeat,
+# clear) on top, the full-height scrolling list of segment rows in the middle, and PLAY TIMELINE +
+# APPLY along the bottom. In its own tall column, a long cut list is easy to see and reorder — the
+# whole point of the two-column layout.
+func _build_timeline_column() -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	var title: Label = Label.new()
+	title.text = "TIMELINE"
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(title)
+	var hint: Label = Label.new()
+	hint.text = "Ctrl+Z / Ctrl+Y"
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	head.add_child(hint)
+	box.add_child(head)
+
+	box.add_child(_build_segment_toolbar())
+
+	# The scrolling list of rows — expands to fill the column so long timelines stay visible.
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_rows_box = VBoxContainer.new()
+	_rows_box.add_theme_constant_override("separation", 2)
+	_rows_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_rows_box)
+	box.add_child(scroll)
+
+	# Bottom action row: play the assembled cut, and APPLY it to the round.
+	var actions: HBoxContainer = HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 8)
+	# Plays the assembled cut instead of the raw source. The bake concatenates pre-encoded segments
+	# and is seamless, so a hitch seen HERE is a preview artifact the file won't have.
+	_edl_btn = UITheme.make_icon_btn("▶ PLAY TIMELINE", false, UITheme.CYAN)
+	_edl_btn.tooltip_text = UITheme.wrap_tip(
+		"Play the segments in order (the preview seeks at each join)"
+	)
+	_edl_btn.pressed.connect(_toggle_edl_playback)
+	actions.add_child(_edl_btn)
+	_seg_label = Label.new()
+	_seg_label.add_theme_font_size_override("font_size", 11)
+	_seg_label.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
+	_seg_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(_seg_label)
+	var apply: Button = UITheme.make_icon_btn("✔ APPLY", false, UITheme.SUCCESS)
+	apply.tooltip_text = UITheme.wrap_tip(
+		"Write this timeline to the round (baked at the next save)"
+	)
+	apply.pressed.connect(
+		func() -> void:
+			_on_segments_applied.call(_segments.duplicate(true))  # hand over a copy, not our live list
+			_close()
+	)
+	actions.add_child(apply)
+	box.add_child(actions)
+	return box
+
+
+# The segment build toolbar: mark a window with the playhead, add it as a row, repeat or clear.
+# These build the timeline, so they live in the timeline column. An HFlowContainer so the buttons
+# wrap to a second line when the column is dragged narrow.
+func _build_segment_toolbar() -> Control:
+	var bar: HFlowContainer = HFlowContainer.new()
+	bar.add_theme_constant_override("h_separation", 6)
+	bar.add_theme_constant_override("v_separation", 4)
+
+	var set_in: Button = UITheme.make_icon_btn("⟦ IN", false, UITheme.TOXIC_GREEN)
+	set_in.tooltip_text = UITheme.wrap_tip("Mark the window start at the playhead")
+	set_in.pressed.connect(func() -> void: _set_mark(true))
+	bar.add_child(set_in)
+	var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.AMBER)
+	set_out.tooltip_text = UITheme.wrap_tip("Mark the window end at the playhead")
+	set_out.pressed.connect(func() -> void: _set_mark(false))
+	bar.add_child(set_out)
+	var add_btn: Button = UITheme.make_icon_btn("+ ADD", false, UITheme.CYAN)
+	add_btn.tooltip_text = UITheme.wrap_tip("Add the marked window to the timeline as a new row")
+	add_btn.pressed.connect(_add_pending_segment)
+	bar.add_child(add_btn)
+	var drop_marks: Button = UITheme.make_icon_btn("✕ MARKS", false, UITheme.AMBER)
+	drop_marks.tooltip_text = UITheme.wrap_tip("Discard the ⟦IN/OUT⟧ marks (keeps the timeline)")
+	drop_marks.pressed.connect(
+		func() -> void:
+			_mark_in = -1
+			_mark_out = -1
+			_rebuild_rows()
+	)
+	bar.add_child(drop_marks)
+
+	# Repeat: inserts N copies of the selected row. Storage is expanded rows, but nobody clicks
+	# duplicate thirty times — so the AFFORDANCE is a count even though the model has none.
+	# Deliberately uncapped; a long bake is the author's call.
+	_repeat_spin = SpinBox.new()
+	_repeat_spin.min_value = 2
+	_repeat_spin.max_value = 999
+	_repeat_spin.value = 4
+	_repeat_spin.tooltip_text = UITheme.wrap_tip("How many total passes the selected row becomes")
+	UITheme.style_spin_box(_repeat_spin)
+	bar.add_child(_repeat_spin)
+	var rep_btn: Button = UITheme.make_icon_btn("⧉ REPEAT", false, UITheme.PURPLE_BRIGHT)
+	rep_btn.tooltip_text = UITheme.wrap_tip("Repeat the selected row this many times (adds rows)")
+	rep_btn.pressed.connect(_repeat_selected)
+	bar.add_child(rep_btn)
+
+	var clear_btn: Button = UITheme.make_icon_btn("✕ CLEAR ALL", false, UITheme.MAGENTA)
+	clear_btn.tooltip_text = UITheme.wrap_tip(
+		"Remove EVERY segment so the whole clip plays untouched (Ctrl+Z undoes it)"
+	)
+	clear_btn.pressed.connect(
+		func() -> void:
+			_push_undo()
+			_segments.clear()
+			_sel_row = -1
+			_rebuild_rows()
+	)
+	bar.add_child(clear_btn)
+	return bar
+
+
+# Places the divider at the saved fraction once the video pane is visible and the split has a real
+# height. The stretch ratios above are only a rough seed — the graph's minimum height skews the
+# ratio→fraction mapping — so we correct with split_offset (a delta from wherever it sits now) to
+# land the exact saved fraction. Clamped by the children's min sizes, same as a manual drag.
+func _apply_saved_split() -> void:
+	if _video_split == null or not _video_pane.visible:
+		return
+	await get_tree().process_frame  # let the split lay out with the video visible
+	if not is_inside_tree() or _video_split.size.y <= 0.0:
+		return
+	var target_h: float = SettingsService.get_preview_video_split() * _video_split.size.y
+	_video_split.split_offset += int(round(target_h - _video_pane.size.y))
+
+
+# The author dragged the video/graph divider — persist the new split as a fraction of the
+# splitter's height. A fraction (not the raw pixel offset the signal hands us) stays correct when
+# the modal is later opened at a different window size.
+func _on_video_split_dragged(_offset: int) -> void:
+	if _video_split == null or _video_split.size.y <= 0.0:
+		return
+	SettingsService.set_preview_video_split(_video_pane.size.y / _video_split.size.y)
+	SettingsService.save()
+
+
+# Same persistence approach as the video/graph split, but horizontal: the saved fraction is the
+# LEFT column's share of the width. Corrected with split_offset after layout so it lands exactly.
+func _apply_saved_columns_split() -> void:
+	if _columns_split == null:
+		return
+	await get_tree().process_frame  # let the columns lay out
+	if not is_inside_tree() or _columns_split.size.x <= 0.0:
+		return
+	var left: Control = _columns_split.get_child(0)
+	var target_w: float = SettingsService.get_preview_columns_split() * _columns_split.size.x
+	_columns_split.split_offset += int(round(target_w - left.size.x))
+
+
+func _on_columns_split_dragged(_offset: int) -> void:
+	if _columns_split == null or _columns_split.size.x <= 0.0:
+		return
+	var left: Control = _columns_split.get_child(0)
+	SettingsService.set_preview_columns_split(left.size.x / _columns_split.size.x)
+	SettingsService.save()
 
 
 # One slider per tunable sensory effect on this round, applied live to the video pane as you
@@ -408,48 +559,6 @@ func _sensory_slider_row(roll: Dictionary) -> Control:
 	row.add_child(slider)
 	row.add_child(value_lbl)
 	return row
-
-
-# The segment list: one row per segment, in playback order. A repeated window is simply the
-# same row again — that's the model, not a rendering choice, so reordering and duplicating are
-# the same operation on the same list.
-func _build_timeline_panel() -> Control:
-	var panel: VBoxContainer = VBoxContainer.new()
-	panel.add_theme_constant_override("separation", 4)
-
-	var head: HBoxContainer = HBoxContainer.new()
-	head.add_theme_constant_override("separation", 8)
-	var title: Label = Label.new()
-	title.text = "TIMELINE"
-	title.add_theme_font_size_override("font_size", 12)
-	title.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	head.add_child(title)
-
-	# Plays the assembled cut instead of the raw source. The bake concatenates pre-encoded
-	# segments and is seamless, so a hitch seen HERE is a preview artifact the file won't have.
-	_edl_btn = UITheme.make_icon_btn("▶ PLAY TIMELINE", false, UITheme.CYAN)
-	_edl_btn.tooltip_text = UITheme.wrap_tip(
-		"Play the segments in order (the preview seeks at each join)"
-	)
-	_edl_btn.pressed.connect(_toggle_edl_playback)
-	head.add_child(_edl_btn)
-
-	var hint: Label = Label.new()
-	hint.text = "Ctrl+Z / Ctrl+Y to undo"
-	hint.add_theme_font_size_override("font_size", 10)
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
-	head.add_child(hint)
-	panel.add_child(head)
-
-	var scroll: ScrollContainer = ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(0, 132)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_rows_box = VBoxContainer.new()
-	_rows_box.add_theme_constant_override("separation", 2)
-	_rows_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(_rows_box)
-	panel.add_child(scroll)
-	return panel
 
 
 # Recomputes (or clears) the modifier-applied curve and updates the caption.
@@ -791,6 +900,7 @@ func _setup_video(path: String) -> void:
 		_update_play_btn()
 		_apply_aspect()
 		_start_sensory()
+		_apply_saved_split()  # size the video pane to the author's saved split, now that it's shown
 		set_process(true)
 	else:
 		_video_pane.visible = false  # decode failed — stay graph-only
@@ -1102,7 +1212,7 @@ func _row_btn(text: String, tip: String, cb: Callable) -> Button:
 
 
 # Pushes the graph's shaded window (the selected row, or the pending ⟦IN/OUT⟧ marks when
-# nothing is selected) and refreshes the footer readout.
+# nothing is selected) and refreshes the timeline readout.
 func _sync_markers() -> void:
 	var start_ms: float = -1.0
 	var end_ms: float = -1.0
