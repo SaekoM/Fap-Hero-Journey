@@ -69,6 +69,13 @@ const DEFAULT_BEAT_BAR_SHAPE: String = "heart"  # see BeatBar.SHAPES
 # These grow TEXT only, in the two places long-form reading actually happens.
 const DEFAULT_STORY_TEXT_SCALE: float = 1.0  # fork / boss / storyboard prose
 const DEFAULT_TOOLTIP_TEXT_SCALE: float = 1.0  # every tooltip, builder included
+# Fraction of the funscript clip-editor's resizable area given to the video pane (the rest goes to
+# the curve graph below it). Authors drag the divider to taste; the choice persists. See
+# FunscriptPreview's VSplitContainer.
+const DEFAULT_PREVIEW_VIDEO_SPLIT: float = 0.68
+# Fraction of the clip-editor's WIDTH given to the left column (video + graph + playback controls);
+# the rest is the segment-timeline column on the right. Draggable + persisted, like the video split.
+const DEFAULT_PREVIEW_COLUMNS_SPLIT: float = 0.68
 const DEFAULT_FILLER_ENABLED: bool = false
 const DEFAULT_FILLER_HALF_CYCLE: int = 2000
 const DEFAULT_FILLER_LO: int = 0
@@ -346,6 +353,34 @@ func get_beat_bar_shape() -> String:
 
 func set_beat_bar_shape(value: String) -> void:
 	_config.set_value("display", "beat_bar_shape", value)
+
+
+# Video-vs-graph split of the clip editor, clamped to a usable band so a saved value can never
+# hide either pane entirely (the graph also enforces its own pixel minimum at layout time).
+func get_preview_video_split() -> float:
+	return clampf(
+		float(_config.get_value("builder", "preview_video_split", DEFAULT_PREVIEW_VIDEO_SPLIT)),
+		0.2,
+		0.9
+	)
+
+
+func set_preview_video_split(value: float) -> void:
+	_config.set_value("builder", "preview_video_split", clampf(value, 0.2, 0.9))
+
+
+# Left-column (video/graph) share of the clip editor's width, clamped so neither the video nor the
+# timeline column can be dragged uselessly small.
+func get_preview_columns_split() -> float:
+	return clampf(
+		float(_config.get_value("builder", "preview_columns_split", DEFAULT_PREVIEW_COLUMNS_SPLIT)),
+		0.4,
+		0.85
+	)
+
+
+func set_preview_columns_split(value: float) -> void:
+	_config.set_value("builder", "preview_columns_split", clampf(value, 0.4, 0.85))
 
 
 func get_filler_enabled() -> bool:
