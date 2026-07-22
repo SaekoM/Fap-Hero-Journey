@@ -124,6 +124,12 @@ var _sensory_value_lbl: Label = null
 var _ui_scale_slider: HSlider = null
 var _ui_scale_value_lbl: Label = null
 var _beat_bar_toggle: Button = null
+var _beat_shape_dd: OptionButton = null
+var _round_timer_toggle: Button = null
+var _story_text_slider: HSlider = null
+var _story_text_value_lbl: Label = null
+var _tooltip_text_slider: HSlider = null
+var _tooltip_text_value_lbl: Label = null
 var _handy_status_lbl: Label = null
 var _update_check_toggle: Button = null
 var _ui_sound_toggle: Button = null
@@ -465,6 +471,85 @@ func _apply_layout() -> void:
 			_save_settings()
 	)
 
+	# ── Readability rows ────────────────────────────────────────────────────
+	# Text-only scales, distinct from UI SCALE above (which resizes layout too).
+	var story_row: HBoxContainer = HBoxContainer.new()
+	story_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(story_row)
+
+	var story_lbl: Label = Label.new()
+	story_lbl.text = "STORY TEXT"
+	story_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(story_lbl, UITheme.WHITE_SOFT, 14, false)
+	story_row.add_child(story_lbl)
+
+	_story_text_slider = HSlider.new()
+	_story_text_slider.min_value = 1.0
+	_story_text_slider.max_value = 2.0
+	_story_text_slider.step = 0.05
+	_story_text_slider.value = 1.0
+	_story_text_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_story_text_slider.custom_minimum_size = Vector2(SLIDER_MIN_W, 0)
+	_style_slider(_story_text_slider)
+	story_row.add_child(_story_text_slider)
+
+	_story_text_value_lbl = Label.new()
+	_story_text_value_lbl.text = "100%"
+	_story_text_value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
+	_style_label(_story_text_value_lbl, UITheme.PURPLE_BRIGHT, 14, false)
+	story_row.add_child(_story_text_value_lbl)
+
+	_story_text_slider.value_changed.connect(
+		func(v: float) -> void:
+			_story_text_value_lbl.text = "%d%%" % roundi(v * 100.0)
+			_save_settings()
+	)
+
+	var story_hint: Label = Label.new()
+	story_hint.text = "Enlarges fork, boss-intro and storyboard text only — the HUD and buttons keep their size. Applies to the next screen that opens."
+	story_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(story_hint, UITheme.SEPARATOR, 11, false)
+	display_section.add_child(story_hint)
+
+	var tip_row: HBoxContainer = HBoxContainer.new()
+	tip_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(tip_row)
+
+	var tip_lbl: Label = Label.new()
+	tip_lbl.text = "TOOLTIP TEXT"
+	tip_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(tip_lbl, UITheme.WHITE_SOFT, 14, false)
+	tip_row.add_child(tip_lbl)
+
+	_tooltip_text_slider = HSlider.new()
+	_tooltip_text_slider.min_value = 1.0
+	_tooltip_text_slider.max_value = 2.0
+	_tooltip_text_slider.step = 0.05
+	_tooltip_text_slider.value = 1.0
+	_tooltip_text_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_tooltip_text_slider.custom_minimum_size = Vector2(SLIDER_MIN_W, 0)
+	_style_slider(_tooltip_text_slider)
+	tip_row.add_child(_tooltip_text_slider)
+
+	_tooltip_text_value_lbl = Label.new()
+	_tooltip_text_value_lbl.text = "100%"
+	_tooltip_text_value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
+	_style_label(_tooltip_text_value_lbl, UITheme.PURPLE_BRIGHT, 14, false)
+	tip_row.add_child(_tooltip_text_value_lbl)
+
+	_tooltip_text_slider.value_changed.connect(
+		func(v: float) -> void:
+			_tooltip_text_value_lbl.text = "%d%%" % roundi(v * 100.0)
+			_save_settings()
+			UITheme.apply_tooltip_scale()  # live: the next hover shows the new size
+	)
+
+	var tip_hint: Label = Label.new()
+	tip_hint.text = "Enlarges every tooltip, including the journey builder's."
+	tip_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(tip_hint, UITheme.SEPARATOR, 11, false)
+	display_section.add_child(tip_hint)
+
 	var ui_scale_hint: Label = Label.new()
 	ui_scale_hint.text = "Scales the entire interface. Raise it if menus look small on a high-resolution or 4K display."
 	ui_scale_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -493,11 +578,49 @@ func _apply_layout() -> void:
 			_save_settings()
 	)
 
+	# Marker shape. Order matches BeatBar.SHAPES so the index maps straight to the id.
+	_beat_shape_dd = OptionButton.new()
+	_beat_shape_dd.add_item("♥ Heart")
+	_beat_shape_dd.add_item("● Orb")
+	_beat_shape_dd.add_item("◆ Diamond")
+	_beat_shape_dd.add_item("★ Star")
+	UITheme.style_option_button(_beat_shape_dd)
+	beat_row.add_child(_beat_shape_dd)
+	_beat_shape_dd.item_selected.connect(func(_i: int) -> void: _save_settings())
+
 	var beat_hint: Label = Label.new()
-	beat_hint.text = "Shows upcoming stroke beats as orbs scrolling toward a hit-line during play."
+	beat_hint.text = "Shows upcoming stroke beats scrolling toward a hit-line during play. Pick the marker shape on the right."
 	beat_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(beat_hint, UITheme.SEPARATOR, 11, false)
 	display_section.add_child(beat_hint)
+
+	# ── Round Timer row ─────────────────────────────────────────────────────
+	var timer_row: HBoxContainer = HBoxContainer.new()
+	timer_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(timer_row)
+
+	var timer_lbl: Label = Label.new()
+	timer_lbl.text = "ROUND TIMER"
+	timer_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_label(timer_lbl, UITheme.WHITE_SOFT, 14, false)
+	timer_row.add_child(timer_lbl)
+
+	_round_timer_toggle = Button.new()
+	_round_timer_toggle.toggle_mode = true
+	_round_timer_toggle.focus_mode = Control.FOCUS_NONE
+	_style_toggle(_round_timer_toggle, false)
+	timer_row.add_child(_round_timer_toggle)
+	_round_timer_toggle.toggled.connect(
+		func(pressed: bool) -> void:
+			_style_toggle(_round_timer_toggle, pressed)
+			_save_settings()
+	)
+
+	var timer_hint: Label = Label.new()
+	timer_hint.text = "Shows the time left in the current round on the HUD. Hidden along with the rest of the HUD by effects that conceal it."
+	timer_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(timer_hint, UITheme.SEPARATOR, 11, false)
+	display_section.add_child(timer_hint)
 
 	# ── Update Check row (code-generated, appended to DisplaySection) ─────────
 	var upd_row: HBoxContainer = HBoxContainer.new()
@@ -1393,6 +1516,25 @@ func _load_settings() -> void:
 		_beat_bar_toggle.button_pressed = beat_on
 		_style_toggle(_beat_bar_toggle, beat_on)
 
+	if _beat_shape_dd != null:
+		var shape_i: int = BeatBar.SHAPES.find(SettingsService.get_beat_bar_shape())
+		_beat_shape_dd.selected = shape_i if shape_i >= 0 else 0
+
+	if _story_text_slider != null:
+		var story_scale: float = SettingsService.get_story_text_scale()
+		_story_text_slider.set_value_no_signal(story_scale)
+		_story_text_value_lbl.text = "%d%%" % roundi(story_scale * 100.0)
+
+	if _tooltip_text_slider != null:
+		var tip_scale: float = SettingsService.get_tooltip_text_scale()
+		_tooltip_text_slider.set_value_no_signal(tip_scale)
+		_tooltip_text_value_lbl.text = "%d%%" % roundi(tip_scale * 100.0)
+
+	if _round_timer_toggle != null:
+		var timer_on: bool = SettingsService.get_round_timer_enabled()
+		_round_timer_toggle.button_pressed = timer_on
+		_style_toggle(_round_timer_toggle, timer_on)
+
 	if _update_check_toggle != null:
 		var upd_on: bool = SettingsService.get_update_check_enabled()
 		_update_check_toggle.button_pressed = upd_on
@@ -1496,6 +1638,17 @@ func _save_settings() -> void:
 
 	if _beat_bar_toggle != null:
 		SettingsService.set_beat_bar_enabled(_beat_bar_toggle.button_pressed)
+
+	if _beat_shape_dd != null:
+		SettingsService.set_beat_bar_shape(BeatBar.SHAPES[_beat_shape_dd.selected])
+
+	if _round_timer_toggle != null:
+		SettingsService.set_round_timer_enabled(_round_timer_toggle.button_pressed)
+
+	if _story_text_slider != null:
+		SettingsService.set_story_text_scale(_story_text_slider.value)
+	if _tooltip_text_slider != null:
+		SettingsService.set_tooltip_text_scale(_tooltip_text_slider.value)
 
 	if _update_check_toggle != null:
 		SettingsService.set_update_check_enabled(_update_check_toggle.button_pressed)

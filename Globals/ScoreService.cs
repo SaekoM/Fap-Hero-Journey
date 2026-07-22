@@ -79,6 +79,14 @@ public partial class ScoreService : Node
         _current = default;
     }
 
+    // Ends the round WITHOUT banking it: a skipped round scores nothing, so the partial score
+    // accrued before the skip is thrown away rather than added to the run. LastRoundScore keeps
+    // reporting the previous completed round, which is what score-based forks should read.
+    public void DiscardRound()
+    {
+        _current = default;
+    }
+
     public void SetMultiplier(double multiplier) => _multiplier = multiplier;
 
     // Test-play helper: injects a synthetic completed round with the given score

@@ -70,7 +70,6 @@ func test_coerce_round_fills_baseline_defaults() -> void:
 	var out := JourneyData.coerce_node_save_data("round", {"name": "A"})
 	assert_str(out["round_type"]).is_equal("normal")
 	assert_str(out["award_item"]).is_equal("")  # no reward by default
-	assert_bool(out["is_checkpoint"]).is_false()
 	assert_bool(out["effect_random"]).is_true()
 	assert_bool(out["resolvable"]).is_false()
 	assert_int(out["cleanse_cost"]).is_equal(50)
@@ -316,3 +315,23 @@ func test_graph_video_sources_dedups_rounds_only() -> void:
 	assert_int(srcs.size()).is_equal(2)
 	assert_bool(srcs.has("/x/v.mp4")).is_true()
 	assert_bool(srcs.has("/y/w.mp4")).is_true()
+
+
+# Warmup survives coercion as a real bool (default false). is_checkpoint is RETIRED — coercion
+# must NOT write it back, since the flag is converted to a checkpoint node on load.
+func test_round_flags_coerce_to_bools() -> void:
+	var on: Dictionary = JourneyData.coerce_node_save_data(
+		"round", {"name": "A", "is_checkpoint": true, "is_warmup": true}
+	)
+	assert_int(typeof(on["is_warmup"])).is_equal(TYPE_BOOL)
+	assert_bool(on["is_warmup"]).is_true()
+	assert_bool(on.has("is_checkpoint")).is_false()  # retired — not persisted
+
+	var off: Dictionary = JourneyData.coerce_node_save_data("round", {"name": "B"})
+	assert_bool(off["is_warmup"]).is_false()
+
+
+# A checkpoint node coerces to just its label.
+func test_coerce_checkpoint_node() -> void:
+	var out: Dictionary = JourneyData.coerce_node_save_data("checkpoint", {"name": "Act 1"})
+	assert_str(out["name"]).is_equal("Act 1")

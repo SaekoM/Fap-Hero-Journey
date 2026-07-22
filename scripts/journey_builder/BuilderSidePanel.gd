@@ -217,7 +217,12 @@ func show_journey_info_panel() -> void:
 	side_vbox.add_child(_side_field_label("PLAYER MAP"))
 	var map_toggle: CheckButton = CheckButton.new()
 	map_toggle.text = "ALLOW JOURNEY MAP"
-	map_toggle.tooltip_text = "Let the player open the read-only journey map during play (◇ MAP button / M key). Turn off to keep the journey's layout a surprise."
+	map_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Let the player open the read-only journey map during play (◇ MAP button / M key). Turn off to keep the journey's layout a surprise."
+		)
+	)
 	map_toggle.add_theme_font_size_override("font_size", 12)
 	map_toggle.button_pressed = _owner._journey_map_enabled
 	side_vbox.add_child(map_toggle)
@@ -227,7 +232,12 @@ func show_journey_info_panel() -> void:
 	# refresh closure can reach them all.
 	var fog_toggle: CheckButton = CheckButton.new()
 	fog_toggle.text = "FOG OF WAR  (REVEAL ON DISCOVERY)"
-	fog_toggle.tooltip_text = "Reveal the map as the player plays: visited nodes shown in full, the steps ahead ghosted as '?', everything beyond hidden. Discovery resets each run."
+	fog_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Reveal the map as the player plays: visited nodes shown in full, the steps ahead ghosted as '?', everything beyond hidden. Discovery resets each run."
+		)
+	)
 	fog_toggle.add_theme_font_size_override("font_size", 12)
 	fog_toggle.button_pressed = _owner._journey_map_fog
 	side_vbox.add_child(fog_toggle)
@@ -245,14 +255,21 @@ func show_journey_info_panel() -> void:
 	reveal_spin.max_value = 20
 	reveal_spin.step = 1
 	reveal_spin.value = maxi(0, _owner._journey_map_fog_reveal)
-	reveal_spin.tooltip_text = "How many steps of '?' ghosts to show beyond the visited trail. 0 = trail only."
+	reveal_spin.tooltip_text = UITheme.wrap_tip(
+		"How many steps of '?' ghosts to show beyond the visited trail. 0 = trail only."
+	)
 	UITheme.style_spin_box(reveal_spin)
 	reveal_row.add_child(reveal_spin)
 	side_vbox.add_child(reveal_row)
 
 	var whole_toggle: CheckButton = CheckButton.new()
 	whole_toggle.text = "REVEAL WHOLE STRUCTURE"
-	whole_toggle.tooltip_text = "Show EVERY node as a '?' ghost so the player sees the journey's shape without learning what each node is. Overrides the step count."
+	whole_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Show EVERY node as a '?' ghost so the player sees the journey's shape without learning what each node is. Overrides the step count."
+		)
+	)
 	whole_toggle.add_theme_font_size_override("font_size", 12)
 	whole_toggle.button_pressed = _owner._journey_map_fog_reveal < 0
 	side_vbox.add_child(whole_toggle)
@@ -480,7 +497,7 @@ func show_comment_editor(idx: int) -> void:
 		var sw: Button = Button.new()
 		sw.custom_minimum_size = Vector2(30, 26)
 		sw.focus_mode = Control.FOCUS_NONE
-		sw.tooltip_text = "Set note colour"
+		sw.tooltip_text = UITheme.wrap_tip("Set note colour")
 		var sb: StyleBoxFlat = StyleBoxFlat.new()
 		sb.bg_color = col
 		sb.corner_radius_top_left = 4
@@ -544,7 +561,7 @@ func show_frame_editor(idx: int) -> void:
 		var sw: Button = Button.new()
 		sw.custom_minimum_size = Vector2(30, 26)
 		sw.focus_mode = Control.FOCUS_NONE
-		sw.tooltip_text = "Set frame colour"
+		sw.tooltip_text = UITheme.wrap_tip("Set frame colour")
 		var sb: StyleBoxFlat = StyleBoxFlat.new()
 		sb.bg_color = col
 		sb.corner_radius_top_left = 4
@@ -857,7 +874,7 @@ func _make_graph_choice_block(
 	# A fork needs ≥2 choices (matches the tree's path minimum + ForkScreen).
 	if out.size() > 2:
 		var rm_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
-		rm_btn.tooltip_text = "Delete this choice"
+		rm_btn.tooltip_text = UITheme.wrap_tip("Delete this choice")
 		rm_btn.pressed.connect(func() -> void: _owner._remove_fork_edge(node_id, ei))
 		hdr.add_child(rm_btn)
 
@@ -1002,7 +1019,9 @@ func _make_test_controls(item: Dictionary, arr: Array) -> Control:
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = expanded
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	toggle_btn.tooltip_text = "Save the journey and play it from this node, with optional starting score / coins / flags."
+	toggle_btn.tooltip_text = UITheme.wrap_tip(
+		"Save the journey and play it from this node, with optional starting score / coins / flags."
+	)
 	UITheme.style_button(toggle_btn, UITheme.PURPLE_MID)
 	wrapper.add_child(toggle_btn)
 
@@ -1014,7 +1033,9 @@ func _make_test_controls(item: Dictionary, arr: Array) -> Control:
 	# Primary action: save the journey and play the real runtime starting at this node.
 	var btn: Button = UITheme.make_icon_btn("▶  PLAY FROM HERE", false, UITheme.SUCCESS)
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	btn.tooltip_text = "Save the journey and play it in the real runtime starting at this node."
+	btn.tooltip_text = UITheme.wrap_tip(
+		"Save the journey and play it in the real runtime starting at this node."
+	)
 	btn.pressed.connect(func() -> void: _owner._save_and_test_from(item, arr))
 	panel.add_child(btn)
 
@@ -1099,6 +1120,9 @@ func _build_side_panel_editor(
 		"storyboard":
 			hdr.text = "// STORYBOARD //"
 			accent = UITheme.STORYBOARD
+		"checkpoint":
+			hdr.text = "// CHECKPOINT //"
+			accent = UITheme.AMBER
 		_:
 			hdr.text = "// ITEM //"
 			accent = UITheme.PURPLE_MID
@@ -1118,6 +1142,32 @@ func _build_side_panel_editor(
 			container.add_child(_make_side_shop_editor(arr, idx))
 		"storyboard":
 			container.add_child(_make_side_storyboard_editor(arr, idx, reselect))
+		"checkpoint":
+			container.add_child(_make_side_checkpoint_editor(arr, idx))
+
+
+# A checkpoint node's editor: just an optional banner label. The save point itself needs no
+# config — reaching the node offers Save & Quit / Continue at runtime.
+func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+
+	var hint: Label = Label.new()
+	hint.text = "A SAVE POINT BETWEEN ROUNDS. PLAYERS REACHING IT CAN SAVE & QUIT TO RESUME FROM HERE LATER, OR CONTINUE. PLACE IT BEFORE A ROUND YOU WANT TO ACT AS A CHECKPOINT."
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.uppercase = true
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(hint)
+
+	col.add_child(_side_field_label("LABEL  (OPTIONAL)"))
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.placeholder_text = "e.g. End of Act 1"
+	name_edit.text = str(arr[idx].get("name", ""))
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(val: String) -> void: arr[idx]["name"] = val)
+	col.add_child(name_edit)
+	return col
 
 
 # ── Internal: small helpers ─────────────────────────────────────────────────
@@ -1247,7 +1297,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 		var fs_rm: Button = UITheme.make_icon_btn(
 			"✕", round_data.get("funscript_path", "") == "", UITheme.MAGENTA
 		)
-		fs_rm.tooltip_text = "Remove funscript"
+		fs_rm.tooltip_text = UITheme.wrap_tip("Remove funscript")
 		fs_rm.pressed.connect(func() -> void: fs_zone.set_file(""))
 		var fs_row: HBoxContainer = HBoxContainer.new()
 		fs_row.add_theme_constant_override("separation", 6)
@@ -1293,9 +1343,14 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 			UITheme.CYAN
 		)
 		preview_btn.tooltip_text = (
-			"Preview the strokes against the video, set the cut window, and drag scale/clamp effects to tune them live."
-			if is_effect_round
-			else "Preview the strokes against the video and set the cut window."
+			UITheme
+			. wrap_tip(
+				(
+					"Preview the strokes against the video, set the cut window, and drag scale/clamp effects to tune them live."
+					if is_effect_round
+					else "Preview the strokes against the video and set the cut window."
+				)
+			)
 		)
 		preview_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		preview_btn.pressed.connect(func() -> void: _open_funscript_editor(arr, idx, reselect))
@@ -1348,9 +1403,10 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	col.add_child(_make_set_flags_field(arr[idx]))
 	col.add_child(_make_set_counters_field(arr[idx]))
 
-	# ── Round behavior (checkpoint + the round types) ────────────────────────────
+	# ── Round behavior ───────────────────────────────────────────────────────────
+	# (Checkpoints are their own node type now — added from the canvas, not a round flag.)
 	col.add_child(_side_divider_line())
-	col.add_child(_make_checkpoint_toggle(arr, idx))
+	col.add_child(_make_warmup_toggle(arr, idx))
 
 	# Boss / Effect are the round's own twist and are mutually exclusive with each other. A POOL
 	# round carries its type PER ENTRY instead (a rolled encounter can itself be a boss), so the
@@ -1487,6 +1543,8 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 		shop_data["items"] = []
 	if not shop_data.has("guaranteed"):
 		shop_data["guaranteed"] = []
+	if not shop_data.has("excluded"):
+		shop_data["excluded"] = []
 	if not shop_data.has("price_multiplier"):
 		shop_data["price_multiplier"] = 1.0
 
@@ -1553,11 +1611,25 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	pool_section.visible = shop_data.get("mode", "pool") == "pool"
 	col.add_child(pool_section)
 
+	# Exclusions bar items from the random draw. Pool mode only — in fixed mode the lineup IS
+	# the authored list, so "never draw this" has nothing to act on.
+	var excluded_section: VBoxContainer = _shop_item_checklist(
+		arr,
+		idx,
+		"excluded",
+		"NEVER DRAWN",
+		"CHECKED ITEMS ARE KEPT OUT OF THE RANDOM DRAW. AN ITEM THAT IS ALSO GUARANTEED STILL APPEARS.",
+		all_item_ids
+	)
+	excluded_section.visible = shop_data.get("mode", "pool") == "pool"
+	col.add_child(excluded_section)
+
 	mode_dd.item_selected.connect(
 		func(sel: int) -> void:
 			arr[idx]["mode"] = "fixed" if sel == 1 else "pool"
 			fixed_section.visible = sel == 1
 			pool_section.visible = sel == 0
+			excluded_section.visible = sel == 0
 			count_spin.editable = sel == 0
 	)
 
@@ -1803,7 +1875,7 @@ func _shop_item_checklist(
 		var item_data: Dictionary = InventoryService.GetItemData(item_id)
 		var cb: CheckBox = CheckBox.new()
 		cb.text = "%s  (♦%d)" % [item_data.get("name", item_id), item_data.get("price", 0)]
-		cb.tooltip_text = _item_tooltip(item_id)
+		cb.tooltip_text = UITheme.wrap_tip(_item_tooltip(item_id))
 		cb.button_pressed = item_id in (arr[idx].get(key, []) as Array)
 		cb.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 		cb.add_theme_font_size_override("font_size", 12)
@@ -2310,7 +2382,7 @@ func _make_axis_expander(arr: Array, idx: int) -> Control:
 		var current_path: String = (arr[idx]["axis_scripts"] as Dictionary).get(axis, "")
 		# Zone + inline ✕ remove (disabled until this axis is set).
 		var rm: Button = UITheme.make_icon_btn("✕", current_path == "", UITheme.MAGENTA)
-		rm.tooltip_text = "Remove %s funscript" % axis
+		rm.tooltip_text = UITheme.wrap_tip("Remove %s funscript" % axis)
 		rm.pressed.connect(func() -> void: zone.set_file(""))
 		var row: HBoxContainer = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
@@ -2388,7 +2460,7 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 		var current_path: String = (arr[idx]["vib_scripts"] as Dictionary).get(ch_key, "")
 		# Zone + inline ✕ remove (disabled until this channel is set).
 		var rm: Button = UITheme.make_icon_btn("✕", current_path == "", UITheme.MAGENTA)
-		rm.tooltip_text = "Remove %s funscript" % ch_key.to_upper()
+		rm.tooltip_text = UITheme.wrap_tip("Remove %s funscript" % ch_key.to_upper())
 		rm.pressed.connect(func() -> void: zone.set_file(""))
 		var row: HBoxContainer = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
@@ -2428,9 +2500,12 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 # a CHECKPOINT REACHED banner offering Save & Quit so the player can resume the
 # run later. Works on any round type, including bosses — the banner is shown
 # before the boss intro card, so the player can save out before committing.
-func _make_checkpoint_toggle(arr: Array, idx: int) -> Control:
-	if not arr[idx].has("is_checkpoint"):
-		arr[idx]["is_checkpoint"] = false
+# A "WARMUP ROUND" toggle. A warmup plays like any other round — full payout if completed — but
+# offers the player a free ⏭ SKIP button. Use for opening/easing rounds a returning player may
+# not want again.
+func _make_warmup_toggle(arr: Array, idx: int) -> Control:
+	if not arr[idx].has("is_warmup"):
+		arr[idx]["is_warmup"] = false
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
 	wrapper.add_theme_constant_override("separation", 4)
@@ -2440,8 +2515,8 @@ func _make_checkpoint_toggle(arr: Array, idx: int) -> Control:
 	wrapper.add_child(row)
 
 	var label: Label = Label.new()
-	label.text = "CHECKPOINT ROUND"
-	label.add_theme_color_override("font_color", UITheme.AMBER)
+	label.text = "WARMUP ROUND"
+	label.add_theme_color_override("font_color", UITheme.CYAN)
 	label.add_theme_font_size_override("font_size", 12)
 	label.uppercase = true
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2449,19 +2524,19 @@ func _make_checkpoint_toggle(arr: Array, idx: int) -> Control:
 
 	var toggle: Button = Button.new()
 	toggle.toggle_mode = true
-	toggle.button_pressed = arr[idx]["is_checkpoint"]
+	toggle.button_pressed = arr[idx]["is_warmup"]
 	toggle.focus_mode = Control.FOCUS_NONE
-	UITheme.style_button(toggle, UITheme.AMBER)
-	toggle.text = "✓ ON" if arr[idx]["is_checkpoint"] else "OFF"
+	UITheme.style_button(toggle, UITheme.CYAN)
+	toggle.text = "✓ ON" if arr[idx]["is_warmup"] else "OFF"
 	toggle.toggled.connect(
 		func(pressed: bool) -> void:
-			arr[idx]["is_checkpoint"] = pressed
+			arr[idx]["is_warmup"] = pressed
 			toggle.text = "✓ ON" if pressed else "OFF"
 	)
 	row.add_child(toggle)
 
 	var hint: Label = Label.new()
-	hint.text = "PLAYERS REACHING THIS ROUND SEE A CHECKPOINT BANNER WITH A SAVE & QUIT OPTION. USE FOR NATURAL STOPPING POINTS — END OF ACT, BEFORE A BIG BOSS, BETWEEN STORY ARCS."
+	hint.text = "PLAYERS GET A FREE SKIP BUTTON ON THIS ROUND. COMPLETING IT PAYS OUT NORMALLY; SKIPPING PAYS NOTHING AND IS MARKED ON THE END-SCREEN ROUTE."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
@@ -2549,8 +2624,16 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	)
 	boss_panel.add_child(add_btn)
 
+	# Gameplay effects (hindrances/boons) the boss forces on top of its raw modifiers. Same
+	# catalog and per-effect tuning as an effect round — but forced (all ticked apply, no roll,
+	# no cleanse), consistent with a boss.
+	boss_panel.add_child(HSeparator.new())
+	boss_panel.add_child(_side_field_label("FORCED EFFECTS  (OPTIONAL)"))
+	boss_panel.add_child(_build_effect_catalog_picker(arr, idx))
+
 	# Optional non-gameplay (visual/audio) modifiers the boss imposes alongside its
 	# forced modifiers. Explicit-pick only for boss rounds — no random pool.
+	boss_panel.add_child(HSeparator.new())
 	boss_panel.add_child(_build_sensory_picker(arr, idx))
 
 	# Rebuild on toggle so the round-type stays consistent with the Cursed toggle
@@ -2606,7 +2689,12 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 
 	var card_toggle: CheckButton = CheckButton.new()
 	card_toggle.text = 'SHOW "ENCOUNTER!" CARD'
-	card_toggle.tooltip_text = "Play the animated ENCOUNTER card before the round starts. Off = the chosen encounter just begins, no reveal."
+	card_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Play the animated ENCOUNTER card before the round starts. Off = the chosen encounter just begins, no reveal."
+		)
+	)
 	card_toggle.add_theme_font_size_override("font_size", 12)
 	card_toggle.button_pressed = bool(arr[idx].get("show_encounter", true))
 	card_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["show_encounter"] = on)
@@ -2808,7 +2896,7 @@ func _make_pool_entry_row(
 	)
 	header.add_child(down)
 	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
-	rm.tooltip_text = "Remove this encounter"
+	rm.tooltip_text = UITheme.wrap_tip("Remove this encounter")
 	rm.pressed.connect(
 		func() -> void:
 			(arr[idx]["pool_entries"] as Array).remove_at(e_idx)
@@ -2955,7 +3043,9 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	var show_border: bool = bool(arr[idx].get("show_border", false))
 	var border_toggle: CheckButton = CheckButton.new()
 	border_toggle.text = "SHOW SCREEN BORDER"
-	border_toggle.tooltip_text = "Draws a coloured edge frame around the play area for this round (no screen tint)."
+	border_toggle.tooltip_text = UITheme.wrap_tip(
+		"Draws a coloured edge frame around the play area for this round (no screen tint)."
+	)
 	border_toggle.add_theme_font_size_override("font_size", 12)
 	border_toggle.button_pressed = show_border
 	border_toggle.toggled.connect(
@@ -3010,6 +3100,35 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	rand_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["effect_random"] = on)
 	wrapper.add_child(rand_toggle)
 
+	wrapper.add_child(_build_effect_catalog_picker(arr, idx))
+
+	# ── Sensory layer (always-apply modifiers + optional random pool) ──
+	wrapper.add_child(HSeparator.new())
+	var pool_toggle: CheckButton = CheckButton.new()
+	pool_toggle.text = "INCLUDE SENSORY IN RANDOM POOL"
+	pool_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"When on, the random roll can also surface non-gameplay modifiers from the full sensory set (not just ticked ones)."
+		)
+	)
+	pool_toggle.add_theme_font_size_override("font_size", 12)
+	pool_toggle.button_pressed = bool(arr[idx].get("sensory_in_pool", false))
+	pool_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["sensory_in_pool"] = on)
+	wrapper.add_child(pool_toggle)
+	wrapper.add_child(_build_sensory_picker(arr, idx, true))  # effect rounds can rename sensory
+
+	return wrapper
+
+
+# The gameplay-effect selection list: hindrances + boons, each tickable (and, once ticked,
+# renamable / reflavorable / tunable via _make_effect_row), plus the Gift-boon item picker.
+# Shared by the effect expander and the boss expander — a boss now carries the full catalog on
+# top of its raw modifiers. Reads/writes arr[idx]["effects"] (+ effect_overrides / gift_item).
+func _build_effect_catalog_picker(arr: Array, idx: int) -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+
 	var selected: Array = arr[idx].get("effects", [])
 	var custom_hint: Label = Label.new()
 	custom_hint.text = "Tick an effect to rename it, reflavor it, or tune its strength."
@@ -3017,15 +3136,15 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	custom_hint.add_theme_font_size_override("font_size", 10)
 	custom_hint.uppercase = true
 	custom_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	wrapper.add_child(custom_hint)
-	wrapper.add_child(_side_field_label("HINDRANCES  (NONE TICKED = NO EFFECT)"))
+	box.add_child(custom_hint)
+	box.add_child(_side_field_label("HINDRANCES  (NONE TICKED = NO EFFECT)"))
 	for entry: Dictionary in JourneyData.CURSE_CATALOG:
-		wrapper.add_child(_make_effect_row(arr, idx, entry, selected))
-	wrapper.add_child(_side_field_label("BOONS"))
+		box.add_child(_make_effect_row(arr, idx, entry, selected))
+	box.add_child(_side_field_label("BOONS"))
 	for entry: Dictionary in JourneyData.BLESSING_CATALOG:
-		wrapper.add_child(_make_effect_row(arr, idx, entry, selected))
+		box.add_child(_make_effect_row(arr, idx, entry, selected))
 
-	wrapper.add_child(_side_field_label("GIFT ITEM  (FOR THE GIFT BOON)"))
+	box.add_child(_side_field_label("GIFT ITEM  (FOR THE GIFT BOON)"))
 	var values: Array = [""]
 	var gift_dd: OptionButton = OptionButton.new()
 	gift_dd.add_item("None")
@@ -3037,20 +3156,8 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	UITheme.style_option_button(gift_dd)
 	_apply_item_tooltips(gift_dd, values)
 	gift_dd.item_selected.connect(func(i: int) -> void: arr[idx]["gift_item"] = values[i])
-	wrapper.add_child(gift_dd)
-
-	# ── Sensory layer (always-apply modifiers + optional random pool) ──
-	wrapper.add_child(HSeparator.new())
-	var pool_toggle: CheckButton = CheckButton.new()
-	pool_toggle.text = "INCLUDE SENSORY IN RANDOM POOL"
-	pool_toggle.tooltip_text = "When on, the random roll can also surface non-gameplay modifiers from the full sensory set (not just ticked ones)."
-	pool_toggle.add_theme_font_size_override("font_size", 12)
-	pool_toggle.button_pressed = bool(arr[idx].get("sensory_in_pool", false))
-	pool_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["sensory_in_pool"] = on)
-	wrapper.add_child(pool_toggle)
-	wrapper.add_child(_build_sensory_picker(arr, idx, true))  # effect rounds can rename sensory
-
-	return wrapper
+	box.add_child(gift_dd)
+	return box
 
 
 # Labeled int SpinBox bound to arr[idx][key]. Used by the effect-round fields.
@@ -3123,7 +3230,7 @@ func _make_effect_row(arr: Array, idx: int, entry: Dictionary, selected: Array) 
 
 	var cb: CheckButton = CheckButton.new()
 	cb.text = nm
-	cb.tooltip_text = str(entry.get("desc", ""))
+	cb.tooltip_text = UITheme.wrap_tip(str(entry.get("desc", "")))
 	cb.add_theme_font_size_override("font_size", 11)
 	cb.button_pressed = nm in selected
 	col.add_child(cb)
@@ -3328,7 +3435,7 @@ func _make_sensory_row(
 
 	var cb: CheckButton = CheckButton.new()
 	cb.text = sname
-	cb.tooltip_text = str(entry.get("desc", ""))
+	cb.tooltip_text = UITheme.wrap_tip(str(entry.get("desc", "")))
 	cb.add_theme_font_size_override("font_size", 11)
 	cb.button_pressed = sname in selected
 	col.add_child(cb)
@@ -3372,7 +3479,7 @@ func _make_sensory_row(
 	slider.step = 1.0
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	slider.tooltip_text = "Intensity"
+	slider.tooltip_text = UITheme.wrap_tip("Intensity")
 	row.add_child(slider)
 
 	var spin: SpinBox = SpinBox.new()
@@ -3474,7 +3581,12 @@ func _toggle_sensory(arr: Array, idx: int, sensory_name: String, on: bool) -> vo
 func _make_reveal_toggle(arr: Array, idx: int) -> CheckButton:
 	var t: CheckButton = CheckButton.new()
 	t.text = "SHOW INTRO CARD"
-	t.tooltip_text = "Play the animated card naming the effect(s) before the round starts. Off = no telegraph; the effect just hits."
+	t.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Play the animated card naming the effect(s) before the round starts. Off = no telegraph; the effect just hits."
+		)
+	)
 	t.add_theme_font_size_override("font_size", 12)
 	t.button_pressed = bool(arr[idx].get("show_reveal", true))
 	t.toggled.connect(func(on: bool) -> void: arr[idx]["show_reveal"] = on)

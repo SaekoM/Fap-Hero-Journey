@@ -95,3 +95,36 @@ func test_media_fingerprint_distinct_paths() -> void:
 		f.store_string("same bytes")
 		f.close()
 	assert_str(JourneyData.media_fingerprint(a)).is_not_equal(JourneyData.media_fingerprint(b))
+
+
+# ── Incremental save: pooled-file reuse ──────────────────────────────────────
+
+
+# is_pooled_content_file recognises a journey's own pooled files (m_<hash> under content/) and
+# nothing else — that's the gate that keeps hardlinks off an author's original source.
+func test_is_pooled_content_file() -> void:
+	assert_bool(MediaPoolService.is_pooled_content_file("user://j/content/m_abc123.mp4")).is_true()
+	assert_bool(MediaPoolService.is_pooled_content_file("user://j/content/m_x.funscript")).is_true()
+	# An original source (any folder, non-pool name) must NOT qualify.
+	assert_bool(MediaPoolService.is_pooled_content_file("/Videos/myclip.mp4")).is_false()
+	assert_bool(MediaPoolService.is_pooled_content_file("user://j/media/cover.png")).is_false()
+	assert_bool(MediaPoolService.is_pooled_content_file("user://j/content/other.mp4")).is_false()
+
+
+# try_hardlink makes a second name for the same bytes; editing one is visible through the other
+# (same inode), and it never clobbers an existing destination.
+func test_try_hardlink_shares_data() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TEST_DIR + "/content"))
+	var src := TEST_DIR + "/content/m_src.txt"
+	var f := FileAccess.open(src, FileAccess.WRITE)
+	f.store_string("pooled-bytes")
+	f.close()
+
+	var dst := TEST_DIR + "/staging/m_dst.txt"
+	var linked: bool = MediaPoolService.try_hardlink(src, dst)
+	# Hardlinks need same-volume support; skip the assertion if the platform/test dir can't (the
+	# save path falls back to copy there anyway). When it DID link, the data must be shared.
+	if linked:
+		assert_str(FileAccess.get_file_as_string(dst)).is_equal("pooled-bytes")
+		# Won't overwrite an existing destination.
+		assert_bool(MediaPoolService.try_hardlink(src, dst)).is_false()

@@ -127,6 +127,15 @@
 		"kind":         "key"
 	},
 	{
+		"id":           "skip_round",
+		"name":         "Bail Out",
+		"description":  "Ends the current round immediately. It counts as played, but pays no coins, score or reward. Consumed when used.",
+		"category":     "utility",
+		"price":        70,
+		"duration_ms":  0,
+		"kind":         "skip_round"
+	},
+	{
 		"id":           "cleanse",
 		"name":         "Cleanse",
 		"description":  "Lifts the curse on a cursed round for free. Consumed when used.",

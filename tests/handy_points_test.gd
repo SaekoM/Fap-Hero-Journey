@@ -55,6 +55,50 @@ func test_window_empty_when_ahead() -> void:
 	assert_int(int(w["next_idx"])).is_equal(0)
 
 
+# ── index_at_or_after (start/seek window the CURRENT position) ────────────────
+
+
+# Returns the first index whose time is >= t; an exact hit returns that index.
+func test_index_at_or_after_basic() -> void:
+	var pts := _points([0, 1000, 2000, 3000, 4000])
+	assert_int(HandyPoints.index_at_or_after(pts, 0)).is_equal(0)
+	assert_int(HandyPoints.index_at_or_after(pts, 2000)).is_equal(2)  # exact match
+	assert_int(HandyPoints.index_at_or_after(pts, 2500)).is_equal(3)  # between → next
+
+
+# A seek past the last point returns size() (an empty forward window, not a rewind to 0).
+func test_index_at_or_after_past_end() -> void:
+	var pts := _points([0, 1000, 2000])
+	assert_int(HandyPoints.index_at_or_after(pts, 9999)).is_equal(3)
+
+
+func test_index_at_or_after_empty() -> void:
+	assert_int(HandyPoints.index_at_or_after([], 1000)).is_equal(0)
+
+
+# The bug this fixes: seeding a mid-script window. A seek to 2:00 must batch points AROUND 2:00,
+# not the opening of the script — window(index_at_or_after(t), …) is what the start/seek path now
+# does, vs the old window(0, …) that shipped the first 100 points every time.
+func test_mid_script_window_is_local_not_from_start() -> void:
+	var times: Array = []
+	for i: int in 2000:
+		times.append(i * 100)  # 0..200s at 10 Hz
+	var pts := _points(times)
+	var seek_ms := 120000  # 2:00
+
+	# Old behaviour: from index 0 → the batch is the OPENING of the script (wrong).
+	var old_batch: Array = HandyPoints.points_in_window(pts, 0, seek_ms + 8000)["batch"]
+	assert_int(int((old_batch[0] as Dictionary)["t"])).is_equal(0)
+
+	# Fixed: from the seek index → the batch begins at the seek position.
+	var from_idx: int = HandyPoints.index_at_or_after(pts, seek_ms)
+	var new_batch: Array = HandyPoints.points_in_window(pts, from_idx, seek_ms + 8000)["batch"]
+	assert_int(int((new_batch[0] as Dictionary)["t"])).is_equal(seek_ms)
+	# ...and every point in it is within the [seek, seek+lookahead] window.
+	for p: Dictionary in new_batch:
+		assert_bool(int(p["t"]) >= seek_ms and int(p["t"]) <= seek_ms + 8000).is_true()
+
+
 # ── apply_effects (items / curses reach the Handy) ───────────────────────────
 
 const PTS := [

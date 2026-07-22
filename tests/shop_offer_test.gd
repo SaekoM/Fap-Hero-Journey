@@ -64,3 +64,49 @@ func test_guaranteed_and_possible_queries() -> void:
 	var pool := {"mode": "pool", "guaranteed": ["key"], "count": 2}
 	assert_array(JourneyData.shop_guaranteed_ids(pool, REGISTRY)).is_equal(["key"])
 	assert_array(JourneyData.shop_possible_ids(pool, REGISTRY)).is_equal(REGISTRY)
+
+
+# ── Exclusions (pool mode: "never drawn") ────────────────────────────────────
+
+
+# An excluded item never turns up in the random draw, across many seeds.
+func test_excluded_never_drawn() -> void:
+	var shop := {"mode": "pool", "excluded": ["key", "mirror"], "count": 3}
+	for seed_value: int in [1, 7, 99, 4242, 88888]:
+		var offer: Array = JourneyData.resolve_shop_offer(shop, REGISTRY, _rng(seed_value))
+		assert_bool("key" in offer).is_false()
+		assert_bool("mirror" in offer).is_false()
+		assert_int(offer.size()).is_equal(3)
+
+
+# Guaranteed beats excluded — ticking both is explicit intent, not a contradiction.
+func test_guaranteed_survives_exclusion() -> void:
+	var shop := {"mode": "pool", "guaranteed": ["key"], "excluded": ["key"], "count": 2}
+	var offer: Array = JourneyData.resolve_shop_offer(shop, REGISTRY, _rng())
+	assert_array(offer).contains(["key"])
+
+
+# Excluding most of the registry shrinks the lineup rather than erroring or repeating.
+func test_exclusions_can_shrink_the_lineup() -> void:
+	var shop := {"mode": "pool", "excluded": ["cleanse", "key", "mirror", "overdrive"], "count": 4}
+	var offer: Array = JourneyData.resolve_shop_offer(shop, REGISTRY, _rng())
+	assert_array(offer).is_equal(["safe_word"])
+
+
+# Exclusions don't touch fixed mode — there the authored list IS the lineup.
+func test_exclusions_ignored_in_fixed_mode() -> void:
+	var shop := {"mode": "fixed", "items": ["key", "cleanse"], "excluded": ["key"], "count": 1}
+	var offer: Array = JourneyData.resolve_shop_offer(shop, REGISTRY, _rng())
+	assert_array(offer).is_equal(["cleanse", "key"])
+
+
+# The auditor asks what a shop MIGHT offer — an excluded item is unreachable, so it must not
+# count as obtainable (it would otherwise wrongly satisfy a fork that requires that item).
+func test_possible_ids_respect_exclusions() -> void:
+	var shop := {"mode": "pool", "excluded": ["key"], "count": 3}
+	var possible: Array = JourneyData.shop_possible_ids(shop, REGISTRY)
+	assert_bool("key" in possible).is_false()
+	assert_bool("cleanse" in possible).is_true()
+	# ...unless it's also guaranteed.
+	var both := {"mode": "pool", "guaranteed": ["key"], "excluded": ["key"], "count": 3}
+	assert_bool("key" in JourneyData.shop_possible_ids(both, REGISTRY)).is_true()

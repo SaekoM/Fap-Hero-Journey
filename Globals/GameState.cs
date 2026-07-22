@@ -446,7 +446,7 @@ public partial class GameState : Node
     // Called by GameLoop after each round ends (before ScoreService.EndRound).
     // roundName / lengthMs are passed explicitly from GDScript to avoid C# key-lookup
     // mismatches on the Variant dict.
-    public void LogRound(Dictionary roundData, string roundName, int lengthMs)
+    public void LogRound(Dictionary roundData, string roundName, int lengthMs, bool skipped = false)
     {
         var node = NodeOf(_currentId);
         _playLog.Add(new Dictionary
@@ -456,6 +456,9 @@ public partial class GameState : Node
             ["length_ms"] = lengthMs,
             ["data"] = roundData,
             ["depth"] = node.ContainsKey("depth") ? node["depth"].AsInt32() : 0,
+            // A skipped round still occupies its place in the run — the end screen marks it
+            // rather than hiding it, so the route stays honest about what was played.
+            ["skipped"] = skipped,
         });
     }
 

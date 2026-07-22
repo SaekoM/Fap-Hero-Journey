@@ -204,6 +204,7 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 			"axis_scripts": axis_scripts,
 			"vib_scripts": vib_scripts,
 			"is_checkpoint": bool(raw.get("IsCheckpoint", raw.get("is_checkpoint", false))),
+			"is_warmup": bool(raw.get("IsWarmup", raw.get("is_warmup", false))),
 			"boss_image": boss_image,
 			"boss_tagline": raw.get("BossTagline", ""),
 			"boss_modifiers": boss_modifiers,

@@ -12,6 +12,64 @@ extends Node
 #     hbox.add_child(UITheme.make_icon_btn("↑", false, UITheme.PURPLE_MID))
 # ---------------------------------------------------------------------------
 
+# ── Readability ────────────────────────────────────────────────────────────
+# Distinct from Options → UI SCALE, which resizes the whole interface (layout included) via
+# content_scale_factor. These grow TEXT only, where long-form reading happens.
+
+const TOOLTIP_BASE_FONT_SIZE: int = 16  # Godot's default theme size for TooltipLabel
+
+
+# Font size for narrative text — fork prose, boss intro cards, storyboard dialogue. Pass the
+# design size; the player's STORY TEXT setting scales it. Chrome (HUD, buttons, toasts) keeps
+# its literal size, so a large setting doesn't reflow the whole game.
+func story_font_size(base: int) -> int:
+	return maxi(1, roundi(base * SettingsService.get_story_text_scale()))
+
+
+# Tooltips can't take a per-label override — Godot renders them from the `TooltipLabel` theme
+# type — so this puts a Theme on the Window carrying only that font size. Everything else falls
+# through to the default theme, so nothing else changes appearance.
+func apply_tooltip_scale() -> void:
+	var w: Window = get_window()
+	if w == null:
+		return
+	var t: Theme = w.theme if w.theme != null else Theme.new()
+	t.set_font_size(
+		"font_size",
+		"TooltipLabel",
+		maxi(1, roundi(TOOLTIP_BASE_FONT_SIZE * SettingsService.get_tooltip_text_scale()))
+	)
+	w.theme = t
+
+
+func _ready() -> void:
+	apply_tooltip_scale()
+
+
+# Word-wraps tooltip text by inserting newlines — Godot's default tooltip does NOT autowrap, so
+# a long one runs off screen. Existing newlines are preserved (each line wrapped independently),
+# and a string already under the limit is returned unchanged, so short tooltips are untouched.
+# Char-based rather than pixel-based on purpose: a tooltip has no parent to measure against.
+func wrap_tip(text: String, max_chars: int = 54) -> String:
+	var out: PackedStringArray = []
+	for para: String in text.split("\n"):
+		if para.length() <= max_chars:
+			out.append(para)
+			continue
+		var line: String = ""
+		for word: String in para.split(" "):
+			if line == "":
+				line = word
+			elif line.length() + 1 + word.length() <= max_chars:
+				line += " " + word
+			else:
+				out.append(line)
+				line = word
+		if line != "":
+			out.append(line)
+	return "\n".join(out)
+
+
 # ── Palette ────────────────────────────────────────────────────────────────
 
 # Backgrounds

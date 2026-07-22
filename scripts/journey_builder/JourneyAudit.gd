@@ -152,13 +152,16 @@ static func _statistics(
 	var total_ms: int = 0
 	for id: String in worst_route(graph, round_lengths):
 		var node: Dictionary = nodes[id]
-		if str(node.get("type", "")) != "round":
+		var ntype: String = str(node.get("type", ""))
+		# A checkpoint NODE closes the running stretch; other non-round nodes are skipped.
+		if ntype == "checkpoint":
+			if seg_rounds > 0:
+				segments.append({"ms": seg_ms, "rounds": seg_rounds})
+				seg_ms = 0
+				seg_rounds = 0
 			continue
-		var data: Dictionary = node.get("data", {})
-		if bool(data.get("is_checkpoint", false)) and seg_rounds > 0:
-			segments.append({"ms": seg_ms, "rounds": seg_rounds})
-			seg_ms = 0
-			seg_rounds = 0
+		if ntype != "round":
+			continue
 		seg_ms += int(round_lengths.get(id, 0))
 		seg_rounds += 1
 		total_ms += int(round_lengths.get(id, 0))
@@ -518,18 +521,12 @@ static func _flow_analysis(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 				var lb: Dictionary = round_length_bounds.get(id, {"lo": ms, "hi": ms})
 				exit_dur["lo"] = int(exit_dur["lo"]) + int(lb.get("lo", ms))
 				exit_dur["hi"] = int(exit_dur["hi"]) + int(lb.get("hi", ms))
-				# Checkpoint spacing: a checkpoint saves at round START, so the
-				# checkpointed round itself is the first of the next stretch.
-				if bool(data.get("is_checkpoint", false)):
-					cp["count"] = int(cp["count"]) + 1
-					_note_completed_stretch(cp, entry["gap_r"], entry["gap_ms"])
-					exit_gap_r = {"lo": 1, "hi": 1}
-					exit_gap_ms = {"lo": int(lb.get("lo", ms)), "hi": int(lb.get("hi", ms))}
-				else:
-					exit_gap_r["lo"] = int(exit_gap_r["lo"]) + 1
-					exit_gap_r["hi"] = int(exit_gap_r["hi"]) + 1
-					exit_gap_ms["lo"] = int(exit_gap_ms["lo"]) + int(lb.get("lo", ms))
-					exit_gap_ms["hi"] = int(exit_gap_ms["hi"]) + int(lb.get("hi", ms))
+				# Save spacing: a round always extends the current stretch (a checkpoint NODE,
+				# handled below, is what resets it).
+				exit_gap_r["lo"] = int(exit_gap_r["lo"]) + 1
+				exit_gap_r["hi"] = int(exit_gap_r["hi"]) + 1
+				exit_gap_ms["lo"] = int(exit_gap_ms["lo"]) + int(lb.get("lo", ms))
+				exit_gap_ms["hi"] = int(exit_gap_ms["hi"]) + int(lb.get("hi", ms))
 				if int(exit_gap_ms["hi"]) > int(cp["max_ms"]):
 					cp["max_ms"] = int(exit_gap_ms["hi"])
 					cp["max_rounds"] = int(exit_gap_r["hi"])
@@ -559,6 +556,12 @@ static func _flow_analysis(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 				for iid: String in JourneyData.shop_possible_ids(data, all_ids):
 					if _shop_price(items, iid, mult) <= int(exit_coins["hi"]):
 						exit_poss[iid] = true
+			"checkpoint":
+				# A save point closes the current stretch and starts a fresh one at zero.
+				cp["count"] = int(cp["count"]) + 1
+				_note_completed_stretch(cp, entry["gap_r"], entry["gap_ms"])
+				exit_gap_r = {"lo": 0, "hi": 0}
+				exit_gap_ms = {"lo": 0, "hi": 0}
 
 		exits[id] = {
 			"coins": exit_coins,
@@ -1101,14 +1104,15 @@ static func simulate(
 					score = int(round_scores.get(id, 0))
 					total_score += score
 					rounds_seen += 1
-					# Checkpoint-stretch segments (save fires at round start).
-					if bool(data.get("is_checkpoint", false)) and seg_rounds > 0:
+					seg_ms += int(round_lengths.get(id, 0))
+					seg_rounds += 1
+				"checkpoint":
+					# A save point closes the current stretch (segments run between saves).
+					if seg_rounds > 0:
 						stretch_total_ms += seg_ms
 						stretch_count += 1
 						seg_ms = 0
 						seg_rounds = 0
-					seg_ms += int(round_lengths.get(id, 0))
-					seg_rounds += 1
 				"storyboard":
 					coins += int(data.get("coins", 0))
 					var reward: String = str(data.get("item", ""))
