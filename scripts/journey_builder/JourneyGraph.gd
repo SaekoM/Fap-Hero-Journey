@@ -148,6 +148,7 @@ static func _build_fork(
 			"resolution": str(fork.get("resolution", "choice")),
 			"cond_metric": str(fork.get("cond_metric", "score")),
 			"default_path": int(fork.get("default_path", 0)),
+			"timeout_path": int(fork.get("timeout_path", -1)),
 			# Kept so the runtime journey-map marker can key a fork node by after_order
 			# (the map still renders the legacy nested model in Phase 2; the graph map in
 			# Phase 3 re-keys by node id and this can go).
@@ -213,6 +214,19 @@ static func is_end(graph: Dictionary, id: String) -> bool:
 	return id == "" or out_edges(graph, id).is_empty()
 
 
+# node_id -> its 1-based ordinal WITHIN ITS TYPE, in the nodes dict's insertion order. So the "N" in a
+# save error's "Storyboard N" / "Round N" / "Fork N" is the same "N" shown on that node in the graph.
+# Takes the raw nodes dict (not a graph) so both the builder validator and GraphView can call it.
+static func type_ordinals(nodes: Dictionary) -> Dictionary:
+	var counts: Dictionary = {}
+	var out: Dictionary = {}
+	for id: String in nodes:
+		var t: String = str((nodes[id] as Dictionary).get("type", ""))
+		counts[t] = int(counts.get(t, 0)) + 1
+		out[id] = int(counts[t])
+	return out
+
+
 # The set (Dictionary-as-set) of node ids reachable from the journey start, following out-edges
 # (post-redirect, when apply_redirects has run). Any node NOT in this set is orphaned — a redirect
 # skipped past it and nothing else leads there. DAG → terminates; `seen` also backstops a malformed
@@ -259,7 +273,7 @@ static func apply_redirects(graph: Dictionary, redirects: Dictionary) -> void:
 #   "dangling"    — node `id` has an out-edge whose target `to` is not a node
 #   "cycle"       — node `id` is closed onto by a back-edge (it participates in a loop)
 #   "unreachable" — node `id` can't be reached from start (it would never play)
-static func validate_graph(graph: Dictionary) -> Array:
+static func validate_graph(graph: Dictionary, finish_id: String = "") -> Array:
 	var issues: Array = []
 	var nodes: Dictionary = graph.get("nodes", {})
 	if nodes.is_empty():
@@ -280,6 +294,11 @@ static func validate_graph(graph: Dictionary) -> Array:
 	# Unreachable nodes (only meaningful with a valid start).
 	if start_ok:
 		var reach: Dictionary = reachable_ids(graph, start)
+		# The designated finish/aftercare node lives off the main graph — reachable only via the FINISH
+		# button — so treat it (and anything it leads to) as reachable rather than flagging an island.
+		if finish_id != "" and nodes.has(finish_id):
+			for id: String in reachable_ids(graph, finish_id):
+				reach[id] = true
 		for id: String in nodes:
 			if not reach.has(id):
 				issues.append({"kind": "unreachable", "id": id})
@@ -331,6 +350,34 @@ static func _longest_round_path(
 	var best_rest: int = 0
 	for e: Dictionary in out_edges(graph, from_id):
 		best_rest = maxi(best_rest, _longest_round_path(graph, str(e.get("to", "")), memo, seen))
+	seen.erase(from_id)
+	var total: int = here + best_rest
+	memo[from_id] = total
+	return total
+
+
+# Max number of nodes from the `targets` set ({id: true}) on any single path from `from_id` to a leaf.
+# Same memoised DFS as longest_round_path (a fork counts only its worst branch, since one run takes
+# one branch). Used to flag a no-repeat pool used more times on a run-path than it has clips. `seen`
+# guards a malformed cyclic input.
+static func max_nodes_on_path(graph: Dictionary, from_id: String, targets: Dictionary) -> int:
+	return _max_nodes_on_path(graph, from_id, targets, {}, {})
+
+
+static func _max_nodes_on_path(
+	graph: Dictionary, from_id: String, targets: Dictionary, memo: Dictionary, seen: Dictionary
+) -> int:
+	if from_id == "" or seen.has(from_id):
+		return 0
+	if memo.has(from_id):
+		return memo[from_id]
+	seen[from_id] = true
+	var here: int = 1 if targets.has(from_id) else 0
+	var best_rest: int = 0
+	for e: Dictionary in out_edges(graph, from_id):
+		best_rest = maxi(
+			best_rest, _max_nodes_on_path(graph, str(e.get("to", "")), targets, memo, seen)
+		)
 	seen.erase(from_id)
 	var total: int = here + best_rest
 	memo[from_id] = total
@@ -453,6 +500,9 @@ static func resolve_paths(graph: Dictionary, base: String) -> void:
 			"fork":
 				for e: Dictionary in n.get("out", []):
 					e["image_path"] = _abs(str(e.get("image_path", "")), base)
+				var fd: Dictionary = n.get("data", {})
+				if fd.has("audio"):
+					fd["audio"] = _abs(str(fd.get("audio", "")), base)
 
 
 static func _resolve_round_paths(d: Dictionary, base: String) -> void:
@@ -479,8 +529,12 @@ static func _resolve_channels(channels: Dictionary, base: String) -> void:
 
 static func _resolve_storyboard_paths(d: Dictionary, base: String) -> void:
 	d["image"] = _abs(str(d.get("image", "")), base)
+	if d.has("bgm"):
+		d["bgm"] = _abs(str(d.get("bgm", "")), base)
 	for line: Dictionary in d.get("lines", []):
 		line["image"] = _abs(str(line.get("image", "")), base)
+		if line.has("audio"):
+			line["audio"] = _abs(str(line.get("audio", "")), base)
 
 
 # Prepends the journey base to a non-empty relative path; "" stays "".

@@ -140,6 +140,25 @@ var _tremor_amp: float = 9.0  # shake amplitude (set from intensity)
 var _muted: bool = false  # a "Silence" hex muted the video
 var _pre_mute_volume_db: float = 0.0  # restored when a "Silence" hex ends
 
+# --- Reconcile / fade state (drives timed item sensory alongside round sensory) ---
+const FADE_SECS: float = 1.5  # how long a departing effect eases out on reconcile
+# Per-pixel shader effects → [uniform name, identity/off value]. Also the set used to decide when the
+# shader material can be dropped (no shader kind applied or fading).
+const _SHADER_OFF: Dictionary = {
+	"grayscale": ["grayscale", 0.0],
+	"blur": ["blur", 0.0],
+	"pixelate": ["pixelate", 0.0],
+	"invert": ["invert", 0.0],
+	"sepia": ["sepia", 0.0],
+	"posterize": ["posterize", 0.0],
+	"saturate": ["saturation", 1.0],
+	"chromatic": ["chromatic", 0.0],
+	"wave": ["wave", 0.0],
+}
+var _applied: Dictionary = {}  # kind → applied intensity (ON, not fading); skips no-op re-applies
+var _fading: Dictionary = {}  # kind → the Tween easing it off; a re-request cancels it
+var _audio_fx: Dictionary = {}  # audio kind → its AudioEffect on the bus (targeted fade + removal)
+
 
 # Builds the overlay nodes (as children of overlay_parent, in back-to-front
 # order: murk → tunnel → bloodshot → static → flicker → strobe), the video-FX
@@ -319,19 +338,19 @@ func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true)
 		"lowpass":
 			var lp: AudioEffectLowPassFilter = AudioEffectLowPassFilter.new()
 			lp.cutoff_hz = _ival(roll, intensity)
-			_add_audio_effect(lp)
+			_apply_audio("lowpass", lp)
 		"reverb":
 			var rv: AudioEffectReverb = AudioEffectReverb.new()
 			rv.wet = _ival(roll, intensity)  # imin/imax = wet range
 			rv.room_size = lerpf(0.6, 0.95, clampf(intensity, 0.0, 1.0))
 			rv.dry = 0.5
-			_add_audio_effect(rv)
+			_apply_audio("reverb", rv)
 		"distort":
 			var ds: AudioEffectDistortion = AudioEffectDistortion.new()
 			ds.mode = AudioEffectDistortion.MODE_CLIP
 			ds.drive = _ival(roll, intensity)
 			ds.post_gain = -10.0
-			_add_audio_effect(ds)
+			_apply_audio("distort", ds)
 		"volwobble":
 			_start_volwobble(_ival(roll, intensity))
 		_:
@@ -342,6 +361,13 @@ func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true)
 # Undoes every sensory effect (mute / video shader / audio bus / overlays /
 # tremor). Safe to call when none are active — each branch no-ops.
 func clear_all() -> void:
+	# Cancel any in-flight fades and drop all reconcile tracking — this is the hard reset.
+	for kind: String in _fading.keys():
+		var t: Tween = _fading[kind]
+		if t != null and t.is_valid():
+			t.kill()
+	_fading.clear()
+	_applied.clear()
 	if _muted:
 		_muted = false
 		_video.volume_db = _pre_mute_volume_db
@@ -355,6 +381,7 @@ func clear_all() -> void:
 	for overlay: Control in [_murk, _tunnel, _bloodshot, _static, _flicker, _strobe]:
 		if overlay != null:
 			overlay.visible = false
+			overlay.modulate.a = 1.0
 
 
 # Per-frame video jitter for the Tremor hex (mixed frequencies so it reads as a
@@ -442,6 +469,7 @@ func _add_audio_effect(effect: AudioEffect) -> void:
 # Strips every audio effect off the VideoFX bus and restores its level (undoing a
 # Faltering wobble). Safe when none are present.
 func _clear_audio_effects() -> void:
+	_audio_fx.clear()
 	var idx: int = AudioServer.get_bus_index(VIDEO_FX_BUS)
 	if idx == -1:
 		return
@@ -538,3 +566,237 @@ func _stop_volwobble() -> void:
 	if _volwobble_tween != null and _volwobble_tween.is_valid():
 		_volwobble_tween.kill()
 	_volwobble_tween = null
+
+
+# ---------------------------------------------------------------------------
+# Declarative reconcile — round sensory + timed item sensory funnel through here
+# ---------------------------------------------------------------------------
+
+
+# Drives the engine from a desired set of effects. Each request is {roll: <SENSORY_CATALOG entry>,
+# intensity: 0-1}. Kinds present are applied (strongest intensity wins on a repeated kind); kinds that
+# left the set ease out over FADE_SECS. One engine state reflects everything active, and an expiring
+# item effect fades instead of snapping. No-op re-applies are skipped so animated effects don't restart.
+func reconcile(requests: Array) -> void:
+	var desired: Dictionary = {}  # kind → {roll, intensity}
+	for req: Dictionary in requests:
+		var roll: Dictionary = req.get("roll", {})
+		var kind: String = str(roll.get("kind", ""))
+		if kind == "":
+			continue
+		var intensity: float = float(req.get("intensity", 1.0))
+		if not desired.has(kind) or intensity > float((desired[kind] as Dictionary)["intensity"]):
+			desired[kind] = {"roll": roll, "intensity": intensity}
+
+	for kind: String in desired:
+		var intensity: float = float((desired[kind] as Dictionary)["intensity"])
+		_cancel_fade(kind)
+		if _applied.has(kind) and is_equal_approx(float(_applied[kind]), intensity):
+			continue
+		apply((desired[kind] as Dictionary)["roll"], intensity)
+		_applied[kind] = intensity
+
+	for kind: String in _applied.keys():
+		if not desired.has(kind) and not _fading.has(kind):
+			_begin_fade(kind)
+
+
+# Starts (or immediately finishes) the ease-out for a kind that left the desired set.
+func _begin_fade(kind: String) -> void:
+	_applied.erase(kind)
+	var tween: Tween = _make_fade_tween(kind)
+	if tween == null:
+		_finalize_off(kind)  # nothing to animate (binary/unknown) — hard off
+		return
+	_fading[kind] = tween
+	tween.finished.connect(
+		func() -> void:
+			_fading.erase(kind)
+			_finalize_off(kind)
+	)
+
+
+# Cancels an in-flight fade so the kind can be re-applied at full strength (a killed tween never
+# emits `finished`, so its finalize won't run).
+func _cancel_fade(kind: String) -> void:
+	if not _fading.has(kind):
+		return
+	var t: Tween = _fading[kind]
+	if t != null and t.is_valid():
+		t.kill()
+	_fading.erase(kind)
+
+
+# Builds the ease-out tween for one kind (ramping its value toward "off"); null when the kind has no
+# smooth ramp (finalize hard-cuts it). Stops any driving loop first so the fade owns the property.
+func _make_fade_tween(kind: String) -> Tween:
+	if _SHADER_OFF.has(kind):
+		if _fx_mat == null:
+			return null
+		var param: String = str((_SHADER_OFF[kind] as Array)[0])
+		var off_val: float = float((_SHADER_OFF[kind] as Array)[1])
+		var cur: float = _fx_mat.get_shader_parameter(param)
+		var st: Tween = create_tween()
+		st.tween_method(
+			func(v: float) -> void: _fx_mat.set_shader_parameter(param, v), cur, off_val, FADE_SECS
+		)
+		return st
+	match kind:
+		"murk":
+			var t: Tween = create_tween()
+			t.tween_property(_murk, "color:a", 0.0, FADE_SECS)
+			return t
+		"tunnel":
+			var t: Tween = create_tween()
+			t.tween_property(_tunnel, "modulate:a", 0.0, FADE_SECS)
+			return t
+		"static":
+			var t: Tween = create_tween()
+			t.tween_property(_static, "modulate:a", 0.0, FADE_SECS)
+			return t
+		"strobe":
+			# Kill the pulsing LOOP (not _stop_strobe, which also zeroes the alpha) and fade the
+			# overlay out from wherever it currently sits.
+			if _strobe_tween != null and _strobe_tween.is_valid():
+				_strobe_tween.kill()
+			_strobe_tween = null
+			var t: Tween = create_tween()
+			t.tween_property(_strobe, "modulate:a", 0.0, FADE_SECS)
+			return t
+		"bloodshot":
+			if _bloodshot_tween != null and _bloodshot_tween.is_valid():
+				_bloodshot_tween.kill()
+			_bloodshot_tween = null
+			var t: Tween = create_tween()
+			t.tween_property(_bloodshot, "modulate:a", 0.0, FADE_SECS)
+			return t
+		"flicker":
+			if _flicker_tween != null and _flicker_tween.is_valid():
+				_flicker_tween.kill()
+			_flicker_tween = null
+			var t: Tween = create_tween()
+			t.tween_property(_flicker, "modulate:a", 0.0, FADE_SECS)
+			return t
+		"tremor":
+			var t: Tween = create_tween()
+			t.tween_method(func(v: float) -> void: _tremor_amp = v, _tremor_amp, 0.0, FADE_SECS)
+			return t
+		"mute":
+			var t: Tween = create_tween()
+			t.tween_property(_video, "volume_db", _pre_mute_volume_db, FADE_SECS)
+			return t
+		"volwobble":
+			_stop_volwobble()
+			var vidx: int = AudioServer.get_bus_index(VIDEO_FX_BUS)
+			if vidx == -1:
+				return null
+			var t: Tween = create_tween()
+			t.tween_method(
+				func(v: float) -> void: AudioServer.set_bus_volume_db(vidx, v),
+				AudioServer.get_bus_volume_db(vidx),
+				0.0,
+				FADE_SECS
+			)
+			return t
+		"lowpass":
+			var lp: AudioEffect = _audio_fx.get("lowpass")
+			if lp == null:
+				return null
+			var t: Tween = create_tween()
+			t.tween_property(lp, "cutoff_hz", 20000.0, FADE_SECS)
+			return t
+		"reverb":
+			var rv: AudioEffect = _audio_fx.get("reverb")
+			if rv == null:
+				return null
+			var t: Tween = create_tween()
+			t.tween_property(rv, "wet", 0.0, FADE_SECS)
+			return t
+		"distort":
+			var ds: AudioEffect = _audio_fx.get("distort")
+			if ds == null:
+				return null
+			var t: Tween = create_tween()
+			t.tween_property(ds, "drive", 0.0, FADE_SECS)
+			return t
+	return null
+
+
+# Hard "off" for a kind after its fade completes (or immediately when it has no fade).
+func _finalize_off(kind: String) -> void:
+	if _SHADER_OFF.has(kind):
+		if _fx_mat != null:
+			_fx_mat.set_shader_parameter(
+				str((_SHADER_OFF[kind] as Array)[0]), float((_SHADER_OFF[kind] as Array)[1])
+			)
+		_drop_shader_if_idle()
+		return
+	match kind:
+		"murk":
+			if _murk != null:
+				_murk.visible = false
+				_murk.color.a = 0.0
+		"tunnel":
+			if _tunnel != null:
+				_tunnel.visible = false
+				_tunnel.modulate.a = 1.0
+		"static":
+			if _static != null:
+				_static.visible = false
+				_static.modulate.a = 1.0
+		"strobe":
+			_stop_strobe()
+			if _strobe != null:
+				_strobe.visible = false
+		"bloodshot":
+			_stop_bloodshot()
+			if _bloodshot != null:
+				_bloodshot.visible = false
+		"flicker":
+			_stop_flicker()
+			if _flicker != null:
+				_flicker.visible = false
+		"mute":
+			_muted = false
+			_video.volume_db = _pre_mute_volume_db
+		"tremor":
+			_tremor = false
+			_tremor_amp = 0.0
+		"volwobble":
+			_stop_volwobble()
+			var vidx: int = AudioServer.get_bus_index(VIDEO_FX_BUS)
+			if vidx != -1:
+				AudioServer.set_bus_volume_db(vidx, 0.0)
+		"lowpass", "reverb", "distort":
+			_remove_audio_fx(kind)
+
+
+# Drops the shader material off the video once no per-pixel effect is applied or fading.
+func _drop_shader_if_idle() -> void:
+	for k: String in _SHADER_OFF:
+		if _applied.has(k) or _fading.has(k):
+			return
+	if _video != null:
+		_video.material = null
+
+
+# Adds an audio bus effect for `kind`, replacing any prior instance so a re-apply (intensity change)
+# doesn't stack duplicates. Tracked in _audio_fx for targeted fade + removal.
+func _apply_audio(kind: String, effect: AudioEffect) -> void:
+	_remove_audio_fx(kind)
+	_audio_fx[kind] = effect
+	_add_audio_effect(effect)
+
+
+# Removes the tracked audio effect for `kind` from the bus by identity, leaving other effects intact.
+func _remove_audio_fx(kind: String) -> void:
+	if not _audio_fx.has(kind):
+		return
+	var effect: AudioEffect = _audio_fx[kind]
+	var idx: int = AudioServer.get_bus_index(VIDEO_FX_BUS)
+	if idx != -1:
+		for i: int in AudioServer.get_bus_effect_count(idx):
+			if AudioServer.get_bus_effect(idx, i) == effect:
+				AudioServer.remove_bus_effect(idx, i)
+				break
+	_audio_fx.erase(kind)

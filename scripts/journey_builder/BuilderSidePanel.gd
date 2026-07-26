@@ -57,6 +57,11 @@ var _owner: JourneyBuilder
 # it). Cleared whenever the panel is rebuilt, so it never points at a freed control.
 var _pool_drop: Dictionary = {}
 
+# The custom-items list container, tracked so the editor modal can refresh it after the
+# side panel is rebuilt underneath it (e.g. a save mid-edit frees the old container). The
+# modal never holds a direct reference; it rebuilds through this, guarded by validity.
+var _custom_items_list: VBoxContainer = null
+
 
 func _init(owner: JourneyBuilder) -> void:
 	_owner = owner
@@ -304,8 +309,763 @@ func show_journey_info_panel() -> void:
 			refresh_fog.call()
 	)
 
+	# Auto-advance: a countdown on storyboards (per line) and interactive forks so a player can't
+	# park there to "rest". The seconds spin greys out until it's enabled.
+	side_vbox.add_child(_side_section_separator())
+	var aa_toggle: CheckButton = CheckButton.new()
+	aa_toggle.text = "AUTO-ADVANCE STORYBOARDS & FORKS"
+	aa_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Show a countdown on storyboards (per dialogue line) and interactive forks so players can't linger to rest. When a fork's timer runs out it takes the author's timeout choice (set per fork), or a random affordable path if none is set."
+		)
+	)
+	aa_toggle.add_theme_font_size_override("font_size", 12)
+	aa_toggle.button_pressed = _owner._journey_auto_advance_enabled
+	side_vbox.add_child(aa_toggle)
+
+	# Separate durations: a dialogue line is quick to read; a fork can need longer to decide.
+	var sb_spin: SpinBox = _make_seconds_row(
+		side_vbox,
+		"STORYBOARD LINE SECONDS",
+		_owner._journey_auto_advance_storyboard_secs,
+		"How long each storyboard dialogue line shows before it auto-advances."
+	)
+	var fork_spin: SpinBox = _make_seconds_row(
+		side_vbox,
+		"FORK / SHOP SECONDS",
+		_owner._journey_auto_advance_fork_secs,
+		"How long an interactive fork waits before it auto-resolves, and how long a shop stays open before it auto-continues."
+	)
+	sb_spin.editable = _owner._journey_auto_advance_enabled
+	fork_spin.editable = _owner._journey_auto_advance_enabled
+
+	aa_toggle.toggled.connect(
+		func(on: bool) -> void:
+			_owner._journey_auto_advance_enabled = on
+			sb_spin.editable = on
+			fork_spin.editable = on
+	)
+	sb_spin.value_changed.connect(
+		func(v: float) -> void: _owner._journey_auto_advance_storyboard_secs = int(v)
+	)
+	fork_spin.value_changed.connect(
+		func(v: float) -> void: _owner._journey_auto_advance_fork_secs = int(v)
+	)
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_finish_section())
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_custom_items_section())
+
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(_make_graph_add_buttons())
+
+
+# A labelled seconds SpinBox row (5–600, step 1) added to `parent`; returns the spin so the caller
+# wires editability + value_changed. Used for the two auto-advance durations.
+func _make_seconds_row(
+	parent: VBoxContainer, label_text: String, value: int, tip: String
+) -> SpinBox:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var lbl: Label = Label.new()
+	lbl.text = label_text
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(lbl)
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = 5
+	spin.max_value = 600
+	spin.step = 1
+	spin.value = clampi(value, 5, 600)
+	spin.tooltip_text = UITheme.wrap_tip(tip)
+	UITheme.style_spin_box(spin)
+	row.add_child(spin)
+	parent.add_child(row)
+	return spin
+
+
+# Gameplay effect kinds an item can bundle. Timed: stroke modifiers + blackout + score + coin. One-shot
+# (fire once on use, then consumed): toll / interest / flag / counter. Timed HUD hide: hud_hide (Fog).
+# Sensory (visual/audio) kinds are ALSO offered — appended from SENSORY_CATALOG in the effect dropdown,
+# applied for the item's duration via SensoryFX.reconcile. Still NOT offered: gift / lingering / no_pause.
+const _ITEM_EFFECT_KINDS: Array = [
+	"scale",
+	"clamp",
+	"reverse",
+	"block",
+	"blackout",
+	"score_multiplier",
+	"coin_jackpot",
+	"coin_penalty",
+	"toll",
+	"interest",
+	"hud_hide",
+	"flag",
+	"counter"
+]
+
+
+# FINISH ("I came") — a journey opt-in for an always-available hold-to-confirm button that ends the run
+# early, optionally into a designated aftercare storyboard (off-graph) before the end screen.
+func _make_finish_section() -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var header: Label = Label.new()
+	header.text = 'FINISH  ( "I CAME" )'
+	header.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
+	header.add_theme_font_size_override("font_size", 13)
+	box.add_child(header)
+	var hint: Label = Label.new()
+	hint.text = (
+		"An always-available hold-to-confirm button that ends the run early — optionally into an "
+		+ 'aftercare SEQUENCE (e.g. a "you lose" storyboard → an aftercare round) before the end screen. '
+		+ "Pick the FIRST node; wire the rest off the main graph, ending in a node with no exit."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+
+	var toggle: CheckButton = CheckButton.new()
+	toggle.text = "ALLOW FINISH BUTTON"
+	toggle.add_theme_font_size_override("font_size", 12)
+	toggle.button_pressed = _owner._journey_allow_finish
+	box.add_child(toggle)
+
+	box.add_child(_side_field_label("AFTERCARE — FIRST NODE  (OPTIONAL)"))
+	var dd: OptionButton = OptionButton.new()
+	var node_ids: Array = [""]  # index 0 = None
+	dd.add_item("None — straight to end screen")
+	# The ENTRY to the aftercare sequence — a round or storyboard. Whatever the author wires off it (a
+	# chain of rounds/storyboards, off the main graph) plays in turn until a node with no exit → the end
+	# screen. Numbered per type in insertion order, with an identifying stub to spot the node.
+	var nodes: Dictionary = _owner._graph_model.get("nodes", {})
+	var counts: Dictionary = {"round": 0, "storyboard": 0}
+	for id: String in nodes:
+		var node: Dictionary = nodes[id]
+		var ntype: String = str(node.get("type", ""))
+		if not counts.has(ntype):
+			continue  # only round + storyboard can be a finish node
+		counts[ntype] += 1
+		var stub: String = _finish_node_hint(ntype, node.get("data", {}))
+		var label: String = "Round" if ntype == "round" else "Storyboard"
+		dd.add_item("%s %d%s" % [label, counts[ntype], (" — " + stub) if stub != "" else ""])
+		node_ids.append(id)
+	dd.selected = maxi(0, node_ids.find(_owner._journey_finish_node))
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.disabled = not _owner._journey_allow_finish
+	dd.item_selected.connect(
+		func(i: int) -> void:
+			_owner._journey_finish_node = str(node_ids[i])
+			_owner._refresh_graph()  # move the 🏁 FINISH badge to the new node live
+	)
+	box.add_child(dd)
+
+	toggle.toggled.connect(
+		func(on: bool) -> void:
+			_owner._journey_allow_finish = on
+			dd.disabled = not on
+	)
+	return box
+
+
+# A short identifying stub for a finish-node dropdown entry: a round's name, or a storyboard's first
+# speaker / start of its first line. "" when there's nothing to show.
+func _finish_node_hint(ntype: String, data: Dictionary) -> String:
+	if ntype == "round":
+		return str(data.get("name", "")).strip_edges()
+	var lines: Array = data.get("lines", [])
+	if lines.size() > 0 and lines[0] is Dictionary:
+		var l: Dictionary = lines[0]
+		var speaker: String = str(l.get("speaker", "")).strip_edges()
+		if speaker != "":
+			return speaker
+		var text: String = str(l.get("text", "")).strip_edges()
+		if text != "":
+			return text.substr(0, 24)
+	return ""
+
+
+# Journey-scoped custom item manager (Slice 1: name/description/type/price + a stroke-effect bundle
+# for modifiers). Items mutate _owner._journey_items in place; the list re-renders on structural change.
+func _make_custom_items_section() -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var header: Label = Label.new()
+	header.text = "CUSTOM ITEMS"
+	header.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
+	header.add_theme_font_size_override("font_size", 13)
+	box.add_child(header)
+	var hint: Label = Label.new()
+	hint.text = "Journey-specific items that bundle tuned effects. They appear in the item dropdowns."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	box.add_child(list)
+	_custom_items_list = list
+	_rebuild_custom_items_list()
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD ITEM"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	# Add appends a default item and opens its editor straight away, so the flow is
+	# still "click add, fill it in" — the fields just live in a modal now, not inline.
+	add_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_items.append(_default_custom_item())
+			_rebuild_custom_items_list()
+			_open_item_editor_modal(_owner._journey_items.size() - 1, true)
+	)
+	box.add_child(add_btn)
+	return box
+
+
+# Re-renders the custom-items rows into the tracked list container. No-op if the panel
+# has been rebuilt and the container freed (the fresh build re-renders itself).
+func _rebuild_custom_items_list() -> void:
+	if not is_instance_valid(_custom_items_list):
+		return
+	for c: Node in _custom_items_list.get_children():
+		c.queue_free()
+	for i: int in _owner._journey_items.size():
+		_custom_items_list.add_child(_make_custom_item_row(i))
+
+
+func _default_custom_item() -> Dictionary:
+	# Name starts blank so an untouched item reads as incomplete and cancels silently when the author
+	# adds one and immediately dismisses the modal (see _close_item_editor).
+	return {
+		"id": JourneyData.new_item_id(),
+		"name": "",
+		"description": "",
+		"category": "modifier",
+		"price": 30,
+		"duration_ms": JourneyData.ITEM_DEFAULT_DURATION_MS,
+		"effects": [],
+	}
+
+
+func _default_item_effect(kind: String) -> Dictionary:
+	match kind:
+		"scale":
+			return {"kind": "scale", "factor": 1.0}
+		"clamp":
+			return {"kind": "clamp", "min": 0, "max": 100}
+		"score_multiplier":
+			return {"kind": "score_multiplier", "factor": 2.0}
+		"coin_jackpot":
+			return {"kind": "coin_jackpot", "factor": 2.0}
+		"coin_penalty":
+			return {"kind": "coin_penalty", "factor": 0.5}  # fraction of the round's coins KEPT
+		"toll":
+			return {"kind": "toll", "amount": 40}  # coins deducted on use
+		"interest":
+			return {"kind": "interest", "pct": 0.25}  # fraction of balance granted on use
+		"flag":
+			return {"kind": "flag", "flag": ""}  # run flag set on use (gates forks)
+		"counter":
+			return {"kind": "counter", "counter": "", "delta": 1}  # counter change on use
+		"hud_hide":
+			return {"kind": "hud_hide"}  # timed Fog — no tuning
+		_:
+			# Sensory (visual/audio) effects carry a 0.1–1.0 intensity (mapped through the catalog's
+			# imin/imax at runtime); a few are binary (Blinded/Silence) and carry no tuning.
+			var sensory: Dictionary = JourneyData.sensory_entry_by_kind(kind)
+			if not sensory.is_empty() and sensory.has("idef"):
+				return {"kind": kind, "intensity": float(sensory["idef"])}
+			return {"kind": kind}  # reverse / block / blackout / binary sensory — no tuning
+
+
+# One-line description of a gameplay item-effect kind, shown as the dropdown tooltip. Sensory kinds
+# use their SENSORY_CATALOG `desc` instead (set where the dropdown is built).
+func _effect_kind_desc(kind: String) -> String:
+	match kind:
+		"scale":
+			return "Scales stroke depth by a factor (×0.5 = shallower, ×2 = deeper)."
+		"clamp":
+			return "Restricts strokes to a min/max position range."
+		"reverse":
+			return "Inverts stroke direction (top ↔ bottom)."
+		"block":
+			return "Blocks output — the device holds position."
+		"blackout":
+			return "Hides the video; the device keeps playing in the dark."
+		"score_multiplier":
+			return "Multiplies the round's score."
+		"coin_jackpot":
+			return "Multiplies the round's coin payout. Settled at the next round end."
+		"coin_penalty":
+			return "Reduces the round's coin payout (fraction kept). Settled at the next round end."
+		"toll":
+			return "Deducts coins from the balance immediately when used (capped at the balance)."
+		"interest":
+			return "Grants coins equal to a fraction of the current balance, immediately when used."
+		"flag":
+			return "Sets a run flag when used — a later fork can branch on it (Conditional / required)."
+		"counter":
+			return "Changes a run counter when used (± delta) — feeds counter-gated forks and the HUD."
+		"hud_hide":
+			return "Fog — hides the HUD for the item's duration."
+	return ""
+
+
+# Short display label for a gameplay item-effect kind (dropdown option + row tag). Defaults to the
+# kind capitalized; a few read better with a custom label.
+func _item_effect_label(kind: String) -> String:
+	match kind:
+		"hud_hide":
+			return "Fog (hide HUD)"
+		"flag":
+			return "Set flag"
+		"counter":
+			return "Change counter"
+		"toll":
+			return "Toll (lose coins)"
+		"interest":
+			return "Interest (gain coins)"
+	return kind.capitalize()
+
+
+# Compact list row for one custom item: name + type badge, with EDIT (opens the editor
+# modal) and DELETE. The full field set lives in _open_item_editor_modal so the journey
+# panel stays short no matter how many items a journey defines.
+func _make_custom_item_row(item_idx: int) -> Control:
+	var item: Dictionary = _owner._journey_items[item_idx]
+	var is_key: bool = str(item.get("category", "modifier")) == "key"
+
+	var card: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = UITheme.PANEL_BG
+	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	card.add_theme_stylebox_override("panel", style)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	card.add_child(row)
+
+	var info: VBoxContainer = VBoxContainer.new()
+	info.add_theme_constant_override("separation", 1)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+
+	var name_lbl: Label = Label.new()
+	var item_name: String = str(item.get("name", "")).strip_edges()
+	name_lbl.text = item_name if item_name != "" else "(unnamed)"
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	info.add_child(name_lbl)
+
+	var badge: Label = Label.new()
+	if is_key:
+		badge.text = "KEY"
+	else:
+		var n: int = (item.get("effects", []) as Array).size()
+		badge.text = "MODIFIER · %d effect%s" % [n, "" if n == 1 else "s"]
+	badge.add_theme_color_override("font_color", UITheme.CYAN if is_key else UITheme.PURPLE_BRIGHT)
+	badge.add_theme_font_size_override("font_size", 10)
+	info.add_child(badge)
+
+	var edit_btn: Button = Button.new()
+	edit_btn.text = "✎ EDIT"
+	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
+	edit_btn.pressed.connect(func() -> void: _open_item_editor_modal(item_idx))
+	row.add_child(edit_btn)
+
+	var del_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	del_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_items.remove_at(item_idx)
+			_rebuild_custom_items_list()
+	)
+	row.add_child(del_btn)
+	return card
+
+
+# Full editor for one custom item, in a centered modal. Everything mutates the live item
+# dict in _owner._journey_items (mutate-in-place, like the rest of the builder — there is
+# no cancel path). Closing re-renders the side list so the row's name/badge reflect edits.
+func _open_item_editor_modal(item_idx: int, is_new: bool = false) -> void:
+	if item_idx < 0 or item_idx >= _owner._journey_items.size():
+		return
+	var item: Dictionary = _owner._journey_items[item_idx]
+
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"CUSTOM ITEM", UITheme.PURPLE_BRIGHT, Vector2i(520, 640)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	_owner.add_child(modal)
+
+	# Fields scroll so a long effect bundle can't push DONE off the panel.
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 4)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+	_fill_item_editor_body(body, item)
+
+	var close_btn: Button = Button.new()
+	close_btn.text = "DONE"
+	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
+	close_btn.pressed.connect(func() -> void: _close_item_editor(modal, item_idx, item, is_new))
+	vbox.add_child(close_btn)
+
+	# Backdrop click also dismisses (the backdrop is the modal's first child).
+	var backdrop: Control = modal.get_child(0) as Control
+	if backdrop:
+		backdrop.gui_input.connect(
+			func(event: InputEvent) -> void:
+				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+					_close_item_editor(modal, item_idx, item, is_new)
+		)
+
+
+# Closes the item editor, then frees the modal and re-renders the list. A NEWLY-ADDED item that is
+# still incomplete is discarded — so clicking ＋ ADD ITEM and then dismissing an untouched item leaves
+# nothing behind. Editing an EXISTING item never deletes it, even if edited to be incomplete. Complete
+# = has a name, and (unless it is a key, which needs none) at least one effect.
+func _close_item_editor(modal: Control, item_idx: int, item: Dictionary, is_new: bool) -> void:
+	if is_new and not _journey_item_complete(item):
+		var nm: String = str(item.get("name", "")).strip_edges()
+		var has_effects: bool = not (item.get("effects", []) as Array).is_empty()
+		_discard_journey_item(item_idx, item)
+		# A bare Add-then-dismiss (nothing filled in) is a silent cancel. If the author put in SOME
+		# content but it's still not keepable, say why it vanished rather than dropping it silently.
+		if nm != "" or has_effects:
+			var reason: String = (
+				"items need a name" if nm == "" else "a modifier needs at least one effect"
+			)
+			_owner._show_status("Discarded incomplete item — %s." % reason, true)
+	modal.queue_free()
+	_rebuild_custom_items_list()
+
+
+# An item is complete enough to keep: it has a name, and — unless it is a key — at least one effect.
+func _journey_item_complete(item: Dictionary) -> bool:
+	if str(item.get("name", "")).strip_edges() == "":
+		return false
+	if str(item.get("category", "modifier")) == "key":
+		return true
+	return not (item.get("effects", []) as Array).is_empty()
+
+
+# Removes an item from the journey list, preferring the captured index but verifying identity (the
+# array can't shift while the modal is up, but be safe), falling back to an identity search.
+func _discard_journey_item(item_idx: int, item: Dictionary) -> void:
+	var items: Array = _owner._journey_items
+	if item_idx >= 0 and item_idx < items.size() and is_same(items[item_idx], item):
+		items.remove_at(item_idx)
+		return
+	for i: int in items.size():
+		if is_same(items[i], item):
+			items.remove_at(i)
+			return
+
+
+# Fills the item-editor modal body with the item's fields. Structural changes (type
+# switch, add/remove effect) refill the body in place via a fresh `rebuild` Callable —
+# built here rather than passed in so it can't capture a not-yet-assigned local.
+func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
+	var rebuild: Callable = func() -> void: _fill_item_editor_body(body, item)
+	for c: Node in body.get_children():
+		c.queue_free()
+
+	body.add_child(_side_field_label("NAME"))
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.text = str(item.get("name", ""))
+	name_edit.placeholder_text = "Item name..."
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: item["name"] = v)
+	body.add_child(name_edit)
+
+	body.add_child(_side_field_label("DESCRIPTION"))
+	var desc_edit: LineEdit = LineEdit.new()
+	desc_edit.text = str(item.get("description", ""))
+	UITheme.style_line_edit(desc_edit)
+	desc_edit.text_changed.connect(func(v: String) -> void: item["description"] = v)
+	body.add_child(desc_edit)
+
+	body.add_child(_side_field_label("TYPE"))
+	var type_dd: OptionButton = OptionButton.new()
+	type_dd.add_item("Modifier (effect bundle)")  # 0
+	type_dd.add_item("Key (fork gate)")  # 1
+	type_dd.selected = 1 if str(item.get("category", "modifier")) == "key" else 0
+	type_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(type_dd)
+	type_dd.item_selected.connect(
+		func(i: int) -> void:
+			item["category"] = "key" if i == 1 else "modifier"
+			if item["category"] == "modifier":
+				if not item.has("effects"):
+					item["effects"] = []
+				if not item.has("duration_ms"):
+					item["duration_ms"] = JourneyData.ITEM_DEFAULT_DURATION_MS
+			rebuild.call()
+	)
+	body.add_child(type_dd)
+
+	body.add_child(_side_field_label("PRICE (♦)"))
+	var price_spin: SpinBox = SpinBox.new()
+	price_spin.min_value = 0
+	price_spin.max_value = 9999
+	price_spin.value = int(item.get("price", 0))
+	UITheme.style_spin_box(price_spin)
+	price_spin.value_changed.connect(func(v: float) -> void: item["price"] = int(v))
+	body.add_child(price_spin)
+
+	if str(item.get("category", "modifier")) == "modifier":
+		body.add_child(_side_field_label("DURATION (SECONDS)"))
+		var dur_spin: SpinBox = SpinBox.new()
+		dur_spin.min_value = 1
+		dur_spin.max_value = 600
+		dur_spin.value = maxi(
+			1, int(item.get("duration_ms", JourneyData.ITEM_DEFAULT_DURATION_MS)) / 1000
+		)
+		UITheme.style_spin_box(dur_spin)
+		dur_spin.value_changed.connect(func(v: float) -> void: item["duration_ms"] = int(v) * 1000)
+		body.add_child(dur_spin)
+
+		body.add_child(_side_field_label("EFFECTS"))
+		var effects: Array = item.get("effects", [])
+		for ei: int in effects.size():
+			body.add_child(_make_item_effect_row(item, ei, rebuild))
+		# The dropdown lists gameplay/stroke/coin kinds, then a separator, then the full sensory
+		# (visual/audio) catalog by display name. `fx_kinds` is kept parallel to every row (including
+		# the placeholder and separator, which occupy indices) so item_selected maps back to a kind.
+		var add_fx: OptionButton = OptionButton.new()
+		var fx_kinds: Array = [""]  # index 0 = placeholder
+		add_fx.add_item("＋ Add effect…")
+		for kind: String in _ITEM_EFFECT_KINDS:
+			add_fx.add_item(_item_effect_label(kind))
+			add_fx.set_item_tooltip(
+				add_fx.get_item_count() - 1, UITheme.wrap_tip(_effect_kind_desc(kind))
+			)
+			fx_kinds.append(kind)
+		add_fx.add_separator("SENSORY (VISUAL / AUDIO)")
+		fx_kinds.append("")  # the separator occupies an index but isn't selectable
+		for e: Dictionary in JourneyData.SENSORY_CATALOG:
+			var skind: String = str(e.get("kind", ""))
+			if skind in _ITEM_EFFECT_KINDS:
+				continue  # "blackout" (Blinded) is already offered as a gameplay kind — no duplicate
+			add_fx.add_item(str(e.get("name", skind)))
+			add_fx.set_item_tooltip(
+				add_fx.get_item_count() - 1, UITheme.wrap_tip(str(e.get("desc", "")))
+			)
+			fx_kinds.append(skind)
+		add_fx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_option_button(add_fx)
+		add_fx.item_selected.connect(
+			func(i: int) -> void:
+				if i <= 0 or i >= fx_kinds.size() or str(fx_kinds[i]) == "":
+					return
+				(item["effects"] as Array).append(_default_item_effect(str(fx_kinds[i])))
+				rebuild.call()
+		)
+		body.add_child(add_fx)
+
+	body.add_child(_side_field_label("ITEM IMAGE (OPTIONAL)"))
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions = ["png", "jpg", "jpeg", "webp"]
+	img_zone.picker_title = "Select Item Image"
+	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(img_zone)
+	if str(item.get("image", "")) != "":
+		img_zone.call_deferred("set_file", item["image"])
+	var img_rm: Button = Button.new()
+	img_rm.text = "✕ REMOVE IMAGE"
+	img_rm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	img_rm.visible = str(item.get("image", "")) != ""
+	UITheme.style_button(img_rm, UITheme.MAGENTA)
+	img_rm.pressed.connect(
+		func() -> void:
+			item["image"] = ""
+			img_zone.call_deferred("set_file", "")
+			img_rm.visible = false
+	)
+	img_zone.file_dropped.connect(
+		func(p: String) -> void:
+			item["image"] = p
+			img_rm.visible = p != ""
+	)
+	body.add_child(img_rm)
+
+
+# One effect row in an item's bundle: kind label + magnitude field(s) + remove.
+# `rebuild` refills the editor body after a removal.
+func _make_item_effect_row(item: Dictionary, fx_idx: int, rebuild: Callable) -> Control:
+	var fx: Dictionary = (item["effects"] as Array)[fx_idx]
+	var kind: String = str(fx.get("kind", ""))
+	var sensory: Dictionary = JourneyData.sensory_entry_by_kind(kind)
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var lbl: Label = Label.new()
+	# Sensory effects show their catalog display name (Bleary, Muffled, …); gameplay kinds a short label.
+	lbl.text = (
+		str(sensory.get("name", kind)).to_upper()
+		if not sensory.is_empty()
+		else _item_effect_label(kind).to_upper()
+	)
+	lbl.custom_minimum_size = Vector2(64, 0)
+	lbl.add_theme_color_override("font_color", UITheme.CYAN)
+	lbl.add_theme_font_size_override("font_size", 11)
+	row.add_child(lbl)
+
+	match kind:
+		"scale":
+			row.add_child(_make_factor_spin(fx, "factor", 0.1, 3.0, 0.05, "×", 1.0))
+		"score_multiplier":
+			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "score ×", 2.0))
+		"coin_jackpot":
+			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "coin ×", 2.0))
+		"coin_penalty":
+			row.add_child(_make_factor_spin(fx, "factor", 0.0, 1.0, 0.05, "keep ", 0.5))
+		"clamp":
+			var mn: SpinBox = SpinBox.new()
+			mn.min_value = 0
+			mn.max_value = 100
+			mn.prefix = "min "
+			mn.value = int(fx.get("min", 0))
+			mn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			UITheme.style_spin_box(mn)
+			mn.value_changed.connect(func(v: float) -> void: fx["min"] = int(v))
+			row.add_child(mn)
+			var mx: SpinBox = SpinBox.new()
+			mx.min_value = 0
+			mx.max_value = 100
+			mx.prefix = "max "
+			mx.value = int(fx.get("max", 100))
+			mx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			UITheme.style_spin_box(mx)
+			mx.value_changed.connect(func(v: float) -> void: fx["max"] = int(v))
+			row.add_child(mx)
+		"toll":
+			row.add_child(_make_int_spin(fx, "amount", 0, 9999, "lose ♦", 40))
+		"interest":
+			row.add_child(_make_factor_spin(fx, "pct", 0.0, 1.0, 0.05, "gain ", 0.25))
+		"flag":
+			row.add_child(_make_effect_line_edit(fx, "flag", "flag name…"))
+		"counter":
+			row.add_child(_make_effect_line_edit(fx, "counter", "counter name…"))
+			row.add_child(_make_int_spin(fx, "delta", -999, 999, "Δ ", 1))
+		_:
+			if not sensory.is_empty() and sensory.has("idef"):
+				# Sensory intensity 0.1–1.0 — mapped through the catalog's imin/imax at runtime.
+				row.add_child(
+					_make_factor_spin(
+						fx,
+						"intensity",
+						0.1,
+						1.0,
+						0.05,
+						"intensity ",
+						float(sensory.get("idef", 0.5))
+					)
+				)
+			else:
+				var none: Label = Label.new()
+				none.text = "(no tuning)"
+				none.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				none.add_theme_color_override("font_color", UITheme.SEPARATOR)
+				none.add_theme_font_size_override("font_size", 10)
+				row.add_child(none)
+
+	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	rm.pressed.connect(
+		func() -> void:
+			(item["effects"] as Array).remove_at(fx_idx)
+			rebuild.call()
+	)
+	row.add_child(rm)
+	return row
+
+
+# Item ids offered in the journey's item dropdowns: BUILT-IN items + this journey's LIVE custom items.
+# Uses GetBuiltinItemIds (not GetAllItemIds) so a test-play's leftover journey items in InventoryService
+# don't get counted a second time on top of _owner._journey_items (the duplicate-in-dropdowns bug).
+func _all_item_ids() -> Array:
+	var ids: Array = []
+	for k: String in InventoryService.GetBuiltinItemIds():
+		ids.append(str(k))
+	for it: Dictionary in _owner._journey_items:
+		ids.append(str(it.get("id", "")))
+	return ids
+
+
+# Display name for an item id — this journey's LIVE custom items first (authoritative while editing),
+# else the built-in registry. Journey items check first so a test-play's stale InventoryService copy
+# never shadows the live name / "(custom)" tag.
+func _item_display_name(id: String) -> String:
+	for it: Dictionary in _owner._journey_items:
+		if str(it.get("id", "")) == id:
+			return "%s  (custom)" % str(it.get("name", id))
+	var d: Dictionary = InventoryService.GetItemData(id)
+	if not d.is_empty():
+		return str(d.get("name", id))
+	return id
+
+
+# One float-parameter SpinBox for an effect (e.g. scale/score/coin factor), writing fx[key] live.
+func _make_factor_spin(
+	fx: Dictionary, key: String, lo: float, hi: float, step: float, prefix: String, default: float
+) -> SpinBox:
+	var s: SpinBox = SpinBox.new()
+	s.min_value = lo
+	s.max_value = hi
+	s.step = step
+	s.prefix = prefix
+	s.value = float(fx.get(key, default))
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(s)
+	s.value_changed.connect(func(v: float) -> void: fx[key] = v)
+	return s
+
+
+# Whole-number SpinBox for an effect param (toll amount, counter delta), writing fx[key] live as int.
+func _make_int_spin(
+	fx: Dictionary, key: String, lo: int, hi: int, prefix: String, default: int
+) -> SpinBox:
+	var s: SpinBox = SpinBox.new()
+	s.min_value = lo
+	s.max_value = hi
+	s.step = 1
+	s.prefix = prefix
+	s.value = int(fx.get(key, default))
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(s)
+	s.value_changed.connect(func(v: float) -> void: fx[key] = int(v))
+	return s
+
+
+# Text field for an effect param (flag / counter name), writing fx[key] live.
+func _make_effect_line_edit(fx: Dictionary, key: String, placeholder: String) -> LineEdit:
+	var le: LineEdit = LineEdit.new()
+	le.placeholder_text = placeholder
+	le.text = str(fx.get(key, ""))
+	le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_line_edit(le)
+	le.text_changed.connect(func(v: String) -> void: fx[key] = v)
+	return le
 
 
 # Toggle chip for one journey tag. Filled with the tag's colour when on,
@@ -816,6 +1576,71 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	res_hint.add_theme_font_size_override("font_size", 10)
 	res_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(res_hint)
+
+	# Auto-advance timeout choice (used only when the journey enables auto-advance). Conditional forks
+	# fall back to their DEFAULT CHOICE above, so this is offered only for choice / sacrifice forks.
+	if resolution == "choice" or resolution == "sacrifice":
+		col.add_child(_side_field_label("ON AUTO-ADVANCE TIMEOUT"))
+		var to_dd: OptionButton = OptionButton.new()
+		to_dd.add_item("Random affordable path")  # dropdown index 0 → timeout_path -1
+		for ei in out.size():
+			var en: String = str((out[ei] as Dictionary).get("name", "")).strip_edges()
+			to_dd.add_item("Choice %d%s" % [ei + 1, ("  " + en) if en != "" else ""])
+		var cur_to: int = int(data.get("timeout_path", -1))
+		to_dd.selected = (cur_to + 1) if (cur_to >= 0 and cur_to < out.size()) else 0
+		to_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		to_dd.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"If the journey's auto-advance timer runs out on this fork, take this path. 'Random affordable path' picks one the player could afford."
+			)
+		)
+		UITheme.style_option_button(to_dd)
+		to_dd.item_selected.connect(func(i: int) -> void: data["timeout_path"] = i - 1)
+		col.add_child(to_dd)
+
+	col.add_child(_side_field_label("FORK AUDIO (OPTIONAL)"))
+	var fork_audio_zone: PanelContainer = DropZoneScript.new()
+	fork_audio_zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
+	fork_audio_zone.picker_title = "Select Fork Audio"
+	fork_audio_zone.picker_filters = ["*.ogg,*.mp3,*.wav ; Audio Files"]
+	fork_audio_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(fork_audio_zone)
+	if str(data.get("audio", "")) != "":
+		fork_audio_zone.call_deferred("set_file", data["audio"])
+	var fork_loop_toggle: CheckButton = CheckButton.new()
+	fork_loop_toggle.text = "LOOP THIS AUDIO"
+	fork_loop_toggle.add_theme_font_size_override("font_size", 11)
+	fork_loop_toggle.button_pressed = bool(data.get("audio_loop", false))
+	fork_loop_toggle.visible = str(data.get("audio", "")) != ""
+	fork_loop_toggle.toggled.connect(func(on: bool) -> void: data["audio_loop"] = on)
+	col.add_child(fork_loop_toggle)
+	var fork_audio_vol: SpinBox = _make_factor_spin(
+		data, "audio_volume", 0.0, 1.0, 0.05, "vol ", 1.0
+	)
+	fork_audio_vol.visible = str(data.get("audio", "")) != ""
+	col.add_child(fork_audio_vol)
+	var fork_audio_rm: Button = Button.new()
+	fork_audio_rm.text = "✕ REMOVE AUDIO"
+	fork_audio_rm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	fork_audio_rm.visible = str(data.get("audio", "")) != ""
+	UITheme.style_button(fork_audio_rm, UITheme.MAGENTA)
+	fork_audio_rm.pressed.connect(
+		func() -> void:
+			data["audio"] = ""
+			fork_audio_zone.call_deferred("set_file", "")
+			fork_audio_rm.visible = false
+			fork_loop_toggle.visible = false
+			fork_audio_vol.visible = false
+	)
+	fork_audio_zone.file_dropped.connect(
+		func(p: String) -> void:
+			data["audio"] = p
+			fork_audio_rm.visible = p != ""
+			fork_loop_toggle.visible = p != ""
+			fork_audio_vol.visible = p != ""
+	)
+	col.add_child(fork_audio_rm)
 
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("CHOICES"))
@@ -1387,9 +2212,14 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	var item_values: Array = [""]
 	var item_dd: OptionButton = OptionButton.new()
 	item_dd.add_item("None")
-	for k: String in InventoryService.GetAllItemIds():
+	# Built-in items only (see _all_item_ids) so a test-play's leftover journey items don't duplicate.
+	for k: String in InventoryService.GetBuiltinItemIds():
 		item_values.append(k)
 		item_dd.add_item(str(InventoryService.GetItemData(k).get("name", k)))
+	# Journey-scoped custom items — the live edit model is authoritative.
+	for it: Dictionary in _owner._journey_items:
+		item_values.append(str(it.get("id", "")))
+		item_dd.add_item("%s  (custom)" % str(it.get("name", "")))
 	item_dd.selected = max(0, item_values.find(str(round_data.get("award_item", ""))))
 	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(item_dd)
@@ -1550,7 +2380,7 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 
 	# Item registry — also bounds the pool-draw count, since a draw can never
 	# yield more distinct items than exist. Clamp any stale/out-of-range count.
-	var all_item_ids: Array = InventoryService.GetAllItemIds()
+	var all_item_ids: Array = _all_item_ids()
 	var item_count: int = all_item_ids.size()
 	shop_data["count"] = clampi(int(shop_data.get("count", 3)), 1, max(1, item_count))
 
@@ -1873,8 +2703,15 @@ func _shop_item_checklist(
 
 	for item_id: String in all_item_ids:
 		var item_data: Dictionary = InventoryService.GetItemData(item_id)
+		var iname: String = _item_display_name(item_id)
+		var iprice: int = int(item_data.get("price", 0))
+		if item_data.is_empty():  # custom item — price lives in the journey's item list, not InventoryService
+			for it: Dictionary in _owner._journey_items:
+				if str(it.get("id", "")) == item_id:
+					iprice = int(it.get("price", 0))
+					break
 		var cb: CheckBox = CheckBox.new()
-		cb.text = "%s  (♦%d)" % [item_data.get("name", item_id), item_data.get("price", 0)]
+		cb.text = "%s  (♦%d)" % [iname, iprice]
 		cb.tooltip_text = UITheme.wrap_tip(_item_tooltip(item_id))
 		cb.button_pressed = item_id in (arr[idx].get(key, []) as Array)
 		cb.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
@@ -1912,9 +2749,9 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	var item_values: Array = [""]
 	var item_dd: OptionButton = OptionButton.new()
 	item_dd.add_item("None")
-	for k: String in InventoryService.GetAllItemIds():
+	for k: String in _all_item_ids():
 		item_values.append(k)
-		item_dd.add_item(str(InventoryService.GetItemData(k).get("name", k)))
+		item_dd.add_item(_item_display_name(k))
 	item_dd.selected = max(0, item_values.find(str(sb_data.get("item", ""))))
 	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(item_dd)
@@ -1950,6 +2787,40 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 			sb_rm_btn.visible = true
 	)
 	col.add_child(sb_rm_btn)
+
+	# Overarching BGM — one looping track under EVERY line (its own volume, separate from line accents).
+	col.add_child(_side_section_separator())
+	col.add_child(_side_field_label("BACKGROUND MUSIC  (OPTIONAL — LOOPS UNDER ALL LINES)"))
+	var bgm_zone: PanelContainer = DropZoneScript.new()
+	bgm_zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
+	bgm_zone.picker_title = "Select Background Music"
+	bgm_zone.picker_filters = ["*.ogg,*.mp3,*.wav ; Audio Files"]
+	bgm_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(bgm_zone)
+	if str(sb_data.get("bgm", "")) != "":
+		bgm_zone.call_deferred("set_file", sb_data["bgm"])
+	var bgm_vol: SpinBox = _make_factor_spin(arr[idx], "bgm_volume", 0.0, 1.0, 0.05, "vol ", 0.6)
+	bgm_vol.visible = str(sb_data.get("bgm", "")) != ""
+	col.add_child(bgm_vol)
+	var bgm_rm_btn: Button = Button.new()
+	bgm_rm_btn.text = "✕ REMOVE MUSIC"
+	bgm_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bgm_rm_btn.visible = str(sb_data.get("bgm", "")) != ""
+	UITheme.style_button(bgm_rm_btn, UITheme.MAGENTA)
+	bgm_rm_btn.pressed.connect(
+		func() -> void:
+			arr[idx]["bgm"] = ""
+			bgm_zone.call_deferred("set_file", "")
+			bgm_rm_btn.visible = false
+			bgm_vol.visible = false
+	)
+	bgm_zone.file_dropped.connect(
+		func(p: String) -> void:
+			arr[idx]["bgm"] = p
+			bgm_rm_btn.visible = p != ""
+			bgm_vol.visible = p != ""
+	)
+	col.add_child(bgm_rm_btn)
 
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("DIALOGUE LINES"))
@@ -2176,6 +3047,51 @@ func _make_side_storyboard_line_block(
 		)
 		col.add_child(ref_btn)
 
+	col.add_child(_side_field_label("LINE AUDIO (OPTIONAL)"))
+	var audio_zone: PanelContainer = DropZoneScript.new()
+	audio_zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
+	audio_zone.picker_title = "Select Audio for Line %d" % (line_idx + 1)
+	audio_zone.picker_filters = ["*.ogg,*.mp3,*.wav ; Audio Files"]
+	audio_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(audio_zone)
+	if line_data.get("audio", "") != "":
+		audio_zone.call_deferred("set_file", line_data["audio"])
+	var audio_loop_toggle: CheckButton = CheckButton.new()
+	audio_loop_toggle.text = "LOOP THIS AUDIO"
+	audio_loop_toggle.add_theme_font_size_override("font_size", 11)
+	audio_loop_toggle.button_pressed = bool(line_data.get("audio_loop", false))
+	audio_loop_toggle.visible = line_data.get("audio", "") != ""
+	audio_loop_toggle.toggled.connect(
+		func(on: bool) -> void: lines_arr[line_idx]["audio_loop"] = on
+	)
+	col.add_child(audio_loop_toggle)
+	var audio_vol: SpinBox = _make_factor_spin(
+		lines_arr[line_idx], "audio_volume", 0.0, 1.0, 0.05, "vol ", 1.0
+	)
+	audio_vol.visible = line_data.get("audio", "") != ""
+	col.add_child(audio_vol)
+	var audio_rm_btn: Button = Button.new()
+	audio_rm_btn.text = "✕ REMOVE AUDIO"
+	audio_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	audio_rm_btn.visible = line_data.get("audio", "") != ""
+	UITheme.style_button(audio_rm_btn, UITheme.MAGENTA)
+	audio_rm_btn.pressed.connect(
+		func() -> void:
+			lines_arr[line_idx]["audio"] = ""
+			audio_zone.call_deferred("set_file", "")
+			audio_rm_btn.visible = false
+			audio_loop_toggle.visible = false
+			audio_vol.visible = false
+	)
+	audio_zone.file_dropped.connect(
+		func(p: String) -> void:
+			lines_arr[line_idx]["audio"] = p
+			audio_rm_btn.visible = p != ""
+			audio_loop_toggle.visible = p != ""
+			audio_vol.visible = p != ""
+	)
+	col.add_child(audio_rm_btn)
+
 	# Line action row (move + delete).
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
@@ -2290,12 +3206,12 @@ func _add_required_item_field(
 ) -> void:
 	container.add_child(_side_field_label(label))
 	var values: Array = [""]
-	var item_ids: Array = InventoryService.GetAllItemIds()
+	var item_ids: Array = _all_item_ids()
 	var dd: OptionButton = OptionButton.new()
 	dd.add_item("None (free)")
 	for k: String in item_ids:
 		values.append(k)
-		dd.add_item(str(InventoryService.GetItemData(k).get("name", k)))
+		dd.add_item(_item_display_name(k))
 	dd.selected = max(0, values.find(str(path.get("required_item", ""))))
 	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(dd)
@@ -2699,6 +3615,19 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	card_toggle.button_pressed = bool(arr[idx].get("show_encounter", true))
 	card_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["show_encounter"] = on)
 	wrapper.add_child(card_toggle)
+
+	var norepeat_toggle: CheckButton = CheckButton.new()
+	norepeat_toggle.text = "DON'T REPEAT CLIPS ACROSS COPIES"
+	norepeat_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"If you copy this pool and it plays more than once in a run, skip clips it already showed. Once every clip has been shown it starts repeating again."
+		)
+	)
+	norepeat_toggle.add_theme_font_size_override("font_size", 12)
+	norepeat_toggle.button_pressed = bool(arr[idx].get("no_repeat", false))
+	norepeat_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["no_repeat"] = on)
+	wrapper.add_child(norepeat_toggle)
 
 	var list: VBoxContainer = VBoxContainer.new()
 	list.add_theme_constant_override("separation", 8)
@@ -3148,9 +4077,9 @@ func _build_effect_catalog_picker(arr: Array, idx: int) -> Control:
 	var values: Array = [""]
 	var gift_dd: OptionButton = OptionButton.new()
 	gift_dd.add_item("None")
-	for k: String in InventoryService.GetAllItemIds():
+	for k: String in _all_item_ids():
 		values.append(k)
-		gift_dd.add_item(str(InventoryService.GetItemData(k).get("name", k)))
+		gift_dd.add_item(_item_display_name(k))
 	gift_dd.selected = max(0, values.find(str(arr[idx].get("gift_item", ""))))
 	gift_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(gift_dd)

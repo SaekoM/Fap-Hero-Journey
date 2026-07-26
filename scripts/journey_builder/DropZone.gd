@@ -22,6 +22,9 @@ var _browse_btn: Button
 func _ready() -> void:
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	# Lets JourneyBuilder detect that a per-field zone owns a file drop, so the drop isn't ALSO
+	# treated as a canvas / journey-cover action (see JourneyBuilder._drop_zone_under_cursor).
+	add_to_group("file_drop_zone")
 
 	var hbox: HBoxContainer = HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 6)

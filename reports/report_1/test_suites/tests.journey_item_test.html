@@ -34,12 +34,12 @@
 		<div class="report-container">
 			<h1>Testsuite Report</h1>
 			<div>
-				<span class="label">res://tests/catalog_test.gd</span>
+				<span class="label">res://tests/journey_item_test.gd</span>
 			</div>
 			<div class="summary">
 				<div class="summary-item">
 					<span class="label">Tests</span>
-					<span class="value">5</span>
+					<span class="value">6</span>
 				</div>
 				<div class="summary-item">
 					<span class="label">Skipped</span>
@@ -59,7 +59,7 @@
 				</div>
 				<div class="summary-item">
 					<span class="label">Duration</span>
-					<span class="value">19ms</span>
+					<span class="value">35ms</span>
 				</div>
 				<div class="success-rate">
 					<div class="check-icon status-passed">✓</div>
@@ -73,7 +73,7 @@
 		<div class="breadcrumb">
 			<a href="../index.html"><span>All</span></a>
 			<a href="../path/tests.html"><span>tests</span></a>
-			<a class="active" href="#"><span>catalog_test</span></a>
+			<a class="active" href="#"><span>journey_item_test</span></a>
 		</div>
 	</header>
 
@@ -94,7 +94,7 @@
 					<tbody>
 						
 								<tr class="testcase-group">
-									<td>test_sensory_intensity_fields</td>
+									<td>test_modifier_item_round_trip</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
@@ -108,7 +108,7 @@
 
 
 								<tr class="testcase-group">
-									<td>test_idef_normalized</td>
+									<td>test_key_item_round_trip_has_no_effects</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
@@ -122,11 +122,11 @@
 
 
 								<tr class="testcase-group">
-									<td>test_audio_kinds_subset</td>
+									<td>test_invalid_category_falls_back_to_modifier</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
-									<td>2ms</td>
+									<td>4ms</td>
 									<td class="report-column">
 										<pre>
 
@@ -136,11 +136,11 @@
 
 
 								<tr class="testcase-group">
-									<td>test_names_unique_across_catalogs</td>
+									<td>test_price_clamped_non_negative</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
-									<td>3ms</td>
+									<td>8ms</td>
 									<td class="report-column">
 										<pre>
 
@@ -150,11 +150,25 @@
 
 
 								<tr class="testcase-group">
-									<td>test_entries_have_kind_and_name</td>
+									<td>test_blank_id_is_healed_on_parse</td>
 									<td><span class="status status-passed">PASSED</span></td>
 									<td>0</td>
 									<td>0</td>
-									<td>2ms</td>
+									<td>5ms</td>
+									<td class="report-column">
+										<pre>
+
+										</pre>
+									</td>
+								</tr>
+
+
+								<tr class="testcase-group">
+									<td>test_oneshot_effect_params_round_trip</td>
+									<td><span class="status status-passed">PASSED</span></td>
+									<td>0</td>
+									<td>0</td>
+									<td>7ms</td>
 									<td class="report-column">
 										<pre>
 

@@ -67,6 +67,7 @@ var _current_layout_node_id: String = ""  # transient: the node _make_node is bu
 var _node_ctrls: Dictionary = {}  # node_id -> Control (graph mode), for live drag moves
 var _node_warnings: Dictionary = {}  # node_id -> soft-validation summary (author badge); pulled per layout
 var warning_provider: Callable = Callable()  # builder hook → {node_id: warning}; called each layout (editor only)
+var finish_id_provider: Callable = Callable()  # builder hook → the FINISH aftercare-entry node id; badged each layout
 # Traffic heatmap (audit Monte-Carlo results): {nodes: {id: pct}, edges: {"id:ei": pct}}.
 # Non-empty → editor edges are tinted/thickened by traffic share and nodes get a % chip.
 # Never rendered in map_mode (player map / image export). Set via set_traffic({}) to clear.
@@ -275,6 +276,9 @@ func _layout_graph() -> void:
 	_node_warnings = (
 		warning_provider.call() if (not map_mode and warning_provider.is_valid()) else {}
 	)
+	var finish_node_id: String = (
+		str(finish_id_provider.call()) if (not map_mode and finish_id_provider.is_valid()) else ""
+	)
 	# Group frames render at the very back, then sticky-note comments, then the nodes on top. Both are
 	# editor furniture the player map never has; image export shows them static (map_mode → no gui_input).
 	_frame_ctrls = []
@@ -299,6 +303,8 @@ func _layout_graph() -> void:
 		cc.position = (comments[ci] as Dictionary).get("pos", Vector2.ZERO)
 		_canvas.add_child(cc)
 		_comment_ctrls.append(cc)
+	# Per-type ordinals so a node can show its number (e.g. "STORYBOARD 4") matching save-error text.
+	var ord_map: Dictionary = JourneyGraph.type_ordinals(nodes)
 	for id: String in nodes:
 		if _collapsed_frame_of.has(id):  # inside a collapsed group — drawn as the collapsed bar instead
 			continue
@@ -318,6 +324,8 @@ func _layout_graph() -> void:
 		if not map_mode:  # author-only badges (never on the player map)
 			disp["warning"] = str(_node_warnings.get(id, ""))
 			disp["is_start"] = (id == str(_graph_model.get("start", "")))
+			disp["is_finish"] = (finish_node_id != "" and id == finish_node_id)
+			disp["type_ordinal"] = int(ord_map.get(id, 0))
 		var ctrl: Control = _make_node(disp, JourneyGraph.is_end(_graph_model, id))
 		ctrl.position = n.get("pos", Vector2.ZERO)
 		ctrl.set_meta("graph_node_id", id)
@@ -871,6 +879,17 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 		row.add_child(start_lbl)
 		row.move_child(start_lbl, 0)
 
+	# FINISH marker — the aftercare-sequence entry played by the "I came" button (off the main graph).
+	if item.get("is_finish", false):
+		var finish_lbl: Label = Label.new()
+		finish_lbl.text = "🏁 FINISH"
+		finish_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
+		finish_lbl.add_theme_font_size_override("font_size", 11)
+		finish_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		finish_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(finish_lbl)
+		row.move_child(finish_lbl, 0)
+
 	# Labels column
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 2)
@@ -1048,7 +1067,10 @@ func _type_sublabel(item: Dictionary) -> String:
 			return "SHOP"
 		"storyboard":
 			var n: int = (item.get("lines", []) as Array).size()
-			var sub: String = "STORYBOARD   %d LINE%s" % [n, "S" if n != 1 else ""]
+			# Show the storyboard's number (matches "Storyboard N" in save errors) when known.
+			var ord: int = int(item.get("type_ordinal", 0))
+			var head: String = "STORYBOARD %d" % ord if ord > 0 else "STORYBOARD"
+			var sub: String = "%s   %d LINE%s" % [head, n, "S" if n != 1 else ""]
 			var rewards: Array = []
 			if int(item.get("coins", 0)) > 0:
 				rewards.append("♦ %d" % int(item.get("coins", 0)))

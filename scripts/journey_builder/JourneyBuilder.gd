@@ -34,6 +34,8 @@ const CAUSE_BAD_NAME: String = "bad_name"
 const CAUSE_NAME_COLLISION: String = "name_collision"
 const CAUSE_MISSING_SOURCE: String = "missing_source"
 const CAUSE_NO_ROUNDS: String = "no_rounds"
+const CAUSE_STORYBOARD_EMPTY: String = "storyboard_empty"
+const CAUSE_ITEM_INVALID: String = "item_invalid"
 const CAUSE_FORK_UNDERFILLED: String = "fork_underfilled"
 const CAUSE_FFMPEG_MISSING: String = "ffmpeg_missing"
 const CAUSE_CANCELLED: String = "cancelled"
@@ -79,7 +81,13 @@ var _journey_tags: Array = []  # Array[String] of tag ids (see TagRegistry)
 var _journey_map_enabled: bool = true  # author allows the in-play journey map (off = enforce surprise)
 var _journey_map_fog: bool = false  # fog of war: reveal the map as the player discovers it (map must be enabled)
 var _journey_map_fog_reveal: int = 1  # fog reveal depth: ghost levels ahead of the trail (< 0 = whole structure)
+var _journey_auto_advance_enabled: bool = false  # countdown on storyboards / interactive forks (off = players self-pace)
+var _journey_auto_advance_storyboard_secs: int = 20  # per-line storyboard countdown when enabled
+var _journey_auto_advance_fork_secs: int = 45  # fork-decision countdown when enabled
 var _journey_shown_counters: Array = []  # Array[String] of counter names surfaced to the player (HUD + inventory)
+var _journey_allow_finish: bool = false  # author opt-in: the player "I came" / FINISH button ends the run early
+var _journey_finish_node: String = ""  # entry node of the off-graph aftercare sequence played on FINISH (round/storyboard; optional)
+var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
 
 # Folder the journey was loaded from when editing. If the journey is renamed,
 # the save writes a new folder; this lets us delete the stale original.
@@ -228,6 +236,7 @@ func _setup_graph_view() -> void:
 	_graph.canvas_context_menu_requested.connect(_on_canvas_context_menu_requested)
 	_graph.node_context_menu_requested.connect(_on_node_context_menu_requested)
 	_graph.warning_provider = _compute_node_warnings  # GraphView pulls soft-validation badges each layout
+	_graph.finish_id_provider = func() -> String: return _journey_finish_node  # badges the FINISH node
 	_graph.call_deferred("set_graph", _graph_model)
 
 
@@ -264,14 +273,70 @@ func _compute_node_warnings() -> Dictionary:
 				details.append(str(it.get("detail", "Problem")))
 			warnings[id] = "\n".join(details)
 	# Structural (whole-graph) problems, attached to the offending node.
-	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model):
+	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model, _journey_finish_node):
 		var sid: String = str(gi.get("id", ""))
 		if sid == "" or not nodes.has(sid):
 			continue  # journey-level (e.g. no_start) — surfaced at save, not per node
 		var msg: String = _structural_warning_text(str(gi.get("kind", "")))
 		if msg != "":
 			warnings[sid] = (str(warnings[sid]) + "\n" + msg) if warnings.has(sid) else msg
+	_check_norepeat_pool_exhaustion(warnings)
 	return warnings
+
+
+# Advisory ⚠: flags no-repeat pool COPIES that are used more times on a single run-path than the pool
+# has distinct clips — past that, the run-wide dedup is exhausted and a clip repeats. Copies are pools
+# that share a clip set (so copy/paste groups them; editing one copy's clips de-groups it). Path-aware
+# (max_nodes_on_path) so copies on exclusive fork branches, which never co-occur in one run, don't
+# false-alarm. Doesn't block save — the runtime degrades gracefully to repeating.
+func _check_norepeat_pool_exhaustion(warnings: Dictionary) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var groups: Dictionary = {}  # clip-set signature -> {ids: Array[node_id], clips: int}
+	for id: String in nodes:
+		var n: Dictionary = nodes[id]
+		if str(n.get("type", "")) != "round":
+			continue
+		var data: Dictionary = n.get("data", {})
+		if str(data.get("round_type", "")) != "pool" or not bool(data.get("no_repeat", false)):
+			continue
+		var clips: Array = _distinct_pool_clip_paths(data.get("pool_entries", []))
+		var sig: String = "\n".join(clips)
+		if not groups.has(sig):
+			groups[sig] = {"ids": [], "clips": clips.size()}
+		(groups[sig]["ids"] as Array).append(id)
+	var start_id: String = str(_graph_model.get("start", ""))
+	for sig: String in groups:
+		var group: Dictionary = groups[sig]
+		var ids: Array = group["ids"]
+		var clip_count: int = int(group["clips"])
+		# One copy never exhausts (single draw); zero clips is a separate missing-source issue.
+		if ids.size() < 2 or clip_count <= 0:
+			continue
+		var targets: Dictionary = {}
+		for gid: String in ids:
+			targets[gid] = true
+		var on_path: int = JourneyGraph.max_nodes_on_path(_graph_model, start_id, targets)
+		if on_path <= clip_count:
+			continue
+		var msg: String = (
+			"No-repeat pool used %d× on one run but has only %d clip%s — some plays will repeat."
+			% [on_path, clip_count, "" if clip_count == 1 else "s"]
+		)
+		for gid: String in ids:
+			warnings[gid] = (str(warnings[gid]) + "\n" + msg) if warnings.has(gid) else msg
+
+
+# Sorted, distinct, non-empty video_paths of a pool's entries — its clip set, used to group copies
+# and to count the no-repeat clip budget (dedup is by video_path, so distinct paths = unique clips).
+func _distinct_pool_clip_paths(entries: Array) -> Array:
+	var seen: Dictionary = {}
+	for e: Variant in entries:
+		var vp: String = str((e as Dictionary).get("video_path", ""))
+		if vp != "":
+			seen[vp] = true
+	var paths: Array = seen.keys()
+	paths.sort()
+	return paths
 
 
 # Every flag name any node's data or fork choice sets in this journey (for dead-flag detection).
@@ -1168,6 +1233,19 @@ func _show_node_context_menu(node_id: String) -> void:
 	)
 	vbox.add_child(start_b)
 
+	# FINISH (aftercare-sequence entry) — only a round or storyboard can be the entry.
+	var node_type: String = str((_graph_model["nodes"][node_id] as Dictionary).get("type", ""))
+	if node_type == "round" or node_type == "storyboard":
+		var already_finish: bool = _journey_finish_node == node_id
+		var finish_b: Button = _ctx_menu_button(
+			"✓ FINISH NODE  (clear)" if already_finish else "🏁 SET AS FINISH",
+			UITheme.MAGENTA,
+			func() -> void:
+				popup.queue_free()
+				_toggle_node_as_finish(node_id)
+		)
+		vbox.add_child(finish_b)
+
 	popup.reset_size()
 	popup.position = Vector2i(get_global_mouse_position())
 	popup.popup()
@@ -1182,6 +1260,24 @@ func _set_node_as_start(node_id: String) -> void:
 	_graph_model["start"] = node_id
 	_refresh_graph()
 	_show_status("Start set — the journey now begins at this node.", false)
+
+
+# Sets (or clears, if already set) `node_id` as the FINISH aftercare-sequence entry. Setting also flips
+# on the journey's "allow finish" so a right-click is all it takes for the button to appear. Not undoable
+# — it's a journey setting (like the map toggle / the finish dropdown), not a graph-structure change. The
+# refresh re-badges the node and re-evaluates reachability (the finish subtree is exempt from unreachable).
+func _toggle_node_as_finish(node_id: String) -> void:
+	if _journey_finish_node == node_id:
+		_journey_finish_node = ""
+		_refresh_graph()
+		_show_status("Finish node cleared.", false)
+	else:
+		_journey_finish_node = node_id
+		_journey_allow_finish = true
+		_refresh_graph()
+		_show_status(
+			"Finish set — the FINISH button plays the aftercare sequence from here.", false
+		)
 
 
 # One left-aligned, full-width button for the canvas context menu.
@@ -1773,7 +1869,7 @@ func _show_shortcuts_overlay() -> void:
 			"RIGHT-CLICK",
 			[
 				["Right-click empty space", "Menu: add a node / note / group at the cursor"],
-				["Right-click a node", "Menu: set it as the journey's start"],
+				["Right-click a node", "Menu: set it as the journey's start / FINISH node"],
 			]
 		],
 		[
@@ -2046,6 +2142,12 @@ func _on_viewport_files_dropped(files: PackedStringArray) -> void:
 		_handle_side_panel_drop(files)
 		return
 
+	# A per-field DropZone under the cursor (e.g. a custom-item image zone in a modal over the canvas)
+	# owns the drop — it sets its own value, so the builder stays out of it rather than bulk-importing
+	# or hijacking the journey cover.
+	if _drop_zone_under_cursor():
+		return
+
 	# Canvas drop: bulk round import, else accept an image as the journey cover.
 	if not _bulk_import_graph_rounds(files):
 		for f: String in files:
@@ -2090,13 +2192,26 @@ func _handle_side_panel_drop(files: PackedStringArray) -> void:
 			_graph.call_deferred("select_graph_node", _selected_graph_node_id)
 			return
 
-	# Nothing selected → a dropped image becomes the journey cover.
-	if _selected_graph_node_id == "":
+	# Nothing selected → a dropped image becomes the journey cover, unless a per-field DropZone under
+	# the cursor owns the drop (it sets its own value; don't also hijack the cover).
+	if _selected_graph_node_id == "" and not _drop_zone_under_cursor():
 		for f: String in files:
 			if f.get_extension().to_lower() in JourneyData.IMAGE_EXTENSIONS:
 				_cover_path = f
 				_update_cover_preview()
 				return
+
+
+# True when a visible per-field DropZone sits under the cursor. Those zones set their own value from
+# an OS file drop (DropZone._on_viewport_files_dropped), so the builder must not also treat the same
+# drop as a canvas / journey-cover action. Zones join the "file_drop_zone" group in DropZone._ready.
+func _drop_zone_under_cursor() -> bool:
+	var mouse: Vector2 = get_viewport().get_mouse_position()
+	for z: Node in get_tree().get_nodes_in_group("file_drop_zone"):
+		var ctrl: Control = z as Control
+		if ctrl != null and ctrl.is_visible_in_tree() and ctrl.get_global_rect().has_point(mouse):
+			return true
+	return false
 
 
 # Bulk-imports rounds from dropped files: ImportScanner groups them into round data (a video + its
@@ -2220,8 +2335,17 @@ func _load_graph(journey: Dictionary) -> void:
 	_journey_tags = (parsed.get("tags", []) as Array).duplicate()
 	_journey_map_enabled = bool(parsed.get("map_enabled", true))
 	_journey_shown_counters = (parsed.get("shown_counters", []) as Array).duplicate()
+	# Custom journey items come from the scanner's resolved `items` on the raw journey dict —
+	# NOT from `parsed`, whose "items" key is JourneyData.parse_journey's NODE SEQUENCE (a name
+	# collision). Reading `parsed["items"]` here loaded the round/shop nodes as blank custom items.
+	_journey_items = (journey.get("items", []) as Array).duplicate(true)
 	_journey_map_fog = bool(parsed.get("map_fog", false))
 	_journey_map_fog_reveal = int(parsed.get("map_fog_reveal", 1))
+	_journey_auto_advance_enabled = bool(parsed.get("auto_advance_enabled", false))
+	_journey_auto_advance_storyboard_secs = int(parsed.get("auto_advance_storyboard_secs", 20))
+	_journey_auto_advance_fork_secs = int(parsed.get("auto_advance_fork_secs", 45))
+	_journey_allow_finish = bool(parsed.get("allow_finish", false))
+	_journey_finish_node = str(parsed.get("finish_node", ""))
 	if (parsed["cover_path"] as String) != "":
 		_cover_path = parsed["cover_path"]
 		_update_cover_preview()
@@ -2695,6 +2819,9 @@ func _remove_fork_edge(fork_id: String, edge_idx: int) -> void:
 	var data: Dictionary = node.get("data", {})
 	if int(data.get("default_path", 0)) >= edges.size():
 		data["default_path"] = max(0, edges.size() - 1)
+	# timeout_path may be -1 (random); only clamp a real index that now points past the end.
+	if int(data.get("timeout_path", -1)) >= edges.size():
+		data["timeout_path"] = -1
 	_graph.select_graph_node(fork_id)
 
 
@@ -3199,6 +3326,19 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 				saved_out = await _save_fork_node_edges(
 					node.get("out", []), abs_dir, abs_media_dir, id, copied_images, modal
 				)
+				# Optional fork audio accent — pooled like the storyboard's, replacing the author's
+				# absolute source path (carried in by coerce's data.duplicate) with the pooled rel.
+				var fork_audio: String = _pool_small_file(str(data_in.get("audio", "")), abs_dir)
+				if fork_audio != "":
+					saved_data["audio"] = fork_audio
+					saved_data["audio_loop"] = bool(data_in.get("audio_loop", false))
+					saved_data["audio_volume"] = clampf(
+						float(data_in.get("audio_volume", 1.0)), 0.0, 1.0
+					)
+				else:
+					saved_data.erase("audio")
+					saved_data.erase("audio_loop")
+					saved_data.erase("audio_volume")
 			"shop", "checkpoint":
 				pass  # no media
 
@@ -3222,6 +3362,17 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	var node_block: Dictionary = JourneyGraph.to_json(
 		{"start": _graph_model.get("start", ""), "nodes": out_nodes}
 	)
+
+	# Pool custom-item icons into content/ (small stills, hash-deduped) so the saved Items block
+	# carries a relative pooled path rather than the author's absolute source path.
+	var items_for_save: Array = []
+	for it: Dictionary in _journey_items:
+		var saved_item: Dictionary = (it as Dictionary).duplicate(true)
+		var img_src: String = str(saved_item.get("image", ""))
+		if img_src != "":
+			saved_item["image"] = _pool_small_file(img_src, abs_dir)
+		items_for_save.append(saved_item)
+
 	var result: Dictionary = {
 		"Name": paths["journey_name"],
 		"Author": _journey_author.strip_edges(),
@@ -3231,7 +3382,13 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"MapEnabled": _journey_map_enabled,
 		"MapFog": _journey_map_fog,
 		"MapFogReveal": _journey_map_fog_reveal,
+		"AutoAdvanceEnabled": _journey_auto_advance_enabled,
+		"AutoAdvanceStoryboardSecs": _journey_auto_advance_storyboard_secs,
+		"AutoAdvanceForkSecs": _journey_auto_advance_fork_secs,
 		"ShownCounters": JourneyData.clean_flag_list(_journey_shown_counters),
+		"AllowFinish": _journey_allow_finish,
+		"FinishNode": _journey_finish_node,
+		"Items": JourneyData.coerce_journey_items(items_for_save),
 	}
 	# Identity + version stamps. _journey_id is empty for a new journey (minted here) and carries
 	# the loaded id for an existing one, so re-saving — or renaming — never changes it.
@@ -3587,14 +3744,25 @@ func _save_storyboard_node_media(
 			JourneyData.ANIM_CAP_STORYBOARD,
 			modal
 		)
-		lines_out.append(
-			{
-				"speaker": str(line.get("speaker", "")),
-				"text": str(line.get("text", "")),
-				"image": li_rel
-			}
-		)
+		var line_out: Dictionary = {
+			"speaker": str(line.get("speaker", "")),
+			"text": str(line.get("text", "")),
+			"image": li_rel,
+		}
+		# Optional per-line audio accent — hash-pooled like any small file (no transcode; Godot
+		# decodes ogg/mp3/wav natively). Only stored when set, to keep the schema lean.
+		var audio_rel: String = _pool_small_file(str(line.get("audio", "")), abs_dir)
+		if audio_rel != "":
+			line_out["audio"] = audio_rel
+			line_out["audio_loop"] = bool(line.get("audio_loop", false))
+			line_out["audio_volume"] = clampf(float(line.get("audio_volume", 1.0)), 0.0, 1.0)
+		lines_out.append(line_out)
 	saved_data["lines"] = lines_out
+	# Optional overarching BGM — one looping track under every line, pooled like the line accents.
+	var bgm_rel: String = _pool_small_file(str(data_in.get("bgm", "")), abs_dir)
+	if bgm_rel != "":
+		saved_data["bgm"] = bgm_rel
+		saved_data["bgm_volume"] = clampf(float(data_in.get("bgm_volume", 0.6)), 0.0, 1.0)
 	return saved_data
 
 
@@ -4390,6 +4558,55 @@ func _collect_journey_meta_issues(issues: Array) -> void:
 				}
 			)
 		)
+	_collect_custom_item_issues(issues)
+
+
+# Custom items must have a name; a modifier must carry at least one effect (a key needs none); an
+# item image, if set, must still exist. Blocks save — a nameless/effectless item is unusable.
+func _collect_custom_item_issues(issues: Array) -> void:
+	for it: Dictionary in _journey_items:
+		var iname: String = str(it.get("name", "")).strip_edges()
+		var label: String = "Custom item '%s'" % iname if iname != "" else "Custom item"
+		if iname == "":
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_ITEM_INVALID,
+						"item": "Custom item",
+						"detail": "A custom item has no name.",
+						"hint": "Give every custom item a name in the Custom Items panel.",
+					}
+				)
+			)
+		if (
+			str(it.get("category", "modifier")) == "modifier"
+			and (it.get("effects", []) as Array).is_empty()
+		):
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_ITEM_INVALID,
+						"item": label,
+						"detail": "This modifier item has no effects — using it would do nothing.",
+						"hint": "Add at least one effect, or switch its type to Key.",
+					}
+				)
+			)
+		var img: String = str(it.get("image", ""))
+		if img != "" and not _save_source_exists(img):
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_MISSING_SOURCE,
+						"item": label,
+						"detail": "Item image no longer exists at: %s" % img,
+						"hint": "Re-add the item image, or remove it.",
+					}
+				)
+			)
 
 
 # Graph-editor presave validation. Per GRAPH_EDITOR_OVERHAUL.md §10/§12, deep structural
@@ -4420,28 +4637,26 @@ func _collect_presave_issues_graph() -> Array:
 			)
 		)
 
-	var round_num: int = 0
-	var sb_num: int = 0
-	var fork_num: int = 0
+	# Per-type ordinals (shared with GraphView) so "Storyboard 4" in an error points at the node the
+	# graph also labels 4.
+	var ordinals: Dictionary = JourneyGraph.type_ordinals(nodes)
 	for id: String in nodes:
 		var n: Dictionary = nodes[id]
 		var data: Dictionary = n.get("data", {})
+		var ordinal: int = int(ordinals.get(id, 0))
 		match str(n.get("type", "")):
 			"round":
-				round_num += 1
-				_save_check_round(data, "Round %d" % round_num, issues)
+				_save_check_round(data, "Round %d" % ordinal, issues)
 			"storyboard":
-				sb_num += 1
-				_save_check_storyboard(data, "Storyboard %d" % sb_num, issues)
+				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
-				fork_num += 1
-				_save_check_fork_graph(n, "Fork %d" % fork_num, issues)
+				_save_check_fork_graph(n, "Fork %d" % ordinal, issues)
 
 	# Structural graph validation (L4): block on graphs the runtime can't cleanly play — a missing
 	# start, an edge to a deleted node, a cycle (the DAG walk would loop forever), or an unreachable
 	# node. Unreachable nodes block so a saved journey never carries media that's never played (a
 	# storage concern): the author must wire the orphan into the flow or delete it before saving.
-	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model):
+	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model, _journey_finish_node):
 		match str(gi.get("kind", "")):
 			"no_start":
 				(
@@ -4527,6 +4742,19 @@ func _graph_issue_label(node_id: String) -> String:
 # handled separately by JourneyGraph.validate_graph; cycles are also prevented at wire time.
 func _save_check_fork_graph(node: Dictionary, ctx: String, issues: Array) -> void:
 	var edges: Array = node.get("out", [])
+	var fork_audio: String = str((node.get("data", {}) as Dictionary).get("audio", ""))
+	if fork_audio != "" and not _save_source_exists(fork_audio):
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_MISSING_SOURCE,
+					"item": ctx,
+					"detail": "Fork audio clip no longer exists at: %s" % fork_audio,
+					"hint": "Re-add the fork audio, or remove it.",
+				}
+			)
+		)
 	if edges.size() < 2:
 		(
 			issues
@@ -4817,6 +5045,21 @@ func _save_check_pool_source(path: String, kind: String, elabel: String, issues:
 
 
 func _save_check_storyboard(sb_data: Dictionary, ctx: String, issues: Array) -> void:
+	# A storyboard must have at least one dialogue line — an empty one has nothing to show or advance
+	# through (and would hang under auto-advance). Blocks save; also drives the ⚠ node badge.
+	var lines: Array = sb_data.get("lines", [])
+	if lines.is_empty():
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_STORYBOARD_EMPTY,
+					"item": ctx,
+					"detail": "This storyboard has no dialogue lines.",
+					"hint": "Add at least one line, or delete the storyboard node.",
+				}
+			)
+		)
 	var default_img: String = sb_data.get("image", "")
 	if default_img != "" and not _save_source_exists(default_img):
 		(
@@ -4830,7 +5073,19 @@ func _save_check_storyboard(sb_data: Dictionary, ctx: String, issues: Array) -> 
 				}
 			)
 		)
-	var lines: Array = sb_data.get("lines", [])
+	var bgm: String = str(sb_data.get("bgm", ""))
+	if bgm != "" and not _save_source_exists(bgm):
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_MISSING_SOURCE,
+					"item": ctx,
+					"detail": "Background music no longer exists at: %s" % bgm,
+					"hint": "Re-add the background music, or remove it.",
+				}
+			)
+		)
 	for li in lines.size():
 		var line: Dictionary = lines[li]
 		var img: String = line.get("image", "")
@@ -4843,6 +5098,19 @@ func _save_check_storyboard(sb_data: Dictionary, ctx: String, issues: Array) -> 
 						"item": "%s, Line %d" % [ctx, li + 1],
 						"detail": "Speaker image no longer exists at: %s" % img,
 						"hint": "Re-drag the speaker image into this line, or remove it.",
+					}
+				)
+			)
+		var aud: String = str(line.get("audio", ""))
+		if aud != "" and not _save_source_exists(aud):
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_MISSING_SOURCE,
+						"item": "%s, Line %d" % [ctx, li + 1],
+						"detail": "Audio clip no longer exists at: %s" % aud,
+						"hint": "Re-add the audio for this line, or remove it.",
 					}
 				)
 			)

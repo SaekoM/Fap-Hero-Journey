@@ -142,6 +142,10 @@ func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
 	var name_lbl: Label = Label.new()
 	name_lbl.text = (data.get("name", "?") as String).to_upper()
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Clip + ellipsis so a long (e.g. custom) item name stays within its flex width instead of forcing
+	# the row wider and running off the panel; the class tag + duration stay visible on the right.
+	name_lbl.clip_text = true
+	name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 	name_lbl.add_theme_font_size_override("font_size", 14)
 	top_row.add_child(name_lbl)

@@ -372,6 +372,21 @@ static func effect_entry(name: String) -> Dictionary:
 	return {}
 
 
+# True when `kind` is a sensory (visual/audio) effect. Sensory effects are keyed by kind in item
+# bundles and applied through SensoryFX; the gameplay/stroke item kinds are keyed by kind too but
+# reconciled by their own consumers.
+static func is_sensory_kind(kind: String) -> bool:
+	return not sensory_entry_by_kind(kind).is_empty()
+
+
+# The SENSORY_CATALOG entry for a kind (carries name + imin/imax/idef intensity range). {} if none.
+static func sensory_entry_by_kind(kind: String) -> Dictionary:
+	for e: Dictionary in SENSORY_CATALOG:
+		if str(e.get("kind", "")) == kind:
+			return e
+	return {}
+
+
 # Stroke-modifier kinds — these change the funscript curve, so their magnitude is tuned
 # live in the funscript preview (where the author can watch the strokes), not the side
 # panel. reverse/block are stroke kinds but carry no magnitude.
@@ -672,9 +687,12 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 						pool_out.append(coerce_pool_entry(pe))
 				out["pool_entries"] = pool_out
 				out["show_encounter"] = bool(data.get("show_encounter", true))
+				# Opt-in: don't draw a clip this pool already showed this run (across its copies).
+				out["no_repeat"] = bool(data.get("no_repeat", false))
 			else:
 				out.erase("pool_entries")
 				out.erase("show_encounter")
+				out.erase("no_repeat")
 		"shop":
 			out["title"] = str(data.get("title", ""))
 			out["mode"] = str(data.get("mode", "pool"))
@@ -694,6 +712,7 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["cond_metric"] = str(data.get("cond_metric", "score"))
 			out["cond_decider"] = str(data.get("cond_decider", "game"))
 			out["default_path"] = int(data.get("default_path", 0))
+			out["timeout_path"] = int(data.get("timeout_path", -1))
 			out["after_order"] = int(data.get("after_order", 0))
 			# Which counter a "counter" conditional fork gates on (blank for other metrics).
 			out["cond_counter"] = str(data.get("cond_counter", ""))
@@ -768,6 +787,24 @@ static func pool_entry_weights(entries: Array) -> Array:
 	for e: Variant in entries:
 		w.append(maxi(1, int((e as Dictionary).get("weight", 1))))
 	return w
+
+
+# Weights for a NO-REPEAT pool draw: an entry whose video already played this run (its video_path is
+# in `played`, a {video_path: true} set) gets weight 0 so it's skipped — UNLESS every entry has
+# played, in which case the full weights are returned (repeat rather than dead-end). Pure; pairs with
+# pool_entry_weights.
+static func pool_draw_weights(entries: Array, played: Dictionary) -> Array:
+	var base: Array = pool_entry_weights(entries)
+	var filtered: Array = []
+	var any_unplayed: bool = false
+	for i in entries.size():
+		var vp: String = str((entries[i] as Dictionary).get("video_path", ""))
+		if vp != "" and played.has(vp):
+			filtered.append(0)
+		else:
+			filtered.append(int(base[i]))
+			any_unplayed = true
+	return filtered if any_unplayed else base
 
 
 # Every animated image source the graph references, deduped. `animated_exts` is passed in (the
@@ -853,6 +890,95 @@ static func stamp_journey_identity(meta: Dictionary, existing_id: String = "") -
 # journeys) can't collide; build_graph also guards against a stray duplicate.
 static func new_node_id() -> String:
 	return "n_%08x%08x" % [randi(), randi()]
+
+
+# ── Custom journey items ─────────────────────────────────────────────────────
+# Author-defined, journey-scoped items: a name + description, and either an effect BUNDLE (a
+# "modifier" that, when used, applies its tuned effects for the duration) or a "key" (owned for fork
+# gating, never manually used). Stored in the journey meta; loaded into InventoryService each run.
+# Effects are resolved {kind, params} dicts — the same shape built-in items use — so the C# runtime
+# consumes them directly. Ids are minted once and preserved so award/shop/gate references survive edits.
+const ITEM_CATEGORIES: Array = ["modifier", "key"]
+const ITEM_DEFAULT_DURATION_MS: int = 30000
+
+
+static func new_item_id() -> String:
+	return "itm_%08x%08x" % [randi(), randi()]
+
+
+# Runtime (snake-case) shape → journey.json (PascalCase envelope; effect param dicts stay lowercase).
+static func coerce_journey_item(item: Dictionary) -> Dictionary:
+	var category: String = str(item.get("category", "modifier"))
+	if not ITEM_CATEGORIES.has(category):
+		category = "modifier"
+	var out: Dictionary = {
+		"Id": str(item.get("id", "")),
+		"Name": str(item.get("name", "")),
+		"Description": str(item.get("description", "")),
+		"Category": category,
+		"Price": maxi(0, int(item.get("price", 0))),
+	}
+	# Optional icon (pooled path written by the save; the author's source path in the editor model).
+	if str(item.get("image", "")) != "":
+		out["Image"] = str(item.get("image", ""))
+	if category == "key":
+		return out
+	out["DurationMs"] = maxi(0, int(item.get("duration_ms", ITEM_DEFAULT_DURATION_MS)))
+	var effects_out: Array = []
+	for e: Variant in item.get("effects", []):
+		if e is Dictionary:
+			effects_out.append((e as Dictionary).duplicate(true))
+	out["Effects"] = effects_out
+	return out
+
+
+static func coerce_journey_items(items: Array) -> Array:
+	var out: Array = []
+	for it: Variant in items:
+		if it is Dictionary:
+			out.append(coerce_journey_item(it))
+	return out
+
+
+# journey.json (PascalCase) → runtime (snake-case). A "key" gets kind:"key" so InventoryService
+# refuses manual use and fork gating works by id; a "modifier" carries its effects bundle.
+static func parse_journey_item(raw: Dictionary) -> Dictionary:
+	var category: String = str(raw.get("Category", "modifier"))
+	if not ITEM_CATEGORIES.has(category):
+		category = "modifier"
+	# Heal a missing/blank id on read. An empty id is always broken — InventoryService.LoadJourneyItems
+	# skips it and no fork can gate on "" — so minting one here (durable on the next save) can only fix
+	# a broken item, never break a valid reference. Guards against legacy / mid-development id-less items.
+	var id: String = str(raw.get("Id", "")).strip_edges()
+	if id == "":
+		id = new_item_id()
+	var item: Dictionary = {
+		"id": id,
+		"name": str(raw.get("Name", "")),
+		"description": str(raw.get("Description", "")),
+		"category": category,
+		"price": int(raw.get("Price", 0)),
+	}
+	if str(raw.get("Image", "")) != "":
+		item["image"] = str(raw.get("Image", ""))
+	if category == "key":
+		item["kind"] = "key"
+		return item
+	item["duration_ms"] = int(raw.get("DurationMs", ITEM_DEFAULT_DURATION_MS))
+	var effects: Array = []
+	for e: Variant in raw.get("Effects", []):
+		if e is Dictionary:
+			effects.append((e as Dictionary).duplicate(true))
+	item["effects"] = effects
+	return item
+
+
+static func parse_journey_items(raw: Array) -> Array:
+	var out: Array = []
+	for r: Variant in raw:
+		if r is Dictionary:
+			out.append(parse_journey_item(r))
+	return out
 
 
 # Normalizes a flag list (from a comma-separated field or a saved array) to a deduped, trimmed,
@@ -1010,6 +1136,7 @@ static func new_item(type: String) -> Dictionary:
 			# resolution: "choice" | "random" | "conditional" | "sacrifice"
 			# cond_metric (conditional only): "score" | "coins" | "item"
 			# default_path (conditional only): index taken when no rule matches
+			# timeout_path (choice/sacrifice): auto-advance fallback; -1 = random affordable
 			# Per-path config (only the field(s) for the active resolution are used):
 			#   weight (random) · threshold (conditional score/coins) ·
 			#   required_item (conditional item check, OR sacrifice — consumed) ·
@@ -1022,6 +1149,7 @@ static func new_item(type: String) -> Dictionary:
 				"resolution": "choice",
 				"cond_metric": "score",
 				"default_path": 0,
+				"timeout_path": -1,
 				"paths":
 				[
 					{
@@ -1176,6 +1304,11 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"map_enabled": bool(journey.get("map_enabled", true)),
 		"map_fog": bool(journey.get("map_fog", false)),
 		"map_fog_reveal": int(journey.get("map_fog_reveal", 1)),
+		"auto_advance_enabled": bool(journey.get("auto_advance_enabled", false)),
+		"auto_advance_storyboard_secs": int(journey.get("auto_advance_storyboard_secs", 20)),
+		"auto_advance_fork_secs": int(journey.get("auto_advance_fork_secs", 45)),
+		"allow_finish": bool(journey.get("allow_finish", false)),
+		"finish_node": str(journey.get("finish_node", "")),
 		"redirects": journey.get("redirects", {}),
 		"items": items,
 	}
@@ -1219,6 +1352,7 @@ static func _build_fork_item(f: Dictionary) -> Dictionary:
 		"resolution": str(f.get("resolution", "choice")),
 		"cond_metric": str(f.get("cond_metric", "score")),
 		"default_path": int(f.get("default_path", 0)),
+		"timeout_path": int(f.get("timeout_path", -1)),
 		"paths": paths_out,
 		"node_id": f.get("node_id", ""),
 	}

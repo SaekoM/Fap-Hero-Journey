@@ -59,6 +59,32 @@ func test_pool_entry_weights() -> void:
 	assert_array(w).is_equal([1, 3, 1])  # missing weight → 1
 
 
+# ── pool_draw_weights (no-repeat pool draw) ──────────────────────────────────
+
+
+func test_pool_draw_weights_none_played_is_base() -> void:
+	var entries := [{"video_path": "a", "weight": 2}, {"video_path": "b"}]
+	assert_array(JourneyData.pool_draw_weights(entries, {})).is_equal([2, 1])
+
+
+# A played clip's entry is zeroed (skipped); the rest keep their weight.
+func test_pool_draw_weights_zeros_played_entry() -> void:
+	var entries := [{"video_path": "a", "weight": 3}, {"video_path": "b"}]
+	assert_array(JourneyData.pool_draw_weights(entries, {"a": true})).is_equal([0, 1])
+
+
+# Every clip already played → fall back to the full weights rather than dead-ending on all-zero.
+func test_pool_draw_weights_all_played_falls_back() -> void:
+	var entries := [{"video_path": "a", "weight": 2}, {"video_path": "b"}]
+	assert_array(JourneyData.pool_draw_weights(entries, {"a": true, "b": true})).is_equal([2, 1])
+
+
+# An entry with no video_path is treated as unplayed (kept), never matched against the played set.
+func test_pool_draw_weights_empty_path_kept() -> void:
+	var entries := [{"video_path": ""}, {"video_path": "b"}]
+	assert_array(JourneyData.pool_draw_weights(entries, {"b": true})).is_equal([1, 0])
+
+
 func test_pool_round_coercion_keeps_entries() -> void:
 	var data: Dictionary = {
 		"round_type": "pool",
