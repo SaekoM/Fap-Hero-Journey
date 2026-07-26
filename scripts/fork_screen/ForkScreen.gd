@@ -20,10 +20,26 @@ var show_map_button: bool = true  # GameLoop clears this when the journey hides 
 
 var _cond_decider: String = "game"  # conditional: "game" (auto-spin) or "player" (gated pick)
 
+# Auto-advance countdown (journey opt-in). GameLoop sets auto_advance_secs before setup(); when >0 it
+# arms a visible timer on INTERACTIVE forks (the ones that wait for the player). On expiry it picks
+# the author's timeout path (or the conditional default), else a random affordable path. 0 = off.
+var auto_advance_secs: int = 0
+var _timeout_path: int = -1  # author's on-timeout path for choice/sacrifice forks; -1 = random
+var _time_left: float = 0.0
+var _timer_active: bool = false
+var _resolved: bool = false  # guards a manual pick and the timeout firing together
+var _countdown_lbl: Label = null
+
+# Optional audio accent, played on open over the BGM (Master bus). Loops until the fork resolves.
+var _audio: AudioStreamPlayer = null
+
 
 func _ready() -> void:
 	_apply_layout()
 	_apply_base_theme()
+	_audio = AudioStreamPlayer.new()
+	_audio.bus = "Master"
+	add_child(_audio)
 
 
 func setup(fork_data: Dictionary) -> void:
@@ -51,6 +67,21 @@ func setup(fork_data: Dictionary) -> void:
 	# button is omitted there (GameLoop also blocks the M key).
 	if not _is_auto_resolved():
 		_add_map_button()
+		# Auto-advance countdown — only interactive forks can be "rested" on.
+		_timeout_path = int(fork_data.get("timeout_path", -1))
+		if auto_advance_secs > 0:
+			_start_countdown()
+
+	# Optional audio accent — plays over the BGM the moment the fork opens.
+	var audio_path: String = str(fork_data.get("audio", ""))
+	if audio_path != "":
+		var stream: AudioStream = JourneyAudio.load_from_file(audio_path)
+		if stream != null:
+			JourneyAudio.set_loop(stream, bool(fork_data.get("audio_loop", false)))
+			_audio.stream = stream
+			var vol: float = float(fork_data.get("audio_volume", 1.0))
+			_audio.volume_db = linear_to_db(vol) if vol > 0.0 else -80.0
+			_audio.play()
 
 
 func _make_card(index: int, path_data: Dictionary) -> Control:
@@ -260,6 +291,13 @@ static func _load_image(path: String) -> Image:
 
 
 func _on_path_chosen(index: int) -> void:
+	# One resolution only — a manual pick and the countdown expiring can race.
+	if _resolved:
+		return
+	_resolved = true
+	_timer_active = false
+	if _audio != null:
+		_audio.stop()
 	# Sacrifice: spend the path's cost (coins and/or item) before proceeding.
 	# Affordability was already gated, so these should succeed.
 	if _resolution == "sacrifice" and index >= 0 and index < _paths.size():
@@ -273,6 +311,76 @@ func _on_path_chosen(index: int) -> void:
 	# Note: GameLoop frees this screen during the transition (after the black
 	# covers it), so it dims into the fade rather than vanishing first.
 	emit_signal("path_chosen", index)
+
+
+# ── Auto-advance countdown ───────────────────────────────────────────────────
+
+
+func _start_countdown() -> void:
+	_add_countdown_label()
+	_time_left = float(auto_advance_secs)
+	_timer_active = true
+	_update_countdown_label()
+
+
+func _process(delta: float) -> void:
+	# Pausing is handled by GameLoop toggling set_process() while the map viewer is open.
+	if not _timer_active:
+		return
+	_time_left -= delta
+	if _time_left <= 0.0:
+		_timer_active = false
+		var idx: int = _resolve_timeout_index()
+		# -1 = nothing selectable (a sacrifice with no affordable path): don't force an invalid spend,
+		# just leave the player where they are.
+		if idx < 0:
+			return
+		_on_path_chosen(idx)
+		return
+	_update_countdown_label()
+
+
+# The path taken when the countdown expires — the pure pick in ForkResolver, fed this fork's live
+# affordability mask (sacrifice paths gate on coins/items; every other path is always selectable).
+func _resolve_timeout_index() -> int:
+	var selectable: Array = []
+	for i in _paths.size():
+		selectable.append(_is_selectable(i))
+	return ForkResolver.timeout_pick(_resolution, selectable, _timeout_path, _default_path, randi())
+
+
+# A path the auto-pick may land on: a sacrifice path must be affordable; others are always fair game.
+func _is_selectable(index: int) -> bool:
+	if index < 0 or index >= _paths.size():
+		return false
+	if _resolution == "sacrifice":
+		var p: Dictionary = _paths[index]
+		return _can_afford(int(p.get("cost", 0)), str(p.get("required_item", "")))
+	return true
+
+
+# A small countdown pinned top-centre so the ticking clock is visible above the cards.
+func _add_countdown_label() -> void:
+	_countdown_lbl = Label.new()
+	_countdown_lbl.anchor_left = 0.5
+	_countdown_lbl.anchor_right = 0.5
+	_countdown_lbl.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_countdown_lbl.offset_top = 18
+	_countdown_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_countdown_lbl.add_theme_font_size_override("font_size", 15)
+	_countdown_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_countdown_lbl)
+
+
+func _update_countdown_label() -> void:
+	if _countdown_lbl == null:
+		return
+	var secs: int = int(ceil(_time_left))
+	_countdown_lbl.text = "AUTO-ADVANCE IN %d" % secs
+	# Calm until the final few seconds, then flag it red.
+	_countdown_lbl.add_theme_color_override(
+		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
+	)
 
 
 # True if the player can pay this path's coin cost and owns its required item.

@@ -74,3 +74,29 @@ static func path_affordable(
 	if required_item != "" and not is_owned.call(required_item):
 		return false
 	return true
+
+
+# Which path a timed-out INTERACTIVE fork (auto-advance) takes.
+#   conditional        → default_path, its existing fallback.
+#   choice / sacrifice → timeout_path when it's set and selectable, else a selectable path chosen
+#                        by `r` (the caller's random draw; r % pool.size() picks among the pool).
+# `selectable` is a per-path affordability mask (all true for cost-free forks) whose size IS the path
+# count; the caller builds it from live coins/ownership. Returns a valid index, or -1 when nothing is
+# selectable (a sacrifice dead-end, or an empty fork) — the caller should then leave the fork alone.
+static func timeout_pick(
+	resolution: String, selectable: Array, timeout_path: int, default_path: int, r: int
+) -> int:
+	var n: int = selectable.size()
+	if n == 0:
+		return -1
+	if resolution == "conditional":
+		return clampi(default_path, 0, n - 1)
+	if timeout_path >= 0 and timeout_path < n and bool(selectable[timeout_path]):
+		return timeout_path
+	var pool: Array = []
+	for i in n:
+		if bool(selectable[i]):
+			pool.append(i)
+	if pool.is_empty():
+		return -1
+	return pool[(r % pool.size() + pool.size()) % pool.size()]  # tolerate a negative r

@@ -18,6 +18,21 @@ var _coins: int = 0
 var _def_image: String = ""
 var _can_advance: bool = false
 
+# Auto-advance countdown (journey opt-in). GameLoop sets auto_advance_secs before _ready; when >0
+# each dialogue line auto-advances after the countdown (reset on every line, and whenever the player
+# clicks through sooner). The clock only ticks once the opening fade lets the player advance. 0 = off.
+var auto_advance_secs: int = 0
+var _time_left: float = 0.0
+var _timer_active: bool = false
+var _countdown_lbl: Label = null
+
+# Optional per-line audio accent. One player, reused as lines advance; a line repeating the same clip
+# (a bed) is left playing rather than restarted. Plays over the BGM on the Master bus, at its own volume.
+var _audio: AudioStreamPlayer = null
+var _current_audio_path: String = ""
+# Optional storyboard BGM — one looping track under EVERY line (started once in setup, stopped at exit).
+var _bgm: AudioStreamPlayer = null
+
 var _skip_btn: Button = null
 var _map_btn: Button = null
 
@@ -32,6 +47,13 @@ func _ready() -> void:
 	_setup_bg_image()  # after _apply_layout: it reads $BgImage's finished expand/stretch
 	_apply_theme()
 	_add_map_button()
+	_add_countdown_label()
+	_audio = AudioStreamPlayer.new()
+	_audio.bus = "Master"
+	add_child(_audio)
+	_bgm = AudioStreamPlayer.new()
+	_bgm.bus = "Master"
+	add_child(_bgm)
 	_fade.color = Color.BLACK
 	_fade.modulate.a = 1.0
 	await get_tree().process_frame
@@ -51,10 +73,30 @@ func setup(data: Dictionary) -> void:
 	_def_image = data.get("image", "")
 	_lines = data.get("lines", [])
 	_line_idx = 0
+	_start_bgm(str(data.get("bgm", "")), float(data.get("bgm_volume", 0.6)))
 	if _lines.is_empty():
 		_load_bg_image(_def_image)
 		return
 	_show_line()
+
+
+# Starts the storyboard's overarching BGM (looping, under every line) at its author-set volume. No-op
+# when no BGM is set.
+func _start_bgm(path: String, volume: float) -> void:
+	if path == "" or _bgm == null:
+		return
+	var stream: AudioStream = JourneyAudio.load_from_file(path)
+	if stream == null:
+		return
+	JourneyAudio.set_loop(stream, true)  # BGM always loops
+	_bgm.stream = stream
+	_bgm.volume_db = _volume_db(volume)
+	_bgm.play()
+
+
+# Linear 0–1 author volume → dB for an AudioStreamPlayer; 0 mutes.
+func _volume_db(v: float) -> float:
+	return linear_to_db(v) if v > 0.0 else -80.0
 
 
 func _show_line() -> void:
@@ -71,6 +113,33 @@ func _show_line() -> void:
 
 	var is_last: bool = _line_idx >= _lines.size() - 1
 	_hint.text = "▶ CLICK OR SPACE TO COMPLETE" if is_last else "▶ CLICK OR SPACE TO CONTINUE"
+
+	_play_line_audio(line)
+
+	# Restart the per-line countdown (clicking through sooner resets it via this same call).
+	if auto_advance_secs > 0:
+		_time_left = float(auto_advance_secs)
+		_timer_active = true
+		_update_countdown_label()
+
+
+# Plays this line's optional audio accent. A line repeating the clip already playing (a bed carried
+# across lines) is left alone so it doesn't restart; anything else swaps in the new clip (or silence).
+func _play_line_audio(line: Dictionary) -> void:
+	var path: String = str(line.get("audio", ""))
+	if path != "" and path == _current_audio_path and _audio.playing:
+		return
+	_audio.stop()
+	_current_audio_path = path
+	if path == "":
+		return
+	var stream: AudioStream = JourneyAudio.load_from_file(path)
+	if stream == null:
+		return
+	JourneyAudio.set_loop(stream, bool(line.get("audio_loop", false)))
+	_audio.stream = stream
+	_audio.volume_db = _volume_db(float(line.get("audio_volume", 1.0)))
+	_audio.play()
 
 
 # Shows a storyboard image — still, or an animation the builder baked to looping H.264.
@@ -129,8 +198,28 @@ func _advance() -> void:
 		_show_line()
 
 
+# Counts the current line's timer down once the player is allowed to advance. Pausing is handled by
+# GameLoop toggling set_process() while the map viewer is open.
+func _process(delta: float) -> void:
+	if not _timer_active or not _can_advance:
+		return
+	_time_left -= delta
+	if _time_left <= 0.0:
+		_timer_active = false
+		_advance()
+		return
+	_update_countdown_label()
+
+
 func _finish() -> void:
 	_can_advance = false
+	_timer_active = false
+	if _audio != null:
+		_audio.stop()
+	if _bgm != null:
+		_bgm.stop()
+	if _countdown_lbl != null:
+		_countdown_lbl.visible = false
 	_skip_btn.visible = false
 	if _map_btn != null:
 		_map_btn.visible = false
@@ -142,6 +231,32 @@ func _finish() -> void:
 			# covers it) — see _transition_swap. Don't self-free, or the play area
 			# behind would flash before the fade completes.
 			emit_signal("completed", _coins)
+	)
+
+
+# A countdown pinned bottom-left (mirroring the "continue" hint on the right) when the journey arms
+# auto-advance. Only built when enabled; text/colour are filled by _update_countdown_label.
+func _add_countdown_label() -> void:
+	if auto_advance_secs <= 0:
+		return
+	_countdown_lbl = Label.new()
+	_countdown_lbl.anchor_top = 1.0
+	_countdown_lbl.anchor_bottom = 1.0
+	_countdown_lbl.offset_left = 48  # match the inner-margin gutter the hint uses on the right
+	_countdown_lbl.offset_top = -44
+	_countdown_lbl.offset_bottom = -22
+	_countdown_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(11))
+	_countdown_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_countdown_lbl)
+
+
+func _update_countdown_label() -> void:
+	if _countdown_lbl == null:
+		return
+	var secs: int = int(ceil(_time_left))
+	_countdown_lbl.text = "AUTO-ADVANCE IN %d" % secs
+	_countdown_lbl.add_theme_color_override(
+		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
 	)
 
 

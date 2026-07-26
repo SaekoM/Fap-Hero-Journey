@@ -77,6 +77,16 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		"map_fog": bool(data.get("MapFog", false)),
 		# Fog reveal depth: ghost levels shown ahead of the visited trail (< 0 = whole structure ghosted).
 		"map_fog_reveal": int(data.get("MapFogReveal", 1)),
+		# Auto-advance countdown on storyboards / interactive forks (journey opt-in; absent → off).
+		# Separate durations; the fork field falls back to the earlier single AutoAdvanceSecs key.
+		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
+		"auto_advance_storyboard_secs": int(data.get("AutoAdvanceStoryboardSecs", 20)),
+		"auto_advance_fork_secs":
+		# Finish / "I came" button: author opt-in to end the run early, optionally into a designated
+		int(data.get("AutoAdvanceForkSecs", data.get("AutoAdvanceSecs", 45))),
+		# aftercare node (any type — a gentle round or a storyboard; off the main graph) before the end.
+		"allow_finish": bool(data.get("AllowFinish", false)),
+		"finish_node": str(data.get("FinishNode", "")),
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
@@ -340,6 +350,22 @@ static func parse_graph_for_editor(path: String, folder: String) -> Dictionary:
 # meta block. The nested rounds/forks/shops/storyboards arrays are intentionally empty
 # (graph journeys carry structure in start/nodes); the map/catalogue switch to the graph
 # in Phase 3, at which point those consumers stop reading the nested arrays.
+# Parses the journey's custom items and resolves each item's icon path (relative pooled path →
+# absolute), so the runtime (inventory / shop) can load it directly.
+static func _journey_items_resolved(data: Dictionary, base: String) -> Array:
+	var items: Array = JourneyData.parse_journey_items(data.get("Items", []))
+	for it: Dictionary in items:
+		var img: String = str(it.get("image", ""))
+		if (
+			img != ""
+			and not (
+				img.begins_with("res://") or img.begins_with("user://") or img.is_absolute_path()
+			)
+		):
+			it["image"] = base.path_join(img)
+	return items
+
+
 static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dictionary:
 	return {
 		"folder": path,
@@ -352,6 +378,14 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		"map_enabled": bool(data.get("MapEnabled", true)),
 		"map_fog": bool(data.get("MapFog", false)),
 		"map_fog_reveal": int(data.get("MapFogReveal", 1)),
+		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
+		"auto_advance_storyboard_secs": int(data.get("AutoAdvanceStoryboardSecs", 20)),
+		"auto_advance_fork_secs":
+		# Finish / "I came" button: author opt-in to end the run early, optionally into a designated
+		int(data.get("AutoAdvanceForkSecs", data.get("AutoAdvanceSecs", 45))),
+		# aftercare node (any type — a gentle round or a storyboard; off the main graph) before the end.
+		"allow_finish": bool(data.get("AllowFinish", false)),
+		"finish_node": str(data.get("FinishNode", "")),
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
@@ -361,6 +395,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Counter names the author chose to surface to the player (HUD pop + inventory list). The
 		# runtime reads this off GameState.Journey; other counters stay hidden, gating only.
 		"shown_counters": JourneyData.clean_flag_list(data.get("ShownCounters", [])),
+		# Author-defined journey-scoped items — loaded into InventoryService at play and listed in the
+		# builder's item dropdowns. Parsed to the runtime (snake-case) shape, image paths resolved.
+		"items": _journey_items_resolved(data, path),
 		"cover_path": find_cover_image(path),
 		"modified_time": FileAccess.get_modified_time(path + "/journey.json"),
 		"rounds": [],
@@ -616,6 +653,7 @@ static func parse_fork(raw_fork: Dictionary, journey_path: String) -> Dictionary
 		"resolution": raw_fork.get("Resolution", raw_fork.get("resolution", "choice")),
 		"cond_metric": raw_fork.get("CondMetric", raw_fork.get("cond_metric", "score")),
 		"default_path": int(raw_fork.get("DefaultPath", raw_fork.get("default_path", 0))),
+		"timeout_path": int(raw_fork.get("TimeoutPath", raw_fork.get("timeout_path", -1))),
 		"paths": [],
 	}
 	var raw_paths: Array = raw_fork.get("Paths", raw_fork.get("paths", []))

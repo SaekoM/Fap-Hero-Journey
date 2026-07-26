@@ -24,6 +24,12 @@ public partial class InventoryService : Node
     // Non-static so it is populated once the node is ready (autoload order is safe).
     private Dictionary _registry = new Dictionary();
 
+    // Author-defined, JOURNEY-scoped items — loaded from the journey's Items block each run
+    // (LoadJourneyItems) and merged into lookups alongside the built-in _registry. A journey item
+    // carries an "effects" bundle (a list of tuned effect dicts) instead of a single kind. Cleared
+    // and repopulated per journey load, so stale items from a prior journey never leak.
+    private Dictionary _journeyItems = new Dictionary();
+
     // Path of the JSON data file inside the project.
     private const string RegistryPath = "res://data/shop_items.json";
 
@@ -253,8 +259,36 @@ public partial class InventoryService : Node
 
         foreach (var key in _registry.Keys)
             ids.Add(key);
+        foreach (var key in _journeyItems.Keys)
+            ids.Add(key);
 
         return ids;
+    }
+
+    // Built-in registry ids only (no journey-scoped items). The BUILDER uses this: it merges these
+    // with its OWN live journey-item model, so it must not also pull in _journeyItems (play-state left
+    // over from a test-play — which would double-count this journey's items and leak another journey's).
+    public Array GetBuiltinItemIds()
+    {
+        var ids = new Array();
+        foreach (var key in _registry.Keys)
+            ids.Add(key);
+        return ids;
+    }
+
+    // Replaces the journey-scoped item set from the journey's Items block ([{id, name, description,
+    // category, price, duration_ms, effects:[…]}, …]). Called on every journey load (fresh or
+    // resumed), so it fully clears the previous journey's items first.
+    public void LoadJourneyItems(Array items)
+    {
+        _journeyItems.Clear();
+        foreach (var itemVar in items)
+        {
+            var item = itemVar.AsGodotDictionary();
+            var id = item.ContainsKey("id") ? item["id"].AsString() : "";
+            if (id != "")
+                _journeyItems[id] = item;
+        }
     }
 
     // Returns the data dictionary for the given item ID, or an empty dict if unknown.
@@ -262,6 +296,8 @@ public partial class InventoryService : Node
     {
         if (id != null && _registry.ContainsKey(id))
             return _registry[id].AsGodotDictionary();
+        if (id != null && _journeyItems.ContainsKey(id))
+            return _journeyItems[id].AsGodotDictionary();
         return new Dictionary();
     }
 
@@ -460,24 +496,56 @@ public partial class InventoryService : Node
         }
 
         int duration = item.ContainsKey("duration_ms") ? item["duration_ms"].AsInt32() : 0;
-        var effect = new Dictionary
-        {
-            ["id"] = item.ContainsKey("id") ? item["id"] : "",
-            ["name"] = displayName,
-            ["kind"] = source.ContainsKey("kind") ? source["kind"] : "",
-            ["duration_ms"] = duration,
-            ["end_time_ms"] = _nowMs + duration,
-            ["start_time_ms"] = _nowMs,
-        };
-        // Copy effect params used by FunscriptPlayer from the resolved source.
-        if (source.ContainsKey("factor")) effect["factor"] = source["factor"];
-        if (source.ContainsKey("min")) effect["min"] = source["min"];
-        if (source.ContainsKey("max")) effect["max"] = source["max"];
+        string itemId = item.ContainsKey("id") ? item["id"].AsString() : "";
 
-        _active.Add(effect);
+        // A journey item carries an "effects" bundle (several tuned effects); a built-in item is a
+        // single kind. Push one active effect per effect in the bundle (all sharing the item's
+        // duration), else the single kind. Consumers match on `kind`, so N entries apply independently.
+        var bundle = source.ContainsKey("effects") ? source["effects"].AsGodotArray() : null;
+        if (bundle != null && bundle.Count > 0)
+        {
+            foreach (var effVar in bundle)
+                _active.Add(_MakeActiveEffect(itemId, displayName, effVar.AsGodotDictionary(), duration));
+        }
+        else
+        {
+            _active.Add(_MakeActiveEffect(itemId, displayName, source, duration));
+        }
+
         EmitSignal(SignalName.InventoryChanged);
         EmitSignal(SignalName.ActiveEffectsChanged);
         return true;
+    }
+
+    // Builds one active-effect entry from an effect source (a built-in item or a bundle effect): the
+    // timing fields plus every tuning param (factor/min/max/…) carried through generically, so any
+    // kind's params reach the consumers. Meta keys (name/price/category/…) are skipped.
+    private Dictionary _MakeActiveEffect(string id, string name, Dictionary src, int duration)
+    {
+        string kind = src.ContainsKey("kind") ? src["kind"].AsString() : "";
+        // coin_jackpot / coin_penalty are settled at the NEXT round end (GameLoop reads and then
+        // consumes them there), NOT on a wall clock. They must outlast the item's timer — a short
+        // bundle duration (default 30s) would otherwise drop the coin effect before the round paid
+        // out, so nothing applied. They persist until consumed; every other kind stays timed.
+        bool persistToRoundEnd = kind == "coin_jackpot" || kind == "coin_penalty";
+        var effect = new Dictionary
+        {
+            ["id"] = id,
+            ["name"] = name,
+            ["kind"] = src.ContainsKey("kind") ? src["kind"] : "",
+            ["duration_ms"] = duration,
+            ["end_time_ms"] = persistToRoundEnd ? double.MaxValue : _nowMs + duration,
+            ["start_time_ms"] = _nowMs,
+        };
+        foreach (var k in src.Keys)
+        {
+            var ks = k.AsString();
+            if (ks != "kind" && ks != "name" && ks != "desc" && ks != "description"
+                && ks != "id" && ks != "duration_ms" && ks != "price"
+                && ks != "category" && ks != "image" && ks != "effects")
+                effect[ks] = src[k];
+        }
+        return effect;
     }
 
     // Picks a random modifier dict from the registry for the Wildcard item.

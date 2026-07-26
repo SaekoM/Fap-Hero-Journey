@@ -107,6 +107,17 @@ var _current_overlay: Control = null
 # journey (_map_enabled): an author can disable it to enforce surprise, in which
 # case the map is never built and the buttons never appear.
 var _map_enabled: bool = true  # journey-level: author allows the player map
+# Finish ("I came") — journey-level opt-in. When on, an always-available hold-to-confirm button ends the
+# run early; if a finish node (any type — a gentle round or a storyboard) is designated it plays as
+# aftercare before the end screen.
+var _allow_finish: bool = false
+var _finish_node_id: String = ""
+# Auto-advance (journey-level opt-in): a countdown on storyboards (per line) and interactive forks
+# so a player can't linger to "rest". Separate durations — a dialogue line needs far less time than a
+# fork decision. Passed to those overlays; 0 secs = off (either the feature or that surface).
+var _auto_advance_enabled: bool = false
+var _auto_advance_storyboard_secs: int = 20
+var _auto_advance_fork_secs: int = 45
 # Counter names the author surfaced to the player (journey-level "ShownCounters"). A change to one
 # of these shows the transient top-right pop; the inventory panel lists them. Others stay hidden.
 var _shown_counters: Array = []
@@ -168,7 +179,14 @@ var _effect_frame: Panel = null  # optional coloured edge border (author-toggled
 # audio bus, tremor, mute. Built in _build_effect_overlay; every hex routes
 # through it first (see _apply_hex). Gameplay hexes below stay here.
 var _sensory: SensoryFX = null
-var _curse_hud_hidden: bool = false  # a "Fog" effect hid the HUD for this round
+# This round's own sensory layer as [{roll, intensity}] — collected in _apply_hex, combined with any
+# active ITEM sensory effects, and pushed to SensoryFX.reconcile by _reconcile_sensory. Cleared at
+# round entry (rebuilt) and at round teardown (so the round's sensory fades out; item sensory stays).
+var _round_sensory: Array = []
+# Guards _apply_oneshot_item_effects against the re-entrant ActiveEffectsChanged that ConsumeEffects
+# emits (so a one-shot toll/interest/flag/counter fires exactly once, not once per consume).
+var _applying_oneshots: bool = false
+var _curse_hud_hidden: bool = false  # a "Fog" effect hid the HUD (round OR timed item), reconciled
 var _curse_no_pause: bool = false  # a "Restless" effect disabled pausing this round
 const TOLL_AMOUNT: int = 40  # coins a "Toll" effect takes immediately
 
@@ -188,6 +206,10 @@ const ENCOUNTER_HOLD_SECS: float = 1.2
 var _effect_resolved: bool = false
 var _effect_cleanse_btn: Button = null
 var _warmup_skip_btn: Button = null  # free ⏭ skip on an author-marked warmup round
+var _finish_btn: Button = null  # hold-to-confirm FINISH ("I came") button, shown during rounds when enabled
+var _finish_hold_tween: Tween = null  # fills while FINISH is held; fires _finish_journey at completion
+var _finishing: bool = false  # set once FINISH is confirmed, so a late button_up can't re-trigger
+const FINISH_HOLD_SECS: float = 1.2  # hold time to confirm FINISH
 var _effect_cleanse_cost: int = CLEANSE_COST_DEFAULT  # per-round, set on enter
 
 # Optional beat-bar visualiser — created only when the setting is enabled.
@@ -221,6 +243,12 @@ func _ready() -> void:
 	# Journey-level: the author can disable the player map to enforce surprise.
 	_map_enabled = bool(GameState.Journey.get("map_enabled", true))
 	_map_fog = bool(GameState.Journey.get("map_fog", false))
+	# Journey-level: auto-advance countdown on storyboards / interactive forks.
+	_allow_finish = bool(GameState.Journey.get("allow_finish", false))
+	_finish_node_id = str(GameState.Journey.get("finish_node", ""))
+	_auto_advance_enabled = bool(GameState.Journey.get("auto_advance_enabled", false))
+	_auto_advance_storyboard_secs = int(GameState.Journey.get("auto_advance_storyboard_secs", 20))
+	_auto_advance_fork_secs = int(GameState.Journey.get("auto_advance_fork_secs", 45))
 	_map_fog_reveal = int(GameState.Journey.get("map_fog_reveal", 1))
 	_shown_counters = (GameState.Journey.get("shown_counters", []) as Array)
 	_build_map()
@@ -246,6 +274,11 @@ func _ready() -> void:
 		GameState.remove_meta("_test_seed_score")
 		GameState.remove_meta("_test_seed_coins")
 		GameState.remove_meta("_test_seed_flags")
+
+	# Author-defined journey items — load into the inventory registry every run (fresh OR resumed),
+	# since they're journey definitions, not run-state. Before Reset so a fresh run's registry is
+	# populated when the first grant happens.
+	InventoryService.LoadJourneyItems(GameState.Journey.get("items", []))
 
 	var is_resuming: bool = bool(GameState.get_meta("_resuming", false))
 	# A run resumed from a checkpoint save should skip that checkpoint's banner and go straight
@@ -402,6 +435,7 @@ func _show_storyboard_screen(sb_data: Dictionary) -> void:
 	_start_storyboard_filler()
 	var storyboard: Control = StoryboardScene.instantiate()
 	storyboard.show_map_button = _map_enabled
+	storyboard.auto_advance_secs = _auto_advance_storyboard_secs if _auto_advance_enabled else 0
 	storyboard.completed.connect(_on_storyboard_completed)
 	storyboard.map_requested.connect(_open_map_viewer)
 	add_child(storyboard)
@@ -448,6 +482,8 @@ func _show_shop_screen(shop_data: Dictionary) -> void:
 	_set_cursor_hidden(false)
 	var shop: Control = ShopScene.instantiate()
 	shop.show_map_button = _map_enabled
+	# Auto-advance also applies to shops (reuses the fork-decision duration — both are linger surfaces).
+	shop.auto_advance_secs = _auto_advance_fork_secs if _auto_advance_enabled else 0
 	shop.closed.connect(_on_shop_closed)
 	shop.map_requested.connect(_open_map_viewer)
 	add_child(shop)
@@ -480,6 +516,7 @@ func _show_fork_screen(fork_data: Dictionary) -> void:
 	_set_cursor_hidden(false)
 	var fork_screen = ForkScene.instantiate()
 	fork_screen.show_map_button = _map_enabled
+	fork_screen.auto_advance_secs = _auto_advance_fork_secs if _auto_advance_enabled else 0
 	fork_screen.path_chosen.connect(_on_fork_path_chosen)
 	fork_screen.map_requested.connect(_open_map_viewer)
 	add_child(fork_screen)
@@ -676,6 +713,8 @@ func _begin_round(round: Dictionary) -> void:
 
 	if bool(round.get("is_warmup", false)):
 		_show_warmup_skip_button()
+	# FINISH ("I came") is available during every round when the journey opts in.
+	_show_finish_button()
 
 	var fs_path: String = round.get("funscript_path", "")
 	if fs_path != "":
@@ -951,7 +990,9 @@ func _show_boss_intro(round: Dictionary) -> void:
 
 # Clean slate, forced modifiers, item lockout, red frame on.
 func _enter_boss_mode(round: Dictionary) -> void:
-	# Clean slate — drop any effects the player activated before the boss.
+	# Clean slate — drop any effects the player activated before the boss. Clear this round's sensory
+	# list first so the ActiveEffectsChanged from ClearActiveEffects reconciles against an empty set.
+	_round_sensory.clear()
 	InventoryService.ClearActiveEffects()
 
 	# Inject the designer's forced modifiers as boss effects.
@@ -978,6 +1019,9 @@ func _enter_boss_mode(round: Dictionary) -> void:
 		InventoryService.AddBossEffects([hx])
 		_apply_hex(roll, SensoryFX.intensity_for(round, roll))
 
+	_reconcile_sensory()  # apply the round's collected sensory (plus any surviving item sensory)
+	_reconcile_hud_hide()  # round Fog (or a surviving item Fog) → HUD hidden
+
 	# Item use is disabled for the whole boss round.
 	if is_instance_valid(_inventory_panel):
 		_inventory_panel.close()
@@ -995,6 +1039,7 @@ func _enter_boss_mode(round: Dictionary) -> void:
 func _enter_effect_mode(round: Dictionary) -> void:
 	_effect_resolvable = bool(round.get("resolvable", false))
 	_effect_cleanse_cost = int(round.get("cleanse_cost", CLEANSE_COST_DEFAULT))
+	_round_sensory.clear()  # rebuilt below via _apply_hex; item sensory (if any) is folded in on reconcile
 
 	var selected: Array = round.get("effects", [])
 	var random_mode: bool = bool(round.get("effect_random", true))
@@ -1021,6 +1066,8 @@ func _enter_effect_mode(round: Dictionary) -> void:
 			to_apply.append(s)
 
 	to_apply = _apply_gameplay_effects(round, to_apply)
+	_reconcile_sensory()  # apply the round's collected sensory alongside any active item sensory
+	_reconcile_hud_hide()  # round Fog (or a surviving item Fog) → HUD hidden
 
 	# Optional coloured border (author-toggled); the resolvable cleanse layer when enabled.
 	var v: Dictionary = _effect_visuals(round)
@@ -1198,12 +1245,21 @@ func _resolve_pool_round(round: Dictionary) -> void:
 	var entries: Array = round.get("pool_entries", [])
 	if entries.is_empty():
 		return
-	var weights: Array = JourneyData.pool_entry_weights(entries)
+	# No-repeat (opt-in): drop entries whose clip already played this run so two copies of the pool
+	# don't show the same video. Falls back to the full set once every entry has been drawn.
+	var no_repeat: bool = bool(round.get("no_repeat", false))
+	var weights: Array = (
+		JourneyData.pool_draw_weights(entries, GameState.PlayedPoolClips())
+		if no_repeat
+		else JourneyData.pool_entry_weights(entries)
+	)
 	var total_w: int = 0
 	for w: int in weights:
 		total_w += w
 	var idx: int = ForkResolver.weighted_pick(weights, randi() % maxi(1, total_w))
 	var e: Dictionary = entries[idx]
+	if no_repeat:
+		GameState.MarkPoolClipPlayed(str(e.get("video_path", "")))
 	round["video_path"] = str(e.get("video_path", ""))
 	round["funscript_path"] = str(e.get("funscript_path", ""))
 	round["axis_scripts"] = (e.get("axis_scripts", {}) as Dictionary).duplicate(true)
@@ -1386,6 +1442,113 @@ func _remove_warmup_skip_button() -> void:
 	_warmup_skip_btn = null
 
 
+const _FINISH_IDLE_TEXT: String = "✔ HOLD TO FINISH"
+
+
+# The FINISH ("I came") button — a hold-to-confirm floating button (a tap can't end the session), shown
+# only during rounds when the journey opts in. Sits just ABOVE the HUD bar, hugging the RIGHT edge (like
+# the cleanse button but right-aligned). Fades with the HUD's idle cycle — when the UI fades out it does
+# too — but stays clickable at rest so a hold started as it fades isn't broken.
+func _show_finish_button() -> void:
+	_remove_finish_button()
+	if not _allow_finish or _finishing:
+		return
+	var btn: Button = Button.new()
+	btn.text = _FINISH_IDLE_TEXT
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.tooltip_text = UITheme.wrap_tip(
+		"Hold to finish the session (I came). Ends the run and shows the finale."
+	)
+	UITheme.style_button(btn, UITheme.MAGENTA)
+	btn.anchor_left = 1.0
+	btn.anchor_right = 1.0
+	btn.anchor_top = 1.0
+	btn.anchor_bottom = 1.0
+	btn.offset_left = -232
+	btn.offset_right = -20
+	btn.offset_top = -(HUD_BAR_HEIGHT + 48)  # 40px tall, an 8px gap above the bar
+	btn.offset_bottom = -(HUD_BAR_HEIGHT + 8)
+	btn.button_down.connect(_on_finish_hold_start)
+	btn.button_up.connect(_on_finish_hold_cancel)
+	add_child(btn)
+	_finish_btn = btn
+
+
+# Fades the FINISH button with the HUD's idle cycle (alpha only) — it disappears when the UI does. Kept
+# clickable at rest (alpha, not visibility) so a hold in progress as it fades still resolves on release.
+func _fade_finish_button(shown: bool) -> void:
+	if not is_instance_valid(_finish_btn):
+		return
+	var to: float = 1.0 if shown else 0.0
+	if is_equal_approx(_finish_btn.modulate.a, to):
+		return
+	create_tween().tween_property(_finish_btn, "modulate:a", to, 0.3)
+
+
+func _remove_finish_button() -> void:
+	_cancel_finish_hold()
+	if is_instance_valid(_finish_btn):
+		_finish_btn.queue_free()
+	_finish_btn = null
+
+
+func _on_finish_hold_start() -> void:
+	if _finishing:
+		return
+	_cancel_finish_hold()
+	_finish_hold_tween = create_tween()
+	_finish_hold_tween.tween_method(_set_finish_fill, 0.0, 1.0, FINISH_HOLD_SECS)
+	_finish_hold_tween.finished.connect(_finish_journey)
+
+
+func _on_finish_hold_cancel() -> void:
+	if _finishing:
+		return
+	_cancel_finish_hold()
+	_set_finish_fill(0.0)  # reset the fill label
+
+
+func _cancel_finish_hold() -> void:
+	if _finish_hold_tween != null and _finish_hold_tween.is_valid():
+		_finish_hold_tween.kill()
+	_finish_hold_tween = null
+
+
+# Draws the hold progress into the button label as a small filling bar.
+func _set_finish_fill(t: float) -> void:
+	if not is_instance_valid(_finish_btn):
+		return
+	if t <= 0.0:
+		_finish_btn.text = _FINISH_IDLE_TEXT
+		return
+	var filled: int = clampi(int(round(t * 6.0)), 0, 6)
+	_finish_btn.text = "%s%s" % ["▰".repeat(filled), "▱".repeat(6 - filled)]
+
+
+# FINISH confirmed: discard the in-progress round (no payout — the skip semantic), tear down any round
+# effects, then JUMP to the designated aftercare node and play it through the normal pipeline. That
+# node is the ENTRY to an off-graph aftercare SEQUENCE — its out-edges advance through the chain like
+# any node, so a "you lose" storyboard → aftercare round → … plays in turn until a node with no exit
+# reaches "done" → the end screen. No node designated → straight to the end screen. `_finishing` guards
+# against a re-trigger from a late button_up (and suppresses the button on the aftercare rounds, so it
+# can't loop).
+func _finish_journey() -> void:
+	if _finishing:
+		return
+	_finishing = true
+	_cancel_finish_hold()
+	_remove_finish_button()
+	_video.stop()
+	_end_timer.stop()
+	FunscriptPlayer.Stop()
+	ScoreService.DiscardRound()  # the in-progress round banks nothing (same as a skip)
+	_exit_boss_mode()  # drop any active round effects / frames before leaving
+	if _finish_node_id != "" and GameState.JumpToFinish(_finish_node_id):
+		await _transition_swap(_load_current_item)  # fade into the aftercare node
+	else:
+		_transition_to_end_screen()
+
+
 # Same exit as the Bail Out item: no payout, marked on the route. One skip semantic, not two.
 func _on_warmup_skip_pressed() -> void:
 	_video.stop()
@@ -1426,13 +1589,18 @@ func _cleanse_curse() -> void:
 # (HUD/pause/blackout) here. Safe to call when none are active (boss rounds,
 # plain rounds) — each branch no-ops.
 func _clear_curse_hexes() -> void:
-	_curse_hud_hidden = false
 	if _curse_no_pause:
 		_curse_no_pause = false
 		_pause_btn.disabled = false
 	_video.visible = true  # undo a Blinded (blackout) hex
-	if _sensory != null:
-		_sensory.clear_all()
+	# Drop THIS round's sensory and reconcile: the round's kinds ease out (they left the desired set),
+	# while any active ITEM sensory persists until its own timer expires. (Full teardown on scene exit
+	# is handled by SensoryFX._exit_tree, not here.)
+	_round_sensory.clear()
+	_reconcile_sensory()
+	# Fog (hud_hide) is active-list-driven: round Fog clears once its boss effects are removed, while a
+	# timed item Fog persists until its own timer expires — so reconcile rather than force the HUD back.
+	_reconcile_hud_hide()
 
 
 # Applies a "hex" curse — effects beyond the stroke (which FunscriptPlayer can't
@@ -1440,12 +1608,16 @@ func _clear_curse_hexes() -> void:
 # (0–1) mapped through the catalog's imin/imax; the gameplay kinds are handled
 # here. coin_penalty is read at round end, not applied here.
 func _apply_hex(roll: Dictionary, intensity: float = 1.0) -> void:
-	if _sensory != null and _sensory.apply(roll, intensity):
+	var kind: String = String(roll.get("kind", ""))
+	# Sensory (visual/audio) kinds are collected for the reconcile pass, not applied here — so the
+	# round's sensory shares one engine state with any active item sensory. "blackout" (Blinded) is a
+	# sensory catalog entry SensoryFX does NOT own (the HUD hides the video for it), so it's excluded.
+	if kind != "blackout" and JourneyData.is_sensory_kind(kind):
+		_round_sensory.append({"roll": roll, "intensity": intensity})
 		return
-	match String(roll.get("kind", "")):
-		"hud_hide":
-			_curse_hud_hidden = true
-			_hud.visible = false
+	# hud_hide (Fog) is reconciled from the active list in _reconcile_hud_hide (so round + item Fog share
+	# one state), not applied here.
+	match kind:
 		"toll":
 			var take: int = mini(int(roll.get("amount", TOLL_AMOUNT)), CoinService.Balance)
 			if take > 0:
@@ -1453,6 +1625,87 @@ func _apply_hex(roll: Dictionary, intensity: float = 1.0) -> void:
 		"no_pause":
 			_curse_no_pause = true
 			_pause_btn.disabled = true
+
+
+# Pushes the combined desired sensory set to SensoryFX: this round's own sensory (_round_sensory) plus
+# every active ITEM sensory effect (timed — identified by start_time_ms, as the chips are). The engine
+# applies additions, updates intensities, and fades out anything that left the set. Item sensory that
+# outlives the round therefore keeps running until its timer expires. Cheap; safe to call often.
+func _reconcile_sensory() -> void:
+	if _sensory == null:
+		return
+	var requests: Array = _round_sensory.duplicate()
+	for fx: Dictionary in InventoryService.GetActiveEffects():
+		var kind: String = String(fx.get("kind", ""))
+		if fx.has("start_time_ms") and kind != "blackout" and JourneyData.is_sensory_kind(kind):
+			(
+				requests
+				. append(
+					{
+						"roll": JourneyData.sensory_entry_by_kind(kind),
+						"intensity": float(fx.get("intensity", 1.0)),
+					}
+				)
+			)
+	_sensory.reconcile(requests)
+
+
+# Applies one-shot ITEM effects (toll / interest / flag / counter) the moment they enter the active list
+# from an activation, then consumes each so it fires exactly once. Only player-activated effects
+# (start_time_ms) are handled — round versions apply at their own boundaries. Re-entrancy-guarded
+# because ConsumeEffects re-emits ActiveEffectsChanged.
+func _apply_oneshot_item_effects() -> void:
+	if _applying_oneshots:
+		return
+	_applying_oneshots = true
+	var applied: Dictionary = {}  # kinds actually present, consumed once each below
+	for fx: Dictionary in InventoryService.GetActiveEffects():
+		if not fx.has("start_time_ms"):
+			continue
+		match String(fx.get("kind", "")):
+			"toll":
+				var take: int = mini(int(fx.get("amount", TOLL_AMOUNT)), CoinService.Balance)
+				if take > 0:
+					CoinService.SpendCoins(take)
+					_show_pop(
+						"TOLL", "-♦ %d" % take, "→ ♦ %d" % CoinService.Balance, UITheme.MAGENTA
+					)
+				applied["toll"] = true
+			"interest":
+				_grant_coins(roundi(CoinService.Balance * float(fx.get("pct", INTEREST_PCT))))
+				applied["interest"] = true
+			"flag":
+				var fname: String = str(fx.get("flag", "")).strip_edges()
+				if fname != "":
+					GameState.ApplyItemFlagsCounters({"set_flags": [fname]})
+				applied["flag"] = true
+			"counter":
+				var cname: String = str(fx.get("counter", "")).strip_edges()
+				if cname != "":
+					GameState.ApplyItemFlagsCounters(
+						{"set_counters": {cname: int(fx.get("delta", 1))}}
+					)
+				applied["counter"] = true
+	for kind: String in applied:
+		InventoryService.ConsumeEffects(kind)
+	_applying_oneshots = false
+
+
+# Hides the HUD while any active effect (round Fog OR a timed item Fog) is `hud_hide`, else restores it.
+# Driven off the active list so round + item Fog share one state and item Fog persists across rounds.
+func _reconcile_hud_hide() -> void:
+	var want_hidden: bool = false
+	for fx: Dictionary in InventoryService.GetActiveEffects():
+		if String(fx.get("kind", "")) == "hud_hide":
+			want_hidden = true
+			break
+	if want_hidden == _curse_hud_hidden:
+		return
+	_curse_hud_hidden = want_hidden
+	if want_hidden:
+		_hud.visible = false
+	else:
+		_show_hud()  # restore + rejoin the idle-fade cycle
 
 
 # Tears down boss / effect state at round end. Safe to call on plain rounds.
@@ -1728,6 +1981,7 @@ func _start_no_video_fallback() -> void:
 
 func _on_round_ended(skipped: bool = false) -> void:
 	_remove_warmup_skip_button()
+	_remove_finish_button()  # FINISH is a during-round affordance; it doesn't carry into overlays
 	_handy_stop()  # the device would otherwise keep playing into the transition
 	# Extract the name here in GDScript where Dictionary access is reliable,
 	# then pass it explicitly so C# never needs to look up the key itself.
@@ -1774,11 +2028,13 @@ func _on_round_ended(skipped: bool = false) -> void:
 
 	var coins: int = GameState.CurrentRound().get("coins", 0)
 	coins = roundi(coins * jackpot_factor)
-	# Consume any active shop jackpot so it only ever doubles one round's reward
-	# (the boss-effect Fortune was already cleared by _exit_boss_mode above).
-	InventoryService.ConsumeEffects("coin_jackpot")
 	# Greed/Pauper curse: coins reduced (captured above, before effects cleared).
 	coins = roundi(coins * penalty_factor)
+	# Consume the item coin effects so each activation settles exactly one round's payout (they don't
+	# expire on a timer — see InventoryService._MakeActiveEffect). Boss-round Fortune/Greed already went
+	# with _exit_boss_mode above; ConsumeEffects only touches the player-activated _active list.
+	InventoryService.ConsumeEffects("coin_jackpot")
+	InventoryService.ConsumeEffects("coin_penalty")
 	# Endure reward: bonus for carrying a curse to the end (on top of the round
 	# coins, so it survives a Greed penalty).
 	coins += endure_reward
@@ -2019,10 +2275,12 @@ func _close_map_viewer() -> void:
 
 # Suspends or restores the active overlay's input callbacks while the map is open.
 # No-op outside an overlay (plain in-round map open) — _current_overlay is null then.
+# Also toggles _process so a storyboard/fork auto-advance countdown pauses under the map viewer.
 func _set_overlay_input_enabled(enabled: bool) -> void:
 	if is_instance_valid(_current_overlay):
 		_current_overlay.set_process_input(enabled)
 		_current_overlay.set_process_unhandled_input(enabled)
+		_current_overlay.set_process(enabled)
 
 
 func _go_to_menu() -> void:
@@ -2621,6 +2879,7 @@ func _show_hud(fade: bool = false) -> void:
 	# The warmup skip fades in and out with the HUD, but is NOT subject to the curse below: a
 	# player told they can leave a round must always be able to.
 	_fade_warmup_skip_button(true)
+	_fade_finish_button(true)  # fades in with the HUD (stays clickable at rest for an in-progress hold)
 	# A "Fog" curse hides the HUD for the whole round — don't let hover / timers
 	# reveal it.
 	if _curse_hud_hidden:
@@ -2640,6 +2899,7 @@ func _show_hud(fade: bool = false) -> void:
 func _on_hide_timer_timeout() -> void:
 	_hud.visible = false
 	_fade_warmup_skip_button(false)
+	_fade_finish_button(false)
 	# Hide the mouse cursor during uninterrupted playback so it stops covering the
 	# video — but only when there's nothing the player might need to click. If a
 	# menu/overlay/panel/map is up or the round is paused, keep it visible.
@@ -2875,8 +3135,13 @@ func _connect_signals() -> void:
 	ScoreService.ScoreChanged.connect(_on_score_changed)
 	CoinService.BalanceChanged.connect(_on_coin_balance_changed)
 	GameState.CounterChanged.connect(_on_counter_changed)
+	# One-shots first: they apply + consume before the chips render, so a fire-once item effect
+	# (toll/interest/flag/counter) never flashes a chip.
+	InventoryService.ActiveEffectsChanged.connect(_apply_oneshot_item_effects)
 	InventoryService.ActiveEffectsChanged.connect(_refresh_effect_chips)
 	InventoryService.ActiveEffectsChanged.connect(_handy_effects_changed)
+	InventoryService.ActiveEffectsChanged.connect(_reconcile_sensory)
+	InventoryService.ActiveEffectsChanged.connect(_reconcile_hud_hide)
 	# save_now utility item: writes a save mid-round so the player can resume
 	# from the start of this round if they quit later. Doesn't end the run.
 	InventoryService.connect("SaveRequested", _on_save_item_used)
@@ -3020,12 +3285,33 @@ func _refresh_coin_label(instant: bool = false) -> void:
 func _refresh_effect_chips() -> void:
 	for child in _chips_row.get_children():
 		child.queue_free()
+	# Blackout is decided over EVERY active effect; chips render the consolidated view so a multi-
+	# effect item shows one chip, not one identical chip per bundled effect.
 	var has_blackout: bool = false
 	for effect: Dictionary in InventoryService.GetActiveEffects():
-		_chips_row.add_child(_make_chip(effect))
 		if effect.get("kind", "") == "blackout":
 			has_blackout = true
+	for effect: Dictionary in _visible_effects():
+		_chips_row.add_child(_make_chip(effect))
 	_video.visible = not has_blackout
+
+
+# One representative effect per HUD chip. Effects from the same item activation (a shared non-empty
+# id + start time) collapse to a single chip — a multi-effect modifier item is one item to the player,
+# so it reads as one chip with the item's name. Boss / effect-round effects carry no start_time_ms and
+# are never grouped, so each keeps its own chip.
+func _visible_effects() -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for fx: Dictionary in InventoryService.GetActiveEffects():
+		var id: String = str(fx.get("id", ""))
+		if id != "" and fx.has("start_time_ms"):
+			var key: String = "%s|%s" % [id, str(fx.get("start_time_ms"))]
+			if seen.has(key):
+				continue
+			seen[key] = true
+		out.append(fx)
+	return out
 
 
 func _make_chip(effect: Dictionary) -> Control:
@@ -3063,8 +3349,12 @@ func _make_chip(effect: Dictionary) -> Control:
 
 func _update_chip_text(lbl: Label, effect: Dictionary) -> void:
 	var name_str: String = (effect.get("name", "") as String).to_upper()
-	# Boss forced modifiers last the whole round — no countdown.
-	if effect.get("boss", false):
+	# Boss forced modifiers last the whole round, and coin effects settle at round end (they don't run
+	# on a wall clock) — neither shows a countdown.
+	if (
+		effect.get("boss", false)
+		or String(effect.get("kind", "")) in ["coin_jackpot", "coin_penalty"]
+	):
 		lbl.text = name_str
 		return
 	var remaining: float = InventoryService.GetRemainingSeconds(effect)
@@ -3072,7 +3362,7 @@ func _update_chip_text(lbl: Label, effect: Dictionary) -> void:
 
 
 func _update_chip_countdowns() -> void:
-	var effects: Array = InventoryService.GetActiveEffects()
+	var effects: Array = _visible_effects()
 	if effects.size() != _chips_row.get_child_count():
 		_refresh_effect_chips()
 		return

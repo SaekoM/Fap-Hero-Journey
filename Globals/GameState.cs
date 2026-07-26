@@ -38,6 +38,11 @@ public partial class GameState : Node
     // discovery is per-run.
     private HashSet<string> _discovered = new();
 
+    // Video clips already drawn by NO-REPEAT pool rounds this run (keyed by pooled video_path). A
+    // no-repeat pool skips clips in here, so two copies of the same pool don't show the same video.
+    // Rides the save record (per-run, but persists across resume). Cleared on a fresh start.
+    private HashSet<string> _playedPoolClips = new();
+
     // Round nodes entered so far this run = the 1-based "current round number". A DAG is
     // acyclic, so each node is entered at most once — no double counting.
     private int _roundsEntered = 0;
@@ -61,6 +66,7 @@ public partial class GameState : Node
         _flags.Clear();
         _counters.Clear();
         _discovered.Clear();
+        _playedPoolClips.Clear();
         EnterCurrent();
     }
 
@@ -78,6 +84,7 @@ public partial class GameState : Node
         _flags.Clear();
         _counters.Clear();
         _discovered.Clear();
+        _playedPoolClips.Clear();
         EnterCurrent();
         return true;
     }
@@ -150,12 +157,38 @@ public partial class GameState : Node
         }
     }
 
+    // Applies an item's flag/counter changes — same `set_flags` / `set_counters` shape as a node's
+    // data, so a used item can flip a run flag or bump a counter (routing story branches off the
+    // player's item choice). Reuses the node appliers, so a counter change still fires CounterChanged
+    // for the HUD pop. GameLoop calls this when a one-shot flag/counter item effect is activated.
+    public void ApplyItemFlagsCounters(Dictionary src)
+    {
+        ApplyFlags(src);
+        ApplyCounters(src);
+    }
+
     // Whether a run flag is currently set (used by flag-conditional fork resolution).
     public bool HasFlag(string name) => _flags.Contains(name);
 
     // The current value of a named counter (0 if never set) — read by counter-conditional forks and
     // the HUD.
     public int CounterValue(string name) => _counters.TryGetValue(name, out var v) ? v : 0;
+
+    // Records a clip a no-repeat pool round drew, so later copies of that pool skip it.
+    public void MarkPoolClipPlayed(string videoPath)
+    {
+        if (!string.IsNullOrEmpty(videoPath)) _playedPoolClips.Add(videoPath);
+    }
+
+    // The set of already-drawn no-repeat pool clips as a Godot set {video_path: true}, for the pure
+    // GDScript weight filter (JourneyData.pool_draw_weights).
+    public Dictionary PlayedPoolClips()
+    {
+        var d = new Dictionary();
+        foreach (var p in _playedPoolClips)
+            d[p] = true;
+        return d;
+    }
 
     // Test-play: pre-set flags so a Test-From-Here run can exercise flag-gated forks. Adds on top of
     // whatever the start/seek node already set.
@@ -202,6 +235,20 @@ public partial class GameState : Node
         return new Dictionary();
     }
 
+    // Moves the walker to the ENTRY node of the off-graph aftercare sequence (round / storyboard / …),
+    // reachable only via the FINISH button. Unlike SeekToNode (test-play's "from here" reset), this
+    // KEEPS the run state built up during play — the finish node plays after a real playthrough, not
+    // restarted from. Its out-edges advance through the sequence like any node, until a node with no
+    // exit reaches "done" → the end screen. Returns false (no state change) if the id isn't a node.
+    public bool JumpToFinish(string nodeId)
+    {
+        if (nodeId == "" || !_nodes.ContainsKey(nodeId))
+            return false;
+        _currentId = nodeId;
+        EnterCurrent();
+        return true;
+    }
+
     // Reconstructs the paths-shaped fork dict that ForkScreen / ForkResolver / GameLoop
     // expect, from the fork node's meta + its out-edges (one edge == one path). Empty when
     // the current node isn't a fork.
@@ -242,6 +289,12 @@ public partial class GameState : Node
             ["cond_counter"] = data.ContainsKey("cond_counter") ? data["cond_counter"].AsString() : "",
             ["cond_decider"] = data.ContainsKey("cond_decider") ? data["cond_decider"].AsString() : "game",
             ["default_path"] = data.ContainsKey("default_path") ? data["default_path"].AsInt32() : 0,
+            // Auto-advance fallback for choice/sacrifice forks; -1 = pick randomly among affordable.
+            ["timeout_path"] = data.ContainsKey("timeout_path") ? data["timeout_path"].AsInt32() : -1,
+            // Optional audio accent (resolved path) + its loop flag + linear 0–1 volume.
+            ["audio"] = data.ContainsKey("audio") ? data["audio"].AsString() : "",
+            ["audio_loop"] = data.ContainsKey("audio_loop") && data["audio_loop"].AsBool(),
+            ["audio_volume"] = data.ContainsKey("audio_volume") ? data["audio_volume"].AsSingle() : 1.0,
             // Carried through so GameLoop._current_map_key can key the fork's map marker.
             ["after_order"] = data.ContainsKey("after_order") ? data["after_order"].AsInt32() : 0,
             ["paths"] = paths,
@@ -361,7 +414,17 @@ public partial class GameState : Node
         ["flags"] = FlagsArray(),
         ["counters"] = CountersDict(),
         ["discovered"] = DiscoveredNodes(),
+        ["played_pool_clips"] = PlayedPoolClipsArray(),
     };
+
+    // The drawn no-repeat pool clips as a Godot Array (for the save record).
+    private Array PlayedPoolClipsArray()
+    {
+        var a = new Array();
+        foreach (var p in _playedPoolClips)
+            a.Add(p);
+        return a;
+    }
 
     // The run's counters as a Godot Dictionary {name: int} — for the save record and the HUD.
     public Dictionary CountersDict()
@@ -405,6 +468,7 @@ public partial class GameState : Node
         _flags.Clear();
         _counters.Clear();
         _discovered.Clear();
+        _playedPoolClips.Clear();
 
         if (saveData.ContainsKey("current_node") && _nodes.ContainsKey(saveData["current_node"].AsString()))
         {
@@ -433,6 +497,13 @@ public partial class GameState : Node
                 {
                     var did = d.AsString();
                     if (did != "") _discovered.Add(did);
+                }
+            // Restore the no-repeat pool clips already drawn, so a pool after a checkpoint still skips them.
+            if (saveData.ContainsKey("played_pool_clips"))
+                foreach (var p in saveData["played_pool_clips"].AsGodotArray())
+                {
+                    var vp = p.AsString();
+                    if (vp != "") _playedPoolClips.Add(vp);
                 }
         }
         else

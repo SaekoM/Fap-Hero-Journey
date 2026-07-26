@@ -650,3 +650,72 @@ func test_validate_flags_unreachable_not_start() -> void:
 			unreachable_ids.append(i["id"])
 	assert_bool(unreachable_ids.has("b")).is_true()
 	assert_bool(unreachable_ids.has("a")).is_false()
+
+
+# The designated finish/aftercare node lives off the main graph (reachable only via the FINISH button),
+# so passing it as finish_id exempts it from the unreachable flag.
+func test_validate_exempts_finish_node_from_unreachable() -> void:
+	var g := _g("a", {"a": _n("round", []), "b": _n("storyboard", [])})  # b is an island
+	var unreachable_ids: Array = []
+	for i: Dictionary in JourneyGraph.validate_graph(g, "b"):
+		if i["kind"] == "unreachable":
+			unreachable_ids.append(i["id"])
+	assert_bool(unreachable_ids.has("b")).is_false()  # exempt as the finish node
+
+
+# type_ordinals numbers each node within its type in insertion order, so the "N" in a save error's
+# "Storyboard N" is the same "N" GraphView draws on that node.
+func test_type_ordinals_number_per_type_in_order() -> void:
+	var nodes := {
+		"a": _n("round", []),
+		"b": _n("storyboard", []),
+		"c": _n("round", []),
+		"d": _n("storyboard", []),
+		"e": _n("fork", []),
+	}
+	var ord: Dictionary = JourneyGraph.type_ordinals(nodes)
+	assert_int(ord["a"]).is_equal(1)  # first round
+	assert_int(ord["c"]).is_equal(2)  # second round
+	assert_int(ord["b"]).is_equal(1)  # first storyboard
+	assert_int(ord["d"]).is_equal(2)  # second storyboard
+	assert_int(ord["e"]).is_equal(1)  # first fork
+
+
+func test_type_ordinals_empty() -> void:
+	assert_int((JourneyGraph.type_ordinals({}) as Dictionary).size()).is_equal(0)
+
+
+# max_nodes_on_path counts target nodes on a single path; a linear chain sums them all.
+func test_max_nodes_on_path_linear() -> void:
+	var g := _g(
+		"s",
+		{
+			"s": _n("round", ["a"]),
+			"a": _n("round", ["b"]),
+			"b": _n("round", ["c"]),
+			"c": _n("round", []),
+		}
+	)
+	assert_int(JourneyGraph.max_nodes_on_path(g, "s", {"a": true, "c": true})).is_equal(2)
+
+
+# A fork counts only its worst (most-targets) branch — one run takes one branch.
+func test_max_nodes_on_path_takes_worst_branch() -> void:
+	var g := _g(
+		"s",
+		{
+			"s": _n("fork", ["x", "y"]),  # branch1: x (1 target); branch2: y → z (2 targets)
+			"x": _n("round", []),
+			"y": _n("round", ["z"]),
+			"z": _n("round", []),
+		}
+	)
+	assert_int(JourneyGraph.max_nodes_on_path(g, "s", {"x": true, "y": true, "z": true})).is_equal(
+		2
+	)
+	assert_int(JourneyGraph.max_nodes_on_path(g, "s", {"x": true})).is_equal(1)
+
+
+func test_max_nodes_on_path_none_targeted() -> void:
+	var g := _g("s", {"s": _n("round", ["a"]), "a": _n("round", [])})
+	assert_int(JourneyGraph.max_nodes_on_path(g, "s", {})).is_equal(0)

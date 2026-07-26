@@ -24,6 +24,13 @@ var _cards_flow: HFlowContainer = null
 
 var show_map_button: bool = true  # GameLoop clears this when the journey hides the map
 
+# Auto-advance countdown (journey opt-in). GameLoop sets auto_advance_secs before setup(); when >0 the
+# shop auto-continues after that many seconds (so a player can't linger to "rest"). Mirrors ForkScreen.
+var auto_advance_secs: int = 0
+var _time_left: float = 0.0
+var _timer_active: bool = false
+var _countdown_lbl: Label = null
+
 
 func _ready() -> void:
 	_apply_layout()
@@ -90,6 +97,9 @@ func setup(shop_data: Dictionary) -> void:
 		# still finishes building in quickly.
 		_animate_card_in(card, min(stagger, 12) * 0.04)
 		stagger += 1
+
+	if auto_advance_secs > 0:
+		_start_countdown()
 
 
 # Fades + scales a freshly-added card in. Waits one frame so the flow container
@@ -170,6 +180,17 @@ func _make_card(id: String, data: Dictionary) -> Control:
 	col.add_theme_constant_override("separation", 8)
 	col.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	inner.add_child(col)
+
+	# Optional custom-item icon at the top of the card (still image; absent for built-in items).
+	var icon_path: String = str(data.get("image", ""))
+	if icon_path != "":
+		var icon: JourneyImage = JourneyImage.new()
+		icon.custom_minimum_size = Vector2(0, 88)
+		col.add_child(icon)
+		if not icon.show_path(
+			icon_path, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		):
+			icon.queue_free()
 
 	# Category badge
 	var category: String = data.get("category", "modifier")
@@ -310,6 +331,50 @@ func _on_continue_pressed() -> void:
 	tween.tween_property(_panel, "scale", Vector2(0.92, 0.92), 0.16).set_ease(Tween.EASE_IN)
 	tween.tween_property(_panel, "modulate:a", 0.0, 0.16).set_ease(Tween.EASE_IN)
 	tween.chain().tween_callback(func() -> void: emit_signal("closed"))
+
+
+# ── Auto-advance countdown (journey opt-in; mirrors ForkScreen) ──────────────
+func _start_countdown() -> void:
+	_add_countdown_label()
+	_time_left = float(auto_advance_secs)
+	_timer_active = true
+	_update_countdown_label()
+
+
+func _process(delta: float) -> void:
+	# GameLoop toggles set_process() while the map viewer is open, so this pauses there.
+	if not _timer_active:
+		return
+	_time_left -= delta
+	if _time_left <= 0.0:
+		_timer_active = false
+		if not _continue.disabled:
+			_on_continue_pressed()  # auto-continue — same exit as pressing Continue
+		return
+	_update_countdown_label()
+
+
+# A small countdown pinned top-centre so the ticking clock is visible above the panel.
+func _add_countdown_label() -> void:
+	_countdown_lbl = Label.new()
+	_countdown_lbl.anchor_left = 0.5
+	_countdown_lbl.anchor_right = 0.5
+	_countdown_lbl.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_countdown_lbl.offset_top = 18
+	_countdown_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_countdown_lbl.add_theme_font_size_override("font_size", 15)
+	_countdown_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_countdown_lbl)
+
+
+func _update_countdown_label() -> void:
+	if _countdown_lbl == null:
+		return
+	var secs: int = int(ceil(_time_left))
+	_countdown_lbl.text = "AUTO-CONTINUE IN %d" % secs
+	_countdown_lbl.add_theme_color_override(
+		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
+	)
 
 
 # --------------------------------------------------------------------------

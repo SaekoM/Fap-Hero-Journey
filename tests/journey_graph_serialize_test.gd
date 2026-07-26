@@ -566,11 +566,15 @@ func test_parse_graph_carries_meta_new_format() -> void:
 	jj["Name"] = "Graphy"
 	jj["Author"] = "Mara"
 	jj["MapEnabled"] = false
+	jj["AllowFinish"] = true  # FINISH ("I came") journey meta
+	jj["FinishNode"] = "n_aftercare"
 	_write_journey(jj)
 	var g := JourneyScanner.parse_graph(_jdir(), JOURNEY)
 	assert_str(g["title"]).is_equal("Graphy")
 	assert_str(g["author"]).is_equal("Mara")
 	assert_bool(g["map_enabled"]).is_false()
+	assert_bool(g["allow_finish"]).is_true()
+	assert_str(g["finish_node"]).is_equal("n_aftercare")
 	assert_int(g["total_rounds"]).is_equal(4)  # longest round path A → X → Y → B
 	assert_str(g["start"]).is_not_equal("")  # graph still attached
 
