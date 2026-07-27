@@ -209,6 +209,10 @@ var _warmup_skip_btn: Button = null  # free ⏭ skip on an author-marked warmup 
 var _finish_btn: Button = null  # hold-to-confirm FINISH ("I came") button, shown during rounds when enabled
 var _finish_hold_tween: Tween = null  # fills while FINISH is held; fires _finish_journey at completion
 var _finishing: bool = false  # set once FINISH is confirmed, so a late button_up can't re-trigger
+# _on_round_ended is bound to BOTH round-end signals (_video.finished / _end_timer.timeout) and is
+# also called manually (FINISH / warmup skip). This guards its once-per-round side effects — counter
+# bestowal, payout, advance — against a double-fire. Reset at the top of each _begin_round.
+var _round_ended_guard: bool = false
 const FINISH_HOLD_SECS: float = 1.2  # hold time to confirm FINISH
 var _effect_cleanse_cost: int = CLEANSE_COST_DEFAULT  # per-round, set on enter
 
@@ -458,6 +462,9 @@ func _on_storyboard_completed(coins: int) -> void:
 	FunscriptPlayer.StopFiller()
 	_is_overlay_open = false
 	_overlay_map_allowed = false
+	# Bestow the storyboard's counters at completion — the pop now fires as the overlay closes, so it
+	# isn't buried under it the way an on-arrival pop was.
+	GameState.ApplyCurrentNodeCounters()
 	_grant_coins(coins)
 	# Optional item reward — read before Advance() moves off the storyboard.
 	_grant_item(str(GameState.CurrentStoryboard().get("item", "")))
@@ -495,6 +502,7 @@ func _show_shop_screen(shop_data: Dictionary) -> void:
 func _on_shop_closed() -> void:
 	_is_overlay_open = false
 	_overlay_map_allowed = false
+	GameState.ApplyCurrentNodeCounters()  # the shop's own set_counters, bestowed on close
 	GameState.Advance()
 	if GameState.IsSequenceDone():
 		_transition_to_end_screen()
@@ -575,14 +583,24 @@ func _conditional_path(fork_data: Dictionary) -> int:
 			0,
 			Callable(GameState, "HasFlag")
 		)
-	# score / coins / counter all resolve by threshold in ForkResolver — only the source of the
-	# compared value differs. A "counter" fork names which counter in cond_counter.
+	# Counter: each choice gates on its OWN counter (paths carry the effective cond_counter, already
+	# resolved against the fork default in GameState.ParseFork), so it can't collapse to one scalar
+	# like score/coins — ForkResolver reads each path's counter through this lookup instead.
+	if metric == "counter":
+		var counter_of: Callable = func(cn: String) -> int: return GameState.CounterValue(cn)
+		return ForkResolver.conditional_path(
+			fork_data.get("paths", []),
+			metric,
+			int(fork_data.get("default_path", 0)),
+			0,
+			Callable(InventoryService, "OwnsItem"),
+			counter_of
+		)
+	# score / coins resolve by threshold against one scalar — only the source of the value differs.
 	var value: int
 	match metric:
 		"coins":
 			value = CoinService.Balance
-		"counter":
-			value = GameState.CounterValue(str(fork_data.get("cond_counter", "")))
 		_:
 			value = ScoreService.LastRoundScore
 	return ForkResolver.conditional_path(
@@ -701,6 +719,7 @@ func _apply_round_label(round: Dictionary) -> void:
 # Loads the round's scripts + video and starts playback. For boss rounds this
 # runs after the intro card's BEGIN; for normal rounds, immediately.
 func _begin_round(round: Dictionary) -> void:
+	_round_ended_guard = false  # a fresh round can end once again
 	ScoreService.StartRound()
 	# Clear any pause left by a pre-round gate (boss intro / checkpoint banner) —
 	# _video.play() below doesn't reset the paused flag on its own.
@@ -848,6 +867,7 @@ func _show_checkpoint_gate() -> void:
 # Continue past a checkpoint node → advance to the next item (mirrors _on_shop_closed: a
 # content-less node that just moves the sequence forward).
 func _advance_from_checkpoint() -> void:
+	GameState.ApplyCurrentNodeCounters()  # a checkpoint's own set_counters (rare, but authoring allows it)
 	GameState.Advance()
 	if GameState.IsSequenceDone():
 		_transition_to_end_screen()
@@ -1980,6 +2000,9 @@ func _start_no_video_fallback() -> void:
 
 
 func _on_round_ended(skipped: bool = false) -> void:
+	if _round_ended_guard:
+		return
+	_round_ended_guard = true
 	_remove_warmup_skip_button()
 	_remove_finish_button()  # FINISH is a during-round affordance; it doesn't carry into overlays
 	_handy_stop()  # the device would otherwise keep playing into the transition
@@ -2041,6 +2064,10 @@ func _on_round_ended(skipped: bool = false) -> void:
 	# Skipping forfeits everything the round would have paid: coins, the endure bonus, and the
 	# item reward. _exit_boss_mode still ran above, so no effect leaks into the next round.
 	if not skipped:
+		# Bestow the round's counters at its END (see GameState.EnterCurrent) — the node is still
+		# current here (Advance runs inside the transition below). A skipped/finished round banks
+		# nothing, so its counters are forfeited alongside the coins and item reward.
+		GameState.ApplyCurrentNodeCounters()
 		_grant_coins(coins)
 		if endure_reward > 0:
 			_show_save_toast("✦  CURSE ENDURED  +♦ %d" % endure_reward)

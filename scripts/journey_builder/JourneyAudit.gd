@@ -1255,8 +1255,11 @@ static func _pick_edge(
 			var metric: String = str(data.get("cond_metric", "score"))
 			var value: int = score if metric == "score" else coins
 			var checker: Callable = has_flag if metric == "flag" else is_owned
+			# The sim tracks score/coins but not counters, so counter gates can't be evaluated here —
+			# every counter reads 0, so a threshold ≥ 1 fails and the fork resolves to its default path.
+			var counter_of: Callable = func(_cn: String) -> int: return 0
 			return ForkResolver.conditional_path(
-				out, metric, int(data.get("default_path", 0)), value, checker
+				out, metric, int(data.get("default_path", 0)), value, checker, counter_of
 			)
 		"sacrifice":
 			var affordable: Array = []

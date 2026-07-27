@@ -28,11 +28,20 @@ static func weighted_pick(weights: Array, r: int) -> int:
 
 # Resolves a conditional fork to a path index.
 #   metric "item"          → first path whose required_item is owned (is_owned), else default.
+#   metric "flag"          → first path whose required_flag is set (is_owned = flag-checker), else default.
+#   metric "counter"       → highest threshold met wins, but each path is compared against ITS OWN
+#                            counter (paths[i].cond_counter) via counter_of; ties → earliest, else default.
 #   metric "score"/"coins" → highest threshold `value` meets wins (ties → earliest), else default.
-# `value` is the score or coin balance (caller picks which by metric). `is_owned`
-# is a Callable(String) -> bool. `default_path` is clamped into range.
+# `value` is the score or coin balance (caller picks which by metric; unused for counter). `is_owned`
+# is a Callable(String) -> bool. `counter_of` is a Callable(String) -> int giving a counter's current
+# value (only consulted for the counter metric). `default_path` is clamped into range.
 static func conditional_path(
-	paths: Array, metric: String, default_path: int, value: int, is_owned: Callable
+	paths: Array,
+	metric: String,
+	default_path: int,
+	value: int,
+	is_owned: Callable,
+	counter_of: Callable = Callable()
 ) -> int:
 	if paths.is_empty():
 		return 0
@@ -52,6 +61,24 @@ static func conditional_path(
 			if rf != "" and is_owned.call(rf):
 				return i
 		return default_idx
+
+	# Counter: same "highest satisfied threshold wins" tiering as score/coins, except the compared
+	# value is per-path — each choice gates on its own counter, so a single fork can mix (prod ≥ 2)
+	# with (test ≥ 3). counter_of resolves the already-effective per-path counter name to its value.
+	if metric == "counter":
+		var c_best_idx: int = -1
+		var c_best_threshold: int = -1
+		for i in paths.size():
+			var t: int = int(paths[i].get("threshold", 0))
+			var cv: int = (
+				counter_of.call(str(paths[i].get("cond_counter", "")))
+				if counter_of.is_valid()
+				else 0
+			)
+			if cv >= t and t > c_best_threshold:
+				c_best_threshold = t
+				c_best_idx = i
+		return c_best_idx if c_best_idx >= 0 else default_idx
 
 	var best_idx: int = -1
 	var best_threshold: int = -1

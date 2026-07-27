@@ -116,16 +116,27 @@ public partial class GameState : Node
     }
 
     // Landing on the current node: bump the round count and apply any flags its data sets.
+    // Flags apply on ARRIVAL (a "you've been here" mark). COUNTERS do not — they are bestowed when the
+    // node COMPLETES (round end, storyboard/shop close), via ApplyCurrentNodeCounters called by GameLoop.
+    // That gives a counter the "you finished this → tally it" meaning the author expects, and keeps its
+    // HUD pop from being buried under the storyboard/shop overlay that opens the instant you arrive.
     private void EnterCurrent()
     {
         if (_currentId != "") _discovered.Add(_currentId);   // map fog-of-war: this node is now discovered
         CountIfRound();
         var n = NodeOf(_currentId);
         if (n.ContainsKey("data"))
-        {
             ApplyFlags(n["data"].AsGodotDictionary());
+    }
+
+    // Bestows the CURRENT node's set_counters — GameLoop calls this at a node's completion (round end,
+    // storyboard/shop close, checkpoint continue), so counters land at the END of a node, not on arrival.
+    // Fork-edge counters keep their own path (ResolveFork), since a fork "completes" when a choice is made.
+    public void ApplyCurrentNodeCounters()
+    {
+        var n = NodeOf(_currentId);
+        if (n.ContainsKey("data"))
             ApplyCounters(n["data"].AsGodotDictionary());
-        }
     }
 
     // Adds every name in src["set_flags"] (a node's data, or a fork edge) to the run's flag set.
@@ -259,11 +270,15 @@ public partial class GameState : Node
             return new Dictionary();
 
         var data = node["data"].AsGodotDictionary();
+        // Fork-level counter is the default for every choice; a choice may override it with its own
+        // (per-path cond_counter), which lets one fork gate different choices on different counters.
+        var forkCounter = data.ContainsKey("cond_counter") ? data["cond_counter"].AsString() : "";
         var paths = new Array();
         foreach (var edgeVariant in OutEdges(_currentId))
         {
             var e = edgeVariant.AsGodotDictionary();
             var to = e.ContainsKey("to") ? e["to"].AsString() : "";
+            var edgeCounter = e.ContainsKey("cond_counter") ? e["cond_counter"].AsString() : "";
             paths.Add(new Dictionary
             {
                 ["name"] = e.ContainsKey("name") ? e["name"].AsString() : "",
@@ -274,6 +289,8 @@ public partial class GameState : Node
                 ["required_item"] = e.ContainsKey("required_item") ? e["required_item"].AsString() : "",
                 ["cost"] = e.ContainsKey("cost") ? e["cost"].AsInt32() : 0,
                 ["required_flag"] = e.ContainsKey("required_flag") ? e["required_flag"].AsString() : "",
+                // Effective per-choice counter: the choice's own, or the fork default when it left it blank.
+                ["cond_counter"] = edgeCounter != "" ? edgeCounter : forkCounter,
                 // Rounds reachable down this branch (longest path — matches TotalRounds'
                 // progress-bar semantics). ForkScreen renders this as the "N ROUNDS" tag;
                 // it was never populated after the graph migration, so it always read 0.

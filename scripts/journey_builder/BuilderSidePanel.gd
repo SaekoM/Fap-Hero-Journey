@@ -1529,10 +1529,11 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		)
 		col.add_child(metric_dd)
 
-		# A counter fork gates on one named counter — each choice's threshold then compares against
-		# its value, exactly like score/coins.
+		# A counter fork's DEFAULT counter — each choice's threshold compares against it, exactly like
+		# score/coins. A choice can override this with its own counter (see the per-choice COUNTER field),
+		# so one fork can gate different choices on different counters (e.g. prod ≥ 2 vs test ≥ 3).
 		if metric == "counter":
-			col.add_child(_side_field_label("COUNTER NAME"))
+			col.add_child(_side_field_label("DEFAULT COUNTER  (per-choice can override)"))
 			var cn_edit: LineEdit = LineEdit.new()
 			cn_edit.placeholder_text = "e.g. belt, arousal, satisfied_partners"
 			cn_edit.text = str(data.get("cond_counter", ""))
@@ -1768,7 +1769,23 @@ func _make_graph_choice_block(
 		sub.add_child(rf_edit)
 		sub.add_child(_known_flags_hint())
 	elif resolution == "conditional":
-		var thr_label: String = "ACTIVATES AT ≥  (%s)" % ("SCORE" if metric == "score" else "COINS")
+		var metric_word: String = "SCORE"
+		if metric == "coins":
+			metric_word = "COINS"
+		elif metric == "counter":
+			metric_word = "COUNTER"
+			# Each choice can gate on its own counter (e.g. one on "prod", another on "test"); blank
+			# falls back to the fork's default counter. This is the per-choice sibling of the threshold.
+			sub.add_child(_side_field_label("COUNTER  (blank = fork default)"))
+			var pc_edit: LineEdit = LineEdit.new()
+			pc_edit.placeholder_text = "Counter name (e.g. prod)…"
+			pc_edit.text = str(edge.get("cond_counter", ""))
+			UITheme.style_line_edit(pc_edit)
+			pc_edit.text_changed.connect(
+				func(v: String) -> void: out[ei]["cond_counter"] = v.strip_edges()
+			)
+			sub.add_child(pc_edit)
+		var thr_label: String = "ACTIVATES AT ≥  (%s)" % metric_word
 		_add_path_int_field(sub, out, ei, "threshold", thr_label, 999999)
 
 	# A choice can set flags and bump counters when it's taken ("you chose mercy" / "+1 resolve").

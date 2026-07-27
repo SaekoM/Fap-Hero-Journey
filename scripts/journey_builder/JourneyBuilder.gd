@@ -1789,6 +1789,7 @@ func _save_capture_with_dialog(result: Dictionary) -> void:
 	dlg.use_native_dialog = true
 	dlg.add_filter("*." + ext, ext.to_upper() + " image")
 	dlg.current_file = "%s_layout.%s" % [base, ext]
+	SettingsService.remember_browse_dir(dlg)  # reopen where the last picker left off (keeps current_file)
 	add_child(dlg)
 	dlg.file_selected.connect(
 		func(path: String) -> void:
@@ -2289,6 +2290,7 @@ func _on_cover_pressed() -> void:
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	dialog.filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	dialog.title = "Select Cover Image"
+	SettingsService.remember_browse_dir(dialog)  # reopen where the last picker left off
 	add_child(dialog)
 	dialog.popup_centered(Vector2i(900, 600))
 	dialog.file_selected.connect(
@@ -3803,6 +3805,7 @@ func _save_fork_node_edges(
 					"required_item": str(e.get("required_item", "")),
 					"cost": int(e.get("cost", 0)),
 					"required_flag": str(e.get("required_flag", "")),
+					"cond_counter": str(e.get("cond_counter", "")),  # per-choice counter override (blank = fork default)
 					"set_flags": JourneyData.clean_flag_list(e.get("set_flags", [])),
 					"set_counters": JourneyData.clean_counter_deltas(e.get("set_counters", {})),
 				}

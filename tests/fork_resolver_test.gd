@@ -71,6 +71,79 @@ func test_conditional_item_picks_first_owned() -> void:
 	assert_int(ForkResolver.conditional_path(paths, "item", 0, 0, _owns([]))).is_equal(0)  # default
 
 
+# ── conditional_path: per-path counter gates ────────────────────────────────
+
+
+# Builds a counter_of Callable backed by a fixed {name: value} map (missing counter = 0).
+func _counters(values: Dictionary) -> Callable:
+	return func(name: String) -> int: return int(values.get(name, 0))
+
+
+# Each choice gates on ITS OWN counter; among the satisfied choices the highest threshold wins.
+func test_conditional_counter_per_path() -> void:
+	var paths := [
+		{"cond_counter": "prod", "threshold": 2},
+		{"cond_counter": "test", "threshold": 3},
+	]
+	# Both met → the higher threshold (test ≥ 3) wins.
+	(
+		assert_int(
+			ForkResolver.conditional_path(
+				paths, "counter", 0, 0, _owns([]), _counters({"prod": 5, "test": 4})
+			)
+		)
+		. is_equal(1)
+	)
+	# Only prod met → the prod choice.
+	(
+		assert_int(
+			ForkResolver.conditional_path(
+				paths, "counter", 0, 0, _owns([]), _counters({"prod": 2, "test": 0})
+			)
+		)
+		. is_equal(0)
+	)
+	# Neither met → the (clamped) default path, not a fallthrough — default 1 proves it.
+	(
+		assert_int(
+			ForkResolver.conditional_path(
+				paths, "counter", 1, 0, _owns([]), _counters({"prod": 1, "test": 2})
+			)
+		)
+		. is_equal(1)
+	)
+
+
+# A single shared counter across paths preserves the legacy "highest met threshold wins" tiering,
+# so migrating an old single-counter fork to the per-path model doesn't change its resolution.
+func test_conditional_counter_shared_is_tiered() -> void:
+	var paths := [
+		{"cond_counter": "belt", "threshold": 0},
+		{"cond_counter": "belt", "threshold": 5},
+		{"cond_counter": "belt", "threshold": 10},
+	]
+	(
+		assert_int(
+			ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), _counters({"belt": 7}))
+		)
+		. is_equal(1)
+	)
+	(
+		assert_int(
+			ForkResolver.conditional_path(
+				paths, "counter", 0, 0, _owns([]), _counters({"belt": 12})
+			)
+		)
+		. is_equal(2)
+	)
+	(
+		assert_int(
+			ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), _counters({"belt": 3}))
+		)
+		. is_equal(0)
+	)
+
+
 func test_conditional_empty_paths() -> void:
 	assert_int(ForkResolver.conditional_path([], "score", 0, 100, _owns([]))).is_equal(0)
 
