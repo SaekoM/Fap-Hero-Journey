@@ -178,6 +178,17 @@ func test_editor_save_load_round_trip() -> void:
 	assert_str((loaded["nodes"]["b"] as Dictionary)["data"]["round_type"]).is_equal("boss")
 
 
+# JourneyData.parse_journey (the builder's meta extractor) must forward shown_counters like its
+# sibling meta fields. It once dropped the key, so the builder reloaded an empty list and the next
+# save wiped the author's ShownCounters off disk — a silent round-trip data loss. Guards the whole
+# forwarding pattern: input is the scanner's snake-case shape.
+func test_parse_journey_forwards_shown_counters() -> void:
+	var parsed := JourneyData.parse_journey({"shown_counters": ["belt_notches", "arousal"]})
+	assert_array(parsed.get("shown_counters", [])).is_equal(["belt_notches", "arousal"])
+	# Omitted → empty list, never absent (callers do .get with a [] default, but be explicit).
+	assert_array(JourneyData.parse_journey({}).get("shown_counters", [])).is_empty()
+
+
 # A legacy tree journey (no Nodes, no pos) loads through the editor entry with positions seeded,
 # so a migrated journey opens laid-out and editable.
 func test_editor_load_seeds_legacy_positions() -> void:

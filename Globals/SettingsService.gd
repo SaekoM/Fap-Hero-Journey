@@ -652,6 +652,44 @@ func set_ui_sound_volume(value: float) -> void:
 	_config.set_value("audio", "ui_sound_volume", value)
 
 
+# ── Last browse directory (file pickers reopen where you left off) ──────────
+
+
+# The folder the most recent file/folder picker landed in. Media pickers (media import, cover,
+# image export, randomizer) seed from this and update it on selection, so browsing reopens where
+# you were instead of the OS default. Options' storage/ffmpeg pickers opt out on purpose — they
+# open at their own configured path, which is more useful than a generic recent folder.
+func get_last_browse_dir() -> String:
+	return str(_config.get_value("paths", "last_browse_dir", ""))
+
+
+func set_last_browse_dir(value: String) -> void:
+	_config.set_value("paths", "last_browse_dir", value)
+
+
+# Seeds `dialog` at the last-used folder (if it still exists) and remembers the next folder picked.
+# Call right after creating a FileDialog, before popup(). Works for file / files / dir modes and
+# native dialogs; connecting all three selection signals is harmless for the ones a mode doesn't emit.
+func remember_browse_dir(dialog: FileDialog) -> void:
+	var last: String = get_last_browse_dir()
+	if last != "" and DirAccess.dir_exists_absolute(last):
+		dialog.current_dir = last
+	dialog.file_selected.connect(func(p: String) -> void: _store_browse_dir(p.get_base_dir()))
+	dialog.dir_selected.connect(func(p: String) -> void: _store_browse_dir(p))
+	dialog.files_selected.connect(
+		func(ps: PackedStringArray) -> void:
+			if not ps.is_empty():
+				_store_browse_dir(ps[0].get_base_dir())
+	)
+
+
+func _store_browse_dir(dir: String) -> void:
+	if dir == "" or not DirAccess.dir_exists_absolute(dir):
+		return
+	set_last_browse_dir(dir)
+	save()
+
+
 # ── Persistence ─────────────────────────────────────────────────────────────
 
 

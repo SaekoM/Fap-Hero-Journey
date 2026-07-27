@@ -1304,6 +1304,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"map_enabled": bool(journey.get("map_enabled", true)),
 		"map_fog": bool(journey.get("map_fog", false)),
 		"map_fog_reveal": int(journey.get("map_fog_reveal", 1)),
+		"shown_counters": journey.get("shown_counters", []),
 		"auto_advance_enabled": bool(journey.get("auto_advance_enabled", false)),
 		"auto_advance_storyboard_secs": int(journey.get("auto_advance_storyboard_secs", 20)),
 		"auto_advance_fork_secs": int(journey.get("auto_advance_fork_secs", 45)),

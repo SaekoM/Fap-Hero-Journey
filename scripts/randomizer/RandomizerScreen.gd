@@ -486,6 +486,7 @@ func _on_add_pressed() -> void:
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.use_native_dialog = true
 	dialog.filters = _video_filters()
+	SettingsService.remember_browse_dir(dialog)  # reopen where the last picker left off
 	dialog.files_selected.connect(
 		func(paths: PackedStringArray) -> void:
 			dialog.queue_free()
@@ -503,6 +504,7 @@ func _on_folder_pressed() -> void:
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.use_native_dialog = true
+	SettingsService.remember_browse_dir(dialog)  # reopen where the last picker left off
 	dialog.dir_selected.connect(
 		func(dir: String) -> void:
 			dialog.queue_free()

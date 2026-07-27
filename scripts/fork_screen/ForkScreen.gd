@@ -19,6 +19,7 @@ var _default_path: int = 0  # conditional fallback path index
 var show_map_button: bool = true  # GameLoop clears this when the journey hides the map
 
 var _cond_decider: String = "game"  # conditional: "game" (auto-spin) or "player" (gated pick)
+var _cond_counter: String = ""  # conditional "counter" metric: which named counter each path's threshold gates on
 
 # Auto-advance countdown (journey opt-in). GameLoop sets auto_advance_secs before setup(); when >0 it
 # arms a visible timer on INTERACTIVE forks (the ones that wait for the player). On expiry it picks
@@ -54,6 +55,7 @@ func setup(fork_data: Dictionary) -> void:
 	_resolution = fork_data.get("resolution", "choice")
 	_cond_metric = fork_data.get("cond_metric", "score")
 	_cond_decider = fork_data.get("cond_decider", "game")
+	_cond_counter = str(fork_data.get("cond_counter", ""))
 	_default_path = int(fork_data.get("default_path", 0))
 	_paths = fork_data.get("paths", [])
 	for i in _paths.size():
@@ -413,6 +415,13 @@ func _qualifies(index: int, path_data: Dictionary) -> bool:
 		"flag":
 			var rf: String = str(path_data.get("required_flag", ""))
 			return rf != "" and GameState.HasFlag(rf)
+		"counter":
+			# Each choice gates on its own counter (already resolved to the fork default when blank
+			# by GameState.CurrentFork); the fork-level name is a last-resort fallback.
+			var cn: String = str(path_data.get("cond_counter", ""))
+			if cn == "":
+				cn = _cond_counter
+			return GameState.CounterValue(cn) >= int(path_data.get("threshold", 0))
 	return true
 
 
@@ -439,6 +448,19 @@ func _conditional_req_text(index: int, path_data: Dictionary) -> String:
 			var rf: String = str(path_data.get("required_flag", ""))
 			if rf != "":
 				parts.append("REQUIRES: %s" % rf.to_upper().replace("_", " "))
+		"counter":
+			var raw_cn: String = str(path_data.get("cond_counter", ""))
+			if raw_cn == "":
+				raw_cn = _cond_counter
+			var name_part: String = raw_cn.strip_edges().to_upper().replace("_", " ")
+			if name_part == "":
+				name_part = "TALLY"
+			if threshold > 0:
+				parts.append(
+					"%s ≥ %d  (NOW %d)" % [name_part, threshold, GameState.CounterValue(raw_cn)]
+				)
+			else:
+				parts.append("ANY %s" % name_part)
 	if index == _default_path:
 		parts.append("DEFAULT")
 	return "   ·   ".join(parts)

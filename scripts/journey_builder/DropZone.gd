@@ -123,6 +123,7 @@ func _on_browse_pressed() -> void:
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	dialog.filters = picker_filters
 	dialog.title = picker_title
+	SettingsService.remember_browse_dir(dialog)  # reopen where the last picker left off
 	get_tree().root.add_child(dialog)
 	dialog.popup_centered(Vector2i(900, 600))
 	dialog.file_selected.connect(
