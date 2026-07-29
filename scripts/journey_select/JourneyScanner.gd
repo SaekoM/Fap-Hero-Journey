@@ -366,6 +366,26 @@ static func _journey_items_resolved(data: Dictionary, base: String) -> Array:
 	return items
 
 
+# Storyboard cast — parsed to runtime (snake-case) with every portrait's relative pooled path resolved
+# to absolute, so StoryboardScreen can load it directly. Placements are pure fractions (nothing to
+# resolve). Mirrors _journey_items_resolved.
+static func _journey_characters_resolved(data: Dictionary, base: String) -> Array:
+	var characters: Array = JourneyData.parse_journey_characters(data.get("Characters", []))
+	for c: Dictionary in characters:
+		for por: Variant in c.get("portraits", []):
+			var path: String = str((por as Dictionary).get("path", ""))
+			if (
+				path != ""
+				and not (
+					path.begins_with("res://")
+					or path.begins_with("user://")
+					or path.is_absolute_path()
+				)
+			):
+				(por as Dictionary)["path"] = base.path_join(path)
+	return characters
+
+
 static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dictionary:
 	return {
 		"folder": path,
@@ -398,6 +418,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Author-defined journey-scoped items — loaded into InventoryService at play and listed in the
 		# builder's item dropdowns. Parsed to the runtime (snake-case) shape, image paths resolved.
 		"items": _journey_items_resolved(data, path),
+		# Storyboard cast — referenced by each storyboard line's `stage`. Each character carries its own
+		# portraits (paths resolved) and placements (position/size boxes).
+		"characters": _journey_characters_resolved(data, path),
 		"cover_path": find_cover_image(path),
 		"modified_time": FileAccess.get_modified_time(path + "/journey.json"),
 		"rounds": [],
@@ -881,36 +904,31 @@ static func _longest_path_stats(fork: Dictionary) -> Dictionary:
 # Finds the journey cover image. New journeys keep all images in a media/
 # subfolder; old journeys stored the cover at the journey root.
 static func find_cover_image(path: String) -> String:
-	var media_path: String = path + "/media"
-	var media_dir: DirAccess = DirAccess.open(media_path)
-	if media_dir != null:
-		# Scan once: prefer a file named "cover.*" — fork/storyboard/boss images
-		# are also stored in media/ and must not be mistaken for the journey cover.
-		var fallback: String = ""
-		media_dir.list_dir_begin()
-		var mfname: String = media_dir.get_next()
-		while mfname != "":
-			if not media_dir.current_is_dir() and mfname.get_extension().to_lower() in IMAGE_EXTS:
-				if mfname.get_basename().to_lower() == "cover":
-					media_dir.list_dir_end()
-					return media_path + "/" + mfname
-				elif fallback == "":
-					fallback = media_path + "/" + mfname
-			mfname = media_dir.get_next()
-		media_dir.list_dir_end()
-		if fallback != "":
-			return fallback
+	# A journey's cover is EXPLICIT: a file literally named cover.* (in media/, or at the journey root
+	# for old journeys). No cover set → no cover. We deliberately do NOT fall back to "the first image
+	# we find" — media/ also holds fork / storyboard / boss / portrait art, and borrowing one of those
+	# as the cover is exactly the surprise we're removing.
+	var media_cover: String = _find_named_cover(path + "/media")
+	if media_cover != "":
+		return media_cover
+	return _find_named_cover(path)
 
-	# Fallback: old journeys stored the cover at the journey root.
-	var dir: DirAccess = DirAccess.open(path)
+
+# Returns the path to a file named cover.<image-ext> in `dir_path`, or "" if there isn't one.
+static func _find_named_cover(dir_path: String) -> String:
+	var dir: DirAccess = DirAccess.open(dir_path)
 	if dir == null:
 		return ""
 	dir.list_dir_begin()
 	var fname: String = dir.get_next()
 	while fname != "":
-		if not dir.current_is_dir() and fname.get_extension().to_lower() in IMAGE_EXTS:
+		if (
+			not dir.current_is_dir()
+			and fname.get_basename().to_lower() == "cover"
+			and fname.get_extension().to_lower() in IMAGE_EXTS
+		):
 			dir.list_dir_end()
-			return path + "/" + fname
+			return dir_path + "/" + fname
 		fname = dir.get_next()
 	dir.list_dir_end()
 	return ""

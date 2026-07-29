@@ -61,6 +61,7 @@ var _pool_drop: Dictionary = {}
 # side panel is rebuilt underneath it (e.g. a save mid-edit frees the old container). The
 # modal never holds a direct reference; it rebuilds through this, guarded by validity.
 var _custom_items_list: VBoxContainer = null
+var _characters_list: VBoxContainer = null  # same live-container pattern as _custom_items_list
 
 
 func _init(owner: JourneyBuilder) -> void:
@@ -358,6 +359,9 @@ func show_journey_info_panel() -> void:
 
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(_make_custom_items_section())
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_characters_section())
 
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(_make_graph_add_buttons())
@@ -780,6 +784,294 @@ func _discard_journey_item(item_idx: int, item: Dictionary) -> void:
 		if is_same(items[i], item):
 			items.remove_at(i)
 			return
+
+
+# ── Cast roster (journey-level storyboard characters) ───────────────────────
+# Same shape as the custom-items section: a short list of rows in the journey panel, each character's
+# full field set (name / portrait / default side) living in a modal. Characters mutate
+# _owner._journey_characters in place; a storyboard line's stage references them by id.
+func _make_characters_section() -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var header: Label = Label.new()
+	header.text = "CAST"
+	header.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
+	header.add_theme_font_size_override("font_size", 13)
+	box.add_child(header)
+	var hint: Label = Label.new()
+	hint.text = (
+		"Characters for storyboards: define a portrait once, then pick it per line. "
+		+ "Portraits show ~half-screen over the background; two can share the stage (left + right)."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	box.add_child(list)
+	_characters_list = list
+	_rebuild_characters_list()
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD CHARACTER"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_characters.append(_default_character())
+			_rebuild_characters_list()
+			_open_character_editor_modal(_owner._journey_characters.size() - 1, true)
+	)
+	box.add_child(add_btn)
+	return box
+
+
+func _rebuild_characters_list() -> void:
+	if not is_instance_valid(_characters_list):
+		return
+	for c: Node in _characters_list.get_children():
+		c.queue_free()
+	for i: int in _owner._journey_characters.size():
+		_characters_list.add_child(_make_character_row(i))
+
+
+func _default_character() -> Dictionary:
+	# Blank name → reads as incomplete, cancels silently on dismiss. Starts with the three seeded
+	# positions (draggable per character) and no portraits yet.
+	return {
+		"id": JourneyData.new_character_id(),
+		"name": "",
+		"portraits": [],
+		"placements": JourneyData.default_character_placements(),
+	}
+
+
+# Compact row: name + default-side badge, with EDIT (opens the modal) and DELETE.
+func _make_character_row(char_idx: int) -> Control:
+	var chr: Dictionary = _owner._journey_characters[char_idx]
+
+	var card: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = UITheme.PANEL_BG
+	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	card.add_theme_stylebox_override("panel", style)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	card.add_child(row)
+
+	var info: VBoxContainer = VBoxContainer.new()
+	info.add_theme_constant_override("separation", 1)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+
+	var name_lbl: Label = Label.new()
+	var cname: String = str(chr.get("name", "")).strip_edges()
+	name_lbl.text = cname if cname != "" else "(unnamed)"
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	info.add_child(name_lbl)
+
+	var badge: Label = Label.new()
+	var n_portraits: int = (chr.get("portraits", []) as Array).size()
+	badge.text = "%d portrait%s" % [n_portraits, "" if n_portraits == 1 else "s"]
+	badge.add_theme_color_override(
+		"font_color", UITheme.PURPLE_BRIGHT if n_portraits > 0 else UITheme.SEPARATOR
+	)
+	badge.add_theme_font_size_override("font_size", 10)
+	info.add_child(badge)
+
+	var edit_btn: Button = Button.new()
+	edit_btn.text = "✎ EDIT"
+	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
+	edit_btn.pressed.connect(func() -> void: _open_character_editor_modal(char_idx))
+	row.add_child(edit_btn)
+
+	var del_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	del_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_characters.remove_at(char_idx)
+			_rebuild_characters_list()
+	)
+	row.add_child(del_btn)
+	return card
+
+
+# Full editor for one character in a centered modal: name, their POSITIONS (opens the drag/resize
+# preview), and their PORTRAITS (expressions; first = default). Mutates the live dict in place; the
+# body refills on a structural change (add/remove portrait). Closing re-renders the row.
+func _open_character_editor_modal(char_idx: int, is_new: bool = false) -> void:
+	if char_idx < 0 or char_idx >= _owner._journey_characters.size():
+		return
+	var chr: Dictionary = _owner._journey_characters[char_idx]
+
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"CHARACTER", UITheme.PURPLE_BRIGHT, Vector2i(520, 620)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	_owner.add_child(modal)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 4)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+	_fill_character_editor_body(body, chr)
+
+	var close_btn: Button = Button.new()
+	close_btn.text = "DONE"
+	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
+	close_btn.pressed.connect(func() -> void: _close_character_editor(modal, char_idx, chr, is_new))
+	vbox.add_child(close_btn)
+
+	var backdrop: Control = modal.get_child(0) as Control
+	if backdrop:
+		backdrop.gui_input.connect(
+			func(event: InputEvent) -> void:
+				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+					_close_character_editor(modal, char_idx, chr, is_new)
+		)
+
+
+func _fill_character_editor_body(body: VBoxContainer, chr: Dictionary) -> void:
+	var rebuild: Callable = func() -> void: _fill_character_editor_body(body, chr)
+	for c: Node in body.get_children():
+		c.queue_free()
+
+	body.add_child(_side_field_label("NAME  (match a line's speaker to light this character)"))
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.text = str(chr.get("name", ""))
+	name_edit.placeholder_text = "Character name..."
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: chr["name"] = v)
+	body.add_child(name_edit)
+
+	body.add_child(_side_divider_line())
+	body.add_child(
+		_side_field_label("POSITIONS  (where this character can stand, tuned to their art)")
+	)
+	var pos_btn: Button = Button.new()
+	pos_btn.text = "✎ EDIT POSITIONS ON A PREVIEW"
+	pos_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(pos_btn, UITheme.PURPLE_MID)
+	pos_btn.pressed.connect(func() -> void: _open_character_placement_editor(chr))
+	body.add_child(pos_btn)
+
+	body.add_child(_side_divider_line())
+	body.add_child(_side_field_label("PORTRAITS  (expressions; first is the default)"))
+	var portraits: Array = chr.get("portraits", [])
+	for i: int in portraits.size():
+		body.add_child(_make_portrait_row(chr, i, rebuild))
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD PORTRAIT"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			(chr["portraits"] as Array).append(
+				{"id": JourneyData.new_portrait_id(), "name": "", "path": ""}
+			)
+			rebuild.call()
+	)
+	body.add_child(add_btn)
+
+
+# One portrait (expression) row: a name, a drop-zone for the image (still or animated), and remove.
+func _make_portrait_row(chr: Dictionary, idx: int, rebuild: Callable) -> Control:
+	var por: Dictionary = (chr["portraits"] as Array)[idx]
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color = UITheme.PANEL_BG
+	ps.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	ps.set_content_margin_all(8)
+	panel.add_theme_stylebox_override("panel", ps)
+	var col: VBoxContainer = panel_col(panel)
+
+	var hdr: HBoxContainer = HBoxContainer.new()
+	var tag: Label = Label.new()
+	tag.text = "PORTRAIT %d%s" % [idx + 1, "  ·  DEFAULT" if idx == 0 else ""]
+	tag.add_theme_color_override("font_color", UITheme.STORYBOARD)
+	tag.add_theme_font_size_override("font_size", 10)
+	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(tag)
+	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	rm.pressed.connect(
+		func() -> void:
+			_delete_saved_image(str((chr["portraits"] as Array)[idx].get("path", "")))
+			(chr["portraits"] as Array).remove_at(idx)
+			rebuild.call()
+	)
+	hdr.add_child(rm)
+	col.add_child(hdr)
+
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.text = str(por.get("name", ""))
+	name_edit.placeholder_text = "Expression name (e.g. Happy)..."
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: por["name"] = v)
+	col.add_child(name_edit)
+
+	var zone: PanelContainer = DropZoneScript.new()
+	zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
+	zone.picker_title = "Select Portrait Image"
+	zone.picker_filters = [
+		"*.png,*.jpg,*.jpeg,*.webp,*.gif,*.apng,*.mp4,*.m4v,*.webm,*.mkv,*.mov ; Portrait (image or animation)"
+	]
+	zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(zone)
+	if str(por.get("path", "")) != "":
+		zone.call_deferred("set_file", str(por.get("path", "")))
+	zone.file_dropped.connect(func(p: String) -> void: por["path"] = p)
+	return panel
+
+
+# Opens the visual placement editor scoped to ONE character — editing THEIR positions against THEIR
+# own portraits, so the boxes are sized to that character's art.
+func _open_character_placement_editor(chr: Dictionary) -> void:
+	var samples: Array = []
+	for por: Variant in chr.get("portraits", []):
+		if por is Dictionary and str((por as Dictionary).get("path", "")) != "":
+			samples.append(str((por as Dictionary).get("path", "")))
+	var editor: PlacementEditor = PlacementEditor.new()
+	_owner.add_child(editor)
+	editor.setup(chr.get("placements", []), samples)
+	editor.done.connect(func(placements: Array) -> void: chr["placements"] = placements)
+
+
+# A NEWLY-ADDED character with no name is discarded on close (Add-then-dismiss = silent cancel), same
+# as the item editor. A named character is kept even without portraits — the author clearly meant it.
+func _close_character_editor(modal: Control, char_idx: int, chr: Dictionary, is_new: bool) -> void:
+	if is_new and str(chr.get("name", "")).strip_edges() == "":
+		var chars: Array = _owner._journey_characters
+		if char_idx >= 0 and char_idx < chars.size() and is_same(chars[char_idx], chr):
+			chars.remove_at(char_idx)
+		else:
+			for i: int in chars.size():
+				if is_same(chars[i], chr):
+					chars.remove_at(i)
+					break
+	modal.queue_free()
+	_rebuild_characters_list()
+
+
+# A VBox filling a PanelContainer (helper for the compact card rows above).
+func panel_col(panel: PanelContainer) -> VBoxContainer:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	panel.add_child(col)
+	return col
 
 
 # Fills the item-editor modal body with the item's fields. Structural changes (type
@@ -3009,6 +3301,11 @@ func _make_side_storyboard_line_block(
 		func(val: String) -> void: lines_arr[line_idx]["speaker"] = val
 	)
 	col.add_child(speaker_edit)
+	# Cast quick-pick: one chip per character sets the speaker in a click — so a back-and-forth doesn't
+	# mean retyping names each line (the "use line above" button never helped there). It also stages the
+	# character on their home side the first time they speak. The lit character at runtime is whichever
+	# on-stage portrait's name matches this speaker.
+	_add_speaker_chips(col, lines_arr, line_idx, speaker_edit, refresh_storyboard)
 
 	col.add_child(_side_field_label("DIALOGUE"))
 	var text_edit: TextEdit = TextEdit.new()
@@ -3021,17 +3318,22 @@ func _make_side_storyboard_line_block(
 	text_edit.text_changed.connect(func() -> void: lines_arr[line_idx]["text"] = text_edit.text)
 	col.add_child(text_edit)
 
-	col.add_child(_side_field_label("SPEAKER IMAGE (OPTIONAL)"))
+	# Persistent stage: the list of characters on screen this line, each with a chosen portrait +
+	# position. Carries forward from the line above (set when a line is inserted), so a back-and-forth
+	# only changes the speaker chip. Shown only when the journey has a cast.
+	_add_stage_editor(col, lines_arr, line_idx, refresh_storyboard)
+
+	col.add_child(_side_field_label("BACKGROUND (THIS LINE, OPTIONAL)"))
 	var img_zone: PanelContainer = DropZoneScript.new()
 	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
-	img_zone.picker_title = "Select Speaker Image for Line %d" % (line_idx + 1)
+	img_zone.picker_title = "Select Background for Line %d" % (line_idx + 1)
 	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.add_child(img_zone)
 	if line_data.get("image", "") != "":
 		img_zone.call_deferred("set_file", line_data["image"])
 	var line_rm_btn: Button = Button.new()
-	line_rm_btn.text = "✕ REMOVE IMAGE"
+	line_rm_btn.text = "✕ REMOVE BACKGROUND"
 	line_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	line_rm_btn.visible = line_data.get("image", "") != ""
 	UITheme.style_button(line_rm_btn, UITheme.MAGENTA)
@@ -3049,10 +3351,10 @@ func _make_side_storyboard_line_block(
 	)
 	col.add_child(line_rm_btn)
 
-	# "Use image from line above" — shown for every line except the first.
+	# "Use background from line above" — shown for every line except the first.
 	if line_idx > 0:
 		var ref_btn: Button = Button.new()
-		ref_btn.text = "↑  USE IMAGE FROM LINE ABOVE"
+		ref_btn.text = "↑  USE BACKGROUND FROM LINE ABOVE"
 		ref_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		UITheme.style_button(ref_btn, UITheme.STORYBOARD)
 		ref_btn.pressed.connect(
@@ -3151,6 +3453,196 @@ func _make_side_storyboard_line_block(
 	return panel
 
 
+# Cast quick-pick chips: one button per named character. A click sets this line's speaker AND, the
+# first time they speak, adds them to the stage at their default position + portrait (non-destructive —
+# see JourneyData.stage_with_speaker). Already-staged characters just get set as the speaker. No cast →
+# nothing added. `refresh` re-renders the line block when a chip changes the stage.
+func _add_speaker_chips(
+	col: VBoxContainer, lines_arr: Array, line_idx: int, speaker_edit: LineEdit, refresh: Callable
+) -> void:
+	var named: Array = []
+	for c: Variant in _owner._journey_characters:
+		if c is Dictionary and str((c as Dictionary).get("name", "")).strip_edges() != "":
+			named.append(c)
+	if named.is_empty():
+		return
+	var flow: HFlowContainer = HFlowContainer.new()
+	flow.add_theme_constant_override("h_separation", 4)
+	flow.add_theme_constant_override("v_separation", 4)
+	for c: Dictionary in named:
+		var cname: String = str(c.get("name", "")).strip_edges()
+		var cid: String = str(c.get("id", ""))
+		var chip: Button = Button.new()
+		chip.text = cname
+		chip.focus_mode = Control.FOCUS_NONE
+		chip.add_theme_font_size_override("font_size", 10)
+		UITheme.style_button_subtle(chip, UITheme.STORYBOARD)
+		chip.pressed.connect(
+			func() -> void:
+				lines_arr[line_idx]["speaker"] = cname
+				speaker_edit.text = cname
+				# Bring them on stage on their first line; re-render so the STAGE rows reflect it. A
+				# no-op (already staged) skips the rebuild — the back-and-forth case just sets speaker.
+				if _auto_stage_speaker(lines_arr, line_idx, cid):
+					refresh.call()
+		)
+		flow.add_child(chip)
+	col.add_child(flow)
+
+
+# Non-destructive first-entrance staging (JourneyData.stage_with_speaker) using the character's default
+# position + portrait. Returns true only when a character was actually added (so the caller re-renders).
+func _auto_stage_speaker(lines_arr: Array, line_idx: int, cid: String) -> bool:
+	var chr: Dictionary = _character_by_id(cid)
+	var cur: Array = lines_arr[line_idx].get("stage", [])
+	if not (cur is Array):
+		cur = []
+	var updated: Array = JourneyData.stage_with_speaker(
+		cur,
+		cid,
+		JourneyData.character_default_placement(chr),
+		JourneyData.character_default_portrait(chr)
+	)
+	lines_arr[line_idx]["stage"] = updated
+	return updated.size() > cur.size()
+
+
+func _character_by_id(id: String) -> Dictionary:
+	for c: Variant in _owner._journey_characters:
+		if c is Dictionary and str((c as Dictionary).get("id", "")) == id:
+			return c
+	return {}
+
+
+# Per-line STAGE editor: a list of on-stage entries (character + portrait + position), plus an add
+# button. Carries forward from the previous line (done at insert time). No cast + no stage → skipped.
+func _add_stage_editor(
+	col: VBoxContainer, lines_arr: Array, line_idx: int, refresh: Callable
+) -> void:
+	var cast: Array = _owner._journey_characters
+	if not (lines_arr[line_idx].get("stage", null) is Array):
+		lines_arr[line_idx]["stage"] = []
+	var stage: Array = lines_arr[line_idx]["stage"]
+	if cast.is_empty() and stage.is_empty():
+		return
+	col.add_child(_side_field_label("STAGE  (characters over the background)"))
+	for i: int in stage.size():
+		col.add_child(_make_stage_entry_row(lines_arr, line_idx, i, refresh))
+	if not cast.is_empty():
+		var add_btn: Button = Button.new()
+		add_btn.text = "＋ ADD TO STAGE"
+		add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button_subtle(add_btn, UITheme.STORYBOARD)
+		add_btn.pressed.connect(
+			func() -> void:
+				stage.append({"character": str((cast[0] as Dictionary).get("id", ""))})
+				refresh.call()
+		)
+		col.add_child(add_btn)
+
+
+# One stage entry: pick the character, then their portrait (expression) and position — both drawn from
+# that character's own lists, with "(default)" = their first. Changing the character refills the row.
+func _make_stage_entry_row(
+	lines_arr: Array, line_idx: int, entry_idx: int, refresh: Callable
+) -> Control:
+	var entry: Dictionary = (lines_arr[line_idx]["stage"] as Array)[entry_idx]
+	var chr: Dictionary = _character_by_id(str(entry.get("character", "")))
+
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color = UITheme.PANEL_BG
+	ps.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	ps.set_content_margin_all(6)
+	panel.add_theme_stylebox_override("panel", ps)
+	var box: VBoxContainer = panel_col(panel)
+
+	# Character + remove.
+	var top: HBoxContainer = HBoxContainer.new()
+	top.add_theme_constant_override("separation", 6)
+	var char_dd: OptionButton = OptionButton.new()
+	char_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var char_vals: Array = []
+	for c: Variant in _owner._journey_characters:
+		if c is Dictionary:
+			char_vals.append(str((c as Dictionary).get("id", "")))
+			var nm: String = str((c as Dictionary).get("name", "")).strip_edges()
+			char_dd.add_item(nm if nm != "" else "(unnamed)")
+	var csel: int = char_vals.find(str(entry.get("character", "")))
+	if csel < 0:
+		char_vals.append(str(entry.get("character", "")))
+		char_dd.add_item("⚠ (missing)")
+		csel = char_vals.size() - 1
+	char_dd.selected = maxi(0, csel)
+	UITheme.style_option_button(char_dd)
+	char_dd.item_selected.connect(
+		func(i: int) -> void:
+			entry["character"] = str(char_vals[i])
+			entry.erase("portrait")  # the new character's options differ — reset to defaults
+			entry.erase("placement")
+			refresh.call()
+	)
+	top.add_child(char_dd)
+	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	rm.pressed.connect(
+		func() -> void:
+			(lines_arr[line_idx]["stage"] as Array).remove_at(entry_idx)
+			refresh.call()
+	)
+	top.add_child(rm)
+	box.add_child(top)
+
+	# Portrait + position, from the chosen character's own lists ("(default)" = first).
+	box.add_child(
+		_stage_entry_dropdown(
+			entry, "portrait", chr.get("portraits", []), "Expression", "default (first)"
+		)
+	)
+	box.add_child(
+		_stage_entry_dropdown(
+			entry, "placement", chr.get("placements", []), "Position", "default (first)"
+		)
+	)
+	return panel
+
+
+# A labelled dropdown over a character's portraits/placements, writing the picked id to entry[key]
+# ("" / omitted = the default first). `options` are {id, name} dicts.
+func _stage_entry_dropdown(
+	entry: Dictionary, key: String, options: Array, label: String, default_label: String
+) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var lbl: Label = Label.new()
+	lbl.text = label
+	lbl.custom_minimum_size = Vector2(72, 0)
+	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_font_size_override("font_size", 11)
+	row.add_child(lbl)
+
+	var dd: OptionButton = OptionButton.new()
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var values: Array = [""]  # index → id ("" = default)
+	dd.add_item("(%s)" % default_label)
+	for o: Variant in options:
+		if o is Dictionary:
+			values.append(str((o as Dictionary).get("id", "")))
+			var nm: String = str((o as Dictionary).get("name", "")).strip_edges()
+			dd.add_item(nm if nm != "" else "(unnamed)")
+	dd.selected = maxi(0, values.find(str(entry.get(key, ""))))
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(i: int) -> void:
+			var id: String = str(values[i])
+			if id == "":
+				entry.erase(key)
+			else:
+				entry[key] = id
+	)
+	row.add_child(dd)
+	return row
+
+
 # Thin "insert a new line here" button placed between line blocks in the
 # storyboard editor.  Subtle by default, highlights on hover so it doesn't
 # compete visually with the line content above/below it.
@@ -3192,7 +3684,17 @@ func _make_insert_line_btn(lines_arr: Array, insert_at: int, refresh: Callable) 
 
 	btn.pressed.connect(
 		func() -> void:
-			lines_arr.insert(insert_at, {"speaker": "", "text": "", "image": ""})
+			# Carry the stage forward from the line above (persistent-stage default), so a new line in a
+			# back-and-forth keeps the same characters and the author only sets who's now speaking.
+			var carried: Array = []
+			if insert_at > 0 and insert_at - 1 < lines_arr.size():
+				var prev: Variant = lines_arr[insert_at - 1].get("stage", [])
+				if prev is Array:
+					carried = (prev as Array).duplicate(true)
+			var new_line: Dictionary = {"speaker": "", "text": "", "image": ""}
+			if not carried.is_empty():
+				new_line["stage"] = carried
+			lines_arr.insert(insert_at, new_line)
 			refresh.call()
 	)
 	return btn

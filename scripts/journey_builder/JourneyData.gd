@@ -44,6 +44,7 @@ const ANIMATED_IMAGE_EXTENSIONS: Array[String] = [
 const ANIM_CAP_BOSS: Vector2i = Vector2i(760, 480)  # displayed at 380x240
 const ANIM_CAP_FORK: Vector2i = Vector2i(440, 720)  # fork cards are 220x360
 const ANIM_CAP_STORYBOARD: Vector2i = Vector2i(1920, 1080)  # fullscreen background
+const ANIM_CAP_PORTRAIT: Vector2i = Vector2i(720, 1080)  # VN cast portrait; tall, bottom-anchored, ~half-screen
 # The cover never animates (it sits in the catalogue grid), but a GIF cover still has to be
 # converted to a still PNG — Godot can't read GIF. Generous: an ordinary PNG/JPG cover isn't
 # downscaled at all, so this only exists to stop an absurd source, and it never upscales.
@@ -981,6 +982,268 @@ static func parse_journey_items(raw: Array) -> Array:
 	return out
 
 
+# ── Characters (the storyboard cast) ────────────────────────────────────────
+# Journey-level cast, each carrying its OWN portraits (expressions) and placements (position/size boxes
+# tuned to that character's art). A storyboard line's `stage` is a LIST of {character, portrait,
+# placement} — position and expression chosen independently. Durable `chr_…` / `por_…` ids (blank-id
+# heal on read). Portraits pool like any in-game image; placements are pure fraction boxes.
+
+# Seed ids for the three positions every character starts with (draggable/tunable afterward).
+const CHARACTER_SIDES: Array = ["left", "center", "right"]
+
+# Code defaults for the three seeded positions {id: box}. Screen-space fractions; a portrait aspect-fits
+# the box. New characters copy these into their own Placements; also the fallback for a stale reference.
+const PLACEMENT_BUILTINS: Dictionary = {
+	"left": {"name": "Left", "x": 0.0, "y": 0.10, "w": 0.40, "h": 0.76},
+	"center": {"name": "Center", "x": 0.30, "y": 0.10, "w": 0.40, "h": 0.76},
+	"right": {"name": "Right", "x": 0.60, "y": 0.10, "w": 0.40, "h": 0.76},
+}
+const PLACEMENT_MIN_SIZE: float = 0.05  # a box can't be smaller than this fraction, so it stays grabbable
+
+
+static func new_character_id() -> String:
+	return "chr_%08x%08x" % [randi(), randi()]
+
+
+static func new_portrait_id() -> String:
+	return "por_%08x%08x" % [randi(), randi()]
+
+
+static func new_placement_id() -> String:
+	return "plc_%08x%08x" % [randi(), randi()]
+
+
+# The three positions a fresh character starts with (copied from the built-in boxes, then tunable).
+static func default_character_placements() -> Array:
+	var out: Array = []
+	for bid: String in CHARACTER_SIDES:
+		var d: Dictionary = PLACEMENT_BUILTINS[bid]
+		out.append(
+			{"id": bid, "name": str(d["name"]), "x": d["x"], "y": d["y"], "w": d["w"], "h": d["h"]}
+		)
+	return out
+
+
+# ── Character coerce/parse (runtime snake ⇄ journey.json PascalCase) ─────────
+
+
+static func coerce_journey_character(c: Dictionary) -> Dictionary:
+	return {
+		"Id": str(c.get("id", "")),
+		"Name": str(c.get("name", "")),
+		"Portraits": coerce_portraits(c.get("portraits", [])),
+		"Placements": coerce_journey_placements(c.get("placements", [])),
+	}
+
+
+static func coerce_journey_characters(list: Array) -> Array:
+	var out: Array = []
+	for c: Variant in list:
+		if c is Dictionary:
+			out.append(coerce_journey_character(c))
+	return out
+
+
+static func parse_journey_character(raw: Dictionary) -> Dictionary:
+	var id: String = str(raw.get("Id", "")).strip_edges()
+	if id == "":
+		id = new_character_id()  # heal a blank id so the character is still referenceable
+	var placements: Array = parse_journey_placements(raw.get("Placements", []))
+	if placements.is_empty():
+		placements = default_character_placements()  # self-heal: always give a character L/C/R to start
+	return {
+		"id": id,
+		"name": str(raw.get("Name", "")),
+		"portraits": parse_portraits(raw.get("Portraits", [])),
+		"placements": placements,
+	}
+
+
+static func parse_journey_characters(raw: Array) -> Array:
+	var out: Array = []
+	for r: Variant in raw:
+		if r is Dictionary:
+			out.append(parse_journey_character(r))
+	return out
+
+
+# ── Portraits (a character's expressions; first = default) ──────────────────
+
+
+static func coerce_portraits(list: Array) -> Array:
+	var out: Array = []
+	for p: Variant in list:
+		if p is Dictionary:
+			(
+				out
+				. append(
+					{
+						"Id": str((p as Dictionary).get("id", "")),
+						"Name": str((p as Dictionary).get("name", "")),
+						"Path": str((p as Dictionary).get("path", "")),
+					}
+				)
+			)
+	return out
+
+
+static func parse_portraits(raw: Array) -> Array:
+	var out: Array = []
+	for p: Variant in raw:
+		if p is Dictionary:
+			var pid: String = str((p as Dictionary).get("Id", "")).strip_edges()
+			if pid == "":
+				pid = new_portrait_id()
+			(
+				out
+				. append(
+					{
+						"id": pid,
+						"name": str((p as Dictionary).get("Name", "")),
+						"path": str((p as Dictionary).get("Path", "")),
+					}
+				)
+			)
+	return out
+
+
+# Path of a character's portrait by id; falls back to the FIRST portrait (the default), or "" if none.
+static func character_portrait_path(character: Dictionary, portrait_id: String) -> String:
+	var portraits: Array = character.get("portraits", [])
+	if portraits.is_empty():
+		return ""
+	for p: Variant in portraits:
+		if p is Dictionary and str((p as Dictionary).get("id", "")) == portrait_id:
+			return str((p as Dictionary).get("path", ""))
+	return str((portraits[0] as Dictionary).get("path", ""))
+
+
+# The character's default (first) portrait / placement id, for the speaker chip's implicit staging.
+static func character_default_portrait(character: Dictionary) -> String:
+	var portraits: Array = character.get("portraits", [])
+	return str((portraits[0] as Dictionary).get("id", "")) if not portraits.is_empty() else ""
+
+
+static func character_default_placement(character: Dictionary) -> String:
+	var placements: Array = character.get("placements", [])
+	return str((placements[0] as Dictionary).get("id", "")) if not placements.is_empty() else ""
+
+
+# ── Placements (a character's position/size boxes) ──────────────────────────
+
+
+static func coerce_journey_placement(p: Dictionary) -> Dictionary:
+	return {
+		"Id": str(p.get("id", "")),
+		"Name": str(p.get("name", "")),
+		"X": clampf(float(p.get("x", 0.0)), 0.0, 1.0),
+		"Y": clampf(float(p.get("y", 0.0)), 0.0, 1.0),
+		"W": clampf(float(p.get("w", 0.4)), PLACEMENT_MIN_SIZE, 1.0),
+		"H": clampf(float(p.get("h", 0.76)), PLACEMENT_MIN_SIZE, 1.0),
+	}
+
+
+static func coerce_journey_placements(list: Array) -> Array:
+	var out: Array = []
+	for p: Variant in list:
+		if p is Dictionary:
+			out.append(coerce_journey_placement(p))
+	return out
+
+
+static func parse_journey_placement(raw: Dictionary) -> Dictionary:
+	var id: String = str(raw.get("Id", "")).strip_edges()
+	if id == "":
+		id = new_placement_id()
+	return {
+		"id": id,
+		"name": str(raw.get("Name", "")),
+		"x": clampf(float(raw.get("X", 0.0)), 0.0, 1.0),
+		"y": clampf(float(raw.get("Y", 0.0)), 0.0, 1.0),
+		"w": clampf(float(raw.get("W", 0.4)), PLACEMENT_MIN_SIZE, 1.0),
+		"h": clampf(float(raw.get("H", 0.76)), PLACEMENT_MIN_SIZE, 1.0),
+	}
+
+
+static func parse_journey_placements(raw: Array) -> Array:
+	var out: Array = []
+	for r: Variant in raw:
+		if r is Dictionary:
+			out.append(parse_journey_placement(r))
+	return out
+
+
+# Resolves a placement id to its box {x, y, w, h} within a character's OWN placements. Falls back to the
+# character's first placement, then the code center default, so a portrait is never lost to a stale id.
+static func resolve_placement(id: String, placements: Array) -> Dictionary:
+	for p: Variant in placements:
+		if p is Dictionary and str((p as Dictionary).get("id", "")) == id:
+			var d: Dictionary = p
+			return {
+				"x": float(d.get("x", 0.0)),
+				"y": float(d.get("y", 0.0)),
+				"w": float(d.get("w", 0.4)),
+				"h": float(d.get("h", 0.76)),
+			}
+	if not placements.is_empty():
+		var f: Dictionary = placements[0]
+		return {
+			"x": float(f.get("x", 0.0)),
+			"y": float(f.get("y", 0.0)),
+			"w": float(f.get("w", 0.4)),
+			"h": float(f.get("h", 0.76)),
+		}
+	var b: Dictionary = PLACEMENT_BUILTINS["center"]
+	return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
+
+
+# ── Stage (a line's list of on-stage characters) ────────────────────────────
+# A LIST of {character, portrait?, placement?}. portrait/placement omitted → the character's default
+# (first) of each. Entries with no character are dropped; ids are NOT validated here (a stale id just
+# renders nothing at runtime, never a crash).
+static func clean_stage(v: Variant) -> Array:
+	var out: Array = []
+	if not (v is Array):
+		return out
+	for e: Variant in v:
+		if not (e is Dictionary):
+			continue
+		var ch: String = str((e as Dictionary).get("character", "")).strip_edges()
+		if ch == "":
+			continue
+		var entry: Dictionary = {"character": ch}
+		var por: String = str((e as Dictionary).get("portrait", "")).strip_edges()
+		var plc: String = str((e as Dictionary).get("placement", "")).strip_edges()
+		if por != "":
+			entry["portrait"] = por
+		if plc != "":
+			entry["placement"] = plc
+		out.append(entry)
+	return out
+
+
+# Non-destructive staging for the speaker quick-pick: appends {character, placement, portrait} to the
+# stage ONLY IF that character isn't already on it — never moves or re-expresses an already-staged
+# character, so explicit STAGE edits always win. Returns a fresh list only when it actually adds
+# someone (callers detect a change by size). `placement`/`portrait` are the character's defaults.
+static func stage_with_speaker(
+	stage: Array, character_id: String, placement: String, portrait: String
+) -> Array:
+	if character_id == "":
+		return stage
+	for e: Variant in stage:
+		if e is Dictionary and str((e as Dictionary).get("character", "")) == character_id:
+			return stage  # already on stage — leave it alone
+	var out: Array = stage.duplicate(true)
+	var entry: Dictionary = {"character": character_id}
+	if placement != "":
+		entry["placement"] = placement
+	if portrait != "":
+		entry["portrait"] = portrait
+	out.append(entry)
+	return out
+
+
 # Normalizes a flag list (from a comma-separated field or a saved array) to a deduped, trimmed,
 # non-empty string array. Shared by a node's "sets flags" and a fork choice's "sets flags".
 static func clean_flag_list(v: Variant) -> Array:
@@ -1312,6 +1575,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"finish_node": str(journey.get("finish_node", "")),
 		"redirects": journey.get("redirects", {}),
 		"items": items,
+		"characters": journey.get("characters", []),
 	}
 
 
@@ -1594,8 +1858,70 @@ static func media_fingerprint(src: String, segments: Array = [], variant: String
 # playback content (video / funscript / axis / vib / boss image) lives under
 # content/, kept separate from media/ which holds journey IMAGES (cover,
 # storyboard art, fork-path art).
-static func pooled_media_rel(fingerprint: String, ext: String) -> String:
-	return "content/m_%s.%s" % [fingerprint, ext]
+static func pooled_media_rel(fingerprint: String, ext: String, source: String = "") -> String:
+	# A readable source-name prefix keeps content/ browsable ("clip__<fp>.mp4") while the fingerprint
+	# still drives dedup + collision-safety. Same fingerprint ⇒ same source ⇒ same prefix, so dedup is
+	# unaffected. Source-less callers fall back to the legacy "m_<fp>" spelling.
+	if source == "":
+		return "content/m_%s.%s" % [fingerprint, ext]
+	return "content/%s__%s.%s" % [_pooled_prefix(source), fingerprint, ext]
+
+
+# A filesystem-safe, length-bounded stem derived from a source filename, for the readable pool prefix.
+# Drops all extensions, recovers the stem of an ALREADY-pooled file (so re-saving doesn't grow the name
+# `clip__fp__fp2…`), sanitizes to [A-Za-z0-9_-] with single-underscore runs, and caps the length.
+static func _pooled_prefix(source: String) -> String:
+	var base: String = source.get_file()
+	var dot: int = base.find(".")
+	if dot > 0:
+		base = base.substr(0, dot)
+	base = _strip_pool_suffix(base)
+	base = RegEx.create_from_string("[^A-Za-z0-9_-]+").sub(base, "_", true)
+	base = RegEx.create_from_string("_+").sub(base, "_", true)  # keep "__" as the separator, not in the stem
+	base = base.lstrip("_").rstrip("_")
+	if base.length() > 40:
+		base = base.substr(0, 40).rstrip("_")
+	return base if base != "" else "media"
+
+
+# True iff `path` names a file this journey pooled into content/ (either the readable `<name>__<fp>`
+# or legacy `m_<fp>` spelling). Drives hardlink reuse on re-save. Splits on "/" rather than using
+# get_base_dir(), which returns "" for a single-component relative path like "content/x.mp4".
+static func is_pooled_content_path(path: String) -> bool:
+	var parts: PackedStringArray = path.split("/")
+	if parts.size() < 2 or parts[parts.size() - 2] != "content":
+		return false
+	var stem: String = parts[parts.size() - 1]
+	var dot: int = stem.find(".")
+	if dot > 0:
+		stem = stem.substr(0, dot)  # part before the first extension (handles "…​.pitch.funscript")
+	if stem.begins_with("m_") and is_hex16(stem.substr(2)):
+		return true
+	var us: int = stem.rfind("__")
+	return us >= 0 and is_hex16(stem.substr(us + 2))
+
+
+# True iff `s` is exactly a 16-char lowercase/uppercase hex string — the shape of a pooled fingerprint.
+# (Not String.is_valid_hex_number: that range-parses as an int, so it rejects 16-hex values > int64.)
+static func is_hex16(s: String) -> bool:
+	if s.length() != 16:
+		return false
+	for i: int in 16:
+		var c: int = s.unicode_at(i)
+		if not ((c >= 48 and c <= 57) or (c >= 97 and c <= 102) or (c >= 65 and c <= 70)):
+			return false
+	return true
+
+
+# Recovers the readable stem of a pooled filename: strips a trailing "__<16 hex>" (new form) and treats
+# the legacy "m_<16 hex>" as nameless (its original filename wasn't preserved).
+static func _strip_pool_suffix(base: String) -> String:
+	if base.begins_with("m_") and is_hex16(base.substr(2)):
+		return ""
+	var us: int = base.rfind("__")
+	if us >= 0 and is_hex16(base.substr(us + 2)):
+		return base.substr(0, us)
+	return base
 
 
 # Pure dedup planner (the testable core of the save-time pooling). `sources` is
@@ -1607,7 +1933,9 @@ static func plan_media_pool(sources: Array) -> Array:
 	var out: Array = []
 	var seen: Dictionary = {}
 	for s: Dictionary in sources:
-		var rel: String = pooled_media_rel(s.get("fingerprint", ""), s.get("ext", ""))
+		var rel: String = pooled_media_rel(
+			s.get("fingerprint", ""), s.get("ext", ""), str(s.get("src", ""))
+		)
 		var is_copy: bool = not seen.has(rel)
 		seen[rel] = true
 		out.append({"rel": rel, "copy": is_copy})
