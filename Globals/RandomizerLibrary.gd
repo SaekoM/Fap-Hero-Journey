@@ -192,7 +192,7 @@ func add_clip(
 
 	var vfp: String = JourneyData.media_fingerprint(video_src)
 	var vext: String = "mp4" if needs_transcode else video_src.get_extension()
-	var video_rel: String = JourneyData.pooled_media_rel(vfp, vext)
+	var video_rel: String = JourneyData.pooled_media_rel(vfp, vext, video_src)
 
 	var stats: Dictionary = _read_script_stats(funscript_src)
 	# Auto-rate intensity from the funscript's motion; the passed value is the
@@ -358,7 +358,7 @@ func _pool_script(src: String) -> String:
 	if src == "" or not FileAccess.file_exists(ProjectSettings.globalize_path(src)):
 		return ""
 	var fp: String = JourneyData.media_fingerprint(src)
-	var rel: String = JourneyData.pooled_media_rel(fp, "funscript")
+	var rel: String = JourneyData.pooled_media_rel(fp, "funscript", src)
 	var dst: String = STORE_DIR + "/" + rel
 	if not FileAccess.file_exists(dst):
 		if not _copy_file(src, dst):
@@ -371,7 +371,7 @@ func _pool_script(src: String) -> String:
 func _predict_script_rel(src: String) -> String:
 	if src == "" or not FileAccess.file_exists(ProjectSettings.globalize_path(src)):
 		return ""
-	return JourneyData.pooled_media_rel(JourneyData.media_fingerprint(src), "funscript")
+	return JourneyData.pooled_media_rel(JourneyData.media_fingerprint(src), "funscript", src)
 
 
 # {channel_key: source} → {channel_key: predicted_rel} (skips empty/missing sources).

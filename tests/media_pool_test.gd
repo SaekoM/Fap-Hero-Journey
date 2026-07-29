@@ -13,12 +13,65 @@ func after() -> void:
 	JourneyData.delete_dir_recursive(TEST_DIR)
 
 
-# pooled_media_rel composes the journey-root-relative pool path.
+# pooled_media_rel composes the journey-root-relative pool path. Source-less → legacy m_ spelling.
 func test_pooled_media_rel_shape() -> void:
 	assert_str(JourneyData.pooled_media_rel("abc123", "mp4")).is_equal("content/m_abc123.mp4")
 	assert_str(JourneyData.pooled_media_rel("def456", "funscript")).is_equal(
 		"content/m_def456.funscript"
 	)
+
+
+# With a source, the pooled name gains a readable prefix (browsable) while the fingerprint still tails it.
+func test_pooled_media_rel_readable_prefix() -> void:
+	assert_str(JourneyData.pooled_media_rel("abc123", "mp4", "G:/vids/SmugBlueFaun.mp4")).is_equal(
+		"content/SmugBlueFaun__abc123.mp4"
+	)
+
+
+# Odd characters/spaces are sanitized to single underscores; extensions are dropped from the prefix.
+func test_pooled_media_rel_sanitizes_prefix() -> void:
+	(
+		assert_str(
+			JourneyData.pooled_media_rel("f0", "funscript", "/x/My Clip (v2)!.pitch.funscript")
+		)
+		. is_equal("content/My_Clip_v2__f0.funscript")
+	)
+
+
+# Re-pooling an already-pooled file recovers the readable stem instead of growing it (name__fp__fp2…).
+# A real fingerprint is 16 hex chars — only that exact suffix is stripped.
+func test_pooled_media_rel_repool_does_not_grow() -> void:
+	# the "source" is itself a previously-pooled file
+	(
+		assert_str(
+			JourneyData.pooled_media_rel(
+				"1111222233334444", "mp4", "content/Clip__abc1230000000000.mp4"
+			)
+		)
+		. is_equal("content/Clip__1111222233334444.mp4")
+	)
+	# a legacy m_<hex> source has no recoverable name → the "media" fallback
+	(
+		assert_str(
+			JourneyData.pooled_media_rel(
+				"1111222233334444", "mp4", "content/m_abc1230000000000.mp4"
+			)
+		)
+		. is_equal("content/media__1111222233334444.mp4")
+	)
+
+
+# The same fingerprint always yields the same source ⇒ same prefix, so dedup is unaffected: plan_media_pool
+# still writes once per fingerprint even with readable prefixes.
+func test_plan_media_pool_readable_prefix_still_dedups() -> void:
+	var sources := [
+		{"fingerprint": "aaa", "ext": "mp4", "src": "/v/intro.mp4"},
+		{"fingerprint": "aaa", "ext": "mp4", "src": "/v/intro.mp4"},  # same clip reused
+	]
+	var plan := JourneyData.plan_media_pool(sources)
+	assert_str(plan[0]["rel"]).is_equal("content/intro__aaa.mp4")
+	assert_bool(plan[1]["copy"]).is_false()  # dedup: skipped
+	assert_str(plan[1]["rel"]).is_equal("content/intro__aaa.mp4")
 
 
 # plan_media_pool: the first sighting of a (fingerprint,ext) pool path is a copy;
@@ -100,15 +153,35 @@ func test_media_fingerprint_distinct_paths() -> void:
 # ── Incremental save: pooled-file reuse ──────────────────────────────────────
 
 
-# is_pooled_content_file recognises a journey's own pooled files (m_<hash> under content/) and
-# nothing else — that's the gate that keeps hardlinks off an author's original source.
+# is_pooled_content_path recognises a journey's own pooled files (legacy m_<16 hex> and the readable
+# <name>__<16 hex> under content/) and nothing else — the gate that keeps hardlinks off an author's
+# original source. Real fingerprints are 16 hex chars. MediaPoolService.is_pooled_content_file
+# delegates here; testing the pure static avoids autoload-reload flakiness.
 func test_is_pooled_content_file() -> void:
-	assert_bool(MediaPoolService.is_pooled_content_file("user://j/content/m_abc123.mp4")).is_true()
-	assert_bool(MediaPoolService.is_pooled_content_file("user://j/content/m_x.funscript")).is_true()
+	(
+		assert_bool(JourneyData.is_pooled_content_path("user://j/content/m_abc1230000000000.mp4"))
+		. is_true()
+	)
+	(
+		assert_bool(
+			JourneyData.is_pooled_content_path("user://j/content/Clip__abc1230000000000.mp4")
+		)
+		. is_true()
+	)
+	(
+		assert_bool(
+			JourneyData.is_pooled_content_path(
+				"user://j/content/Clip__abc1230000000000.pitch.funscript"
+			)
+		)
+		. is_true()
+	)
 	# An original source (any folder, non-pool name) must NOT qualify.
-	assert_bool(MediaPoolService.is_pooled_content_file("/Videos/myclip.mp4")).is_false()
-	assert_bool(MediaPoolService.is_pooled_content_file("user://j/media/cover.png")).is_false()
-	assert_bool(MediaPoolService.is_pooled_content_file("user://j/content/other.mp4")).is_false()
+	assert_bool(JourneyData.is_pooled_content_path("/Videos/myclip.mp4")).is_false()
+	assert_bool(JourneyData.is_pooled_content_path("user://j/media/cover.png")).is_false()
+	assert_bool(JourneyData.is_pooled_content_path("user://j/content/other.mp4")).is_false()
+	# A short/non-16-hex tail is not a real fingerprint → not treated as pooled.
+	assert_bool(JourneyData.is_pooled_content_path("user://j/content/m_abc123.mp4")).is_false()
 
 
 # try_hardlink makes a second name for the same bytes; editing one is visible through the other

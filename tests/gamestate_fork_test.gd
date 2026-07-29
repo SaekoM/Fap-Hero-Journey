@@ -228,13 +228,20 @@ func _counter_journey() -> Dictionary:
 	}
 
 
-# set_counters applies on node entry and ACCUMULATES; an unset counter reads 0.
-func test_counter_accumulates_on_enter() -> void:
+# set_counters applies when a node COMPLETES (ApplyCurrentNodeCounters, called by GameLoop at round /
+# storyboard / shop end), not on arrival, and ACCUMULATES; an unset counter reads 0. (Flags still
+# apply on arrival — that split is deliberate; see GameState.EnterCurrent.)
+func test_counter_accumulates_on_completion() -> void:
 	GameState.StartJourney(_counter_journey())
-	assert_int(GameState.CounterValue("belt")).is_equal(1)  # start node A applied on StartJourney
+	# On arrival at A nothing is applied yet — counters wait for the node to finish.
+	assert_int(GameState.CounterValue("belt")).is_equal(0)
 	assert_int(GameState.CounterValue("never_set")).is_equal(0)  # default
-	GameState.Advance()  # → B
-	assert_int(GameState.CounterValue("belt")).is_equal(3)  # 1 + 2
+	GameState.ApplyCurrentNodeCounters()  # A completes → belt = 1
+	assert_int(GameState.CounterValue("belt")).is_equal(1)
+	GameState.Advance()  # → B (not completed yet)
+	assert_int(GameState.CounterValue("belt")).is_equal(1)
+	GameState.ApplyCurrentNodeCounters()  # B completes → belt = 3 (1 + 2), stress = 1
+	assert_int(GameState.CounterValue("belt")).is_equal(3)
 	assert_int(GameState.CounterValue("stress")).is_equal(1)
 
 
@@ -267,7 +274,9 @@ func test_fork_choice_applies_counters() -> void:
 func test_counters_survive_save_restore() -> void:
 	var journey: Dictionary = _counter_journey()
 	GameState.StartJourney(journey)
-	GameState.Advance()  # belt=3, stress=1
+	GameState.ApplyCurrentNodeCounters()  # A completes → belt=1
+	GameState.Advance()  # → B
+	GameState.ApplyCurrentNodeCounters()  # B completes → belt=3, stress=1
 	var save: Dictionary = GameState.CaptureSaveData()
 	GameState.LoadFromSave(journey, save)
 	assert_int(GameState.CounterValue("belt")).is_equal(3)
@@ -277,7 +286,9 @@ func test_counters_survive_save_restore() -> void:
 # A fresh start clears counters from a prior run.
 func test_counters_reset_on_fresh_start() -> void:
 	GameState.StartJourney(_counter_journey())
-	GameState.Advance()
+	GameState.ApplyCurrentNodeCounters()  # A completes → belt=1
+	GameState.Advance()  # → B
+	GameState.ApplyCurrentNodeCounters()  # B completes → belt=3
 	assert_int(GameState.CounterValue("belt")).is_equal(3)
-	GameState.StartJourney(_counter_journey())  # new run
-	assert_int(GameState.CounterValue("belt")).is_equal(1)  # only A's +1, not carried over
+	GameState.StartJourney(_counter_journey())  # new run → counters cleared, A not completed yet
+	assert_int(GameState.CounterValue("belt")).is_equal(0)

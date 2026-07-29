@@ -88,6 +88,7 @@ var _journey_shown_counters: Array = []  # Array[String] of counter names surfac
 var _journey_allow_finish: bool = false  # author opt-in: the player "I came" / FINISH button ends the run early
 var _journey_finish_node: String = ""  # entry node of the off-graph aftercare sequence played on FINISH (round/storyboard; optional)
 var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
+var _journey_characters: Array = []  # storyboard cast (runtime dicts: id/name/portraits[]/placements[])
 
 # Folder the journey was loaded from when editing. If the journey is renamed,
 # the save writes a new folder; this lets us delete the stale original.
@@ -2341,6 +2342,9 @@ func _load_graph(journey: Dictionary) -> void:
 	# NOT from `parsed`, whose "items" key is JourneyData.parse_journey's NODE SEQUENCE (a name
 	# collision). Reading `parsed["items"]` here loaded the round/shop nodes as blank custom items.
 	_journey_items = (journey.get("items", []) as Array).duplicate(true)
+	# Cast roster — from the scanner's resolved `characters` (absolute portrait paths for display), same
+	# reasoning as items above (`parsed["characters"]` would be the raw pass-through, unresolved).
+	_journey_characters = (journey.get("characters", []) as Array).duplicate(true)
 	_journey_map_fog = bool(parsed.get("map_fog", false))
 	_journey_map_fog_reveal = int(parsed.get("map_fog_reveal", 1))
 	_journey_auto_advance_enabled = bool(parsed.get("auto_advance_enabled", false))
@@ -3093,6 +3097,14 @@ func _check_animated_images() -> bool:
 	)
 	if _cover_path != "" and MediaPoolService.is_animated_source(_cover_path):
 		sources.append(_cover_path)
+	# Character portraits are journey-level (not in the graph), so scan them here too — an animated
+	# portrait needs the same bake as any other animated image.
+	for c: Variant in _journey_characters:
+		if c is Dictionary:
+			for por: Variant in (c as Dictionary).get("portraits", []):
+				var p: String = str((por as Dictionary).get("path", ""))
+				if p != "" and MediaPoolService.is_animated_source(p):
+					sources.append(p)
 	if sources.is_empty() or MediaPoolService.is_available():
 		return true
 
@@ -3375,6 +3387,31 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 			saved_item["image"] = _pool_small_file(img_src, abs_dir)
 		items_for_save.append(saved_item)
 
+	# Store each cast portrait through the same image path as boss/storyboard art — a still is deduped
+	# into media/, an animated source (gif/apng/mp4/…) is baked to looping H.264 in content/ and played
+	# by JourneyImage at runtime. Keyed by character id + portrait id so nothing collides. A character's
+	# placements are pure fraction boxes, so they persist verbatim (no media).
+	var characters_for_save: Array = []
+	for c: Dictionary in _journey_characters:
+		var saved_char: Dictionary = (c as Dictionary).duplicate(true)
+		var portraits_out: Array = []
+		for por: Variant in saved_char.get("portraits", []):
+			var por_copy: Dictionary = (por as Dictionary).duplicate(true)
+			var src: String = str(por_copy.get("path", ""))
+			if src != "":
+				por_copy["path"] = await _store_journey_image(
+					src,
+					abs_dir,
+					abs_media_dir,
+					"char_%s_%s" % [str(saved_char.get("id", "x")), str(por_copy.get("id", "p"))],
+					copied_images,
+					JourneyData.ANIM_CAP_PORTRAIT,
+					modal
+				)
+			portraits_out.append(por_copy)
+		saved_char["portraits"] = portraits_out
+		characters_for_save.append(saved_char)
+
 	var result: Dictionary = {
 		"Name": paths["journey_name"],
 		"Author": _journey_author.strip_edges(),
@@ -3391,6 +3428,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"AllowFinish": _journey_allow_finish,
 		"FinishNode": _journey_finish_node,
 		"Items": JourneyData.coerce_journey_items(items_for_save),
+		"Characters": JourneyData.coerce_journey_characters(characters_for_save),
 	}
 	# Identity + version stamps. _journey_id is empty for a new journey (minted here) and carries
 	# the loaded id for an existing one, so re-saving — or renaming — never changes it.
@@ -3751,6 +3789,12 @@ func _save_storyboard_node_media(
 			"text": str(line.get("text", "")),
 			"image": li_rel,
 		}
+		# Persistent-stage portraits: a list of {character, portrait?, placement?} (ids only — the media
+		# is pooled once per character). Carries through verbatim; omitted when empty to keep the schema
+		# lean (mirrors set_counters / audio).
+		var stage: Array = JourneyData.clean_stage(line.get("stage", []))
+		if not stage.is_empty():
+			line_out["stage"] = stage
 		# Optional per-line audio accent — hash-pooled like any small file (no transcode; Godot
 		# decodes ogg/mp3/wav natively). Only stored when set, to keep the schema lean.
 		var audio_rel: String = _pool_small_file(str(line.get("audio", "")), abs_dir)
@@ -4080,7 +4124,7 @@ func _assign_pooled_media(
 	src: String, ext: String, segments: Array = [], variant: String = ""
 ) -> Dictionary:
 	var fp: String = JourneyData.media_fingerprint(src, segments, variant)
-	var rel: String = JourneyData.pooled_media_rel(fp, ext)
+	var rel: String = JourneyData.pooled_media_rel(fp, ext, src)
 	var is_new: bool = not _pooled_media.has(fp)
 	if is_new:
 		_pooled_media[fp] = rel

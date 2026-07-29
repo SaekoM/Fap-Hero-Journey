@@ -79,7 +79,7 @@ func is_available() -> bool:
 # An author's ORIGINAL source is never this, so it always gets an independent byte copy — the
 # journey never shares storage with a file the author might move or edit.
 func is_pooled_content_file(path: String) -> bool:
-	return path.get_file().begins_with("m_") and path.get_base_dir().get_file() == "content"
+	return JourneyData.is_pooled_content_path(path)
 
 
 # Attempts an OS hardlink src→dst — instant, no disk, since the two names share one inode. Returns

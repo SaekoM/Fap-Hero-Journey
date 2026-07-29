@@ -5,6 +5,13 @@ signal map_requested  # player tapped the "◇ MAP" button (GameLoop owns the ma
 
 const VN_BAR_HEIGHT: int = 210
 
+# Cast portraits (the VN "stage") are drawn over the background and under the VN bar. Each is placed by
+# a PLACEMENT box (screen-fraction x/y/w/h) resolved from the line's stage id via JourneyData —
+# the three built-ins (left/center/right) plus any custom placements. A portrait aspect-fits its box.
+# Speaker is full brightness; anyone else on stage is dimmed (the standard VN "who's talking" cue).
+const PORTRAIT_LIT: Color = Color(1, 1, 1, 1)
+const PORTRAIT_DIM: Color = Color(0.5, 0.5, 0.58, 1)
+
 @onready var _bg_image: TextureRect = $BgImage
 @onready var _vn_bar: PanelContainer = $VNBar
 @onready var _speaker: Label = $VNBar/Inner/VBox/Speaker
@@ -38,6 +45,14 @@ var _map_btn: Button = null
 
 # Draws the storyboard image (still or baked animation) in $BgImage's place — see _setup_bg_image.
 var _bg_view: JourneyImage = null
+
+# Persistent-stage cast, from the journey roster. Each line's `stage` is a LIST of {character, portrait,
+# placement}; portrait/placement default to the character's first of each. Each character carries its own
+# portraits + placements. Portrait nodes are created lazily and reused per CHARACTER (so one who stays
+# across lines keeps their node — no flicker, no animated-portrait restart).
+var _cast: Dictionary = {}  # character id → character dict (name/portraits[]/placements[])
+var _portraits: Dictionary = {}  # character id → JourneyImage
+var _portrait_paths: Dictionary = {}  # character id → the path currently shown (skips a needless reload)
 
 var show_map_button: bool = true  # GameLoop clears this when the journey hides the map
 
@@ -73,11 +88,24 @@ func setup(data: Dictionary) -> void:
 	_def_image = data.get("image", "")
 	_lines = data.get("lines", [])
 	_line_idx = 0
+	_build_cast()
 	_start_bgm(str(data.get("bgm", "")), float(data.get("bgm_volume", 0.6)))
 	if _lines.is_empty():
 		_load_bg_image(_def_image)
 		return
 	_show_line()
+
+
+# Indexes the journey's cast roster by id for per-line stage lookups. The roster is journey-level
+# (GameState.Journey), not part of the storyboard node's data, and portraits are already resolved to
+# absolute paths by the scanner.
+func _build_cast() -> void:
+	_cast.clear()
+	for c: Variant in GameState.Journey.get("characters", []):
+		if c is Dictionary:
+			var id: String = str((c as Dictionary).get("id", ""))
+			if id != "":
+				_cast[id] = c
 
 
 # Starts the storyboard's overarching BGM (looping, under every line) at its author-set volume. No-op
@@ -110,6 +138,8 @@ func _show_line() -> void:
 	_speaker.visible = spk != ""
 	_speaker.text = spk.to_upper()
 	_dialogue.text = line.get("text", "")
+
+	_update_stage(line)
 
 	var is_last: bool = _line_idx >= _lines.size() - 1
 	_hint.text = "▶ CLICK OR SPACE TO COMPLETE" if is_last else "▶ CLICK OR SPACE TO CONTINUE"
@@ -160,6 +190,86 @@ func _setup_bg_image() -> void:
 	add_child(_bg_view)
 	move_child(_bg_view, _bg_image.get_index())
 	_bg_image.visible = false
+
+
+# Lazily creates (or returns) the reused JourneyImage for a character, drawn just above the background
+# so it sits under the VN bar and its overlays. Aspect-preserved centering fits any art.
+func _ensure_portrait(character_id: String) -> JourneyImage:
+	if _portraits.has(character_id):
+		return _portraits[character_id]
+	var view: JourneyImage = JourneyImage.new()
+	view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	view.visible = false
+	add_child(view)
+	move_child(view, _bg_view.get_index() + 1)
+	_portraits[character_id] = view
+	return view
+
+
+# Renders the line's persistent stage: a list of {character, portrait, placement}. Each shows that
+# character's chosen portrait (default = their first) in their chosen placement box (default = their
+# first), and a character whose NAME matches the line's speaker is lit while the rest dim. Characters
+# no longer on stage are hidden; a line with no stage clears everything.
+func _update_stage(line: Dictionary) -> void:
+	var stage: Array = line.get("stage", []) if line.get("stage", null) is Array else []
+	var speaker: String = str(line.get("speaker", "")).strip_edges().to_lower()
+
+	# Which character ids are on stage this line, and whether the speaker is one of them (only then do
+	# we dim the others — narration / an off-stage speaker leaves everyone at full brightness).
+	var on_stage: Dictionary = {}
+	var lit_present: bool = false
+	for e: Variant in stage:
+		if e is Dictionary:
+			var cid: String = str((e as Dictionary).get("character", ""))
+			on_stage[cid] = true
+			if (
+				speaker != ""
+				and str(_cast.get(cid, {}).get("name", "")).strip_edges().to_lower() == speaker
+			):
+				lit_present = true
+
+	# Hide any portrait whose character dropped off the stage this line.
+	for cid: String in _portraits:
+		if not on_stage.has(cid):
+			(_portraits[cid] as JourneyImage).visible = false
+
+	for e: Variant in stage:
+		if not (e is Dictionary):
+			continue
+		var cid: String = str((e as Dictionary).get("character", ""))
+		var chr: Dictionary = _cast.get(cid, {})
+		var portrait: String = JourneyData.character_portrait_path(
+			chr, str((e as Dictionary).get("portrait", ""))
+		)
+		if portrait == "":
+			if _portraits.has(cid):
+				(_portraits[cid] as JourneyImage).visible = false
+			continue
+		var view: JourneyImage = _ensure_portrait(cid)
+		# Position by the character's chosen placement box. Fractions → anchors, no pixel offsets.
+		var box: Dictionary = JourneyData.resolve_placement(
+			str((e as Dictionary).get("placement", "")), chr.get("placements", [])
+		)
+		view.anchor_left = clampf(float(box["x"]), 0.0, 1.0)
+		view.anchor_top = clampf(float(box["y"]), 0.0, 1.0)
+		view.anchor_right = clampf(float(box["x"]) + float(box["w"]), 0.0, 1.0)
+		view.anchor_bottom = clampf(float(box["y"]) + float(box["h"]), 0.0, 1.0)
+		view.offset_left = 0.0
+		view.offset_top = 0.0
+		view.offset_right = 0.0
+		view.offset_bottom = 0.0
+		# Only (re)load when the portrait path actually changed — a character keeping the same expression
+		# keeps their (possibly animated) portrait running instead of restarting it.
+		if portrait != str(_portrait_paths.get(cid, "")):
+			_portrait_paths[cid] = portrait
+			view.show_path(
+				portrait, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			)
+		view.visible = true
+		var is_speaker: bool = (
+			lit_present and str(chr.get("name", "")).strip_edges().to_lower() == speaker
+		)
+		view.modulate = PORTRAIT_LIT if (is_speaker or not lit_present) else PORTRAIT_DIM
 
 
 func _input(event: InputEvent) -> void:
