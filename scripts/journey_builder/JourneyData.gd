@@ -68,6 +68,28 @@ const VIB_SUFFIXES: Dictionary = {
 	"vib2": "vibe2",
 }
 
+# restim (E-Stim Full) parameter scripts, keyed by restim T-code axis → funscript name suffix.
+# These have no serial/motion equivalent, so they stream to restim only. (alpha/beta are NOT
+# here — they map to the L0 main / L1 surge slots so they also drive serial, like position.)
+const ESTIM_SUFFIXES: Dictionary = {
+	"V0": "volume",
+	"C0": "carrier_frequency",
+	"P0": "pulse_frequency",
+	"P1": "pulse_width",
+	"P2": "pulse_interval_random",
+	"P3": "pulse_rise_time",
+	"V1": "vib1_frequency",
+	"V2": "vib1_strength",
+	"V3": "vib1_random",
+	"V4": "vib2_frequency",
+	"V5": "vib2_strength",
+	"V6": "vib1_left_right_bias",
+	"V7": "vib1_up_down_bias",
+	"V8": "vib2_left_right_bias",
+	"V9": "vib2_up_down_bias",
+	"W1": "vib2_random",
+}
+
 # Curse catalog — the GAMEPLAY afflictions a cursed round can apply (they change
 # the device output, the economy, or the controls). Non-gameplay visual/audio
 # effects live in SENSORY_CATALOG below. Single source of truth shared by the
@@ -1378,6 +1400,7 @@ static func new_item(type: String) -> Dictionary:
 				"coins": 0,
 				"award_item": "",
 				"axis_scripts": {},
+				"estim_scripts": {},
 				"node_id": new_node_id()
 			}
 		"shop":
@@ -1484,6 +1507,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 			"funscript_path": r.get("funscript_path", ""),
 			"axis_scripts": r.get("axis_scripts", {}),
 			"vib_scripts": r.get("vib_scripts", {}),
+			"estim_scripts": r.get("estim_scripts", {}),
 			"is_checkpoint": bool(r.get("is_checkpoint", false)),
 			"is_warmup": bool(r.get("is_warmup", false)),
 			"boss_image": r.get("boss_image", ""),
@@ -1634,6 +1658,7 @@ static func _build_path_items(p: Dictionary) -> Array:
 			"funscript_path": pr.get("funscript_path", ""),
 			"axis_scripts": pr.get("axis_scripts", {}),
 			"vib_scripts": pr.get("vib_scripts", {}),
+			"estim_scripts": pr.get("estim_scripts", {}),
 			"is_checkpoint": bool(pr.get("is_checkpoint", false)),
 			"is_warmup": bool(pr.get("is_warmup", false)),
 			"boss_image": pr.get("boss_image", ""),

@@ -31,6 +31,17 @@ const DEFAULT_OUTPUT_MODE: String = "buttplug"
 const DEFAULT_SERIAL_PORT: String = ""
 const DEFAULT_SERIAL_BAUD: int = 115200
 const DEFAULT_SERIAL_AUTO: bool = false
+
+# ── restim (e-stim, network T-code over WebSocket) ──
+# Address is split into server + path so the endpoint path can't be missed. The restim
+# in this workspace routes T-code on /tcode; a user on a build expecting /ws can edit it.
+const DEFAULT_RESTIM_SERVER: String = "ws://127.0.0.1:12346"
+const DEFAULT_RESTIM_PATH: String = "/tcode"
+const DEFAULT_RESTIM_AUTO: bool = false
+# Per-axis manual value (percent 0–100) for each of the 18 "E-Stim Full" axes. Motion
+# axes (L0/L1/C0/P0/V1/V2) use this only as a fallback when the round has no matching
+# funscript; the rest always send this value. Default 0 mirrors the profile's DefaultValue.
+const DEFAULT_RESTIM_AXIS: int = 0
 const DEFAULT_RANGE_MIN: int = 0
 const DEFAULT_RANGE_MAX: int = 100
 const DEFAULT_HOME_POSITION: int = 50
@@ -166,6 +177,24 @@ func get_sensory_strength() -> float:
 
 func set_sensory_strength(value: float) -> void:
 	_config.set_value("display", "sensory_strength", clampf(value, 0.1, 1.0))
+
+
+# ── restim ──
+func get_restim_server() -> String:
+	return str(_config.get_value("restim", "server", DEFAULT_RESTIM_SERVER))
+
+
+func get_restim_path() -> String:
+	return str(_config.get_value("restim", "path", DEFAULT_RESTIM_PATH))
+
+
+func get_restim_auto_connect() -> bool:
+	return bool(_config.get_value("restim", "auto_connect", DEFAULT_RESTIM_AUTO))
+
+
+# Manual value (percent 0–100) for one E-Stim Full axis, e.g. "V0", "P1", "C0".
+func get_restim_axis(axis: String) -> int:
+	return int(_config.get_value("restim", "axis_%s" % axis, DEFAULT_RESTIM_AXIS))
 
 
 func get_range_min() -> int:
@@ -527,6 +556,23 @@ func set_serial_baud(value: int) -> void:
 
 func set_serial_auto_connect(value: bool) -> void:
 	_config.set_value("serial", "auto_connect", value)
+
+
+# ── restim ──
+func set_restim_server(value: String) -> void:
+	_config.set_value("restim", "server", value)
+
+
+func set_restim_path(value: String) -> void:
+	_config.set_value("restim", "path", value)
+
+
+func set_restim_auto_connect(value: bool) -> void:
+	_config.set_value("restim", "auto_connect", value)
+
+
+func set_restim_axis(axis: String, value: int) -> void:
+	_config.set_value("restim", "axis_%s" % axis, value)
 
 
 func set_range_min(value: int) -> void:
