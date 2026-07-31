@@ -162,6 +162,57 @@ var _intiface_delay_lbl: Label = null
 var _transcode_section: VBoxContainer = null
 var _credits_section: VBoxContainer = null
 
+# restim (e-stim), split across two tabs: the connection block (server/path/
+# auto-connect) sits on CONNECTION next to the other transports, while the
+# per-axis levels are device tuning and live on DEVICE beside the T-code ranges.
+var _restim_section: VBoxContainer = null
+var _restim_axes_section: VBoxContainer = null
+var _restim_server_input: LineEdit = null
+var _restim_path_input: LineEdit = null
+var _restim_auto_toggle: Button = null
+var _restim_connect_btn: Button = null
+var _restim_status_lbl: Label = null
+var _restim_axis_sliders: Dictionary = {}  # axis id → HSlider
+var _restim_axis_value_lbls: Dictionary = {}  # axis id → value Label
+
+# The 18 "E-Stim Full" axes, grouped for the UI. [axis id, friendly label].
+# Motion axes (L0/L1/C0/P0/V1/V2) note their driving funscript; those sliders are the
+# fallback used only when the round has no such script.
+const RESTIM_AXIS_GROUPS: Array = [
+	["MASTER", [["V0", "Volume"]]],
+	["POSITION", [["L0", "Alpha ← stroke"], ["L1", "Beta ← surge"]]],
+	["CARRIER", [["C0", "Carrier freq ← twist"]]],
+	[
+		"PULSE",
+		[
+			["P0", "Pulse freq ← pitch"],
+			["P1", "Pulse width"],
+			["P2", "Pulse interval random"],
+			["P3", "Pulse rise time"],
+		]
+	],
+	[
+		"VIBRATION 1",
+		[
+			["V1", "Vib1 freq ← sway"],
+			["V2", "Vib1 strength ← roll"],
+			["V3", "Vib1 random"],
+			["V6", "Vib1 L/R bias"],
+			["V7", "Vib1 up/down bias"],
+		]
+	],
+	[
+		"VIBRATION 2",
+		[
+			["V4", "Vib2 freq"],
+			["V5", "Vib2 strength"],
+			["W1", "Vib2 random"],
+			["V8", "Vib2 L/R bias"],
+			["V9", "Vib2 up/down bias"],
+		]
+	],
+]
+
 
 func _ready() -> void:
 	_apply_layout()
@@ -674,7 +725,7 @@ func _apply_layout() -> void:
 	_range_section = range_section
 
 	var range_header: Label = Label.new()
-	range_header.text = "DEVICE RANGE"
+	range_header.text = "T-CODE DEVICE"
 	_style_label(range_header, UITheme.PURPLE_BRIGHT, 13, true)
 	range_section.add_child(range_header)
 
@@ -963,6 +1014,8 @@ func _apply_layout() -> void:
 
 	_build_routing_section()
 	_build_handy_section()
+	_build_restim_section()
+	_build_restim_axes_section()
 
 	var filler_header: Label = Label.new()
 	filler_header.text = "STORYBOARD FILLER"
@@ -1179,9 +1232,10 @@ func _on_tab_changed(idx: int) -> void:
 			get_node(VBOX + "SerialSection"),
 			_routing_section,
 			_handy_section,
+			_restim_section,
 		],
 		# DEVICE
-		[_range_section, _filler_section],
+		[_range_section, _restim_axes_section, _filler_section],
 		# ABOUT
 		[_credits_section],
 	]
@@ -2427,6 +2481,246 @@ func _build_handy_section() -> void:
 	disclosure.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(disclosure, UITheme.SEPARATOR, 11, false)
 	section.add_child(disclosure)
+
+
+# ---------------------------------------------------------------------------
+# restim (e-stim) section — network T-code over WebSocket
+# ---------------------------------------------------------------------------
+
+
+func _build_restim_section() -> void:
+	var section: VBoxContainer = VBoxContainer.new()
+	section.add_theme_constant_override("separation", 10)
+	_content_vbox.add_child(section)
+	_restim_section = section
+
+	var header: Label = Label.new()
+	header.text = "RESTIM (E-STIM)"
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	section.add_child(header)
+
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	section.add_child(divider)
+
+	# Address is two fields (server + path) so the endpoint path can't be missed.
+	_restim_server_input = _add_restim_text_row(section, "Server", "ws://127.0.0.1:12346")
+	_restim_path_input = _add_restim_text_row(section, "Path", "/tcode")
+
+	var auto_row: HBoxContainer = HBoxContainer.new()
+	auto_row.add_theme_constant_override("separation", 16)
+	section.add_child(auto_row)
+	var auto_lbl: Label = Label.new()
+	auto_lbl.text = "Auto-connect on launch"
+	auto_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(auto_lbl, UITheme.WHITE_SOFT, 14, false)
+	auto_row.add_child(auto_lbl)
+	_restim_auto_toggle = Button.new()
+	_restim_auto_toggle.toggle_mode = true
+	_restim_auto_toggle.focus_mode = Control.FOCUS_NONE
+	auto_row.add_child(_restim_auto_toggle)
+
+	var conn_row: HBoxContainer = HBoxContainer.new()
+	conn_row.add_theme_constant_override("separation", 16)
+	section.add_child(conn_row)
+	_restim_connect_btn = Button.new()
+	_restim_connect_btn.text = "> CONNECT"
+	_restim_connect_btn.focus_mode = Control.FOCUS_NONE
+	_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
+	conn_row.add_child(_restim_connect_btn)
+	_restim_status_lbl = Label.new()
+	_style_label(_restim_status_lbl, UITheme.SEPARATOR, 12, true)
+	conn_row.add_child(_restim_status_lbl)
+
+	var hint: Label = Label.new()
+	hint.text = "Streams the round's funscripts to restim as E-Stim Full T-code over WebSocket. Connecting turns the serial device off. Per-axis levels (Volume, Alpha/Beta, Carrier, Pulse, Vibration) live under E-STIM DEVICE on the Device tab."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	section.add_child(hint)
+
+	# Seed controls BEFORE connecting handlers so setup doesn't fire saves.
+	_restim_server_input.text = SettingsService.get_restim_server()
+	_restim_path_input.text = SettingsService.get_restim_path()
+	var auto_on: bool = SettingsService.get_restim_auto_connect()
+	_restim_auto_toggle.button_pressed = auto_on
+	_style_toggle(_restim_auto_toggle, auto_on)
+
+	_restim_server_input.text_changed.connect(
+		func(t: String) -> void:
+			SettingsService.set_restim_server(t)
+			SettingsService.save()
+	)
+	_restim_path_input.text_changed.connect(
+		func(t: String) -> void:
+			SettingsService.set_restim_path(t)
+			SettingsService.save()
+	)
+	_restim_auto_toggle.toggled.connect(_on_restim_auto_toggled)
+	_restim_connect_btn.pressed.connect(_on_restim_connect_pressed)
+
+	RestimService.connect("Connected", _on_restim_connected)
+	RestimService.connect("Disconnected", _on_restim_disconnected)
+	RestimService.connect("ErrorOccurred", _on_restim_error)
+
+	_sync_restim_state()
+
+
+# Per-axis e-stim levels. Deliberately on the DEVICE tab rather than CONNECTION:
+# these are ongoing output tuning (the same kind of thing as the T-code ranges
+# above them), not part of getting connected. Each row seeds and saves itself.
+func _build_restim_axes_section() -> void:
+	var section: VBoxContainer = VBoxContainer.new()
+	section.add_theme_constant_override("separation", 10)
+	_content_vbox.add_child(section)
+	_restim_axes_section = section
+
+	var header: Label = Label.new()
+	header.text = "E-STIM DEVICE"
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	section.add_child(header)
+
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	section.add_child(divider)
+
+	var hint: Label = Label.new()
+	hint.text = "Motion axes (Alpha/Beta/Carrier/Pulse-freq/Vib1) follow their funscripts when a round provides them; these sliders set every other axis. Raise Volume — at 0 restim is silent. Changes apply live to a connected session."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	section.add_child(hint)
+
+	for group: Array in RESTIM_AXIS_GROUPS:
+		var group_lbl: Label = Label.new()
+		group_lbl.text = str(group[0])
+		_style_label(group_lbl, UITheme.CYAN, 11, true)
+		section.add_child(group_lbl)
+		for entry: Array in group[1]:
+			_add_restim_axis_row(section, str(entry[0]), str(entry[1]))
+
+
+func _add_restim_text_row(parent: VBoxContainer, label_text: String, placeholder: String) -> LineEdit:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	parent.add_child(row)
+
+	var lbl: Label = Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(lbl, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(lbl)
+
+	var edit: LineEdit = LineEdit.new()
+	edit.placeholder_text = placeholder
+	edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_line_edit(edit)
+	row.add_child(edit)
+	return edit
+
+
+func _add_restim_axis_row(parent: VBoxContainer, axis: String, label_text: String) -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	parent.add_child(row)
+
+	var lbl: Label = Label.new()
+	lbl.text = label_text
+	lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(lbl, UITheme.WHITE_SOFT, 13, false)
+	row.add_child(lbl)
+
+	var slider: HSlider = HSlider.new()
+	slider.min_value = 0
+	slider.max_value = 100
+	slider.step = 1
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(slider)
+	row.add_child(slider)
+
+	var value_lbl: Label = Label.new()
+	value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
+	_style_label(value_lbl, UITheme.PURPLE_MID, 11, true)
+	row.add_child(value_lbl)
+
+	var initial: int = SettingsService.get_restim_axis(axis)
+	slider.value = initial
+	value_lbl.text = "%d%%" % initial
+
+	slider.value_changed.connect(
+		func(v: float) -> void:
+			var iv: int = roundi(v)
+			value_lbl.text = "%d%%" % iv
+			SettingsService.set_restim_axis(axis, iv)
+			SettingsService.save()
+			FunscriptPlayer.SetRestimAxisValue(axis, iv)
+	)
+
+	_restim_axis_sliders[axis] = slider
+	_restim_axis_value_lbls[axis] = value_lbl
+
+
+func _on_restim_auto_toggled(pressed: bool) -> void:
+	_style_toggle(_restim_auto_toggle, pressed)
+	SettingsService.set_restim_auto_connect(pressed)
+	SettingsService.save()
+
+
+func _on_restim_connect_pressed() -> void:
+	if RestimService.RestimConnected:
+		RestimService.Disconnect()
+		return
+
+	var server: String = _restim_server_input.text.strip_edges()
+	if server.is_empty():
+		_set_restim_status("● NO SERVER", UITheme.ERROR)
+		return
+	var path: String = _restim_path_input.text.strip_edges()
+	var addr: String = server.trim_suffix("/")
+	if not path.is_empty():
+		if not path.begins_with("/"):
+			path = "/" + path
+		addr += path
+
+	_set_restim_status("● CONNECTING…", UITheme.PURPLE_MID)
+	_restim_connect_btn.disabled = true
+	RestimService.Connect(addr)
+
+
+func _on_restim_connected() -> void:
+	_restim_connect_btn.disabled = false
+	_set_restim_status("● CONNECTED", UITheme.OK)
+	_style_button(_restim_connect_btn, UITheme.MAGENTA)
+	_restim_connect_btn.text = "> DISCONNECT"
+	FunscriptPlayer.SendRestimManualState()
+	# restim turns the serial device off on connect — refresh the serial UI to match.
+	_sync_serial_state()
+
+
+func _on_restim_disconnected() -> void:
+	_restim_connect_btn.disabled = false
+	_set_restim_status("● DISCONNECTED", UITheme.ERROR)
+	_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
+	_restim_connect_btn.text = "> CONNECT"
+
+
+func _on_restim_error(message: String) -> void:
+	_restim_connect_btn.disabled = false
+	_set_restim_status("● ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
+
+
+func _set_restim_status(text: String, color: Color) -> void:
+	_restim_status_lbl.text = text
+	_restim_status_lbl.add_theme_color_override("font_color", color)
+
+
+func _sync_restim_state() -> void:
+	if RestimService.RestimConnected:
+		_set_restim_status("● CONNECTED", UITheme.OK)
+		_style_button(_restim_connect_btn, UITheme.MAGENTA)
+		_restim_connect_btn.text = "> DISCONNECT"
+	else:
+		_set_restim_status("● DISCONNECTED", UITheme.ERROR)
+		_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
+		_restim_connect_btn.text = "> CONNECT"
 
 
 func _add_delay_row(parent: VBoxContainer, label_text: String, tip: String = "") -> Dictionary:

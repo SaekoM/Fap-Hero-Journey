@@ -38,6 +38,45 @@ const SCRIPT_SUFFIXES: Array[String] = [
 	"_vib2",
 	".vibe2",
 	"_vibe2",
+	# restim / E-Stim Full position aliases (alpha→L0 main, beta→L1) …
+	".alpha",
+	"_alpha",
+	".beta",
+	"_beta",
+	# … and the e-stim parameter scripts (restim-only). Longer names listed before the plain
+	# vib1/vib2 endings above are safe: strip/detect use exact-tail ends_with, no prefix overlap.
+	".volume",
+	"_volume",
+	".carrier_frequency",
+	"_carrier_frequency",
+	".pulse_frequency",
+	"_pulse_frequency",
+	".pulse_width",
+	"_pulse_width",
+	".pulse_interval_random",
+	"_pulse_interval_random",
+	".pulse_rise_time",
+	"_pulse_rise_time",
+	".vib1_frequency",
+	"_vib1_frequency",
+	".vib1_strength",
+	"_vib1_strength",
+	".vib1_random",
+	"_vib1_random",
+	".vib2_frequency",
+	"_vib2_frequency",
+	".vib2_strength",
+	"_vib2_strength",
+	".vib1_left_right_bias",
+	"_vib1_left_right_bias",
+	".vib1_up_down_bias",
+	"_vib1_up_down_bias",
+	".vib2_left_right_bias",
+	"_vib2_left_right_bias",
+	".vib2_up_down_bias",
+	"_vib2_up_down_bias",
+	".vib2_random",
+	"_vib2_random",
 ]
 
 
@@ -71,11 +110,46 @@ static func detect_funscript_axis(path: String) -> String:
 		".roll": "R1",
 		"_pitch": "R2",
 		".pitch": "R2",
+		# restim position aliases: alpha = main stroke (L0), beta = the L1 axis.
+		"_alpha": "L0",
+		".alpha": "L0",
+		"_beta": "L1",
+		".beta": "L1",
 	}
 	for suffix: String in name_codes:
 		if stem.ends_with(suffix):
 			return name_codes[suffix]
 	return "L0"
+
+
+# Infers a restim (E-Stim Full) parameter axis from a funscript filename, e.g. "scene.volume" → "V0",
+# "scene.carrier_frequency" → "C0". These have no serial/motion equivalent and stream to restim only.
+# Returns "" when the filename carries no e-stim parameter suffix. Checked BEFORE detect_funscript_axis
+# during import (those names would otherwise fall through to the L0 main-script default).
+static func detect_estim_axis(path: String) -> String:
+	var stem: String = path.get_file().get_basename().to_lower()
+	var codes: Dictionary = {
+		"volume": "V0",
+		"carrier_frequency": "C0",
+		"pulse_frequency": "P0",
+		"pulse_width": "P1",
+		"pulse_interval_random": "P2",
+		"pulse_rise_time": "P3",
+		"vib1_frequency": "V1",
+		"vib1_strength": "V2",
+		"vib1_random": "V3",
+		"vib2_frequency": "V4",
+		"vib2_strength": "V5",
+		"vib1_left_right_bias": "V6",
+		"vib1_up_down_bias": "V7",
+		"vib2_left_right_bias": "V8",
+		"vib2_up_down_bias": "V9",
+		"vib2_random": "W1",
+	}
+	for name: String in codes:
+		if stem.ends_with("." + name) or stem.ends_with("_" + name):
+			return codes[name]
+	return ""
 
 
 # Returns "vib1" or "vib2" when the filename carries a recognised vibrator-script suffix
@@ -119,13 +193,17 @@ static func group_anchor_path(g: Dictionary) -> String:
 		return a
 	for v: String in (g["vib"] as Dictionary).values():
 		return v
+	# .get(): "estim" is a later addition, so callers built before it (and the pure unit tests)
+	# legitimately pass groups without the key.
+	for e: String in (g.get("estim", {}) as Dictionary).values():
+		return e
 	return ""
 
 
 # Creates an empty import group for `key` (preserving first-seen order) if absent.
 static func ensure_import_group(groups: Dictionary, order: Array, key: String) -> void:
 	if not groups.has(key):
-		groups[key] = {"video": "", "funscript": "", "axis": {}, "vib": {}, "name": ""}
+		groups[key] = {"video": "", "funscript": "", "axis": {}, "vib": {}, "estim": {}, "name": ""}
 		order.append(key)
 
 
@@ -167,7 +245,7 @@ static func collect_files_recursive(dir: String, out: PackedStringArray) -> void
 # as drag-routing. Returns {"funscript": String, "axis": Dictionary, "vib": Dictionary}; first match
 # wins per slot.
 static func find_sibling_scripts(dir: String, base: String) -> Dictionary:
-	var result: Dictionary = {"funscript": "", "axis": {}, "vib": {}}
+	var result: Dictionary = {"funscript": "", "axis": {}, "vib": {}, "estim": {}}
 	var base_low: String = base.to_lower()
 	var d: DirAccess = DirAccess.open(dir)
 	if d == null:
@@ -182,9 +260,13 @@ static func find_sibling_scripts(dir: String, base: String) -> Dictionary:
 			var full: String = "%s/%s" % [dir, fname]
 			if strip_script_suffix(full).to_lower() == base_low:
 				var vib_ch: String = detect_vib_channel(full)
+				var estim_ax: String = detect_estim_axis(full)
 				if vib_ch != "":
 					if not result["vib"].has(vib_ch):
 						result["vib"][vib_ch] = full
+				elif estim_ax != "":
+					if not result["estim"].has(estim_ax):
+						result["estim"][estim_ax] = full
 				else:
 					var axis: String = detect_funscript_axis(full)
 					if axis == "L0":
@@ -239,6 +321,13 @@ static func autofill_round_siblings(round_data: Dictionary, anchor_path: String)
 			round_data["vib_scripts"][ch] = scan["vib"][ch]
 			changed = true
 
+	if not round_data.has("estim_scripts"):
+		round_data["estim_scripts"] = {}
+	for eax: String in scan["estim"]:
+		if not (round_data["estim_scripts"] as Dictionary).has(eax):
+			round_data["estim_scripts"][eax] = scan["estim"][eax]
+			changed = true
+
 	return changed
 
 
@@ -260,8 +349,11 @@ static func build_rounds(files: PackedStringArray) -> Dictionary:
 		elif ext in JourneyData.FUNSCRIPT_EXTENSIONS:
 			ensure_import_group(groups, order, key)
 			var vib_ch: String = detect_vib_channel(f)
+			var estim_ax: String = detect_estim_axis(f)
 			if vib_ch != "":
 				groups[key]["vib"][vib_ch] = f
+			elif estim_ax != "":
+				groups[key]["estim"][estim_ax] = f
 			else:
 				var axis: String = detect_funscript_axis(f)
 				if axis == "L0":
@@ -284,6 +376,7 @@ static func build_rounds(files: PackedStringArray) -> Dictionary:
 		data["video_path"] = g["video"]
 		data["axis_scripts"] = g["axis"]
 		data["vib_scripts"] = g["vib"]
+		data["estim_scripts"] = g["estim"]
 		var anchor: String = group_anchor_path(g)
 		if anchor != "":
 			autofill_round_siblings(data, anchor)
