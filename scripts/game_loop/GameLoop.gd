@@ -2337,8 +2337,38 @@ func _transition_to_end_screen() -> void:
 		_exit_test_to_builder()
 		return
 	_record_run(true)  # completed run → scoreboard
+	_capture_completion_carryover()  # feature #5: stash Part-1 end-state so an installed sequel can resume
 	JourneySaveService.delete_save(GameState.Journey.get("folder_name", ""))
 	Transition.change_scene("res://scenes/end_screen/EndScreen.tscn")
+
+
+# Feature #5: on completing a BASE journey, stash its end-state keyed by the base's JourneyId so an
+# installed rendition (a sequel) can resume from the ending the player reached — carrying coins, score,
+# items, flags, and counters. Skipped for a rendition run (that IS Part 2; its folder_name is namespaced
+# `…__rend_…`) and when the base has no id to key by. The payload mirrors _write_journey_save's run-state
+# snapshot plus `reached_node`, the ending finished on, which the resume path matches to a rendition anchor.
+func _capture_completion_carryover() -> void:
+	var journey: Dictionary = GameState.Journey
+	var base_id: String = str(journey.get("journey_id", ""))
+	if base_id == "":
+		return
+	# A COMPOSED (Part-2) run reaching the end CONSUMES the Part-1 carryover — you've played the sequel
+	# through, so "Resume Part 2" shouldn't linger (single-use, like a resume save). The composed journey
+	# carries the base's JourneyId, which is what the carryover is keyed by. Bailing out early (no end
+	# screen) leaves it intact, so an unfinished sequel can still be retried from Part 1.
+	if str(journey.get("folder_name", "")).contains("__rend_"):
+		JourneySaveService.delete_carryover(base_id)
+		return
+	var score_data: Dictionary = ScoreService.CaptureSaveData()
+	var payload: Dictionary = {
+		"coins": CoinService.Balance,
+		"score": score_data.get("score", 0),
+		"total_actions": score_data.get("strokes", 0),
+		"inventory": InventoryService.CaptureSaveData(),
+	}
+	payload.merge(GameState.CaptureSaveData())  # current_node, flags, counters, discovered, pool clips
+	payload["reached_node"] = str(payload.get("current_node", ""))  # the ending the sequel anchors to
+	JourneySaveService.write_carryover(base_id, payload)
 
 
 # Records this run's outcome to the journey's local scoreboard. `completed` is
