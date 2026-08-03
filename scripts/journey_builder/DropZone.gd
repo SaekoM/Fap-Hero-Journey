@@ -8,7 +8,12 @@ extends PanelContainer
 # ---------------------------------------------------------------------------
 
 signal file_dropped(path: String)
+# Emitted instead of file_dropped when `multi` is true — carries EVERY accepted file in one drop, so a
+# caller can route a batch (e.g. axis/vibe scripts by filename suffix). The browse button stays single-file.
+signal files_dropped(paths: PackedStringArray)
 
+# When true, a drop emits `files_dropped` with all accepted files rather than `file_dropped` with the first.
+var multi: bool = false
 var accepted_extensions: Array = []
 var picker_title: String = "Select File"
 var picker_filters: Array = ["*.* ; All Files"]
@@ -71,10 +76,7 @@ func _can_drop_data(_pos: Vector2, data: Variant) -> bool:
 
 
 func _drop_data(_pos: Vector2, data: Variant) -> void:
-	for f: String in data.get("files", PackedStringArray()) as PackedStringArray:
-		if f.get_extension().to_lower() in accepted_extensions:
-			set_file(f)
-			return
+	_handle_dropped_files(data.get("files", PackedStringArray()) as PackedStringArray)
 
 
 # --- OS DnD fallback via viewport ---
@@ -84,6 +86,20 @@ func _on_viewport_files_dropped(files: PackedStringArray) -> void:
 	if not is_visible_in_tree():
 		return
 	if not get_global_rect().has_point(get_viewport().get_mouse_position()):
+		return
+	_handle_dropped_files(files)
+
+
+# Routes a dropped batch: in `multi` mode, emit every accepted file at once (files_dropped); otherwise the
+# classic single-file behaviour (first accepted file → set_file → file_dropped).
+func _handle_dropped_files(files: PackedStringArray) -> void:
+	if multi:
+		var accepted: PackedStringArray = []
+		for f: String in files:
+			if f.get_extension().to_lower() in accepted_extensions:
+				accepted.append(f)
+		if not accepted.is_empty():
+			files_dropped.emit(accepted)
 		return
 	for f: String in files:
 		if f.get_extension().to_lower() in accepted_extensions:
