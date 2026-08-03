@@ -44,6 +44,11 @@ func _touch(name: String) -> String:
 	return p
 
 
+# The group shape ImportScanner.group_anchor_path() consumes, with an estim bucket.
+func _group_with_estim(video: String, estim: Dictionary) -> Dictionary:
+	return {"video": video, "funscript": "", "axis": {}, "vib": {}, "estim": estim}
+
+
 # ── detect_estim_axis ────────────────────────────────────────────────────────
 
 
@@ -81,9 +86,9 @@ func test_every_declared_estim_axis_is_detectable() -> void:
 	for axis: String in JourneyData.ESTIM_SUFFIXES:
 		var suffix: String = JourneyData.ESTIM_SUFFIXES[axis]
 		var detected: String = ImportScanner.detect_estim_axis("clip.%s.funscript" % suffix)
-		assert_str(detected).override_failure_message(
-			"axis %s (suffix '%s') was not detected, got '%s'" % [axis, suffix, detected]
-		).is_equal(axis)
+		var args: Array = [axis, suffix, detected]
+		var msg: String = "axis %s (suffix '%s') was not detected, got '%s'" % args
+		assert_str(detected).override_failure_message(msg).is_equal(axis)
 
 
 # ── alpha / beta position aliases ────────────────────────────────────────────
@@ -110,37 +115,21 @@ func test_estim_suffix_is_stripped_so_scripts_group_with_their_round() -> void:
 # Regression: group_anchor_path must tolerate groups built before "estim" existed
 # (upstream's own tests pass such literals) rather than throwing on a missing key.
 func test_group_anchor_path_tolerates_missing_estim_key() -> void:
-	assert_str(
-		ImportScanner.group_anchor_path(
-			{"video": "", "funscript": "f.funscript", "axis": {}, "vib": {}}
-		)
-	).is_equal("f.funscript")
-	assert_str(
-		ImportScanner.group_anchor_path({"video": "", "funscript": "", "axis": {}, "vib": {}})
-	).is_equal("")
+	var legacy: Dictionary = {"video": "", "funscript": "f.funscript", "axis": {}, "vib": {}}
+	assert_str(ImportScanner.group_anchor_path(legacy)).is_equal("f.funscript")
+	var bare: Dictionary = {"video": "", "funscript": "", "axis": {}, "vib": {}}
+	assert_str(ImportScanner.group_anchor_path(bare)).is_equal("")
 
 
 func test_group_anchor_path_falls_back_to_an_estim_script() -> void:
-	assert_str(
-		ImportScanner.group_anchor_path(
-			{"video": "", "funscript": "", "axis": {}, "vib": {}, "estim": {"V0": "v.funscript"}}
-		)
-	).is_equal("v.funscript")
+	var group: Dictionary = _group_with_estim("", {"V0": "v.funscript"})
+	assert_str(ImportScanner.group_anchor_path(group)).is_equal("v.funscript")
 
 
 # Video still wins over an e-stim script when both are present.
 func test_group_anchor_path_prefers_video() -> void:
-	assert_str(
-		ImportScanner.group_anchor_path(
-			{
-				"video": "clip.mp4",
-				"funscript": "",
-				"axis": {},
-				"vib": {},
-				"estim": {"V0": "v.funscript"}
-			}
-		)
-	).is_equal("clip.mp4")
+	var group: Dictionary = _group_with_estim("clip.mp4", {"V0": "v.funscript"})
+	assert_str(ImportScanner.group_anchor_path(group)).is_equal("clip.mp4")
 
 
 func test_ensure_import_group_seeds_an_estim_bucket() -> void:
@@ -176,9 +165,7 @@ func test_build_rounds_routes_estim_scripts_onto_the_round() -> void:
 	var video: String = _touch("clip.mp4")
 	var main: String = _touch("clip.funscript")
 	var vol: String = _touch("clip.volume.funscript")
-	var result: Dictionary = ImportScanner.build_rounds(
-		PackedStringArray([video, main, vol])
-	)
+	var result: Dictionary = ImportScanner.build_rounds(PackedStringArray([video, main, vol]))
 	var rounds: Array = result["rounds"]
 	assert_int(rounds.size()).is_equal(1)
 	assert_dict(rounds[0]["estim_scripts"]).contains_key_value("V0", vol)
