@@ -2598,7 +2598,9 @@ func _build_restim_axes_section() -> void:
 			_add_restim_axis_row(section, str(entry[0]), str(entry[1]))
 
 
-func _add_restim_text_row(parent: VBoxContainer, label_text: String, placeholder: String) -> LineEdit:
+func _add_restim_text_row(
+	parent: VBoxContainer, label_text: String, placeholder: String
+) -> LineEdit:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 16)
 	parent.add_child(row)
