@@ -42,8 +42,42 @@ func apply_tooltip_scale() -> void:
 	w.theme = t
 
 
+# ── Glyph fallback fonts ─────────────────────────────────────────────────────
+# The UI's button/label "icons" are Unicode GLYPHS (⑂ ✎ ✕ ▶ ◆ 🎲 …), not images. Godot's default font
+# carries no symbols/emoji, so absent a bundled fallback those glyphs are supplied by whatever fonts the
+# user's OS happens to have — which varies, so some players (even on Windows) get tofu boxes (□) where an
+# icon should be. We append these bundled fonts as FALLBACKS on the default font: the Latin typeface is
+# unchanged, and only otherwise-missing glyphs pull from them. Drop the .ttf files in res://assets/fonts/
+# (see the README there). Missing files no-op — nothing breaks, you just keep depending on the OS.
+const GLYPH_FALLBACK_FONTS: Array[String] = [
+	"res://assets/fonts/NotoSansSymbols2-Regular.ttf",  # monochrome symbols: ⑂ ✎ ✕ ⚔ ✂ ★ ⬆ ⬇ ⚙ …
+	"res://assets/fonts/NotoColorEmoji.ttf",  # colour emoji: 📂 🔥 🎲 🎭 🏁 …
+]
+
+
 func _ready() -> void:
 	apply_tooltip_scale()
+	_install_glyph_fallbacks()
+
+
+# Appends the bundled symbol/emoji fonts to the DEFAULT font's fallback chain, so glyph "icons" render
+# the same on every machine instead of depending on the player's installed fonts. Runs once at startup,
+# before any UI is built. Warns (and no-ops) if the default font can't take fallbacks — in which case set
+# Project Settings → gui/theme/custom_font to a FontFile carrying these fallbacks instead. Skips any font
+# file not yet added to the project.
+func _install_glyph_fallbacks() -> void:
+	var base: Font = ThemeDB.fallback_font
+	if not (base is FontFile):
+		push_warning("UITheme: default font isn't a FontFile; glyph fallbacks not installed.")
+		return
+	var fonts: Array[Font] = []
+	for path: String in GLYPH_FALLBACK_FONTS:
+		if ResourceLoader.exists(path):
+			var f: Resource = load(path)
+			if f is Font:
+				fonts.append(f as Font)
+	if not fonts.is_empty():
+		(base as FontFile).fallbacks = fonts
 
 
 # Word-wraps tooltip text by inserting newlines — Godot's default tooltip does NOT autowrap, so

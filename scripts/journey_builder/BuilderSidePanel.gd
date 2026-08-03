@@ -1448,6 +1448,17 @@ func show_graph_node_editor(node_id: String) -> void:
 	if node.is_empty():
 		show_journey_info_panel()
 		return
+	# A ghosted base node during rendition authoring: the locked base can't be edited/tested/deleted, but a
+	# FORK can take overlay choices and a ROUND can take channel overlays. Each opens its own limited editor
+	# in place of the full node editor.
+	if _owner._rendition_parent_ids.has(node_id):
+		match str(node.get("type", "")):
+			"fork":
+				side_vbox.add_child(_make_rendition_fork_editor(node_id, node))
+				return
+			"round":
+				side_vbox.add_child(_make_rendition_round_editor(node_id, node))
+				return
 	# Test From Here at the top — save + play the journey starting at this node (a synthetic
 	# {node_id} item is all _save_and_test_from needs; the graph is node-id native).
 	side_vbox.add_child(_make_test_controls({"node_id": node_id}, []))
@@ -1690,6 +1701,8 @@ func show_graph_multi_select_panel(ids: Array) -> void:
 	del_btn.pressed.connect(func() -> void: _owner._delete_selected_nodes())
 	side_vbox.add_child(del_btn)
 
+	# Extraction lives on the node right-click menu (see JourneyBuilder._show_node_context_menu).
+
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(_make_graph_add_buttons())
 
@@ -1755,6 +1768,335 @@ func _make_set_counters_field(target: Dictionary) -> Control:
 	)
 	col.add_child(edit)
 	return col
+
+
+# The side-panel channel-overlay editor for a ghosted base ROUND during rendition authoring (replaces the
+# old CHANNEL OVERLAYS modal). The base round is locked; drop axis/vibe funscripts onto its EMPTY channels
+# — routed by filename suffix — and each becomes a slot_fill. Base-owned channels are shown but locked.
+func _make_rendition_round_editor(node_id: String, node: Dictionary) -> Control:
+	var data: Dictionary = node.get("data", {})
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+
+	var hdr: Label = Label.new()
+	hdr.text = "⊕ CHANNEL OVERLAY"
+	hdr.add_theme_color_override("font_color", UITheme.CYAN)
+	hdr.add_theme_font_size_override("font_size", 14)
+	hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(hdr)
+
+	var rname: String = str(data.get("name", "")).strip_edges()
+	var subl: Label = Label.new()
+	subl.text = ("Round: %s" % rname) if rname != "" else "Round (unnamed)"
+	subl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	subl.add_theme_font_size_override("font_size", 11)
+	subl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(subl)
+
+	var note: Label = Label.new()
+	note.text = "The base round is locked. Drop axis / vibe funscripts to overlay them onto its EMPTY channels — routed by filename suffix (_L1, _R1, _vib1…). The base's own channels stay untouched."
+	note.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	note.add_theme_font_size_override("font_size", 10)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(note)
+
+	# Bulk drop — every dropped funscript routes to its channel by suffix (see _route_channel_scripts).
+	var zone: PanelContainer = DropZoneScript.new()
+	zone.accepted_extensions = JourneyData.FUNSCRIPT_EXTENSIONS.duplicate()
+	zone.multi = true
+	zone.picker_title = "Attach Channel Scripts"
+	zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	zone.files_dropped.connect(
+		func(paths: PackedStringArray) -> void: _owner._route_channel_scripts(node_id, paths)
+	)
+	col.add_child(zone)
+
+	col.add_child(_side_section_separator())
+	col.add_child(_side_field_label("CHANNELS"))
+	var overlay_count: int = 0
+	for channel: String in JourneyData.AXIS_SUFFIXES:
+		if _owner._find_slot_fill(node_id, "axis_scripts", channel) >= 0:
+			overlay_count += 1
+		col.add_child(
+			_channel_overlay_row(
+				node_id, data, "axis_scripts", channel, str(JourneyData.AXIS_SUFFIXES[channel])
+			)
+		)
+	for channel: String in JourneyData.VIB_SUFFIXES:
+		if _owner._find_slot_fill(node_id, "vib_scripts", channel) >= 0:
+			overlay_count += 1
+		col.add_child(
+			_channel_overlay_row(
+				node_id, data, "vib_scripts", channel, str(JourneyData.VIB_SUFFIXES[channel])
+			)
+		)
+
+	# Remove everything this round overlaid — the quick "I picked the wrong scripts" escape hatch, on top
+	# of the per-channel ✕.
+	if overlay_count > 0:
+		col.add_child(_side_section_separator())
+		var clear_btn: Button = UITheme.make_icon_btn(
+			"✕ CLEAR OVERLAYS (%d)" % overlay_count, false, UITheme.MAGENTA
+		)
+		clear_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		clear_btn.pressed.connect(func() -> void: _owner._clear_round_slot_fills(node_id))
+		col.add_child(clear_btn)
+	return col
+
+
+# One channel status row: locked ("in base"), an overlay slot-fill (filename + ✕), or empty (＋ picker).
+func _channel_overlay_row(
+	node_id: String, data: Dictionary, field: String, channel: String, human: String
+) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var lbl: Label = Label.new()
+	lbl.text = "%s  (%s)" % [channel, human]
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.add_theme_font_size_override("font_size", 11)
+	row.add_child(lbl)
+
+	if (data.get(field, {}) as Dictionary).has(channel):
+		lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		var s: Label = Label.new()
+		s.text = "in base"
+		s.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		s.add_theme_font_size_override("font_size", 10)
+		row.add_child(s)
+		return row
+
+	lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	var idx: int = _owner._find_slot_fill(node_id, field, channel)
+	if idx >= 0:
+		var fname: Label = Label.new()
+		fname.text = (
+			str((_owner._rendition_slot_fills[idx] as Dictionary).get("path", "")).get_file()
+		)
+		fname.add_theme_color_override("font_color", UITheme.CYAN)
+		fname.add_theme_font_size_override("font_size", 10)
+		fname.clip_text = true
+		fname.custom_minimum_size = Vector2(120, 0)
+		row.add_child(fname)
+		var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+		rm.tooltip_text = UITheme.wrap_tip("Remove this channel overlay")
+		rm.pressed.connect(func() -> void: _owner._remove_slot_fill(node_id, field, channel))
+		row.add_child(rm)
+	else:
+		var add: Button = Button.new()
+		add.text = "＋"
+		add.tooltip_text = UITheme.wrap_tip("Attach a script to this channel")
+		UITheme.style_button(add, UITheme.PURPLE_MID, 12, 6)
+		add.pressed.connect(func() -> void: _owner._pick_slot_fill_script(node_id, field, channel))
+		row.add_child(add)
+	return row
+
+
+# The side-panel editor for a ghosted base FORK during rendition authoring. The base's prompt and its own
+# choices are shown read-only for context (they render identically when the base is played standalone);
+# below them the rendition can ADD overlay choices — append-anchors, each with its OWN name + card image +
+# target — up to the 4-choice ForkScreen cap. Base-owned config (prompt/resolution/base labels) is never
+# editable here; the base fork is never re-saved.
+func _make_rendition_fork_editor(node_id: String, node: Dictionary) -> Control:
+	var data: Dictionary = node.get("data", {})
+	var out: Array = node.get("out", [])
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+
+	var hdr: Label = Label.new()
+	hdr.text = "⑂ OVERLAY FORK"
+	hdr.add_theme_color_override("font_color", UITheme.CYAN)
+	hdr.add_theme_font_size_override("font_size", 14)
+	hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(hdr)
+
+	var note: Label = Label.new()
+	note.text = "The base fork is locked. Add choices that appear only when this rendition is installed."
+	note.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	note.add_theme_font_size_override("font_size", 10)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(note)
+
+	var title: String = str(data.get("title", "")).strip_edges()
+	if title != "":
+		col.add_child(_side_field_label("BASE PROMPT"))
+		var pl: Label = Label.new()
+		pl.text = title
+		pl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		pl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(pl)
+
+	col.add_child(_side_section_separator())
+	col.add_child(_side_field_label("CHOICES"))
+
+	# The fork's resolution + metric are base-owned; overlay choices gate/act by the same rules, so the
+	# overlay editor exposes the matching per-resolution fields (weight / cost / threshold / requirement).
+	var resolution: String = str(data.get("resolution", "choice"))
+	var metric: String = str(data.get("cond_metric", "score"))
+
+	# Base choices (and any base open slot) read-only; overlay choices — an anchor edge with no `_slot` —
+	# fully editable. A filled base slot (anchor + `_slot`) is base-owned, so it stays a read-only summary.
+	for ei in out.size():
+		var edge: Dictionary = out[ei]
+		if bool(edge.get("_anchor", false)) and not edge.has("_slot"):
+			col.add_child(_make_overlay_choice_block(node_id, out, ei, resolution, metric))
+		else:
+			col.add_child(_make_base_choice_summary(out, ei))
+
+	# ForkScreen shows at most 4 choices — cap on the total (base slots + overlay choices).
+	if out.size() < 4:
+		var add_btn: Button = Button.new()
+		add_btn.text = "+ ADD OVERLAY CHOICE"
+		add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(add_btn, UITheme.CYAN)
+		add_btn.pressed.connect(func() -> void: _owner._add_overlay_fork_choice(node_id))
+		col.add_child(add_btn)
+	else:
+		var capped: Label = Label.new()
+		capped.text = "Fork is full — 4 choices max."
+		capped.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		capped.add_theme_font_size_override("font_size", 10)
+		col.add_child(capped)
+
+	return col
+
+
+# A read-only summary row for a BASE fork choice (or an open/filled base slot) inside the rendition fork
+# editor: its label + where it leads, dimmed to signal it's locked. Context only — no edit controls.
+func _make_base_choice_summary(out: Array, ei: int) -> Control:
+	var edge: Dictionary = out[ei]
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", ROW_SEP)
+	var lbl: Label = Label.new()
+	var nm: String = str(edge.get("name", "")).strip_edges()
+	var to: String = str(edge.get("to", "")).strip_edges()
+	var dest: String = _graph_node_label(to) if to != "" else "(open)"
+	lbl.text = "%d. %s → %s" % [ei + 1, nm if nm != "" else "Choice", dest]
+	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(lbl)
+	return row
+
+
+# An editable card for one OVERLAY fork choice (an append-anchor the rendition added): NAME, CARD IMAGE,
+# LEADS TO (connect), and REMOVE. Styled in the rendition accent (cyan) so it reads as the overlay's own.
+# Edits write straight into out[ei]; structural actions route through the owner and re-render.
+func _make_overlay_choice_block(
+	node_id: String, out: Array, ei: int, resolution: String, metric: String
+) -> Control:
+	var edge: Dictionary = out[ei]
+
+	var panel: PanelContainer = PanelContainer.new()
+	var ps: StyleBoxFlat = StyleBoxFlat.new()
+	ps.bg_color = Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.08)
+	ps.border_color = UITheme.CYAN
+	ps.border_width_left = 1
+	ps.border_width_right = 1
+	ps.border_width_top = 1
+	ps.border_width_bottom = 1
+	ps.content_margin_left = 10
+	ps.content_margin_right = 10
+	ps.content_margin_top = 8
+	ps.content_margin_bottom = 8
+	panel.add_theme_stylebox_override("panel", ps)
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var sub: VBoxContainer = VBoxContainer.new()
+	sub.add_theme_constant_override("separation", 4)
+	panel.add_child(sub)
+
+	var top: HBoxContainer = HBoxContainer.new()
+	top.add_theme_constant_override("separation", ROW_SEP)
+	sub.add_child(top)
+	var choice_lbl: Label = Label.new()
+	choice_lbl.text = "OVERLAY CHOICE %d" % (ei + 1)
+	choice_lbl.add_theme_color_override("font_color", UITheme.CYAN)
+	choice_lbl.add_theme_font_size_override("font_size", 11)
+	choice_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(choice_lbl)
+	var rm_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.CYAN)
+	rm_btn.tooltip_text = UITheme.wrap_tip("Remove this overlay choice")
+	rm_btn.pressed.connect(func() -> void: _owner._remove_overlay_fork_choice(node_id, ei))
+	top.add_child(rm_btn)
+
+	sub.add_child(_side_field_label("NAME"))
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.placeholder_text = "Choice name..."
+	name_edit.text = str(edge.get("name", ""))
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: out[ei]["name"] = v)
+	sub.add_child(name_edit)
+
+	sub.add_child(_side_field_label("DESCRIPTION"))
+	var desc_edit: LineEdit = LineEdit.new()
+	desc_edit.placeholder_text = "Description (optional)..."
+	desc_edit.text = str(edge.get("description", ""))
+	UITheme.style_line_edit(desc_edit)
+	desc_edit.text_changed.connect(func(v: String) -> void: out[ei]["description"] = v)
+	sub.add_child(desc_edit)
+
+	sub.add_child(_side_field_label("CARD IMAGE"))
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
+	img_zone.picker_title = "Select Card Image for Overlay Choice %d" % (ei + 1)
+	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sub.add_child(img_zone)
+	if str(edge.get("image_path", "")) != "":
+		img_zone.call_deferred("set_file", edge["image_path"])
+	var img_rm_btn: Button = Button.new()
+	img_rm_btn.text = "✕ REMOVE IMAGE"
+	img_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	img_rm_btn.visible = str(edge.get("image_path", "")) != ""
+	UITheme.style_button(img_rm_btn, UITheme.CYAN)
+	img_rm_btn.pressed.connect(
+		func() -> void:
+			_delete_saved_image(str(out[ei].get("image_path", "")))
+			out[ei]["image_path"] = ""
+			img_zone.call_deferred("set_file", "")
+			img_rm_btn.visible = false
+	)
+	img_zone.file_dropped.connect(
+		func(p: String) -> void:
+			out[ei]["image_path"] = p
+			img_rm_btn.visible = true
+	)
+	sub.add_child(img_rm_btn)
+
+	# Full parity with a native choice: the fork's per-resolution gate (weight / cost / threshold /
+	# requirement) + on-take flags/counters, so an overlay option behaves exactly like a base one.
+	_add_choice_resolution_and_effects(sub, out, ei, resolution, metric)
+
+	# LEADS TO — connect this choice to a target node (routes through the anchor connect, which appends
+	# it as an extra choice at compose). Shows the current destination or an unconnected warning.
+	sub.add_child(_side_section_separator())
+	sub.add_child(_side_field_label("LEADS TO"))
+	var to_id: String = str(edge.get("to", "")).strip_edges()
+	var connecting: bool = _owner._connecting_from == node_id and _owner._connecting_edge_idx == ei
+	var conn_btn: Button = UITheme.make_icon_btn(
+		(
+			"✕ CANCEL CONNECT"
+			if connecting
+			else ("🔗 " + _graph_node_label(to_id) if to_id != "" else "🔗 CONNECT TO…")
+		),
+		false,
+		UITheme.AMBER
+	)
+	conn_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	conn_btn.pressed.connect(func() -> void: _owner._begin_connect_fork_edge(node_id, ei))
+	sub.add_child(conn_btn)
+	if to_id == "" and not connecting:
+		var warn: Label = Label.new()
+		warn.text = "Not connected — this choice is dropped on save until you wire it."
+		warn.add_theme_color_override("font_color", UITheme.AMBER)
+		warn.add_theme_font_size_override("font_size", 10)
+		warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sub.add_child(warn)
+
+	return panel
 
 
 func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callable) -> Control:
@@ -1953,6 +2295,57 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	return col
 
 
+# The per-resolution gate field(s) + on-take effects (set flags / bump counters) for one fork choice.
+# Shared verbatim by native fork choices and rendition OVERLAY choices, so an overlay option gates and
+# acts exactly like a base one. `resolution`/`metric` come from the (base-owned) fork; edits write into
+# out[ei]. The gate fields reuse the tree path helpers, which index out[ei] just like a tree path.
+func _add_choice_resolution_and_effects(
+	sub: VBoxContainer, out: Array, ei: int, resolution: String, metric: String
+) -> void:
+	var edge: Dictionary = out[ei]
+	if resolution == "random":
+		_add_path_int_field(sub, out, ei, "weight", "WEIGHT (RELATIVE ODDS)", 1000)
+	elif resolution == "sacrifice":
+		_add_path_int_field(sub, out, ei, "cost", "COIN COST", 999999)
+		_add_required_item_field(sub, out, ei, edge, "REQUIRED ITEM (CONSUMED)")
+	elif resolution == "conditional" and metric == "item":
+		_add_required_item_field(sub, out, ei, edge, "REQUIRED ITEM")
+	elif resolution == "conditional" and metric == "flag":
+		sub.add_child(_side_field_label("REQUIRED FLAG"))
+		var rf_edit: LineEdit = LineEdit.new()
+		rf_edit.placeholder_text = "Flag name (e.g. spared_boss)..."
+		rf_edit.text = str(edge.get("required_flag", ""))
+		UITheme.style_line_edit(rf_edit)
+		rf_edit.text_changed.connect(
+			func(v: String) -> void: out[ei]["required_flag"] = v.strip_edges()
+		)
+		sub.add_child(rf_edit)
+		sub.add_child(_known_flags_hint())
+	elif resolution == "conditional":
+		var metric_word: String = "SCORE"
+		if metric == "coins":
+			metric_word = "COINS"
+		elif metric == "counter":
+			metric_word = "COUNTER"
+			# Each choice can gate on its own counter (e.g. one on "prod", another on "test"); blank
+			# falls back to the fork's default counter. This is the per-choice sibling of the threshold.
+			sub.add_child(_side_field_label("COUNTER  (blank = fork default)"))
+			var pc_edit: LineEdit = LineEdit.new()
+			pc_edit.placeholder_text = "Counter name (e.g. prod)…"
+			pc_edit.text = str(edge.get("cond_counter", ""))
+			UITheme.style_line_edit(pc_edit)
+			pc_edit.text_changed.connect(
+				func(v: String) -> void: out[ei]["cond_counter"] = v.strip_edges()
+			)
+			sub.add_child(pc_edit)
+		var thr_label: String = "ACTIVATES AT ≥  (%s)" % metric_word
+		_add_path_int_field(sub, out, ei, "threshold", thr_label, 999999)
+
+	# A choice can set flags and bump counters when it's taken ("you chose mercy" / "+1 resolve").
+	sub.add_child(_make_set_flags_field(edge))
+	sub.add_child(_make_set_counters_field(edge))
+
+
 # One choice card inside the graph fork editor: name / description / card image, the per-
 # resolution field (weight / threshold / cost / required item — reusing the tree helpers, which
 # write to out[ei] just as they do for a tree path), and the "LEADS TO" wiring (connect / clear).
@@ -2040,49 +2433,9 @@ func _make_graph_choice_block(
 	)
 	sub.add_child(img_rm_btn)
 
-	# Per-resolution field — the shared helpers write to out[ei][key] (out is an edge array,
-	# indexed exactly like the tree's paths array).
-	if resolution == "random":
-		_add_path_int_field(sub, out, ei, "weight", "WEIGHT (RELATIVE ODDS)", 1000)
-	elif resolution == "sacrifice":
-		_add_path_int_field(sub, out, ei, "cost", "COIN COST", 999999)
-		_add_required_item_field(sub, out, ei, edge, "REQUIRED ITEM (CONSUMED)")
-	elif resolution == "conditional" and metric == "item":
-		_add_required_item_field(sub, out, ei, edge, "REQUIRED ITEM")
-	elif resolution == "conditional" and metric == "flag":
-		sub.add_child(_side_field_label("REQUIRED FLAG"))
-		var rf_edit: LineEdit = LineEdit.new()
-		rf_edit.placeholder_text = "Flag name (e.g. spared_boss)..."
-		rf_edit.text = str(edge.get("required_flag", ""))
-		UITheme.style_line_edit(rf_edit)
-		rf_edit.text_changed.connect(
-			func(v: String) -> void: out[ei]["required_flag"] = v.strip_edges()
-		)
-		sub.add_child(rf_edit)
-		sub.add_child(_known_flags_hint())
-	elif resolution == "conditional":
-		var metric_word: String = "SCORE"
-		if metric == "coins":
-			metric_word = "COINS"
-		elif metric == "counter":
-			metric_word = "COUNTER"
-			# Each choice can gate on its own counter (e.g. one on "prod", another on "test"); blank
-			# falls back to the fork's default counter. This is the per-choice sibling of the threshold.
-			sub.add_child(_side_field_label("COUNTER  (blank = fork default)"))
-			var pc_edit: LineEdit = LineEdit.new()
-			pc_edit.placeholder_text = "Counter name (e.g. prod)…"
-			pc_edit.text = str(edge.get("cond_counter", ""))
-			UITheme.style_line_edit(pc_edit)
-			pc_edit.text_changed.connect(
-				func(v: String) -> void: out[ei]["cond_counter"] = v.strip_edges()
-			)
-			sub.add_child(pc_edit)
-		var thr_label: String = "ACTIVATES AT ≥  (%s)" % metric_word
-		_add_path_int_field(sub, out, ei, "threshold", thr_label, 999999)
-
-	# A choice can set flags and bump counters when it's taken ("you chose mercy" / "+1 resolve").
-	sub.add_child(_make_set_flags_field(edge))
-	sub.add_child(_make_set_counters_field(edge))
+	# Per-resolution gate field(s) + on-take effects (flags/counters). Shared with rendition overlay
+	# choices so an overlay option behaves exactly like a native one.
+	_add_choice_resolution_and_effects(sub, out, ei, resolution, metric)
 	# LEADS TO — the choice's target node, wired via connect mode.
 	sub.add_child(_side_section_separator())
 	sub.add_child(_side_field_label("LEADS TO"))

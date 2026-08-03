@@ -35,16 +35,160 @@ static func scan_all(journeys_dir: String) -> Array:
 	var dir: DirAccess = DirAccess.open(journeys_dir)
 	if dir == null:
 		return result
+	# Rendition folders (Type: "rendition") are collected separately and attached to their parent
+	# journey by ParentId — an overlay never shows as its own catalogue card.
+	var renditions: Array = []
 	dir.list_dir_begin()
 	var entry: String = dir.get_next()
 	while entry != "":
 		if dir.current_is_dir() and not entry.begins_with("."):
-			var journey: Dictionary = parse_graph(journeys_dir + "/" + entry, entry)
-			if not journey.is_empty():
-				result.append(journey)
+			var folder_path: String = journeys_dir + "/" + entry
+			var raw: Dictionary = _read_raw_json(folder_path)
+			if not raw.is_empty():
+				if JourneyRendition.is_rendition(raw):
+					renditions.append(_rendition_summary(raw, folder_path, entry))
+				else:
+					var journey: Dictionary = parse_graph(folder_path, entry)
+					if not journey.is_empty():
+						result.append(journey)
 		entry = dir.get_next()
 	dir.list_dir_end()
+	group_renditions(result, renditions)
 	return result
+
+
+# Reads a folder's journey.json into its raw dict (or {} when missing/malformed). Used to peek at Type
+# before deciding whether to parse a full journey or collect a rendition summary.
+static func _read_raw_json(folder_path: String) -> Dictionary:
+	var json_path: String = folder_path + "/journey.json"
+	if not FileAccess.file_exists(json_path):
+		return {}
+	var file: FileAccess = FileAccess.open(json_path, FileAccess.READ)
+	if file == null:
+		return {}
+	var parser: JSON = JSON.new()
+	var err: int = parser.parse(file.get_as_text())
+	file.close()
+	if err != OK or not (parser.data is Dictionary):
+		return {}
+	return parser.data
+
+
+# The lightweight catalogue entry for a rendition (it's not a playable card on its own — it's listed
+# under its parent's detail modal as a selectable variant).
+static func _rendition_summary(
+	data: Dictionary, folder_path: String, folder_name: String
+) -> Dictionary:
+	return {
+		"folder": folder_path,
+		"folder_name": folder_name,
+		"journey_id": str(data.get("JourneyId", "")),
+		"name": str(data.get("Name", folder_name)),
+		"author": str(data.get("Author", "")),
+		"description": str(data.get("Description", "")),
+		"parent_id": str(data.get("ParentId", "")),
+		"parent_min_version": str(data.get("ParentMinVersion", "")),
+		# Soft edit-lock: true on a rendition installed from a paid pack (see the journey summary above).
+		"locked": bool(data.get("Locked", false)),
+		"cover_path": find_cover_image(folder_path),  # its own media/cover.* if the author set one, else ""
+	}
+
+
+# Attaches each rendition to its ultimate base journey's `renditions` list. A rendition's ParentId may be
+# a base journey OR ANOTHER rendition (sibling-dependency: e.g. a free-video overlay filling a paid-script
+# overlay's slots), so each rendition's parent chain is walked to the base. Every journey gets a
+# `renditions` array (all descendants, flattened). Each rendition gets `chain_folders` — the ordered list
+# of rendition folders to compose base-ward (…ancestors…, self) — which the loader/selector use to compose
+# the whole stack. An orphan (chain doesn't reach an installed base, or loops) is left out.
+static func group_renditions(journeys: Array, renditions: Array) -> void:
+	var base_by_id: Dictionary = {}
+	for j: Dictionary in journeys:
+		j["renditions"] = []
+		var jid: String = str(j.get("journey_id", ""))
+		if jid != "":
+			base_by_id[jid] = j
+	var rend_by_id: Dictionary = {}
+	for r: Dictionary in renditions:
+		var rid: String = str(r.get("journey_id", ""))
+		if rid != "":
+			rend_by_id[rid] = r
+	for rend: Dictionary in renditions:
+		var resolved: Dictionary = _resolve_rendition_chain(rend, base_by_id, rend_by_id)
+		if resolved.is_empty():
+			continue
+		rend["chain_folders"] = resolved["chain"]
+		((resolved["base"] as Dictionary)["renditions"] as Array).append(rend)
+
+
+# Walks a rendition's ParentId chain to its ultimate base journey. Returns {base, chain} where `chain` is
+# the ordered list of rendition FOLDERS to compose (base-ward first, ending with this rendition), or {} when
+# the chain doesn't reach an installed base (orphan) or loops.
+static func _resolve_rendition_chain(
+	r: Dictionary, base_by_id: Dictionary, rend_by_id: Dictionary
+) -> Dictionary:
+	var chain: Array = []  # self-ward; reversed to base-ward before returning
+	var seen: Dictionary = {}
+	var cur: Dictionary = r
+	while not seen.has(str(cur.get("journey_id", ""))):
+		seen[str(cur.get("journey_id", ""))] = true
+		chain.append(str(cur.get("folder", "")))
+		var pid: String = str(cur.get("parent_id", ""))
+		if base_by_id.has(pid):
+			chain.reverse()
+			return {"base": base_by_id[pid], "chain": chain}
+		if not rend_by_id.has(pid):
+			return {}  # parent (base or ancestor rendition) isn't installed
+		cur = rend_by_id[pid]
+	return {}  # the loop exited via `seen` → a cyclic dependency, so drop it
+
+
+# Reads a rendition folder's delta, with its media paths resolved against the RENDITION's own base
+# (per-origin). Returns the runtime delta JourneyCompose consumes, or {} when unreadable.
+static func load_rendition_delta(rendition_folder: String) -> Dictionary:
+	var data: Dictionary = _read_raw_json(rendition_folder)
+	if data.is_empty():
+		return {}
+	var delta: Dictionary = JourneyRendition.parse_rendition(data)
+	JourneyRendition.resolve_delta_paths(delta, rendition_folder)
+	return delta
+
+
+# Produces a play-ready journey dict = the BASE journey (its meta, paths resolved against the base folder)
+# with its graph replaced by base ⊕ the whole rendition CHAIN. `chain_folders` is the ordered list of
+# rendition folders to compose base-ward (a single-rendition chain is just [that folder]); each is resolved
+# against its OWN folder before composing, so the merged graph carries correct absolute paths from every
+# origin. The runtime consumes it exactly like a normal journey (GameState.StartJourney); `compose_errors`
+# collects break-loudly reports from every layer for the caller to surface.
+static func compose_play_journey(
+	base_folder: String, base_folder_name: String, chain_folders: Array
+) -> Dictionary:
+	var base: Dictionary = parse_graph(base_folder, base_folder_name)
+	if base.is_empty():
+		return {}
+	var graph: Dictionary = {"start": base.get("start", ""), "nodes": base.get("nodes", {})}
+	var errors: Array = []
+	for rf: Variant in chain_folders:
+		var delta: Dictionary = load_rendition_delta(str(rf))
+		var composed: Dictionary = JourneyCompose.compose_graph(graph, delta)
+		graph = composed["graph"]
+		errors.append_array(composed["errors"] as Array)
+	base["start"] = graph["start"]
+	base["nodes"] = graph["nodes"]
+	base["compose_errors"] = errors
+	base["active_rendition"] = str(chain_folders[-1]) if not chain_folders.is_empty() else ""
+	# Rebuild the catalogue preview (round/fork/shop/storyboard lists + totals) from the MERGED graph so
+	# the detail modal and stats reflect base ⊕ rendition, not just the base.
+	var mgraph: Dictionary = {"start": base["start"], "nodes": base["nodes"]}
+	var seq: Dictionary = _graph_catalogue_sequence(mgraph)
+	base["rounds"] = seq["rounds"]
+	base["shops"] = seq["shops"]
+	base["storyboards"] = seq["storyboards"]
+	base["forks"] = seq["forks"]
+	base["total_rounds"] = JourneyGraph.longest_round_path(mgraph, str(mgraph["start"]))
+	var totals: Dictionary = _graph_node_totals(mgraph)
+	base["total_actions"] = totals["actions"]
+	base["total_length_ms"] = totals["length_ms"]
+	return base
 
 
 # Parses one journey folder's journey.json into the catalogue model.
@@ -94,6 +238,9 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		"shown_counters": JourneyData.clean_flag_list(data.get("ShownCounters", [])),
 		# Stable journey id; blank on journeys written before ids existed (see _graph_meta).
 		"journey_id": str(data.get("JourneyId", "")),
+		# Soft edit-lock: true on a journey installed from a paid pack, so the buyer can't open it in the
+		# builder. A courtesy lock (journey.json is plaintext) — see JourneySelect._on_edit_pressed.
+		"locked": bool(data.get("Locked", false)),
 		# Redirect overlay (skip/converge/end), composed onto the graph in parse_graph.
 		"redirects": data.get("Redirects", {}),
 		"rounds": [],
@@ -412,6 +559,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Stable journey id. Blank for journeys written before ids existed; the builder mints one
 		# on the next save. Carried here so a re-save preserves it rather than re-minting.
 		"journey_id": str(data.get("JourneyId", "")),
+		# Soft edit-lock: true on a journey installed from a paid pack, so the buyer can't open it in the
+		# builder. A courtesy lock (journey.json is plaintext) — see JourneySelect._on_edit_pressed.
+		"locked": bool(data.get("Locked", false)),
 		# Counter names the author chose to surface to the player (HUD pop + inventory list). The
 		# runtime reads this off GameState.Journey; other counters stay hidden, gating only.
 		"shown_counters": JourneyData.clean_flag_list(data.get("ShownCounters", [])),

@@ -62,6 +62,7 @@ var _fog_enabled: bool = false
 var _fog_depth: int = 1  # ghost levels revealed beyond the visited trail (< 0 = whole structure)
 var _fog_revealed: Dictionary = {}  # node_id -> true (discovered this run; full render)
 var _fog_ghost: Dictionary = {}  # node_id -> true (within _fog_depth of the trail; "?" ghost render)
+var _ghost_nodes: Dictionary = {}  # node_id -> true; rendition PARENT nodes — dimmed, read-only base
 var _selected_ids: Array = []  # selected node ids (graph mode) — drives the highlight + group ops
 var _current_layout_node_id: String = ""  # transient: the node _make_node is building (graph mode)
 var _node_ctrls: Dictionary = {}  # node_id -> Control (graph mode), for live drag moves
@@ -192,6 +193,12 @@ func _ready() -> void:
 
 # Render entry: set the graph model and rebuild — nodes at their saved positions,
 # edges from out-lists. See _layout_graph.
+# Marks a set of nodes as "ghosted" — the dimmed, read-only base nodes shown behind a rendition overlay
+# being authored. Call before set_graph (the render reads this). Empty dict = normal editing.
+func set_ghost_nodes(ids: Dictionary) -> void:
+	_ghost_nodes = ids.duplicate()
+
+
 func set_graph(graph: Dictionary) -> void:
 	_graph_model = graph
 	refresh()
@@ -329,10 +336,18 @@ func _layout_graph() -> void:
 		var ctrl: Control = _make_node(disp, JourneyGraph.is_end(_graph_model, id))
 		ctrl.position = n.get("pos", Vector2.ZERO)
 		ctrl.set_meta("graph_node_id", id)
-		if not map_mode:  # player-facing map: nodes are read-only (no select/drag wiring)
+		# player-facing map is read-only; ghosted rendition parent nodes are read-only too (no
+		# select/drag/edit — they're the locked base behind the overlay being authored). The exception:
+		# a ghosted base FORK or ROUND is select-only, so the rendition can add overlay choices (fork) or
+		# channel overlays (round) to it. Other ghosted node types stay fully locked.
+		if not map_mode and not _ghost_nodes.has(id):
 			ctrl.gui_input.connect(_on_graph_node_gui_input.bind(id))
+		elif not map_mode and str(n.get("type", "")) in ["fork", "round"]:
+			ctrl.gui_input.connect(_on_ghost_node_gui_input.bind(id))
 		_canvas.add_child(ctrl)
 		_node_ctrls[id] = ctrl
+		if _ghost_nodes.has(id):
+			ctrl.modulate = Color(1, 1, 1, 0.4)  # rendition parent node — ghosted (read-only)
 		if not map_mode and not _traffic.is_empty():
 			_attach_traffic_chip(
 				ctrl, float((_traffic.get("nodes", {}) as Dictionary).get(id, 0.0))
@@ -340,7 +355,9 @@ func _layout_graph() -> void:
 		# Route recap: everything the run didn't visit is ghosted.
 		if not _route_nodes.is_empty() and not _route_nodes.has(id):
 			ctrl.modulate = Color(1, 1, 1, 0.35)
-	# Out-handles in a second pass so they're the topmost (always-clickable) children.
+	# Out-handles in a second pass so they're the topmost (always-clickable) children. Ghosted parent
+	# nodes DO get a handle — dragging from it attaches a rendition ANCHOR to a new node (the builder
+	# routes a ghosted source to an additive anchor edge rather than mutating the locked base).
 	if not map_mode:
 		for id: String in nodes:
 			if _node_ctrls.has(id):
@@ -369,6 +386,8 @@ func _layout_graph() -> void:
 				continue
 			drawn[key] = true
 			var color: Color = UITheme.FORK_EDGE if is_fork else UITheme.EDGE
+			if bool(e.get("_anchor", false)):
+				color = UITheme.CYAN  # rendition overlay edge (anchor / overlay fork choice / slot fill)
 			var width: float = 2.0
 			if not map_mode and not _traffic.is_empty():
 				# Heatmap: the edge's traffic share replaces its type color —
@@ -487,6 +506,20 @@ func _on_graph_node_gui_input(event: InputEvent, node_id: String) -> void:
 	accept_event()
 
 
+# A ghosted base FORK or ROUND is select-only during rendition authoring: a left-click selects it (so the
+# side panel opens the rendition fork editor / channel-overlay editor) but never arms a drag or joins a
+# marquee — the locked base can't be moved or multi-edited. Out-handles still drive anchor/slot connects.
+func _on_ghost_node_gui_input(event: InputEvent, node_id: String) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	var mb := event as InputEventMouseButton
+	if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+		if _connect_mode:
+			return  # not a valid connect target — you attach overlay content, not the base
+		_set_selection([node_id])
+		accept_event()
+
+
 # Drives a node drag armed by _on_graph_node_gui_input. Global (not gui_input) so it keeps tracking
 # when the cursor leaves the node. Moves the WHOLE selection live; grid-snaps each on release. A
 # press with no motion collapses a kept multi-selection to the pressed node. No-op when no drag.
@@ -541,14 +574,28 @@ func _input(event: InputEvent) -> void:
 # Adds the out-handle nub(s) to a node's bottom edge: one centred handle for a regular node (its
 # single out-edge), one per choice for a fork (spread along the bottom, tinted like fork edges).
 func _add_out_handles(node_id: String, node: Dictionary, node_pos: Vector2) -> void:
+	var ghost: bool = _ghost_nodes.has(node_id)
 	if node.get("type", "") == "fork":
 		var out: Array = node.get("out", [])
 		var count: int = maxi(1, out.size())
 		for ei in count:
+			# On a ghosted base fork, only an OPEN choice (blank `to`) — or one this overlay already
+			# filled (`_anchor`, so it can be re-pointed) — is draggable; base-wired choices stay locked.
+			if ghost:
+				var e: Dictionary = out[ei] if ei < out.size() else {}
+				if str(e.get("to", "")) != "" and not bool(e.get("_anchor", false)):
+					continue
 			var fx: float = NODE_WIDTH * float(ei + 1) / float(count + 1)
 			_make_handle(node_id, ei, node_pos + Vector2(fx, NODE_HEIGHT), UITheme.FORK_EDGE)
-	else:
-		_make_handle(node_id, -1, node_pos + Vector2(NODE_WIDTH * 0.5, NODE_HEIGHT), UITheme.EDGE)
+		return
+	# A ghosted non-fork node only offers a handle when it's an ENDING: a rendition anchor extends a base
+	# ending, so mid-graph base nodes (which already continue) get no handle to drag from. An anchor edge
+	# already added by the overlay doesn't disqualify it — the handle stays so its anchor can be re-pointed.
+	if ghost:
+		for e: Dictionary in node.get("out", []):
+			if not bool(e.get("_anchor", false)):
+				return  # a real base continuation — not an ending
+	_make_handle(node_id, -1, node_pos + Vector2(NODE_WIDTH * 0.5, NODE_HEIGHT), UITheme.EDGE)
 
 
 # One out-handle nub (a small circle straddling the bottom edge). Dragging it starts a connect-drag.
@@ -1692,6 +1739,8 @@ func _finish_marquee() -> void:
 		return
 	var ids: Array = _selected_ids.duplicate() if _marquee_additive else []
 	for id: String in _node_ctrls:
+		if _ghost_nodes.has(id):
+			continue  # locked base node — never marquee-selectable
 		var c: Control = _node_ctrls[id]
 		var screen_rect: Rect2 = Rect2(_canvas.position + c.position * _zoom, c.size * _zoom)
 		if rect.intersects(screen_rect) and not ids.has(id):
