@@ -66,6 +66,24 @@ const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
 static var edit_journey: Dictionary = {}
 
+# When set before opening the builder, it starts in RENDITION mode: it loads this base journey with its
+# nodes ghosted/read-only and a save produces an overlay delta rather than a journey (base untouched).
+static var rendition_parent: Dictionary = {}
+
+# Set ALONGSIDE rendition_parent to EDIT an existing rendition (its summary dict) rather than author a
+# fresh one — the builder re-injects its saved delta on top of the ghosted base and re-saves in place.
+static var edit_rendition: Dictionary = {}
+
+# Set ALONGSIDE edit_journey by "merge into base": after the builder loads the base, it injects this node
+# (with a real edge from its former anchor) so the author lands on the base with the node re-added, unsaved.
+# {node_id, node, anchor, edge}
+static var merge_inject: Dictionary = {}
+
+# Set ALONGSIDE rendition_parent to author an overlay over ANOTHER rendition (sibling-dependency), not the
+# base: the ghosted parent becomes base ⊕ the ancestor chain, and the new overlay targets `parent_id`.
+# {start, nodes, parent_id, parent_name}. Empty = overlay the base directly.
+static var rendition_over: Dictionary = {}
+
 const SIDE_PANEL_WIDTH: int = 480
 
 # Journey metadata: stored as member vars since the side-panel editor widgets
@@ -101,6 +119,16 @@ var _graph: Control = null  # GraphView instance, host inside _graph_host
 
 # The free-form GRAPH editor model (GRAPH_EDITOR_OVERHAUL.md) — the journey as nodes + edges.
 var _graph_model: Dictionary = {}  # {start, nodes:{id:{type,data,pos,out}}}
+
+# Rendition (overlay) authoring. True when editing an overlay of a base journey. `_rendition_parent_ids`
+# are the GHOSTED (read-only) base node ids; anything the author adds afterward is new/editable.
+var _rendition_mode: bool = false
+var _rendition_parent_id: String = ""  # the base's JourneyId → the overlay's ParentId
+var _rendition_parent_folder: String = ""
+var _rendition_parent_journey: Dictionary = {}  # the base's scanner dict — reloaded by "merge into base"
+var _rendition_parent_ids: Dictionary = {}  # base node id -> true
+var _rendition_slot_fills: Array = []  # [{node, field, channel, path}] — axis/vibe overlays on base rounds
+
 var _selected_graph_node_id: String = ""  # the lone selected node id, or "" when 0 or 2+ are selected
 var _selected_graph_node_ids: Array = []  # the full selection set (mirrors GraphView; drives group ops)
 var _connecting_from: String = ""  # source node while wiring an edge (click-to-connect), else ""
@@ -204,10 +232,20 @@ func _ready() -> void:
 	_setup_toolbar_buttons()
 	_connect_signals()
 	_setup_graph_view()
-	if not edit_journey.is_empty():
+	if not rendition_parent.is_empty():
+		_enter_rendition_mode(rendition_parent)
+		if not edit_rendition.is_empty():
+			_load_rendition_delta(edit_rendition)
+			edit_rendition = {}
+		rendition_parent = {}
+		rendition_over = {}
+	elif not edit_journey.is_empty():
 		_original_journey_folder = edit_journey.get("folder", "")
 		_load_graph(edit_journey)
 		edit_journey = {}
+		if not merge_inject.is_empty():
+			_apply_merge_inject(merge_inject)
+			merge_inject = {}
 	_side_renderer.show_journey_info_panel()
 	# Check for leftover staging folders from interrupted saves (crash, force-
 	# kill, power loss). They take disk space and the user has no way to know
@@ -454,6 +492,7 @@ func _apply_theme() -> void:
 
 	UITheme.style_label(_title_lbl, UITheme.PURPLE_BRIGHT, 18, true)
 	_title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_title_lbl.clip_text = true  # never let the title (long in rendition mode) overflow into the buttons
 
 	UITheme.style_button(_back_btn, UITheme.MAGENTA)
 	UITheme.style_button(_save_btn, UITheme.PURPLE_BRIGHT)
@@ -461,6 +500,24 @@ func _apply_theme() -> void:
 
 	_status_lbl.add_theme_font_size_override("font_size", 13)
 	_status_lbl.visible = false
+	# The status toast FLOATS as a centered banner at the top of the GRAPH area (reparented into the graph
+	# host) rather than living in the top-bar HBox. That keeps it clear of the toolbar buttons AND confined
+	# to the canvas, so it never overlaps the side-panel editor on the right.
+	if _status_lbl.get_parent() != _graph_host:
+		_status_lbl.reparent(_graph_host)
+	_status_lbl.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_status_lbl.offset_top = 8
+	_status_lbl.offset_bottom = 36
+	_status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_status_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_status_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_status_lbl.z_index = 10
+	var toast_bg: StyleBoxFlat = StyleBoxFlat.new()
+	toast_bg.bg_color = Color(UITheme.PANEL_BG.r, UITheme.PANEL_BG.g, UITheme.PANEL_BG.b, 0.92)
+	toast_bg.border_color = UITheme.PURPLE_MID
+	toast_bg.set_border_width_all(1)
+	toast_bg.set_content_margin_all(6)
+	_status_lbl.add_theme_stylebox_override("normal", toast_bg)
 
 	# Side panel background
 	var sp_style: StyleBoxFlat = StyleBoxFlat.new()
@@ -1246,6 +1303,28 @@ func _show_node_context_menu(node_id: String) -> void:
 				_toggle_node_as_finish(node_id)
 		)
 		vbox.add_child(finish_b)
+
+	# Extract → rendition (base journeys, non-start node); Merge → base (an overlay node in rendition mode).
+	if not _rendition_mode and not already_start:
+		var extract_b: Button = _ctx_menu_button(
+			"⑂ EXTRACT TO RENDITION",
+			UITheme.CYAN,
+			func() -> void:
+				popup.queue_free()
+				if not _selected_graph_node_ids.has(node_id):
+					_graph.select_graph_node(node_id)
+				_begin_extract_to_rendition()
+		)
+		vbox.add_child(extract_b)
+	elif _rendition_mode and not _rendition_parent_ids.has(node_id):
+		var merge_b: Button = _ctx_menu_button(
+			"⤺ MERGE INTO BASE",
+			UITheme.CYAN,
+			func() -> void:
+				popup.queue_free()
+				_begin_merge_to_base(node_id)
+		)
+		vbox.add_child(merge_b)
 
 	popup.reset_size()
 	popup.position = Vector2i(get_global_mouse_position())
@@ -2163,6 +2242,11 @@ func _on_viewport_files_dropped(files: PackedStringArray) -> void:
 # them into the node's funscript / axis / vib slots by suffix (the per-field DropZones only take one
 # file each). Otherwise, with nothing selected, accept a dropped image as the journey cover.
 func _handle_side_panel_drop(files: PackedStringArray) -> void:
+	# A ghosted base round is NEVER modified — its channel-overlay editor's own drop zone already routed
+	# this drop to slot-fills. Writing the scripts into the base node here would make its channels wrongly
+	# read as "in base" (and, worse, alter the locked base in memory).
+	if _rendition_parent_ids.has(_selected_graph_node_id):
+		return
 	var node: Dictionary = (_graph_model.get("nodes", {}) as Dictionary).get(
 		_selected_graph_node_id, {}
 	)
@@ -2375,6 +2459,110 @@ func _load_graph(journey: Dictionary) -> void:
 	_graph_model.merge(loaded, true)
 
 
+# Enters rendition (overlay) mode: loads the base graph with all of its nodes GHOSTED (read-only), then
+# resets the journey-level identity so the overlay is its own artifact (its own name/id/folder). A save
+# produces an overlay delta — not a re-save of the base — and the base's files are never touched.
+# `rendition_over` (set when overlaying ANOTHER rendition) swaps the ghosted graph for base ⊕ the ancestor
+# chain and re-targets the ParentId, enabling sibling-dependency stacks; empty = overlay the base directly.
+func _enter_rendition_mode(base: Dictionary) -> void:
+	_rendition_mode = true
+	_load_graph(base)  # base graph + meta (identity/graph overridden below as needed)
+	var parent_title: String = str(base.get("title", "the base"))
+	if not rendition_over.is_empty():
+		# Ghost the COMPOSED base ⊕ ancestor-chain graph, and target that ancestor rendition's id. Mutate
+		# _graph_model IN PLACE — the deferred set_graph already captured this dict's reference, so a
+		# reassignment here would leave the canvas rendering the pre-composed base.
+		_graph_model.clear()
+		_graph_model["start"] = str(rendition_over.get("start", ""))
+		_graph_model["nodes"] = (rendition_over.get("nodes", {}) as Dictionary).duplicate(true)
+		_rendition_parent_id = str(rendition_over.get("parent_id", ""))
+		parent_title = str(rendition_over.get("parent_name", parent_title))
+	else:
+		_rendition_parent_id = _journey_id  # the base's id becomes the overlay's ParentId
+	_rendition_parent_folder = str(base.get("folder", ""))
+	_rendition_parent_journey = base.duplicate(true)  # kept so "merge into base" can reload it
+	_rendition_parent_ids = {}
+	_rendition_slot_fills = []
+	for id: String in _graph_model.get("nodes", {}):
+		_rendition_parent_ids[id] = true
+	# The overlay is a NEW artifact — never adopt the base's identity, description, cover, or save location.
+	_journey_id = ""
+	_journey_name = ""
+	_journey_desc = ""
+	_cover_path = ""
+	_original_journey_folder = ""
+	_graph.set_ghost_nodes(_rendition_parent_ids)  # the deferred set_graph reads this
+	_show_rendition_banner(parent_title)
+
+
+# Loads an existing rendition's delta ON TOP of the just-ghosted base (call right after
+# _enter_rendition_mode) so it can be edited and re-saved in place: injects its new nodes, rebuilds its
+# anchor edges (marked `_anchor` on the base nodes), repopulates its slot-fills, and adopts its identity
+# + folder so a save OVERWRITES it rather than minting a new overlay.
+func _load_rendition_delta(summary: Dictionary) -> void:
+	var folder: String = str(summary.get("folder", ""))
+	var delta: Dictionary = JourneyScanner.load_rendition_delta(folder)  # paths resolved to the rendition folder
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	# New overlay nodes (their canvas positions were saved in the Nodes block).
+	for id: String in delta.get("nodes", {}):
+		nodes[id] = delta["nodes"][id]
+	# Anchors → `_anchor`-marked edges on the ghosted base nodes (re-extracted on save). An ending-extend
+	# is appended; a fork open-slot fill (has `slot`) re-fills that exact base choice in place so it lines
+	# up with the still-blank slot loaded from the base.
+	for a: Dictionary in delta.get("anchors", []):
+		var anchor_id: String = str(a.get("anchor", ""))
+		if not nodes.has(anchor_id):
+			continue
+		var anchor_node: Dictionary = nodes[anchor_id]
+		if not anchor_node.has("out"):
+			anchor_node["out"] = []
+		var anchor_out: Array = anchor_node["out"]
+		var edge: Dictionary = (a.get("edge", {}) as Dictionary).duplicate(true)
+		edge["_anchor"] = true
+		if a.has("slot") and int(a["slot"]) < anchor_out.size():
+			var slot: int = int(a["slot"])
+			var choice: Dictionary = anchor_out[slot]  # the base's own blank choice — keep its label/art
+			choice["to"] = str(edge.get("to", ""))
+			choice["_anchor"] = true
+			choice["_slot"] = slot
+		else:
+			anchor_out.append(edge)
+	# Channel overlays — paths are absolute after the resolve; the dialog edits them, save re-pools them.
+	_rendition_slot_fills = (delta.get("slot_fills", []) as Array).duplicate(true)
+	# Adopt the rendition's own identity + folder so a re-save overwrites it in place.
+	_journey_id = str(summary.get("journey_id", ""))
+	_journey_name = str(summary.get("name", ""))
+	_journey_author = str(summary.get("author", ""))
+	_journey_desc = str(summary.get("description", ""))
+	_original_journey_folder = folder
+	# Load the rendition's own cover (if it has one) so a re-save preserves it.
+	var rc: String = str(summary.get("cover_path", ""))
+	if rc != "":
+		_cover_path = rc
+		_update_cover_preview()
+	_refresh_graph()
+
+
+# Marks rendition mode in the existing TopBar (rather than a floating banner, which overlapped the
+# toolbar): retints the title. Channel overlays are now added inline — click a ghosted base round to open
+# its channel-overlay editor and drop axis/vibe scripts — so there's no separate toolbar button.
+func _show_rendition_banner(base_title: String) -> void:
+	_title_lbl.text = "◆ RENDITION — overlaying %s   (dim = locked base)" % base_title
+	_title_lbl.add_theme_color_override("font_color", UITheme.CYAN)
+
+
+# Temporary guard while overlay authoring is built up in steps: block the normal save so it can never
+# re-write the base as a journey. Replaced by the real delta save in a later slice.
+func _show_rendition_save_todo() -> void:
+	var d: AcceptDialog = AcceptDialog.new()
+	d.title = "Rendition Saving — Coming Soon"
+	d.dialog_text = "Overlay authoring is being built in steps. Saving a rendition isn't wired up yet, so nothing was written — your base journey is untouched."
+	d.confirmed.connect(d.queue_free)
+	d.canceled.connect(d.queue_free)
+	add_child(d)
+	d.popup_centered()
+
+
 # Graph editor: the selection set changed (click / ctrl/shift-click / marquee / clear / programmatic).
 # Mirror it and show the matching side panel — journey info (0), the node editor (1), or the
 # multi-select panel (2+).
@@ -2481,7 +2669,10 @@ func _delete_selected_nodes() -> void:
 		return
 	_push_undo()
 	var nodes: Dictionary = _graph_model.get("nodes", {})
-	var doomed: Array = _selected_graph_node_ids.duplicate()
+	# Never delete a ghosted base node in rendition mode (they can't be selected either — belt-and-braces).
+	var doomed: Array = _selected_graph_node_ids.filter(
+		func(nid: String) -> bool: return not _rendition_parent_ids.has(nid)
+	)
 	for nid: String in doomed:
 		nodes.erase(nid)
 	# Strip every edge that pointed at a deleted node.
@@ -2504,7 +2695,9 @@ func _snapshot_selection() -> Array:
 	var nodes: Dictionary = _graph_model.get("nodes", {})
 	var entries: Array = []
 	for id: String in _selected_graph_node_ids:
-		if nodes.has(id):
+		# Never copy/duplicate a ghosted base node (a fork can now be selected to add overlay choices, but
+		# it's still the locked base — copying it would spawn a rogue clone in the overlay).
+		if nodes.has(id) and not _rendition_parent_ids.has(id):
 			entries.append({"id": id, "node": (nodes[id] as Dictionary).duplicate(true)})
 	return entries
 
@@ -2713,6 +2906,46 @@ func _begin_connect_fork_edge(fork_id: String, edge_idx: int) -> void:
 	_side_renderer.show_graph_node_editor(fork_id)
 
 
+# Rendition authoring: appends an OVERLAY choice to a ghosted base fork — an extra option shown only when
+# this rendition is installed. It's an append-anchor ({_anchor}, no `_slot`), unconnected until the author
+# wires it. Capped at the 4-choice ForkScreen layout (base slots + overlay choices).
+func _add_overlay_fork_choice(fork_id: String) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	if not nodes.has(fork_id):
+		return
+	var out: Array = (nodes[fork_id] as Dictionary).get("out", [])
+	if out.size() >= 4:
+		_show_status("This fork is full — 4 choices max.", true)
+		return
+	_push_undo()
+	out.append({"to": "", "name": "", "image_path": "", "_anchor": true})
+	(nodes[fork_id] as Dictionary)["out"] = out
+	_refresh_graph()
+	_side_renderer.show_graph_node_editor(fork_id)
+	_show_status("Overlay choice added — name it, then connect it to a node.", false)
+
+
+# Removes an OVERLAY choice (an append-anchor) from a ghosted base fork. Never touches a base choice or a
+# filled base slot — those are base-owned. Overlay choices always sit AFTER the base's, so removing one
+# can't shift a filled slot's recorded index.
+func _remove_overlay_fork_choice(fork_id: String, edge_idx: int) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	if not nodes.has(fork_id):
+		return
+	var out: Array = (nodes[fork_id] as Dictionary).get("out", [])
+	if edge_idx < 0 or edge_idx >= out.size():
+		return
+	var edge: Dictionary = out[edge_idx]
+	if not bool(edge.get("_anchor", false)) or edge.has("_slot"):
+		return  # a base choice or a filled base slot — not an overlay choice
+	_push_undo()
+	_side_renderer._delete_saved_image(str(edge.get("image_path", "")))
+	out.remove_at(edge_idx)
+	_refresh_graph()
+	_side_renderer.show_graph_node_editor(fork_id)
+	_show_status("Overlay choice removed.", false)
+
+
 # Completes a click-to-connect: wires the armed source to `target_id` — either a fork choice's
 # out-edge (when _connecting_edge_idx >= 0) or a regular node's single out-edge. Rejects a
 # self-link or anything that would form a cycle (the runtime is a DAG). Re-selects the source.
@@ -2724,6 +2957,12 @@ func _finish_connect(target_id: String) -> void:
 	_graph.set_connect_mode(false)
 	var nodes: Dictionary = _graph_model.get("nodes", {})
 	if source == "" or not nodes.has(source):
+		return
+	# Rendition ANCHOR: dragging from a ghosted base node attaches a new overlay path here. It's ADDITIVE
+	# (appended, never replacing the base's own edges) and the base is never re-saved, so it can't be
+	# corrupted. The delta save extracts these `_anchor` edges (later slice).
+	if _rendition_parent_ids.has(source):
+		_finish_anchor(source, target_id, edge_idx)
 		return
 	if target_id == source or not nodes.has(target_id):
 		_show_status("Connect cancelled (can't link a node to itself).", true)
@@ -2750,6 +2989,77 @@ func _finish_connect(target_id: String) -> void:
 	else:
 		(nodes[source] as Dictionary)["out"] = [{"to": target_id}]
 	_graph.select_graph_node(source)
+
+
+# Attaches a rendition ANCHOR from a ghosted base node to a NEW overlay node. Additive — the base's own
+# structure is never rewritten on disk. Forms, by where the connect started (`edge_idx`):
+#  • edge_idx < 0 (a node's single out-handle): only a base ENDING may be anchored — a rendition EXTENDS
+#    an ending, never splices into mid-flow. One overlay path per ending, and re-dragging re-points it.
+#  • edge_idx ≥ 0 (a fork choice): if that out-edge is a VIRGIN base slot, FILL it in place (marked `_slot`
+#    so compose fills that reserved choice); if it's already an overlay anchor (an appended overlay choice
+#    or a re-point), just (re)point `to` — it stays an APPEND with no `_slot`, so compose adds an extra
+#    choice. A base-wired choice is off limits.
+# Refuses to anchor onto another base node (you attach overlay content, not re-wire the base) or to loop.
+func _finish_anchor(source: String, target_id: String, edge_idx: int = -1) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	if not nodes.has(target_id) or _rendition_parent_ids.has(target_id):
+		_show_status("Anchor to a NEW node — not the locked base.", true)
+		return
+	if target_id == source:
+		return
+	if JourneyGraph.reachable_ids(_graph_model, target_id).has(source):
+		_show_status("Can't anchor — that would create a loop.", true)
+		return
+	var out: Array = (nodes[source] as Dictionary).get("out", [])
+	# A fork choice handle. Two cases, distinguished by whether this out-edge is already an overlay anchor:
+	#  • a VIRGIN base open slot (not yet an anchor) → fill it IN PLACE and record `_slot` so compose fills
+	#    that exact reserved choice (keeps the fork's choice count).
+	#  • an OVERLAY choice (already `_anchor`: an appended option, or one re-pointed) → just (re)point `to`;
+	#    it stays an APPEND with no `_slot`, so compose adds it as an extra choice.
+	if edge_idx >= 0:
+		if edge_idx >= out.size():
+			return
+		var choice: Dictionary = out[edge_idx]
+		var was_anchor: bool = bool(choice.get("_anchor", false))
+		if str(choice.get("to", "")) != "" and not was_anchor:
+			_show_status("That fork choice is set by the base — pick an open slot.", true)
+			return
+		_push_undo()
+		choice["to"] = target_id
+		choice["_anchor"] = true
+		if not was_anchor:
+			choice["_slot"] = edge_idx  # first-time fill of a base open slot
+		_refresh_graph()
+		_show_status(
+			(
+				"Fork slot filled — this overlay path fills the open choice."
+				if choice.has("_slot")
+				else "Overlay choice connected."
+			),
+			false
+		)
+		return
+	# One overlay path per ending, but reassignable: a drag from an already-anchored ending RE-POINTS its
+	# existing anchor rather than adding a second. A non-anchor (base) edge means it isn't an ending.
+	var anchor_edge: Dictionary = {}
+	for e: Dictionary in out:
+		if bool(e.get("_anchor", false)):
+			anchor_edge = e
+		else:
+			_show_status(
+				"Anchor a base ENDING only — that node already continues in the base.", true
+			)
+			return
+	_push_undo()
+	if anchor_edge.is_empty():
+		out.append({"to": target_id, "_anchor": true})
+		(nodes[source] as Dictionary)["out"] = out
+		_refresh_graph()
+		_show_status("Anchor added — this overlay path attaches after the base node.", false)
+	else:
+		anchor_edge["to"] = target_id  # re-point the existing anchor to the new target
+		_refresh_graph()
+		_show_status("Anchor re-pointed to the new node.", false)
 
 
 # Drops an armed click-to-connect (the Escape shortcut), restoring the source node's editor.
@@ -2873,9 +3183,34 @@ func _push_undo() -> void:
 func _undo() -> void:
 	if _undo_stack.is_empty():
 		return
+	var snap: Dictionary = _undo_stack.pop_back()
 	_redo_stack.append(_graph_snapshot())
-	_restore_graph_snapshot(_undo_stack.pop_back())
-	_show_status("Undo.", false)
+	_restore_graph_snapshot(snap)
+	# Reversing an EXTRACTION: the extracted nodes are now back in the base, so the rendition written at
+	# extract time is a duplicate — delete it (and its isolated saves). Redo can't recreate that file, so
+	# drop the redo future to avoid a broken re-apply that would lose the nodes.
+	if snap.has("_extract_folder"):
+		_delete_rendition_artifacts(str(snap["_extract_folder"]))
+		_redo_stack.clear()
+		_show_status("Undo — extracted rendition removed.", false)
+	else:
+		_show_status("Undo.", false)
+
+
+# Deletes a rendition's journey folder (by folder name) plus any isolated run-saves/scoreboard it spawned.
+# Used by extract-undo and could back a catalogue delete. Idempotent.
+func _delete_rendition_artifacts(rend_name: String) -> void:
+	var folder_name: String = JourneyData.sanitize_folder_name(rend_name)
+	if folder_name == "":
+		return
+	JourneyData.delete_dir_recursive(SettingsService.get_journeys_dir() + "/" + folder_name)
+	# A composed run keys its save/scoreboard under "<base>__rend_<rendition>"; a just-extracted rendition
+	# has never been played, but clean defensively in case it was.
+	var run_key: String = JourneyData.sanitize_folder_name(
+		JourneyData.sanitize_folder_name(str(_journey_name)) + "__rend_" + folder_name
+	)
+	JourneySaveService.delete_save(run_key)
+	ScoreboardService.clear(run_key)
 
 
 # Ctrl+Y / Ctrl+Shift+Z — reapplies the most recently undone structure.
@@ -3008,6 +3343,9 @@ func _launch_test_play(paths: Dictionary) -> void:
 # folder cleanup is centralised here so the per-phase code stays focused on
 # its own responsibility.
 func _do_save() -> bool:
+	# Rendition mode saves an overlay delta to its own folder — never the base — via a separate path.
+	if _rendition_mode:
+		return await _save_rendition()
 	if not _validate_presave():
 		return false
 	if not _check_animated_images():
@@ -3040,6 +3378,767 @@ func _do_save() -> bool:
 	else:
 		_finalize_save_success()
 	return true
+
+
+# ── Extract to rendition (feature #3) ─────────────────────────────────────────
+
+
+# Feature #3 entry (from the selection panels): validate the current node selection, then confirm the
+# split. Extraction only makes sense on a SAVED base journey — the overlay needs the base's JourneyId as
+# its parent, and the base folder on disk to pool the extracted media from.
+func _begin_extract_to_rendition() -> void:
+	if _rendition_mode:
+		_show_status("You're editing a rendition — extraction works on a base journey.", true)
+		return
+	if _journey_id.strip_edges() == "" or _original_journey_folder.strip_edges() == "":
+		_show_builder_message(
+			"SAVE FIRST",
+			"Extraction pulls the selected nodes into a SEPARATE rendition that overlays this journey — so the journey must be saved first (it becomes the rendition's parent). Save, then extract."
+		)
+		return
+	var result: Dictionary = JourneyExtract.extract_rendition(
+		_graph_model, _selected_graph_node_ids
+	)
+	var errors: Array = result.get("errors", [])
+	if not errors.is_empty():
+		_show_builder_message("CAN'T EXTRACT", _extract_error_text(errors))
+		return
+	_show_extract_confirm(result, _unique_extract_name())
+
+
+# Names the extracted overlay so its folder can't collide with the base's: "<base> — extract", bumped to
+# "…2", "…3" if that folder already exists.
+func _unique_extract_name() -> String:
+	var base_name: String = _journey_name.strip_edges()
+	if base_name == "":
+		base_name = "Journey"
+	var root: String = SettingsService.get_journeys_dir()
+	var stem: String = base_name + " — extract"
+	var candidate: String = stem
+	var n: int = 2
+	while DirAccess.dir_exists_absolute(
+		ProjectSettings.globalize_path(root + "/" + JourneyData.sanitize_folder_name(candidate))
+	):
+		candidate = "%s %d" % [stem, n]
+		n += 1
+	return candidate
+
+
+# A human message for an extraction JourneyExtract refused.
+func _extract_error_text(errors: Array) -> String:
+	match str((errors[0] as Dictionary).get("kind", "")):
+		"empty_selection":
+			return "Select the nodes you want to pull into a rendition first."
+		"selects_start":
+			return "The selection includes the journey's START node, which can't move to an overlay. Leave the start in the base."
+		"fork_underflow":
+			return "A fork would be left with fewer than 2 choices. Extract the whole fork, or leave it enough choices to stand on its own."
+		"no_anchor":
+			return "Nothing in the rest of the journey leads into the selection, so the rendition would have no attachment point. Select a branch that hangs off the base — not a disconnected island."
+		"missing_node":
+			return "The selection referenced a node that no longer exists. Reselect and try again."
+	return "This selection can't be extracted into a clean rendition."
+
+
+func _show_extract_confirm(result: Dictionary, rend_name: String) -> void:
+	var count: int = (result["rendition"]["nodes"] as Dictionary).size()
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"EXTRACT TO RENDITION", UITheme.CYAN, Vector2i(560, 300)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	var lbl: Label = Label.new()
+	lbl.text = (
+		'Move %d selected node%s into a new rendition:\n\n"%s"\n\nThe rendition is saved now. This journey keeps the rest — Save it afterwards to finalize the base.'
+		% [count, "s" if count != 1 else "", rend_name]
+	)
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 13, false)
+	vbox.add_child(lbl)
+	var row: HBoxContainer = HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	vbox.add_child(row)
+	var cancel_btn: Button = Button.new()
+	cancel_btn.text = "CANCEL"
+	cancel_btn.custom_minimum_size = Vector2(140, 0)
+	UITheme.style_button(cancel_btn, UITheme.PURPLE_MID)
+	cancel_btn.pressed.connect(func() -> void: modal.queue_free())
+	row.add_child(cancel_btn)
+	var go_btn: Button = Button.new()
+	go_btn.text = "⑂ EXTRACT"
+	go_btn.custom_minimum_size = Vector2(180, 0)
+	UITheme.style_button(go_btn, UITheme.CYAN)
+	go_btn.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			_do_extract(result, rend_name)
+	)
+	row.add_child(go_btn)
+	add_child(modal)
+
+
+# A plain message + OK modal, built dynamically like the other builder dialogs.
+func _show_builder_message(title: String, body: String) -> void:
+	var parts: Dictionary = UITheme.build_centered_modal(
+		title, UITheme.PURPLE_BRIGHT, Vector2i(560, 260)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	var lbl: Label = Label.new()
+	lbl.text = body
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 13, false)
+	vbox.add_child(lbl)
+	var row: HBoxContainer = HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(row)
+	var ok_btn: Button = Button.new()
+	ok_btn.text = "OK"
+	ok_btn.custom_minimum_size = Vector2(140, 0)
+	UITheme.style_button(ok_btn, UITheme.PURPLE_MID)
+	ok_btn.pressed.connect(func() -> void: modal.queue_free())
+	row.add_child(ok_btn)
+	add_child(modal)
+
+
+# Writes the extracted rendition to disk, then removes the extracted nodes from the base IN MEMORY (the
+# author Saves to finalize). Temporarily borrows the rendition-authoring state — the FINAL base as the
+# ghosted parent + the extracted nodes + the anchors injected onto the base — to drive _write_rendition_pack,
+# then restores base editing. On failure the base is left exactly as it was.
+func _do_extract(result: Dictionary, rend_name: String) -> void:
+	var base_graph: Dictionary = result["base"]
+	var delta: Dictionary = result["rendition"]
+	var extracted_count: int = (delta["nodes"] as Dictionary).size()
+
+	# The pristine base graph (JourneyExtract deep-copies, so _graph_model is untouched) — for undo + the
+	# state we restore afterwards.
+	var snap_graph: Dictionary = _graph_model
+	var snap_id: String = _journey_id
+	var snap_name: String = _journey_name
+	var snap_folder: String = _original_journey_folder
+
+	# Transient rendition-authoring graph: the final base (ghosted parent) + extracted nodes, with the
+	# anchors injected onto the base nodes so _extract_anchors picks them up.
+	var authoring: Dictionary = {}
+	for id: String in base_graph["nodes"] as Dictionary:
+		authoring[id] = (base_graph["nodes"][id] as Dictionary).duplicate(true)
+	for id: String in delta["nodes"] as Dictionary:
+		authoring[id] = (delta["nodes"][id] as Dictionary).duplicate(true)
+	for a: Dictionary in delta["anchors"] as Array:
+		var aid: String = str(a.get("anchor", ""))
+		if not authoring.has(aid):
+			continue
+		var an: Dictionary = authoring[aid]
+		if not an.has("out"):
+			an["out"] = []
+		var edge: Dictionary = (a.get("edge", {}) as Dictionary).duplicate(true)
+		edge["_anchor"] = true
+		(an["out"] as Array).append(edge)
+
+	_reset_save_state()
+	_graph_model = {"start": str(base_graph.get("start", "")), "nodes": authoring}
+	_rendition_mode = true
+	_rendition_parent_id = snap_id
+	_rendition_parent_folder = snap_folder
+	_rendition_parent_ids = {}
+	for id: String in base_graph["nodes"] as Dictionary:
+		_rendition_parent_ids[id] = true
+	_rendition_slot_fills = []
+	_journey_id = ""
+	_journey_name = rend_name
+	_original_journey_folder = ""
+
+	var ok: bool = await _write_rendition_pack()
+
+	# Restore base editing regardless of outcome.
+	_rendition_mode = false
+	_rendition_parent_ids = {}
+	_rendition_parent_id = ""
+	_rendition_parent_folder = ""
+	_rendition_slot_fills = []
+	_journey_id = snap_id
+	_journey_name = snap_name
+	_original_journey_folder = snap_folder
+	if not ok:
+		_graph_model = snap_graph  # write failed / cancelled — base untouched
+		_refresh_graph()
+		return
+	# Apply the base-node removal as an undoable step. Stamp the undo entry with the written rendition's
+	# folder so undoing the extraction also deletes it (the nodes come back to the base, so the rendition
+	# would otherwise be a duplicate) — see _undo.
+	_graph_model = snap_graph
+	_push_undo()
+	if not _undo_stack.is_empty():
+		(_undo_stack[-1] as Dictionary)["_extract_folder"] = rend_name
+	# Reduced base — keep the base's comments/groups (only its nodes/start changed).
+	_graph_model = {
+		"start": str(base_graph.get("start", "")),
+		"nodes": base_graph["nodes"],
+		"comments": snap_graph.get("comments", []),
+		"groups": snap_graph.get("groups", []),
+	}
+	_graph.clear_graph_selection()
+	_refresh_graph()
+	_show_status(
+		(
+			'Extracted %d node%s into rendition "%s". Save this journey to finalize the base.'
+			% [extracted_count, "s" if extracted_count != 1 else "", rend_name]
+		),
+		false
+	)
+
+
+# ── Merge an overlay node back into the base (extract recovery) ───────────────
+
+
+# Right-click "Merge into Base" on an overlay node while authoring a rendition: move that node AND its whole
+# overlay branch (every rendition node reachable from it) out of the rendition and into the base in one go.
+# The node must be a BOUNDARY node — one attached directly to the base — so its branch re-attaches to the
+# base through a real anchor edge. Every node keeps its edges intact, so fork default/timeout indices survive
+# the move untouched. Confirms, then hands off to _do_merge_to_base.
+func _begin_merge_to_base(node_id: String) -> void:
+	if not _rendition_mode or _rendition_parent_ids.has(node_id):
+		return
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	if not nodes.has(node_id):
+		return
+	if _original_journey_folder.strip_edges() == "":
+		_show_builder_message(
+			"SAVE FIRST",
+			"Save this rendition before merging a branch back — the merge rewrites the rendition on disk."
+		)
+		return
+	# The node must be anchored directly to a base node, so its branch has a clean base attachment point.
+	if not _has_base_anchor(node_id):
+		_show_builder_message(
+			"CAN'T MERGE",
+			"This node isn't attached directly to the base. Merge from the node that hangs off the base — it brings this whole branch with it."
+		)
+		return
+	var branch: Dictionary = _collect_overlay_subtree(node_id)
+	var count: int = branch.size()
+	var body: String = (
+		"Move this node back into the base?"
+		if count <= 1
+		else "Move this node and its whole branch (%d nodes) back into the base?" % count
+	)
+	_show_builder_confirm(
+		"MERGE INTO BASE",
+		(
+			body
+			+ "\n\nThe rendition is re-saved without them, then the base opens with the branch re-added for you to Save."
+		),
+		"⤺ MERGE",
+		func() -> void: _do_merge_to_base(node_id)
+	)
+
+
+# True if a base node anchors `node_id` directly (a base node with an `_anchor` edge pointing at it).
+func _has_base_anchor(node_id: String) -> bool:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for bid: String in _rendition_parent_ids:
+		if not nodes.has(bid):
+			continue
+		for e: Variant in (nodes[bid] as Dictionary).get("out", []):
+			if (
+				e is Dictionary
+				and bool((e as Dictionary).get("_anchor", false))
+				and str((e as Dictionary).get("to", "")) == node_id
+			):
+				return true
+	return false
+
+
+# Every overlay node reachable from `root` (root included), stopping at base nodes. Cycle-safe. These are the
+# rendition nodes that move to the base together as one branch.
+func _collect_overlay_subtree(root: String) -> Dictionary:
+	var seen: Dictionary = {}
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var cur: String = str(stack.pop_back())
+		if seen.has(cur) or not nodes.has(cur) or _rendition_parent_ids.has(cur):
+			continue
+		seen[cur] = true
+		for e: Variant in (nodes[cur] as Dictionary).get("out", []):
+			if e is Dictionary:
+				var to: String = str((e as Dictionary).get("to", ""))
+				if to != "" and not seen.has(to) and not _rendition_parent_ids.has(to):
+					stack.append(to)
+	return seen
+
+
+func _do_merge_to_base(node_id: String) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	if not nodes.has(node_id):
+		return
+	# 1) The whole overlay branch moves to the base. Each node keeps ALL its edges as-is — edges to base
+	#    nodes and edges to other branch nodes are all valid base edges now, so nothing is stripped and fork
+	#    default/timeout indices stay correct.
+	var branch: Dictionary = _collect_overlay_subtree(node_id)
+	var node_injections: Array = []
+	for sid: String in branch:
+		node_injections.append({"id": sid, "node": (nodes[sid] as Dictionary).duplicate(true)})
+
+	# 2) Every base→branch anchor becomes a real base edge that reattaches the branch. A slot anchor fills the
+	#    base fork's open slot in place; everything else appends.
+	var edge_injections: Array = []
+	for bid: String in _rendition_parent_ids:
+		if not nodes.has(bid):
+			continue
+		for e: Variant in (nodes[bid] as Dictionary).get("out", []):
+			if (
+				e is Dictionary
+				and bool((e as Dictionary).get("_anchor", false))
+				and branch.has(str((e as Dictionary).get("to", "")))
+			):
+				var be: Dictionary = (e as Dictionary).duplicate(true)
+				var slot: int = int(be.get("_slot", -1))
+				be.erase("_anchor")
+				be.erase("_slot")
+				edge_injections.append({"anchor": bid, "edge": be, "slot": slot})
+
+	# 3) Rewrite the rendition on disk WITHOUT the branch — in-place JSON surgery, no re-pool, so the nodes'
+	#    media stays in the rendition folder for the base Save to pool from.
+	if not _rewrite_rendition_without_subtree(branch):
+		_show_builder_message(
+			"MERGE FAILED", "Couldn't update the rendition on disk. Nothing was changed."
+		)
+		return
+
+	# 4) Reload the builder editing the BASE, injecting the branch + its now-real edges (fresh scene, so all
+	#    rendition chrome resets cleanly). The author lands on the base, branch re-added, ready to Save.
+	edit_journey = _rendition_parent_journey
+	merge_inject = {"nodes": node_injections, "edges": edge_injections}
+	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
+
+
+# Injects a merged-back branch into the freshly-loaded base graph (consumed by _ready when merge_inject is
+# set): adds every branch node, then reattaches it by writing each base edge onto its source node — a slot
+# edge fills the base fork's open slot in place, others append. The nodes' media paths still point at the
+# rendition folder, so the base Save pools them across.
+func _apply_merge_inject(inj: Dictionary) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for entry: Variant in inj.get("nodes", []):
+		if not (entry is Dictionary):
+			continue
+		var nid: String = str((entry as Dictionary).get("id", ""))
+		if nid == "" or nodes.has(nid):
+			continue
+		nodes[nid] = ((entry as Dictionary).get("node", {}) as Dictionary).duplicate(true)
+	for attach: Variant in inj.get("edges", []):
+		if not (attach is Dictionary):
+			continue
+		var src: String = str((attach as Dictionary).get("anchor", ""))
+		if not nodes.has(src):
+			continue
+		var b: Dictionary = nodes[src]
+		if not b.has("out"):
+			b["out"] = []
+		var out_arr: Array = b["out"]
+		var edge: Dictionary = ((attach as Dictionary).get("edge", {}) as Dictionary).duplicate(
+			true
+		)
+		var slot: int = int((attach as Dictionary).get("slot", -1))
+		if slot >= 0 and slot < out_arr.size():
+			out_arr[slot] = edge  # fill the base fork's open slot in place
+		else:
+			out_arr.append(edge)
+	_show_status("Merged from rendition — Save this journey to finalize.", false)
+
+
+# Rewrites the rendition's journey.json (at its own folder) without the merged branch — a structural edit
+# only, so no media is re-pooled (the nodes' files linger for the base Save). Removes every branch node and
+# every anchor that attached one; nothing needs re-anchoring because the whole branch moves together. Never
+# deletes the folder even if it empties, so those files survive; an empty rendition can be removed from the
+# catalogue. Returns false on read/parse/write failure (caller leaves everything unchanged).
+func _rewrite_rendition_without_subtree(branch: Dictionary) -> bool:
+	var folder: String = _original_journey_folder  # the rendition's own folder while editing it
+	if folder == "":
+		return false
+	var json_path: String = folder + "/journey.json"
+	if not FileAccess.file_exists(json_path):
+		return false
+	var rf: FileAccess = FileAccess.open(json_path, FileAccess.READ)
+	if rf == null:
+		return false
+	var parser: JSON = JSON.new()
+	var ok: int = parser.parse(rf.get_as_text())
+	rf.close()
+	if ok != OK or not (parser.data is Dictionary):
+		return false
+	var data: Dictionary = parser.data
+	var new_nodes: Array = []
+	for n: Variant in data.get("Nodes", []):
+		if n is Dictionary and branch.has(str((n as Dictionary).get("id", ""))):
+			continue
+		new_nodes.append(n)
+	data["Nodes"] = new_nodes
+	# Drop every anchor that attached a branch node (each becomes a real base edge on the injection side).
+	var new_anchors: Array = []
+	for a: Variant in data.get("Anchors", []):
+		var drop: bool = false
+		if a is Dictionary:
+			var edge: Dictionary = (a as Dictionary).get("Edge", {})
+			drop = branch.has(str(edge.get("to", "")))
+		if not drop:
+			new_anchors.append(a)
+	data["Anchors"] = new_anchors
+	var wf: FileAccess = FileAccess.open(json_path, FileAccess.WRITE)
+	if wf == null:
+		return false
+	wf.store_string(JSON.stringify(data, "\t"))
+	wf.close()
+	return true
+
+
+# A plain confirm modal (OK / Cancel), built dynamically like the other builder dialogs.
+func _show_builder_confirm(title: String, body: String, ok_text: String, on_ok: Callable) -> void:
+	var parts: Dictionary = UITheme.build_centered_modal(title, UITheme.CYAN, Vector2i(560, 280))
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	var lbl: Label = Label.new()
+	lbl.text = body
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 13, false)
+	vbox.add_child(lbl)
+	var row: HBoxContainer = HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	vbox.add_child(row)
+	var cancel_btn: Button = Button.new()
+	cancel_btn.text = "CANCEL"
+	cancel_btn.custom_minimum_size = Vector2(140, 0)
+	UITheme.style_button(cancel_btn, UITheme.PURPLE_MID)
+	cancel_btn.pressed.connect(func() -> void: modal.queue_free())
+	row.add_child(cancel_btn)
+	var ok_btn: Button = Button.new()
+	ok_btn.text = ok_text
+	ok_btn.custom_minimum_size = Vector2(180, 0)
+	UITheme.style_button(ok_btn, UITheme.CYAN)
+	ok_btn.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			on_ok.call()
+	)
+	row.add_child(ok_btn)
+	add_child(modal)
+
+
+# A manual rendition Save: write the overlay to disk, then finalize (return to the catalogue) like any
+# other save. Extraction instead calls _write_rendition_pack directly and STAYS in the builder.
+func _save_rendition() -> bool:
+	var ok: bool = await _write_rendition_pack()
+	if ok:
+		_finalize_save_success()
+	return ok
+
+
+# Writes the rendition overlay to disk: pools ONLY the new nodes' media into a fresh rendition folder,
+# extracts the anchor edges from the ghosted base nodes, pools their card images, and writes a
+# Type:"rendition" journey.json (the delta). The base is never touched — its nodes are skipped in pooling
+# and it's never re-written. Mirrors _do_save's staging → write → swap, but assembles a rendition. Does
+# NOT navigate away, so both the manual Save and the extract flow can reuse it.
+func _write_rendition_pack() -> bool:
+	if not _validate_rendition_presave():
+		return false
+	var paths: Dictionary = _setup_save_folders()  # folder named after the rendition (_journey_name)
+	var modal: Control = _create_save_progress_modal_if_needed()
+	var pooled: Dictionary = await _pool_graph_nodes(paths, modal, _rendition_parent_ids)  # skip the base
+	if not bool(pooled["ok"]):
+		if modal:
+			modal.queue_free()
+		JourneyData.delete_dir_recursive(paths["abs_dir"])
+		return false
+	# Overlay anchors: extract them off the ghosted base nodes, then pool any fork-choice card image they
+	# carry — the base fork is skipped by the pool above, so its overlay edges' images are pooled here.
+	var anchors: Array = await _pool_anchor_images(_extract_anchors(), paths, modal)
+	if modal:
+		modal.queue_free()
+	if _save_aborted:
+		JourneyData.delete_dir_recursive(paths["abs_dir"])
+		return false
+
+	var rendition: Dictionary = {
+		"journey_id": _journey_id,  # "" → coerce_rendition mints the overlay's own id
+		"name": paths["journey_name"],
+		"author": _journey_author.strip_edges(),
+		"description": _journey_desc.strip_edges(),
+		"parent_id": _rendition_parent_id,
+		"parent_min_version": "",
+		"nodes": pooled["nodes"],
+		"anchors": anchors,
+		"slot_fills": _pool_slot_fills(paths["abs_dir"]),  # channel scripts pooled after the nodes above
+	}
+	var data: Dictionary = JourneyRendition.coerce_rendition(rendition)
+	_journey_id = str(data.get("JourneyId", ""))  # remember the minted id for a re-save
+	if not _write_journey_json(paths, data):
+		JourneyData.delete_dir_recursive(paths["abs_dir"])
+		return false
+	_swap_staging_into_place(paths)
+	return true
+
+
+# The anchors an overlay adds: every `_anchor`-marked out-edge on a ghosted base node, as
+# {anchor: <base id>, edge: {to, …}} with the authoring marker stripped.
+func _extract_anchors() -> Array:
+	var anchors: Array = []
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for id: String in _rendition_parent_ids:
+		if not nodes.has(id):
+			continue
+		for e: Variant in (nodes[id] as Dictionary).get("out", []):
+			if not (e is Dictionary and bool((e as Dictionary).get("_anchor", false))):
+				continue
+			var ed: Dictionary = e
+			if ed.has("_slot"):
+				# Fork open-slot fill: needs a real target (an unfilled slot isn't a real anchor). Carries
+				# only the destination + slot index; the base owns the choice's label/image.
+				if str(ed.get("to", "")) == "":
+					continue
+				anchors.append(
+					{"anchor": id, "edge": {"to": str(ed.get("to", ""))}, "slot": int(ed["_slot"])}
+				)
+			else:
+				# Ending-extend or an overlay fork choice: the full edge travels (its name/image_path are
+				# the rendition's own; the card image is pooled by _pool_anchor_images before writing). An
+				# empty `to` on an overlay fork choice is a valid "ends the run" choice, exactly as in the
+				# base editor — kept, not dropped.
+				var edge: Dictionary = ed.duplicate(true)
+				edge.erase("_anchor")
+				anchors.append({"anchor": id, "edge": edge})
+	return anchors
+
+
+# Pools the card image on any overlay fork-choice anchor edge into the rendition's media folder, then
+# rewrites that edge's absolute image_path to the pooled rel. The base fork these choices attach to is
+# skipped by _pool_graph_nodes, so — unlike a native fork's choices — their images are pooled here.
+# Anchors without an image (ending-extends, slot fills) pass through untouched. Sets _save_aborted on a
+# copy failure (the caller wipes staging), mirroring the node pooling.
+func _pool_anchor_images(anchors: Array, paths: Dictionary, modal: Control) -> Array:
+	var abs_dir: String = paths["abs_dir"]
+	var abs_media_dir: String = paths["abs_media_dir"]
+	var copied_images: Dictionary = paths["copied_images"]
+	for ai in anchors.size():
+		var edge: Dictionary = (anchors[ai] as Dictionary).get("edge", {})
+		if str(edge.get("image_path", "")) == "":
+			continue
+		var rel: String = await _store_journey_image(
+			str(edge["image_path"]),
+			abs_dir,
+			abs_media_dir,
+			"anchor_%d_cover" % ai,
+			copied_images,
+			JourneyData.ANIM_CAP_FORK,
+			modal
+		)
+		edge["image_path"] = rel
+		if _save_aborted:
+			break
+	return anchors
+
+
+# Presave for renditions. Requires a name + at least one new node/overlay so an empty rendition can't be
+# saved, then INHERITS the base editor's validation (per-node content + structural checks) via
+# _collect_rendition_presave_issues — a rendition is a distributable journey, so it's held to the same bar.
+func _validate_rendition_presave() -> bool:
+	if _journey_name.strip_edges() == "":
+		_show_status("Name the rendition in the Journey Info panel before saving.", true)
+		return false
+	var new_nodes: int = 0
+	for id: String in _graph_model.get("nodes", {}):
+		if not _rendition_parent_ids.has(id):
+			new_nodes += 1
+	if new_nodes == 0 and _rendition_slot_fills.is_empty():
+		_show_status("Add a new node or a channel overlay before saving.", true)
+		return false
+	var issues: Array = _collect_rendition_presave_issues()
+	if issues.is_empty():
+		return true
+	_show_save_error_modal(
+		"CANNOT SAVE RENDITION",
+		(
+			"Found %d issue%s in this rendition. Fix the items below and try again."
+			% [issues.size(), "s" if issues.size() != 1 else ""]
+		),
+		issues
+	)
+	return false
+
+
+# Inherits the base editor's validation, but SCOPED to the overlay. Per-node content checks run on the
+# rendition's OWN nodes only — the base's media was validated when the base was saved, and re-checking it
+# here is both wrong (they're the base author's files) and fragile: a channel-only overlay adds no nodes,
+# so re-checking the base would block it for a base clip that isn't the rendition's problem. Structural
+# checks run on the whole composed graph, but since the base is a valid DAG, only overlay-introduced
+# problems (unreachable overlay node, dangling/cyclic overlay edge) can surface; no_start is inherited.
+func _collect_rendition_presave_issues() -> Array:
+	var issues: Array = []
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var ordinals: Dictionary = JourneyGraph.type_ordinals(nodes)
+	for id: String in nodes:
+		if _rendition_parent_ids.has(id):
+			continue  # ghosted base node — already validated at base save
+		var n: Dictionary = nodes[id]
+		var data: Dictionary = n.get("data", {})
+		var ordinal: int = int(ordinals.get(id, 0))
+		match str(n.get("type", "")):
+			"round":
+				_save_check_round(data, "Round %d" % ordinal, issues)
+			"storyboard":
+				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
+			"fork":
+				_save_check_fork_graph(n, "Fork %d" % ordinal, issues)
+	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model, _journey_finish_node):
+		if str(gi.get("kind", "")) == "no_start":
+			continue  # the rendition inherits the base's start through its anchors
+		var m: Dictionary = _structural_issue_to_presave(gi)
+		if not m.is_empty():
+			issues.append(m)
+	return issues
+
+
+# ── Channel overlays (slot-fills on base rounds) ─────────────────────────────
+
+
+# Routes a batch of dropped funscripts onto a ghosted base ROUND's EMPTY channels (the inline replacement
+# for the old CHANNEL OVERLAYS modal — called from the channel-overlay side-panel editor). Each script's
+# axis/vibe is inferred from its filename suffix; an empty slot gets a slot_fill; a slot the base or the
+# rendition already fills is skipped. Refreshes the editor and reports what landed.
+func _route_channel_scripts(round_id: String, paths: PackedStringArray) -> void:
+	var added: Array = []
+	var skipped: int = 0
+	for path: String in paths:
+		var field: String
+		var channel: String
+		var vib: String = ImportScanner.detect_vib_channel(path)
+		if vib != "":
+			field = "vib_scripts"
+			channel = vib
+		else:
+			var axis: String = ImportScanner.detect_funscript_axis(path)
+			if axis == "L0":  # main stroke — the base owns it; not an overlay channel
+				skipped += 1
+				continue
+			field = "axis_scripts"
+			channel = axis
+		if _channel_slot_occupied(round_id, field, channel):
+			skipped += 1
+			continue
+		_rendition_slot_fills.append(
+			{"node": round_id, "field": field, "channel": channel, "path": path}
+		)
+		added.append(channel)
+	_side_renderer.show_graph_node_editor(round_id)
+	if added.is_empty() and skipped == 0:
+		_show_status(
+			"No axis/vibe scripts recognised — check filename suffixes (_L1, _R1, _vib1…).", true
+		)
+	elif added.is_empty():
+		_show_status("Nothing added — those channels are already filled (base or overlay).", true)
+	else:
+		var msg: String = (
+			"Overlaid %d channel%s: %s"
+			% [added.size(), "s" if added.size() != 1 else "", ", ".join(added)]
+		)
+		if skipped > 0:
+			msg += "  ·  %d skipped" % skipped
+		_show_status(msg, false)
+
+
+# True when a base round's channel slot can't take an overlay — the base already fills it, or the rendition
+# already slot-filled it this session.
+func _channel_slot_occupied(round_id: String, field: String, channel: String) -> bool:
+	var data: Dictionary = (_graph_model.get("nodes", {}).get(round_id, {}) as Dictionary).get(
+		"data", {}
+	)
+	if (data.get(field, {}) as Dictionary).has(channel):
+		return true
+	return _find_slot_fill(round_id, field, channel) >= 0
+
+
+# Removes a channel overlay (slot-fill) from a base round and refreshes its editor.
+func _remove_slot_fill(round_id: String, field: String, channel: String) -> void:
+	var idx: int = _find_slot_fill(round_id, field, channel)
+	if idx >= 0:
+		_rendition_slot_fills.remove_at(idx)
+		_side_renderer.show_graph_node_editor(round_id)
+
+
+# Removes ALL channel overlays this rendition added to `round_id` (the "wrong scripts" bulk escape hatch).
+func _clear_round_slot_fills(round_id: String) -> void:
+	var kept: Array = []
+	for sf: Dictionary in _rendition_slot_fills:
+		if str(sf.get("node", "")) != round_id:
+			kept.append(sf)
+	_rendition_slot_fills = kept
+	_side_renderer.show_graph_node_editor(round_id)
+	_show_status("Cleared this round's channel overlays.", false)
+
+
+func _find_slot_fill(round_id: String, field: String, channel: String) -> int:
+	for i: int in _rendition_slot_fills.size():
+		var sf: Dictionary = _rendition_slot_fills[i]
+		if (
+			str(sf.get("node", "")) == round_id
+			and str(sf.get("field", "")) == field
+			and str(sf.get("channel", "")) == channel
+		):
+			return i
+	return -1
+
+
+# Precise single-channel attach (the ＋ on a channel row): a file picker whose result fills that exact
+# channel regardless of the file's name. Refreshes the round's channel-overlay editor.
+func _pick_slot_fill_script(round_id: String, field: String, channel: String) -> void:
+	var dialog: FileDialog = FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.title = "Attach %s Script" % channel
+	dialog.add_filter("*.funscript", "Funscript")
+	SettingsService.remember_browse_dir(dialog)
+	dialog.file_selected.connect(
+		func(path: String) -> void:
+			dialog.queue_free()
+			if not _channel_slot_occupied(round_id, field, channel):
+				_rendition_slot_fills.append(
+					{"node": round_id, "field": field, "channel": channel, "path": path}
+				)
+			_side_renderer.show_graph_node_editor(round_id)
+	)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered_ratio(0.6)
+
+
+# Pools each channel-overlay script into the rendition's content/ (deduped against the nodes already
+# pooled this save) and returns the slot_fills with pooled rel paths for the delta. Call AFTER
+# _pool_graph_nodes so the pool map is live.
+func _pool_slot_fills(abs_dir: String) -> Array:
+	var out: Array = []
+	for sf: Dictionary in _rendition_slot_fills:
+		var src: String = str(sf.get("path", ""))
+		if src == "":
+			continue
+		var rel: String = str(_pool_funscript(src, abs_dir).get("rel", ""))
+		if rel == "":
+			continue
+		(
+			out
+			. append(
+				{
+					"node": str(sf.get("node", "")),
+					"field": str(sf.get("field", "")),
+					"channel": str(sf.get("channel", "")),
+					"path": rel,
+				}
+			)
+		)
+	return out
 
 
 # Clears all in-flight save state so a previous failed save can't bleed into
@@ -3306,74 +4405,10 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	var abs_media_dir: String = paths["abs_media_dir"]
 	var copied_images: Dictionary = paths["copied_images"]
 
-	# Fresh content pool for this save (staging is rebuilt from scratch — no cross-save state).
-	_pooled_media = {}
-	_pooled_fs_stats = {}
-
-	var nodes_in: Dictionary = _graph_model.get("nodes", {})
-	var out_nodes: Dictionary = {}
-
-	# Round count drives the transcode modal's "Round x / N" label.
-	var total_rounds: int = 0
-	for id: String in nodes_in:
-		if str((nodes_in[id] as Dictionary).get("type", "")) == "round":
-			total_rounds += 1
-	var round_seen: int = 0
-
-	for id: String in nodes_in:
-		if _save_aborted:
-			break
-		var node: Dictionary = nodes_in[id]
-		var node_type: String = str(node.get("type", "round"))
-		var data_in: Dictionary = node.get("data", {})
-		var saved_data: Dictionary = JourneyData.coerce_node_save_data(node_type, data_in)
-		var saved_out: Array = _clean_regular_out(node.get("out", []))
-
-		match node_type:
-			"round":
-				round_seen += 1
-				saved_data = await _save_round_node_media(
-					saved_data, data_in, abs_dir, modal, round_seen, total_rounds
-				)
-				if saved_data.is_empty():
-					return {}  # transcode/copy failure: modal already shown
-			"storyboard":
-				saved_data = await _save_storyboard_node_media(
-					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
-				)
-			"fork":
-				saved_out = await _save_fork_node_edges(
-					node.get("out", []), abs_dir, abs_media_dir, id, copied_images, modal
-				)
-				# Optional fork audio accent — pooled like the storyboard's, replacing the author's
-				# absolute source path (carried in by coerce's data.duplicate) with the pooled rel.
-				var fork_audio: String = _pool_small_file(str(data_in.get("audio", "")), abs_dir)
-				if fork_audio != "":
-					saved_data["audio"] = fork_audio
-					saved_data["audio_loop"] = bool(data_in.get("audio_loop", false))
-					saved_data["audio_volume"] = clampf(
-						float(data_in.get("audio_volume", 1.0)), 0.0, 1.0
-					)
-				else:
-					saved_data.erase("audio")
-					saved_data.erase("audio_loop")
-					saved_data.erase("audio_volume")
-			"shop", "checkpoint":
-				pass  # no media
-
-		# A non-video copy (funscript / axis / vib / boss / image) failed somewhere above.
-		if _save_aborted:
-			var sr: Dictionary = _save_abort_error.get(
-				"result", {"reason": CAUSE_UNKNOWN_COPY_ERROR}
-			)
-			var si: String = _save_abort_error.get("item", "File copy")
-			_show_copy_failure_modal(sr, si)
-			return {}
-
-		var saved_node: Dictionary = {"type": node_type, "data": saved_data, "out": saved_out}
-		if node.has("pos"):
-			saved_node["pos"] = node["pos"]
-		out_nodes[id] = saved_node
+	var pooled: Dictionary = await _pool_graph_nodes(paths, modal)
+	if not bool(pooled["ok"]):
+		return {}
+	var out_nodes: Dictionary = pooled["nodes"]
 
 	# Assemble the Format-2 node block (Format/Start/Nodes) + journey meta around it.
 	# Redirects are intentionally gone — in a free-form graph, skip/converge/end are just
@@ -3443,6 +4478,89 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	result["Comments"] = _serialize_comments(_graph_model.get("comments", []))
 	result["Groups"] = _serialize_groups(_graph_model.get("groups", []))
 	return result
+
+
+# Pools every non-skipped node's media into the staging content/media dirs, returning
+# {"ok": bool, "nodes": {id:{type,data,out,pos?}}}. Shared by the journey save and the rendition save
+# (which passes the ghosted base node ids as skip_ids). ok=false ⇒ a transcode/copy failed and the error
+# modal was already shown.
+func _pool_graph_nodes(paths: Dictionary, modal: Control, skip_ids: Dictionary = {}) -> Dictionary:
+	var abs_dir: String = paths["abs_dir"]
+	var abs_media_dir: String = paths["abs_media_dir"]
+	var copied_images: Dictionary = paths["copied_images"]
+
+	# Fresh content pool for this save (staging is rebuilt from scratch — no cross-save state).
+	_pooled_media = {}
+	_pooled_fs_stats = {}
+
+	var nodes_in: Dictionary = _graph_model.get("nodes", {})
+	var out_nodes: Dictionary = {}
+
+	# Round count drives the transcode modal's "Round x / N" label.
+	var total_rounds: int = 0
+	for id: String in nodes_in:
+		if not skip_ids.has(id) and str((nodes_in[id] as Dictionary).get("type", "")) == "round":
+			total_rounds += 1
+	var round_seen: int = 0
+
+	for id: String in nodes_in:
+		if skip_ids.has(id):
+			continue
+		if _save_aborted:
+			break
+		var node: Dictionary = nodes_in[id]
+		var node_type: String = str(node.get("type", "round"))
+		var data_in: Dictionary = node.get("data", {})
+		var saved_data: Dictionary = JourneyData.coerce_node_save_data(node_type, data_in)
+		var saved_out: Array = _clean_regular_out(node.get("out", []))
+
+		match node_type:
+			"round":
+				round_seen += 1
+				saved_data = await _save_round_node_media(
+					saved_data, data_in, abs_dir, modal, round_seen, total_rounds
+				)
+				if saved_data.is_empty():
+					return {"ok": false, "nodes": {}}  # transcode/copy failure: modal already shown
+			"storyboard":
+				saved_data = await _save_storyboard_node_media(
+					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
+				)
+			"fork":
+				saved_out = await _save_fork_node_edges(
+					node.get("out", []), abs_dir, abs_media_dir, id, copied_images, modal
+				)
+				# Optional fork audio accent — pooled like the storyboard's, replacing the author's
+				# absolute source path (carried in by coerce's data.duplicate) with the pooled rel.
+				var fork_audio: String = _pool_small_file(str(data_in.get("audio", "")), abs_dir)
+				if fork_audio != "":
+					saved_data["audio"] = fork_audio
+					saved_data["audio_loop"] = bool(data_in.get("audio_loop", false))
+					saved_data["audio_volume"] = clampf(
+						float(data_in.get("audio_volume", 1.0)), 0.0, 1.0
+					)
+				else:
+					saved_data.erase("audio")
+					saved_data.erase("audio_loop")
+					saved_data.erase("audio_volume")
+			"shop", "checkpoint":
+				pass  # no media
+
+		# A non-video copy (funscript / axis / vib / boss / image) failed somewhere above.
+		if _save_aborted:
+			var sr: Dictionary = _save_abort_error.get(
+				"result", {"reason": CAUSE_UNKNOWN_COPY_ERROR}
+			)
+			var si: String = _save_abort_error.get("item", "File copy")
+			_show_copy_failure_modal(sr, si)
+			return {"ok": false, "nodes": {}}
+
+		var saved_node: Dictionary = {"type": node_type, "data": saved_data, "out": saved_out}
+		if node.has("pos"):
+			saved_node["pos"] = node["pos"]
+		out_nodes[id] = saved_node
+
+	return {"ok": true, "nodes": out_nodes}
 
 
 # Serializes the editor's sticky-note comments to the journey.json `Comments` overlay (runtime ignores it).
@@ -4714,61 +5832,47 @@ func _collect_presave_issues_graph() -> Array:
 	# node. Unreachable nodes block so a saved journey never carries media that's never played (a
 	# storage concern): the author must wire the orphan into the flow or delete it before saving.
 	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model, _journey_finish_node):
-		match str(gi.get("kind", "")):
-			"no_start":
-				(
-					issues
-					. append(
-						{
-							"cause": CAUSE_NO_START,
-							"item": "Journey",
-							"detail": "The journey has no valid start node.",
-							"hint":
-							"Reopen the journey, or add a node — the first node becomes the start.",
-						}
-					)
-				)
-			"dangling":
-				(
-					issues
-					. append(
-						{
-							"cause": CAUSE_DANGLING_EDGE,
-							"item": _graph_issue_label(str(gi.get("id", ""))),
-							"detail": "A connection points to a node that no longer exists.",
-							"hint":
-							"Re-wire that connection to a current node — its target may have been deleted.",
-						}
-					)
-				)
-			"cycle":
-				(
-					issues
-					. append(
-						{
-							"cause": CAUSE_CYCLE,
-							"item": _graph_issue_label(str(gi.get("id", ""))),
-							"detail":
-							"This node is part of a loop — a journey must flow forward (no cycles).",
-							"hint": "Remove the connection that loops back to an earlier node.",
-						}
-					)
-				)
-			"unreachable":
-				(
-					issues
-					. append(
-						{
-							"cause": CAUSE_UNREACHABLE,
-							"item": _graph_issue_label(str(gi.get("id", ""))),
-							"detail":
-							"This node can't be reached from the start, so it would never play — and its media would bloat the saved journey.",
-							"hint":
-							"Connect it into the flow (wire an earlier node to it), or delete it.",
-						}
-					)
-				)
+		var m: Dictionary = _structural_issue_to_presave(gi)
+		if not m.is_empty():
+			issues.append(m)
 	return issues
+
+
+# Maps one JourneyGraph.validate_graph issue to a presave-issue dict (shared by the base + rendition
+# collectors). Returns {} for an unknown kind.
+func _structural_issue_to_presave(gi: Dictionary) -> Dictionary:
+	match str(gi.get("kind", "")):
+		"no_start":
+			return {
+				"cause": CAUSE_NO_START,
+				"item": "Journey",
+				"detail": "The journey has no valid start node.",
+				"hint": "Reopen the journey, or add a node — the first node becomes the start.",
+			}
+		"dangling":
+			return {
+				"cause": CAUSE_DANGLING_EDGE,
+				"item": _graph_issue_label(str(gi.get("id", ""))),
+				"detail": "A connection points to a node that no longer exists.",
+				"hint":
+				"Re-wire that connection to a current node — its target may have been deleted.",
+			}
+		"cycle":
+			return {
+				"cause": CAUSE_CYCLE,
+				"item": _graph_issue_label(str(gi.get("id", ""))),
+				"detail": "This node is part of a loop — a journey must flow forward (no cycles).",
+				"hint": "Remove the connection that loops back to an earlier node.",
+			}
+		"unreachable":
+			return {
+				"cause": CAUSE_UNREACHABLE,
+				"item": _graph_issue_label(str(gi.get("id", ""))),
+				"detail":
+				"This node can't be reached from the start, so it would never play — and its media would bloat the saved journey.",
+				"hint": "Connect it into the flow (wire an earlier node to it), or delete it.",
+			}
+	return {}
 
 
 # Readable label for a node id, used by the structural validation messages.
