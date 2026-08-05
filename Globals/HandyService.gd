@@ -44,6 +44,11 @@ const LOOKAHEAD_MS: int = 8000  # keep the buffer filled this far ahead of the c
 const FEED_INTERVAL_MS: int = 1000  # min gap between refill calls (GameLoop drives feed)
 const SERVERTIME_SAMPLES: int = 5  # /servertime probes for the client-clock estimate
 const REQUEST_TIMEOUT_S: float = 10.0
+# Re-run the (slow) clock sync only when the cached one is older than this. The clocks are
+# session-stable, so ensure_ready() reuses the cache round-to-round — killing the per-round
+# ~9-call handshake that delayed the device by several seconds at every round start.
+const RESYNC_AFTER_MS: int = 600000  # 10 min
+const RECOVER_AFTER_FAILURES: int = 2  # consecutive stream-call failures before a full re-establish
 
 var _connected: bool = false
 var _clock_offset_ms: int = 0  # device/server clock offset from /hstp/clocksync
@@ -52,6 +57,7 @@ var _clock_offset_ms: int = 0  # device/server clock offset from /hstp/clocksync
 # time, sent as /hsp/play's server_time so the device can compensate transit lag.
 var _server_offset_ms: int = 0
 var _server_synced: bool = false
+var _last_sync_ms: int = -100000000  # when the clock sync last succeeded (for ensure_ready's cache)
 # Current round's RAW script as HSP points [{t:int ms, x:int 0-100}], time-sorted.
 var _points: Array = []
 # The script with active stroke effects (items / curses / boss) baked in — this
@@ -64,6 +70,13 @@ var _playing: bool = false
 var _last_feed_ms: int = -100000
 var _last_video_ms: int = 0  # most recent video clock (for a delay-change resync)
 var _feed_inflight: bool = false
+# Prewarm: a fresh /hsp/setup done ahead of the round so start() only needs /hsp/play. `_session_ready`
+# means one exists and hasn't been consumed yet; `_setup_inflight` means a prewarm's setup is in progress.
+var _session_ready: bool = false
+var _setup_inflight: bool = false
+# Resilience: a run of failed stream calls triggers a full re-establish from the current position.
+var _consecutive_failures: int = 0
+var _recovering: bool = false
 
 
 func is_connected_ok() -> bool:
@@ -102,8 +115,23 @@ func connect_and_sync() -> bool:
 	if ok:
 		await _clocksync()  # syncs the DEVICE clock to the server
 		await _estimate_server_offset()  # syncs OUR clock to the server (for server_time)
+		_last_sync_ms = Time.get_ticks_msec()
 	_set_connected(ok)
 	return ok
+
+
+# The per-round entry point: reuse the cached session sync when it's fresh, so a round start costs only
+# /hsp/setup + /hsp/play instead of re-running the whole ~9-call connect handshake (the several-second
+# per-round startup lag). Falls back to a full connect_and_sync when never synced, stale (>RESYNC_AFTER_MS),
+# or disconnected. A stale device that dropped since the last sync just fails at start() → deviceless, which
+# is the same graceful path as before.
+func ensure_ready() -> bool:
+	if _app_id() == "" or _connection_key() == "":
+		_set_connected(false)
+		return false
+	if _connected and _server_synced and Time.get_ticks_msec() - _last_sync_ms < RESYNC_AFTER_MS:
+		return true
+	return await connect_and_sync()
 
 
 func _set_connected(ok: bool) -> void:
@@ -184,17 +212,49 @@ func _rebuild_transformed() -> void:
 # ── HSP playback ─────────────────────────────────────────────────────────────
 
 
-# Opens a fresh HSP session and starts playback at `video_ms`, seeding the
-# buffer with the first batch (embedded in /hsp/play). Returns false on setup
-# failure; the caller drops to a toast and plays without the device.
-func start(video_ms: int) -> bool:
+# Opens the HSP session AHEAD of the round (fire-and-forget from GameLoop when a round loads) so start()
+# only has to fire the anchored /hsp/play — the setup round-trip overlaps the intro card / video load
+# instead of adding to the round-start delay. /hsp/setup takes no script, so it's safe this early. No-op when
+# a session is already ready or a prewarm is inflight; silently does nothing if the device isn't reachable.
+func prewarm() -> void:
+	if _session_ready or _setup_inflight:
+		return
+	if not await ensure_ready():
+		return
+	if _session_ready or _setup_inflight:  # state may have changed across the await
+		return
+	_setup_inflight = true
+	var setup: Dictionary = await _api_put("/hsp/setup", {})
+	_setup_inflight = false
+	_session_ready = not setup.is_empty()
+
+
+# Opens a fresh HSP session and starts playback at the CURRENT video position, seeding the buffer with the
+# first batch (embedded in /hsp/play). Returns false on setup failure; the caller drops to a toast and plays
+# without the device.
+#
+# `video_ms_source` is a Callable returning the live video position (ms). It's read AFTER /hsp/setup so the
+# anchor (start_time) and server_time are captured in the SAME instant — otherwise the ~1 setup-RTT between
+# them leaves the device anchored that far behind the video for the whole round (the "plays ~1s late" lag).
+func start(video_ms_source: Callable) -> bool:
 	if _points.is_empty():
 		return false
-	var setup: Dictionary = await _api_put("/hsp/setup", {})
-	if setup.is_empty():
-		return false
+	# Reuse a prewarmed session when one's ready; wait out an inflight prewarm; otherwise set up now. Either
+	# way the session is consumed here (the next round prewarms a fresh one).
+	if not _session_ready:
+		var guard: int = 0
+		while _setup_inflight and not _session_ready and guard < 600:
+			await get_tree().process_frame
+			guard += 1
+	if _session_ready:
+		_session_ready = false
+	else:
+		var setup: Dictionary = await _api_put("/hsp/setup", {})
+		if setup.is_empty():
+			return false
 	_playing = true
 	_last_feed_ms = -100000
+	var video_ms: int = int(video_ms_source.call())  # live, paired with _server_now() below
 	_last_video_ms = video_ms
 	# Window from the CURRENT position, not index 0 — otherwise the device is handed the opening
 	# seconds of the script while it plays from video_ms, starves, and lags for seconds.
@@ -219,7 +279,10 @@ func start(video_ms: int) -> bool:
 	# Only when synced — a bad estimate would desync worse than omitting it.
 	if _server_synced:
 		play["server_time"] = _server_now()
-	await _api_put("/hsp/play", play)
+	var res: Dictionary = await _api_put("/hsp/play", play)
+	if res.is_empty():
+		return false
+	_note_stream_ok()  # clear the failure counter on a clean (re)start
 	return true
 
 
@@ -227,8 +290,8 @@ func start(video_ms: int) -> bool:
 # GameLoop; self-throttles to FEED_INTERVAL_MS and never overlaps a request.
 # Fire-and-forget (no await at the call site).
 func feed(video_ms: int) -> void:
-	_last_video_ms = video_ms
-	if not _playing or _feed_inflight or _send_idx >= _transformed.size():
+	_last_video_ms = video_ms  # kept fresh even when we don't send, so recovery anchors to the live clock
+	if not _playing or _recovering or _feed_inflight or _send_idx >= _transformed.size():
 		return
 	var now: int = Time.get_ticks_msec()
 	if now - _last_feed_ms < FEED_INTERVAL_MS:
@@ -239,12 +302,44 @@ func feed(video_ms: int) -> void:
 	if (win["batch"] as Array).is_empty():
 		return
 	_last_feed_ms = now
-	_send_idx = int(win["next_idx"])
-	_feed_inflight = true
-	await _api_put(
-		"/hsp/add", {"points": win["batch"], "flush": false, "tail_point_stream_index": _send_idx}
+	var next_idx: int = int(win["next_idx"])  # NOT committed until the add succeeds — a dropped packet
+	_feed_inflight = true  # would otherwise skip these points forever, starving the device
+	var res: Dictionary = await _api_put(
+		"/hsp/add", {"points": win["batch"], "flush": false, "tail_point_stream_index": next_idx}
 	)
 	_feed_inflight = false
+	if res.is_empty():
+		_note_stream_failure()  # keep _send_idx; the same batch retries next feed
+	else:
+		_send_idx = next_idx
+		_note_stream_ok()
+
+
+# ── Resilience / recovery ─────────────────────────────────────────────────────
+
+
+func _note_stream_ok() -> void:
+	_consecutive_failures = 0
+
+
+func _note_stream_failure() -> void:
+	_consecutive_failures += 1
+	if _consecutive_failures >= RECOVER_AFTER_FAILURES:
+		_recover()  # fire-and-forget
+
+
+# A run of stream failures escalated (WiFi blip / device sleep): re-establish the session and re-seat
+# playback at the CURRENT video position, so it self-heals in ~a second instead of going silent until the
+# next seek. feed() no-ops while this runs (the _recovering guard) so it can't fight the re-establish.
+func _recover() -> void:
+	if _recovering or not _playing:
+		return
+	_recovering = true
+	if await ensure_ready():
+		_session_ready = false  # force a fresh /hsp/setup inside start()
+		await start(func() -> int: return _last_video_ms)  # reads the live clock after setup
+	_consecutive_failures = 0
+	_recovering = false
 
 
 func pause() -> void:
@@ -257,6 +352,9 @@ func pause() -> void:
 
 
 func stop() -> void:
+	_session_ready = false  # the session is gone — the next round prewarms a fresh one
+	_consecutive_failures = 0
+	_recovering = false
 	if _playing:
 		_playing = false
 		await _api_put("/hsp/stop", {})
@@ -309,6 +407,37 @@ func resync_timing() -> void:
 	if _playing:
 		_rebuild_transformed()
 		await seek(_last_video_ms)
+
+
+# Fires a short, self-contained stroke so the user can physically confirm the WiFi connection is live
+# (there's no other feedback that a cloud "connected" actually reaches the device). Two full strokes over
+# ~1.6s via the proven /hsp/setup + /hsp/play path — no clock sync needed (immediate, start_time 0). Skipped
+# mid-round so it can't disrupt a live session. Returns false if not connected or setup fails.
+func test_stroke() -> bool:
+	if not _connected or _playing:
+		return false
+	var setup: Dictionary = await _api_put("/hsp/setup", {})
+	if setup.is_empty():
+		return false
+	var pts: Array = [
+		{"t": 0, "x": 50},
+		{"t": 350, "x": 5},
+		{"t": 700, "x": 95},
+		{"t": 1050, "x": 5},
+		{"t": 1400, "x": 95},
+		{"t": 1600, "x": 50},
+	]
+	var res: Dictionary = await _api_put(
+		"/hsp/play",
+		{
+			"start_time": 0,
+			"playback_rate": 1.0,
+			"pause_on_starving": true,
+			"loop": false,
+			"add": {"points": pts, "flush": true, "tail_point_stream_index": pts.size()},
+		}
+	)
+	return not res.is_empty()
 
 
 # Maps the stroke range (0–100) onto the device slider stroke zone (v3 uses

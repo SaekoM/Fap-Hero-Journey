@@ -312,6 +312,10 @@ func _ready() -> void:
 			GameState.SeedFlags(_test_seed_flags)
 	_build_round_timer()
 	_refresh_coin_label(true)
+	# Handy WiFi only: sync the device ONCE before the first round (behind a brief overlay) so round 1 isn't
+	# the one that eats the ~9-call handshake, and so you can see + feel it's ready before play. No-op for
+	# every other stroker, in test mode, or when already connected.
+	await _handy_journey_sync_gate()
 	_load_current_item()
 	_show_hud()
 	if _test_mode:
@@ -647,6 +651,11 @@ func _load_current_round() -> void:
 		push_error("GameLoop: GameState has no current round — returning to menu")
 		_go_to_menu()
 		return
+	# Prewarm the Handy's HSP session now (script-agnostic /hsp/setup), so its round-trip overlaps the intro
+	# card / mystery reveal / video load ahead — leaving only the anchored /hsp/play at the actual round
+	# start. Handy WiFi only; fire-and-forget.
+	if _handy_stroke_selected():
+		HandyService.prewarm()
 	# Migrate any legacy cursed/blessed round to the generic effect schema here, once,
 	# so every downstream reader (label, enter mode, reveal card) sees generic fields.
 	round.merge(JourneyData.normalize_effect_round(round), true)
@@ -754,10 +763,6 @@ func _begin_round(round: Dictionary) -> void:
 		if _beat_bar != null:
 			_beat_bar.set_beats(FunscriptPlayer.GetBeats())
 	_update_round_timer(true)  # this round's full length, before the first frame ticks
-	# The Handy (direct WiFi) plays the script itself — fire-and-forget the
-	# upload/setup/synced-play chain; scoring and the beat bar stay on
-	# FunscriptPlayer's clock regardless.
-	_handy_begin_round(fs_path)
 
 	# Auto-detect sibling scripts sitting next to the main funscript on disk — e.g. a per-round
 	# folder holding <name>.beta / <name>.carrier_frequency next to <name>.funscript. This lets
@@ -825,6 +830,13 @@ func _begin_round(round: Dictionary) -> void:
 	if video_path == "":
 		video_path = _find_video(round.get("folder", ""))
 	_load_video(video_path)
+
+	# The Handy (direct WiFi) plays the script itself — fire-and-forget the setup/synced-play chain. MUST run
+	# AFTER _load_video (so the anchor reads THIS clip's position, not the previous round's stale one) and
+	# after the boss/effect setup above (so forced modifiers are baked into the streamed script). The old
+	# slow per-round handshake used to defer this by accident; now that ensure_ready is instant, the order is
+	# explicit. Scoring + beat bar stay on FunscriptPlayer's clock regardless.
+	_handy_begin_round(fs_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2793,6 +2805,55 @@ func _handy_stroke_selected() -> bool:
 	return SettingsService.get_stroke_target() == DeviceRouting.HANDY_TARGET
 
 
+# One-time journey-start sync for Handy WiFi: run the full clock handshake up front (behind a themed
+# overlay) so round 1 starts clean, confirm the device is live with a quick stroke, and only then let the
+# journey begin. No-op unless the Handy is the stroker with a key and isn't already synced; never BLOCKS
+# play — an unreachable device just falls through to deviceless, same as a round would. Skipped in test mode.
+func _handy_journey_sync_gate() -> void:
+	if _test_mode or not _handy_stroke_selected() or not HandyService.has_key():
+		return
+	if HandyService.is_connected_ok():
+		return  # already synced (e.g. CONNECT pressed in Options) — nothing to wait for
+
+	var overlay: ColorRect = ColorRect.new()
+	overlay.color = Color(0.0, 0.0, 0.0, 0.82)
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP  # swallow clicks while we sync
+	add_child(overlay)
+
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var vb: VBoxContainer = VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 14)
+	center.add_child(vb)
+
+	var title: Label = Label.new()
+	title.text = "GETTING THE HANDY READY"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(title, UITheme.CYAN, 22, true)
+	vb.add_child(title)
+
+	var status: Label = Label.new()
+	status.text = "● Syncing with the device…"
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(status, UITheme.WHITE_SOFT, 14, false)
+	vb.add_child(status)
+
+	var ok: bool = await HandyService.connect_and_sync()
+	if ok:
+		status.text = "● Connected"
+		status.add_theme_color_override("font_color", UITheme.SUCCESS)
+		await HandyService.test_stroke()  # a quick buzz so you can feel it's live
+		await get_tree().create_timer(0.7).timeout
+	else:
+		status.text = "✕ Not reachable — playing without the Handy"
+		status.add_theme_color_override("font_color", UITheme.DANGER)
+		await get_tree().create_timer(1.4).timeout
+	overlay.queue_free()
+
+
 # Per-round setup: reachability/clock sync → load the script as HSP points →
 # open a session and start streaming at the current video position → apply the
 # stroke range. Any failure drops to a toast; the round plays without the device.
@@ -2801,7 +2862,9 @@ func _handy_begin_round(fs_path: String) -> void:
 	_handy_ready = false
 	if not _handy_active or fs_path == "":
 		return
-	if not await HandyService.connect_and_sync():
+	# ensure_ready reuses the cached session clock-sync — only the FIRST round (or after a long gap) pays the
+	# full ~9-call handshake; later rounds skip straight to setup+play, so the device starts near-instantly.
+	if not await HandyService.ensure_ready():
 		_show_save_toast("✕  THE HANDY IS UNREACHABLE — CHECK KEYS / WIFI")
 		return
 	HandyService.load_actions(JourneyData.read_funscript_actions(fs_path))
@@ -2810,11 +2873,19 @@ func _handy_begin_round(fs_path: String) -> void:
 	HandyService.set_effects(
 		InventoryService.GetActiveEffects(), SettingsService.get_home_position()
 	)
-	if not await HandyService.start(int(_video.stream_position * 1000.0)):
+	# Pass a live position source (not a snapshot): HandyService reads it AFTER /hsp/setup so the anchor and
+	# server_time line up — the video keeps advancing during the setup round-trip, and a stale snapshot here
+	# is what left the device ~1s behind for the round.
+	if not await HandyService.start(_handy_video_ms):
 		_show_save_toast("✕  HANDY SYNC FAILED — ROUND PLAYS WITHOUT IT")
 		return
 	_handy_ready = true
 	await HandyService.set_slider(SettingsService.get_range_min(), SettingsService.get_range_max())
+
+
+# The live video clock in ms — passed to HandyService.start so it can read the anchor at play-send time.
+func _handy_video_ms() -> int:
+	return int(_video.stream_position * 1000.0)
 
 
 # Active stroke effects changed mid-round (item activated / expired, cleanse,
@@ -2851,8 +2922,9 @@ func _handy_resume() -> void:
 
 
 func _handy_stop() -> void:
-	if _handy_ready:
-		HandyService.stop()
+	# Always call stop(): it clears any prewarmed-but-unused session flag and only sends /hsp/stop when the
+	# device is actually playing, so it's safe even on a round that never engaged the Handy.
+	HandyService.stop()
 
 
 # ---------------------------------------------------------------------------
