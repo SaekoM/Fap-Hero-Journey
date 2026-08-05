@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.7.4
+
+New output support for **e-stim** devices, via [restim](https://github.com/diglet48/restim) — contributed by
+a community member. If you don't use e-stim, nothing here touches you: it stays completely inert unless you
+turn it on and connect.
+
+### ⚡ Drive e-stim from your journeys
+Fap Hero Journey can now stream to a running **restim** instance over its WebSocket T-code connection, so a
+journey's scripts drive your e-stim session the same way they drive a stroker. The main stroke maps to
+restim's position (Alpha), and multi-axis scripts map onto restim's parameters (surge, carrier frequency,
+pulse, vibe channels) — and items, curses, and boss effects reach it just like every other output.
+
+- **Connect** from Options → the restim section: point it at your restim WebSocket address and connect
+  (defaults to the usual local `ws://127.0.0.1:12346/tcode`).
+- **Per-axis manual levels** in a new **E-STIM DEVICE** section (Options → Device), for the parameters you'd
+  rather set by hand than by script. The existing device ranges are now labelled **T-CODE DEVICE** so the
+  two are easy to tell apart.
+- **E-stim scripts in journeys** — authors can include dedicated e-stim parameter scripts (alpha/beta,
+  volume, carrier frequency, pulse, vib…); they're detected by filename and travel with their round like any
+  other axis.
+- Runs **alongside** your other output — e-stim plays in parallel with a Buttplug stroker (it takes over the
+  serial T-code slot, since both speak the same protocol).
+
+Requires [restim](https://github.com/diglet48/restim) running with its WebSocket server enabled. Big thanks
+to [@oleg-nasan](https://github.com/oleg-nasan) for building and testing this.
+
 ## v0.7.3
 
 A focused quality release for **The Handy over WiFi**. If you drive a Handy directly (no Intiface), this is
