@@ -2746,6 +2746,8 @@ func _sync_restim_state() -> void:
 		_set_restim_status("● DISCONNECTED", UITheme.ERROR)
 		_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
 		_restim_connect_btn.text = "> CONNECT"
+
+
 # Sets the Handy status line's text + colour together (green ● for good, red ✕ for bad, neutral purple for
 # pending). Central point so every state stays consistent.
 func _set_handy_status(text: String, color: Color) -> void:
