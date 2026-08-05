@@ -2261,10 +2261,15 @@ func _handle_side_panel_drop(files: PackedStringArray) -> void:
 				data["axis_scripts"] = {}
 			if not data.has("vib_scripts"):
 				data["vib_scripts"] = {}
+			if not data.has("estim_scripts"):
+				data["estim_scripts"] = {}
 			for f: String in fs_files:
 				var vib_ch: String = ImportScanner.detect_vib_channel(f)
+				var estim_ax: String = ImportScanner.detect_estim_axis(f)
 				if vib_ch != "":
 					data["vib_scripts"][vib_ch] = f
+				elif estim_ax != "":
+					data["estim_scripts"][estim_ax] = f
 				else:
 					var axis: String = ImportScanner.detect_funscript_axis(f)
 					if axis == "L0":
@@ -4630,6 +4635,11 @@ func _save_round_node_media(
 	)
 	saved_data["vib_scripts"] = _pool_channels(
 		data_in.get("vib_scripts", {}), abs_dir, JourneyData.VIB_SUFFIXES, segments
+	)
+
+	# restim (E-Stim Full) parameter scripts — pooled, keyed by restim axis; trimmed identically.
+	saved_data["estim_scripts"] = _pool_channels(
+		data_in.get("estim_scripts", {}), abs_dir, JourneyData.ESTIM_SUFFIXES, segments
 	)
 
 	# Boss intro image (boss rounds only) → content pool. A GIF is baked to a looping H.264 (or a

@@ -745,18 +745,45 @@ func _begin_round(round: Dictionary) -> void:
 	_show_finish_button()
 
 	var fs_path: String = round.get("funscript_path", "")
+	# Prefer a sibling ".alpha" funscript for the main (L0 / position) channel when it exists —
+	# that's the true alpha of an alpha/beta pair. Fall back to the plain funscript otherwise.
 	if fs_path != "":
+		var a_dir: String = fs_path.get_base_dir()
+		var a_base: String = ImportScanner.strip_script_suffix(fs_path)
+		var a_ext: String = fs_path.get_extension()
+		for a_cand: String in [
+			"%s/%s.alpha.%s" % [a_dir, a_base, a_ext],
+			"%s/%s_alpha.%s" % [a_dir, a_base, a_ext],
+		]:
+			if FileAccess.file_exists(a_cand):
+				fs_path = a_cand
+				break
 		FunscriptPlayer.LoadFunscript(fs_path)
 		ScoreService.SetRoundActions(FunscriptPlayer.ActionCount)
 		if _beat_bar != null:
 			_beat_bar.set_beats(FunscriptPlayer.GetBeats())
 	_update_round_timer(true)  # this round's full length, before the first frame ticks
 
-	# Load secondary axis scripts (serial devices only; FunscriptPlayer ignores
-	# them if output mode is Buttplug). Clear first so stale axes from a prior
-	# round are never replayed.
+	# Auto-detect sibling scripts sitting next to the main funscript on disk — e.g. a per-round
+	# folder holding <name>.beta / <name>.carrier_frequency next to <name>.funscript. This lets
+	# EXISTING journeys (whose journey.json has empty AxisScripts) drive restim without a
+	# re-import. Explicit journey.json entries always win over an auto-detected sibling.
+	var axis_scripts: Dictionary = (round.get("axis_scripts", {}) as Dictionary).duplicate()
+	var estim_scripts: Dictionary = (round.get("estim_scripts", {}) as Dictionary).duplicate()
+	if fs_path != "":
+		var sib: Dictionary = ImportScanner.find_sibling_scripts(
+			fs_path.get_base_dir(), ImportScanner.strip_script_suffix(fs_path)
+		)
+		for ax: String in sib["axis"]:
+			if not axis_scripts.has(ax):
+				axis_scripts[ax] = sib["axis"][ax]
+		for eax: String in sib["estim"]:
+			if not estim_scripts.has(eax):
+				estim_scripts[eax] = sib["estim"][eax]
+
+	# Load secondary axis scripts (serial + restim motion axes). Clear first so stale axes
+	# from a prior round are never replayed.
 	FunscriptPlayer.ClearAxisScripts()
-	var axis_scripts: Dictionary = round.get("axis_scripts", {})
 	for axis: String in axis_scripts:
 		var ax_path: String = axis_scripts[axis]
 		if ax_path != "":
@@ -772,6 +799,14 @@ func _begin_round(round: Dictionary) -> void:
 		if vib_path != "":
 			var channel: int = 0 if ch_key == "vib1" else 1
 			FunscriptPlayer.LoadVibScript(channel, vib_path)
+
+	# Load restim (E-Stim Full) parameter scripts (restim output only; ignored when
+	# restim isn't connected). Clear first so a prior round's params aren't replayed.
+	FunscriptPlayer.ClearRestimScripts()
+	for eax: String in estim_scripts:
+		var estim_path: String = estim_scripts[eax]
+		if estim_path != "":
+			FunscriptPlayer.LoadRestimScript(eax, estim_path)
 
 	# Boss / effect setup must run before _load_video → FunscriptPlayer.Play() so
 	# the forced modifier is already active on the first dispatched stroke. Each

@@ -117,6 +117,12 @@ public partial class FunscriptPlayer : Node
     private readonly System.Collections.Generic.Dictionary<int, VibState> _vibScripts =
         new System.Collections.Generic.Dictionary<int, VibState>();
 
+    // Maps a restim (E-Stim Full) T-code axis name → a funscript that drives it directly.
+    // Populated from a round's estim_scripts (alpha/beta/volume/carrier_frequency/…). restim-only:
+    // a script here supersedes both the motion→restim mapping and the manual slider for that axis.
+    private readonly System.Collections.Generic.Dictionary<string, AxisState> _restimScripts =
+        new System.Collections.Generic.Dictionary<string, AxisState>();
+
     private static readonly string[] KnownAxes = { "L1", "L2", "R0", "R1", "R2" };
 
     private enum StrokeBackend { None, Serial, Buttplug }
@@ -214,6 +220,7 @@ public partial class FunscriptPlayer : Node
     // a late autoload, so all of these exist by the time _Ready runs.
     private SerialDeviceService _serial;
     private ButtplugService _buttplug;
+    private RestimService _restim;
     private InventoryService _inventory;
     private ScoreService _score;
     private Node _settings;
@@ -226,15 +233,78 @@ public partial class FunscriptPlayer : Node
     {
         _serial = GetNode<SerialDeviceService>("/root/SerialDeviceService");
         _buttplug = GetNode<ButtplugService>("/root/ButtplugService");
+        _restim = GetNode<RestimService>("/root/RestimService");
         _inventory = GetNode<InventoryService>("/root/InventoryService");
         _score = GetNode<ScoreService>("/root/ScoreService");
         _settings = GetNode("/root/SettingsService");
         _deviceRoutingScript = GD.Load<GDScript>("res://scripts/device/DeviceRouting.gd");
+        _LoadRestimManual();
 
         // Stream serial stroke output at a steady high rate (see _PhysicsProcess), decoupled from
         // render FPS and the video frame clock. Nothing else in the project uses the physics loop,
         // so raising this only affects our stroke tick.
         Engine.PhysicsTicksPerSecond = 120;
+    }
+
+    // ── restim (e-stim) manual axis values ──────────────────────────────────────
+    // Manual value (percent 0–100) per "E-Stim Full" axis. Motion axes use this only as a
+    // fallback when the current round has no matching funscript; the rest always use it.
+    private readonly System.Collections.Generic.Dictionary<string, int> _restimManual =
+        new System.Collections.Generic.Dictionary<string, int>();
+
+    private void _LoadRestimManual()
+    {
+        foreach (var axis in RestimService.AllAxes)
+            _restimManual[axis] = _settings.Call("get_restim_axis", axis).AsInt32();
+    }
+
+    // True when the round provides a funscript that drives this restim axis live — either a
+    // dedicated estim script (alpha/beta/carrier_frequency/…) or, for the six motion axes, the
+    // corresponding motion funscript. Used to skip the manual slider for scripted axes.
+    private bool RestimAxisHasScript(string restimAxis)
+    {
+        if (_restimScripts.ContainsKey(restimAxis))
+            return true;
+        switch (restimAxis)
+        {
+            case "L0": return _actions.Count > 0;   // main stroke
+            case "L1": return _axes.ContainsKey("L1");  // surge
+            case "C0": return _axes.ContainsKey("R0");  // twist
+            case "P0": return _axes.ContainsKey("R2");  // pitch
+            case "V1": return _axes.ContainsKey("L2");  // sway
+            case "V2": return _axes.ContainsKey("R1");  // roll
+            default: return false;
+        }
+    }
+
+    /// Live update of one restim manual axis value (Options slider), percent 0–100.
+    /// Pushes immediately so a connected restim session responds without a round restart.
+    public void SetRestimAxisValue(string axis, int percent)
+    {
+        percent = Math.Clamp(percent, 0, 100);
+        _restimManual[axis] = percent;
+        var restim = _restim;
+        if (restim != null && restim.RestimConnected)
+            restim.SendTCode(axis, percent / 100.0);
+    }
+
+    /// Send every manual axis value to restim in one frame: all manual-only axes, plus any
+    /// motion axis the current round doesn't script. Called on connect and on Play/Resume.
+    public void SendRestimManualState()
+    {
+        var restim = _restim;
+        if (restim == null || !restim.RestimConnected)
+            return;
+
+        var cmds = new System.Collections.Generic.List<(string, double, uint)>();
+        foreach (var axis in RestimService.AllAxes)
+        {
+            if (RestimAxisHasScript(axis))
+                continue;
+            int percent = _restimManual.TryGetValue(axis, out int p) ? p : 0;
+            cmds.Add((axis, Math.Clamp(percent, 0, 100) / 100.0, 0u));
+        }
+        restim.SendBatch(cmds);
     }
 
     /// Push updated range-clamp values directly into the player.
@@ -275,6 +345,8 @@ public partial class FunscriptPlayer : Node
         foreach (var kv in _axes)
             kv.Value.Index = 0;
         foreach (var kv in _vibScripts)
+            kv.Value.Index = 0;
+        foreach (var kv in _restimScripts)
             kv.Value.Index = 0;
 
         string absPath = ProjectSettings.GlobalizePath(path);
@@ -452,6 +524,48 @@ public partial class FunscriptPlayer : Node
         _axes.Clear();
     }
 
+    // Load a restim (E-Stim Full) axis funscript. `axis` is the restim T-code axis name
+    // (e.g. "L0", "V0", "C0", "P1"). Streamed to restim only; supersedes the motion mapping
+    // and the manual slider for that axis. Call ClearRestimScripts() before a new round.
+    public void LoadRestimScript(string axis, string path)
+    {
+        var state = new AxisState();
+        string absPath = ProjectSettings.GlobalizePath(path);
+
+        using var funscriptFile = FileAccess.Open(absPath, FileAccess.ModeFlags.Read);
+        if (funscriptFile == null)
+        {
+            GD.PrintErr($"FunscriptPlayer: cannot open restim script {axis}: {path}");
+            return;
+        }
+
+        var parser = new Json();
+        if (parser.Parse(funscriptFile.GetAsText()) != Error.Ok)
+        {
+            GD.PrintErr($"FunscriptPlayer: JSON parse error in restim script {axis}: {path}");
+            return;
+        }
+
+        var funscript = parser.Data.AsGodotDictionary();
+        var rawActions = funscript.ContainsKey("actions") ? funscript["actions"].AsGodotArray() : new Godot.Collections.Array();
+        foreach (var rawAction in rawActions)
+        {
+            var action = rawAction.AsGodotDictionary();
+            state.Actions.Add(new Action
+            {
+                AtMs = action.ContainsKey("at") ? action["at"].AsSingle() : 0f,
+                Pos = action.ContainsKey("pos") ? action["pos"].AsInt32() : 0,
+            });
+        }
+        _restimScripts[axis] = state;
+    }
+
+    // Remove all restim axis scripts (call before loading a new round).
+    public void ClearRestimScripts()
+    {
+        _restimScripts.Clear();
+    }
+
     // Load a per-channel vibrator funscript. channel: 0 = vib1, 1 = vib2.
     // Call ClearVibScripts() before loading scripts for a new round.
     public void LoadVibScript(int channel, string path)
@@ -518,6 +632,7 @@ public partial class FunscriptPlayer : Node
         _interpIndex = 0;
         _lastSerialTarget = _homePosition;
         _SendNeutralToUnloadedAxes();
+        SendRestimManualState();
         _StartEaseIn();
     }
 
@@ -540,6 +655,7 @@ public partial class FunscriptPlayer : Node
         _clockPrimed = false;  // re-lock the smooth clock to the resumed video position
         _interpIndex = 0;
         _lastSerialTarget = _homePosition;
+        SendRestimManualState();
         _StartEaseIn();
     }
 
@@ -559,6 +675,8 @@ public partial class FunscriptPlayer : Node
         foreach (var kv in _axes)
             kv.Value.Index = 0;
         foreach (var kv in _vibScripts)
+            kv.Value.Index = 0;
+        foreach (var kv in _restimScripts)
             kv.Value.Index = 0;
 
         // Release constrict actuators before dropping the routes, then reset the state machine.
@@ -606,6 +724,7 @@ public partial class FunscriptPlayer : Node
         _fillerVibTickMs = 0.0;
         _fillerActive = true;
         ResolveOutput();
+        SendRestimManualState();
         _SendFillerCommand(); // fire immediately so there's no leading silence
     }
 
@@ -679,6 +798,16 @@ public partial class FunscriptPlayer : Node
         if (bpv != null && bpv.BpConnected)
             foreach (var route in _vibeRoutes)
                 bpv.SendVibrateChannel(route.Index, route.Channel, 0.0);
+
+        // restim: position axes home (L0 → user home, mapped motion axes → centre).
+        var restim = _restim;
+        if (restim != null && restim.RestimConnected)
+        {
+            restim.SendTCode(RestimService.StrokeAxis, homeNorm, _homeEaseMs);
+            foreach (var kv in RestimService.MotionAxisMap)
+                if (_axes.ContainsKey(kv.Key))
+                    restim.SendTCode(kv.Value, 0.5, _homeEaseMs);
+        }
     }
 
     // Call this each frame from GameLoop to keep funscript in sync with the video clock.
@@ -724,11 +853,16 @@ public partial class FunscriptPlayer : Node
                 _actionIndex++;
             }
 
-            // Secondary axes → the serial device whenever it's connected (serial T-code only). Same
+            // Secondary axes → the serial device and/or restim whenever either is connected. Same
             // smoothstep ease-in as L0 so all axes blend in from neutral together at round start.
+            // Serial gets the game's own axis name (L1/L2/R0/R1/R2); restim gets the E-Stim Full
+            // mapped name (surge→L1, twist→C0, pitch→P0, sway→V1, roll→V2).
             {
                 var serial = _serial;
-                if (serial != null && serial.SerialConnected)
+                var restim = _restim;
+                bool serialOn = serial != null && serial.SerialConnected;
+                bool restimOn = restim != null && restim.RestimConnected;
+                if (serialOn || restimOn)
                 {
                     // Compute ease blend factor once for this batch of axis commands. _easing is
                     // cleared in _PhysicsProcess once its window elapses, so L0 and the secondary
@@ -768,7 +902,39 @@ public partial class FunscriptPlayer : Node
 
                                 double targetNorm = nextPos / 100.0;
                                 uint durMs = (uint)Math.Max(1, (int)(state.Actions[idx + 1].AtMs - state.Actions[idx].AtMs));
-                                serial.SendAxis(axis, durMs, targetNorm);
+                                if (serialOn)
+                                    serial.SendAxis(axis, durMs, targetNorm);
+                                if (restimOn && RestimService.MotionAxisMap.TryGetValue(axis, out string rax)
+                                    && !_restimScripts.ContainsKey(rax))
+                                    restim.SendTCode(rax, targetNorm, durMs);
+                            }
+                            state.Index++;
+                        }
+                    }
+                }
+            }
+
+            // restim dedicated axis scripts (E-Stim Full: alpha/beta/volume/carrier_frequency/…) → restim,
+            // on the L0 clock. restim-only; each overrides the motion mapping + manual slider for its axis.
+            {
+                var restim = _restim;
+                if (restim != null && restim.RestimConnected && _restimScripts.Count > 0)
+                {
+                    foreach (var kv in _restimScripts)
+                    {
+                        string rax = kv.Key;
+                        AxisState state = kv.Value;
+                        while (state.Index < state.Actions.Count)
+                        {
+                            if (state.Actions[state.Index].AtMs > _positionMs)
+                                break;
+
+                            int idx = state.Index;
+                            if (idx + 1 < state.Actions.Count)
+                            {
+                                double targetNorm = Math.Clamp(state.Actions[idx + 1].Pos, 0, 100) / 100.0;
+                                uint durMs = (uint)Math.Max(1, (int)(state.Actions[idx + 1].AtMs - state.Actions[idx].AtMs));
+                                restim.SendTCode(rax, targetNorm, durMs);
                             }
                             state.Index++;
                         }
@@ -1128,9 +1294,34 @@ public partial class FunscriptPlayer : Node
         int currentPos = ProcessedStrokePos(index, effects);
         SendToVibeSource("stroke", currentPos / 100.0 * _vibeIntensity);
 
+        // restim (e-stim) runs in parallel with the stroke backend: the stroke funscript drives
+        // restim's Alpha (L0). Deliberately outside the _strokeBackend branch so it still works
+        // when the serial device is off (serial is turned off once restim connects). Sent per
+        // keyframe with a duration rather than streamed — T-code does the tweening device-side.
+        SendRestimStroke(index, effects);
+
         // Buttplug linear stroke: one interval-move per keyframe (BLE can't take the serial rate).
         if (_strokeBackend == StrokeBackend.Buttplug)
             SendButtplugStroke(index, effects);
+    }
+
+    // Stroke-axis (Alpha/L0) send to restim for one keyframe, mirroring SendButtplugStroke. Skipped
+    // when the round ships a dedicated estim script for the axis — that script wins over the stroke.
+    private void SendRestimStroke(int index, Godot.Collections.Array effects)
+    {
+        var restim = _restim;
+        if (restim == null || !restim.RestimConnected)
+            return;
+        if (_restimScripts.ContainsKey(RestimService.StrokeAxis))
+            return;
+        if (index + 1 >= _actions.Count)
+            return;
+
+        int currentPos = ProcessedStrokePos(index, effects);
+        int nextPos = ProcessedStrokePos(index + 1, effects);
+        uint durationMs = (uint)Math.Max(1, (int)(_actions[index + 1].AtMs - _actions[index].AtMs));
+        durationMs = _CapDuration(currentPos, nextPos, durationMs);
+        restim.SendTCode(RestimService.StrokeAxis, nextPos / 100.0, durationMs);
     }
 
     // Buttplug linear stroke send for one keyframe: move toward the next processed position over the
