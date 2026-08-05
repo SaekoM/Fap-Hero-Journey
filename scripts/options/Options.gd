@@ -2385,11 +2385,16 @@ func _build_handy_section() -> void:
 	key_row.add_child(key_edit)
 
 	_handy_status_lbl = Label.new()
-	_handy_status_lbl.text = (
-		"Not checked" if SettingsService.get_handy_connection_key() != "" else "No key set"
-	)
-	_style_label(_handy_status_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_handy_status_lbl, UITheme.PURPLE_MID, 11, true)  # size + uppercase; colour set per state
 	key_row.add_child(_handy_status_lbl)
+	# Reflect the LIVE connection state (the service holds it across rounds) instead of always starting at
+	# "Not checked" — reopening Options mid-session now shows you're still connected.
+	_refresh_handy_status()
+	# Keep it live while Options is open (connection_changed fires on connect / test / round start). The node
+	# frees on close, so Godot drops this connection automatically; the guard avoids a double-connect on a
+	# tab rebuild.
+	if not HandyService.connection_changed.is_connected(_on_handy_connection_changed):
+		HandyService.connection_changed.connect(_on_handy_connection_changed)
 
 	var connect_btn: Button = UITheme.make_icon_btn("⟳ CONNECT", false, UITheme.CYAN)
 	connect_btn.tooltip_text = "Save the key and check the device through Handy's servers"
@@ -2399,9 +2404,27 @@ func _build_handy_section() -> void:
 			SettingsService.set_handy_connection_key(key_edit.text)
 			SettingsService.save()
 			_refresh_routing_cards()  # the routing card appears once a key exists
-			_handy_status_lbl.text = "Checking…"
+			_set_handy_status("Checking…", UITheme.PURPLE_MID)
 			var ok: bool = await HandyService.connect_and_sync()
-			_handy_status_lbl.text = "✔ Connected" if ok else "✕ Not reachable"
+			_refresh_handy_status() if ok else _set_handy_status("✕ Not reachable", UITheme.DANGER)
+	)
+
+	# Fires a quick stroke so you can physically confirm the device is reachable (a cloud "connected" alone
+	# tells you nothing reached the hardware).
+	var test_btn: Button = UITheme.make_icon_btn("↕ TEST", false, UITheme.PURPLE_BRIGHT)
+	test_btn.tooltip_text = "Send a short stroke to confirm the device responds"
+	key_row.add_child(test_btn)
+	test_btn.pressed.connect(
+		func() -> void:
+			if not HandyService.is_connected_ok():
+				_set_handy_status("Connect first", UITheme.PURPLE_MID)
+				return
+			_set_handy_status("Testing…", UITheme.PURPLE_MID)
+			var ok: bool = await HandyService.test_stroke()
+			if ok:
+				_set_handy_status("● Stroke sent", UITheme.SUCCESS)
+			else:
+				_set_handy_status("✕ Test failed", UITheme.DANGER)
 	)
 
 	var d_handy: Dictionary = _add_delay_row(section, "Handy delay")
@@ -2427,6 +2450,32 @@ func _build_handy_section() -> void:
 	disclosure.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(disclosure, UITheme.SEPARATOR, 11, false)
 	section.add_child(disclosure)
+
+
+# Sets the Handy status line's text + colour together (green ● for good, red ✕ for bad, neutral purple for
+# pending). Central point so every state stays consistent.
+func _set_handy_status(text: String, color: Color) -> void:
+	if is_instance_valid(_handy_status_lbl):
+		_handy_status_lbl.text = text
+		_handy_status_lbl.add_theme_color_override("font_color", color)
+
+
+# Paints the status line from the LIVE state: no key → prompt; connected → green ● Connected; else unverified.
+func _refresh_handy_status() -> void:
+	if SettingsService.get_handy_connection_key() == "":
+		_set_handy_status("No key set", UITheme.PURPLE_MID)
+	elif HandyService.is_connected_ok():
+		_set_handy_status("● Connected", UITheme.SUCCESS)
+	else:
+		_set_handy_status("Not checked", UITheme.PURPLE_MID)
+
+
+# Keeps the Options status label in step with the live connection (connect / test / round-start all flip it).
+func _on_handy_connection_changed(connected: bool) -> void:
+	if connected:
+		_refresh_handy_status()
+	else:
+		_set_handy_status("✕ Not reachable", UITheme.DANGER)
 
 
 func _add_delay_row(parent: VBoxContainer, label_text: String, tip: String = "") -> Dictionary:
