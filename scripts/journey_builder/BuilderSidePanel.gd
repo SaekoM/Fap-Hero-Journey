@@ -1766,6 +1766,31 @@ func _known_flags_hint() -> Label:
 	return lbl
 
 
+# An "image fit" dropdown → target["image_fit"] (fit / crop / stretch) — how a fork-choice or boss image
+# fills its frame. `default_fit` is the surface's historical default (fork = stretch, boss = fit), shown when
+# the author hasn't set one so existing journeys read unchanged.
+func _make_image_fit_field(target: Dictionary, default_fit: String) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("IMAGE FIT"))
+	var values: Array = ["fit", "crop", "stretch"]
+	var labels: Array = [
+		"Fit — whole image (letterbox)", "Crop — fill & crop", "Stretch — fill (distort)"
+	]
+	var dd: OptionButton = OptionButton.new()
+	for i: int in values.size():
+		dd.add_item(str(labels[i]), i)
+	var cur: String = str(target.get("image_fit", ""))
+	if cur == "":
+		cur = default_fit
+	dd.selected = maxi(0, values.find(cur))
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(func(i: int) -> void: target["image_fit"] = str(values[i]))
+	col.add_child(dd)
+	return col
+
+
 func _make_set_flags_field(target: Dictionary) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
@@ -2149,6 +2174,7 @@ func _make_overlay_choice_block(
 			img_rm_btn.visible = true
 	)
 	sub.add_child(img_rm_btn)
+	sub.add_child(_make_image_fit_field(out[ei], "stretch"))
 
 	# Full parity with a native choice: the fork's per-resolution gate (weight / cost / threshold /
 	# requirement) + on-take flags/counters, so an overlay option behaves exactly like a base one.
@@ -2518,6 +2544,7 @@ func _make_graph_choice_block(
 			img_rm_btn.visible = true
 	)
 	sub.add_child(img_rm_btn)
+	sub.add_child(_make_image_fit_field(out[ei], "stretch"))
 
 	# Per-resolution gate field(s) + on-take effects (flags/counters). Shared with rendition overlay
 	# choices so an overlay option behaves exactly like a native one.
@@ -4471,6 +4498,7 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	if arr[idx].get("boss_image", "") != "":
 		img_zone.call_deferred("set_file", arr[idx]["boss_image"])
 	img_zone.file_dropped.connect(func(p: String) -> void: arr[idx]["boss_image"] = p)
+	boss_panel.add_child(_make_image_fit_field(arr[idx], "fit"))
 
 	# Intro tagline (optional).
 	boss_panel.add_child(_side_field_label("INTRO TAGLINE  (OPTIONAL)"))

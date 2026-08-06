@@ -994,9 +994,10 @@ func _show_boss_intro(round: Dictionary) -> void:
 		var img_ctl: JourneyImage = JourneyImage.new()
 		img_ctl.custom_minimum_size = Vector2(380, 240)
 		col.add_child(img_ctl)
-		if not img_ctl.show_path(
-			boss_image, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		):
+		var boss_fit: int = JourneyImage.stretch_for_fit(
+			str(round.get("image_fit", "")), TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		)
+		if not img_ctl.show_path(boss_image, TextureRect.EXPAND_IGNORE_SIZE, boss_fit):
 			img_ctl.queue_free()  # nothing to show — don't leave a 380x240 hole in the card
 
 	var name_lbl: Label = Label.new()

@@ -30,6 +30,19 @@ func _ready() -> void:
 # Shows `path`, returning false when there is nothing to show (empty path, unreadable file, or an
 # animated source with no FFmpeg GDExtension) so callers can skip their image layer entirely
 # rather than leaving an empty rect behind.
+# Maps an author "image fit" choice to a TextureRect stretch mode. Empty / unknown → `fallback`, so each
+# surface keeps its historical default and existing journeys look identical.
+static func stretch_for_fit(fit: String, fallback: int) -> int:
+	match fit:
+		"fit":
+			return TextureRect.STRETCH_KEEP_ASPECT_CENTERED  # whole image, letterboxed
+		"crop":
+			return TextureRect.STRETCH_KEEP_ASPECT_COVERED  # fills the frame, crops the overflow
+		"stretch":
+			return TextureRect.STRETCH_SCALE  # fills the frame, distorts aspect
+	return fallback
+
+
 func show_path(path: String, expand_mode: int, stretch_mode: int) -> bool:
 	_clear()
 	if path == "":

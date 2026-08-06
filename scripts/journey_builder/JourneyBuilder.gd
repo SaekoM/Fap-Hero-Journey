@@ -5075,6 +5075,7 @@ func _save_fork_node_edges(
 					"name": str(e.get("name", "")),
 					"description": str(e.get("description", "")),
 					"image_path": img_rel,
+					"image_fit": str(e.get("image_fit", "")),
 					"weight": int(e.get("weight", 1)),
 					"threshold": int(e.get("threshold", 0)),
 					"required_item": str(e.get("required_item", "")),

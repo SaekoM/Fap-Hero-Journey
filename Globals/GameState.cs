@@ -320,6 +320,7 @@ public partial class GameState : Node
                 ["name"] = e.ContainsKey("name") ? e["name"].AsString() : "",
                 ["description"] = e.ContainsKey("description") ? e["description"].AsString() : "",
                 ["image_path"] = e.ContainsKey("image_path") ? e["image_path"].AsString() : "",
+                ["image_fit"] = e.ContainsKey("image_fit") ? e["image_fit"].AsString() : "",
                 ["weight"] = e.ContainsKey("weight") ? e["weight"].AsInt32() : 1,
                 ["threshold"] = e.ContainsKey("threshold") ? e["threshold"].AsInt32() : 0,
                 ["required_item"] = e.ContainsKey("required_item") ? e["required_item"].AsString() : "",

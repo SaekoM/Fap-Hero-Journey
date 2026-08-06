@@ -100,16 +100,17 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 	_fill(bg)
 	card.add_child(bg)
 
-	# Layer 2 — poster image (only when available). May be a still or a baked animation; JourneyImage
-	# picks from the path and keeps the same STRETCH_SCALE fill either way.
+	# Layer 2 — poster image (only when available). May be a still or a baked animation; JourneyImage picks
+	# from the path. The author's per-choice image_fit maps to the stretch mode (default STRETCH_SCALE fill).
 	var image_path: String = path_data.get("image_path", "")
 	if image_path != "":
 		var img_ctl: JourneyImage = JourneyImage.new()
 		_fill(img_ctl)
 		card.add_child(img_ctl)
-		if not img_ctl.show_path(
-			image_path, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_SCALE
-		):
+		var fit: int = JourneyImage.stretch_for_fit(
+			str(path_data.get("image_fit", "")), TextureRect.STRETCH_SCALE
+		)
+		if not img_ctl.show_path(image_path, TextureRect.EXPAND_IGNORE_SIZE, fit):
 			img_ctl.queue_free()  # falls through to the solid bg layer beneath
 
 	# Layer 3 — gradient: transparent at top, dark at bottom (always, for readability)
