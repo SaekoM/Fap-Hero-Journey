@@ -126,6 +126,7 @@ var _ui_scale_value_lbl: Label = null
 var _beat_bar_toggle: Button = null
 var _beat_shape_dd: OptionButton = null
 var _round_timer_toggle: Button = null
+var _builder_bg_toggle: Button = null
 var _story_text_slider: HSlider = null
 var _story_text_value_lbl: Label = null
 var _tooltip_text_slider: HSlider = null
@@ -674,6 +675,34 @@ func _apply_layout() -> void:
 	timer_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(timer_hint, UITheme.SEPARATOR, 11, false)
 	display_section.add_child(timer_hint)
+
+	# ── Animated builder background row ──────────────────────────────────────
+	var bldbg_row: HBoxContainer = HBoxContainer.new()
+	bldbg_row.add_theme_constant_override("separation", 16)
+	display_section.add_child(bldbg_row)
+
+	var bldbg_lbl: Label = Label.new()
+	bldbg_lbl.text = "ANIMATED BUILDER BACKGROUND"
+	bldbg_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_label(bldbg_lbl, UITheme.WHITE_SOFT, 14, false)
+	bldbg_row.add_child(bldbg_lbl)
+
+	_builder_bg_toggle = Button.new()
+	_builder_bg_toggle.toggle_mode = true
+	_builder_bg_toggle.focus_mode = Control.FOCUS_NONE
+	_style_toggle(_builder_bg_toggle, true)
+	bldbg_row.add_child(_builder_bg_toggle)
+	_builder_bg_toggle.toggled.connect(
+		func(pressed: bool) -> void:
+			_style_toggle(_builder_bg_toggle, pressed)
+			_save_settings()
+	)
+
+	var bldbg_hint: Label = Label.new()
+	bldbg_hint.text = "Animated orbs behind the journey builder canvas. Turn off for a plain black background (less motion, lighter on the GPU). Applies next time the builder opens."
+	bldbg_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(bldbg_hint, UITheme.SEPARATOR, 11, false)
+	display_section.add_child(bldbg_hint)
 
 	# ── Update Check row (code-generated, appended to DisplaySection) ─────────
 	var upd_row: HBoxContainer = HBoxContainer.new()
@@ -1591,6 +1620,11 @@ func _load_settings() -> void:
 		_round_timer_toggle.button_pressed = timer_on
 		_style_toggle(_round_timer_toggle, timer_on)
 
+	if _builder_bg_toggle != null:
+		var bldbg_on: bool = SettingsService.get_builder_animated_bg_enabled()
+		_builder_bg_toggle.button_pressed = bldbg_on
+		_style_toggle(_builder_bg_toggle, bldbg_on)
+
 	if _update_check_toggle != null:
 		var upd_on: bool = SettingsService.get_update_check_enabled()
 		_update_check_toggle.button_pressed = upd_on
@@ -1700,6 +1734,9 @@ func _save_settings() -> void:
 
 	if _round_timer_toggle != null:
 		SettingsService.set_round_timer_enabled(_round_timer_toggle.button_pressed)
+
+	if _builder_bg_toggle != null:
+		SettingsService.set_builder_animated_bg_enabled(_builder_bg_toggle.button_pressed)
 
 	if _story_text_slider != null:
 		SettingsService.set_story_text_scale(_story_text_slider.value)

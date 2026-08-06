@@ -360,9 +360,19 @@ func style_text_edit(text_edit: TextEdit) -> void:
 
 # OptionButton (dropdown) styling.
 func style_option_button(option_button: OptionButton) -> void:
-	option_button.add_theme_color_override("font_color", WHITE_SOFT)
-	option_button.add_theme_color_override("font_hover_color", PURPLE_BRIGHT)
-	option_button.add_theme_font_size_override("font_size", 14)
+	_apply_dropdown_style(option_button)
+
+
+# Same dark, purple-bordered dropdown look for a MenuButton (e.g. the MultiSelectDropdown component).
+func style_menu_button(menu_button: MenuButton) -> void:
+	_apply_dropdown_style(menu_button)
+
+
+# The shared dropdown look — applies to any Button (OptionButton / MenuButton) via Button-level overrides.
+func _apply_dropdown_style(btn: Button) -> void:
+	btn.add_theme_color_override("font_color", WHITE_SOFT)
+	btn.add_theme_color_override("font_hover_color", PURPLE_BRIGHT)
+	btn.add_theme_font_size_override("font_size", 14)
 	var normal_style: StyleBoxFlat = StyleBoxFlat.new()
 	normal_style.bg_color = PURPLE_DARK
 	normal_style.border_color = PURPLE_MID
@@ -375,12 +385,12 @@ func style_option_button(option_button: OptionButton) -> void:
 	normal_style.content_margin_top = 8
 	normal_style.content_margin_bottom = 8
 	normal_style.set_corner_radius_all(CORNER_RADIUS)
-	option_button.add_theme_stylebox_override("normal", normal_style)
+	btn.add_theme_stylebox_override("normal", normal_style)
 	var hover_style: StyleBoxFlat = normal_style.duplicate()
 	hover_style.border_color = PURPLE_BRIGHT
-	option_button.add_theme_stylebox_override("hover", hover_style)
-	option_button.add_theme_stylebox_override("pressed", hover_style)
-	option_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("hover", hover_style)
+	btn.add_theme_stylebox_override("pressed", hover_style)
+	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 
 
 # Read-only tag chip: a small rounded pill, `text` in `accent`, on a near-opaque

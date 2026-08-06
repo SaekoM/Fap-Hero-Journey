@@ -107,6 +107,7 @@ var _current_overlay: Control = null
 # journey (_map_enabled): an author can disable it to enforce surprise, in which
 # case the map is never built and the buttons never appear.
 var _map_enabled: bool = true  # journey-level: author allows the player map
+var _show_fork_counts: bool = true  # journey-level: show the "N ROUNDS" tag on fork choices
 # Finish ("I came") — journey-level opt-in. When on, an always-available hold-to-confirm button ends the
 # run early; if a finish node (any type — a gentle round or a storyboard) is designated it plays as
 # aftercare before the end screen.
@@ -246,6 +247,7 @@ func _ready() -> void:
 	_build_beat_bar()
 	# Journey-level: the author can disable the player map to enforce surprise.
 	_map_enabled = bool(GameState.Journey.get("map_enabled", true))
+	_show_fork_counts = bool(GameState.Journey.get("show_fork_counts", true))
 	_map_fog = bool(GameState.Journey.get("map_fog", false))
 	# Journey-level: auto-advance countdown on storyboards / interactive forks.
 	_allow_finish = bool(GameState.Journey.get("allow_finish", false))
@@ -528,6 +530,7 @@ func _show_fork_screen(fork_data: Dictionary) -> void:
 	_set_cursor_hidden(false)
 	var fork_screen = ForkScene.instantiate()
 	fork_screen.show_map_button = _map_enabled
+	fork_screen.show_round_counts = _show_fork_counts
 	fork_screen.auto_advance_secs = _auto_advance_fork_secs if _auto_advance_enabled else 0
 	fork_screen.path_chosen.connect(_on_fork_path_chosen)
 	fork_screen.map_requested.connect(_open_map_viewer)
@@ -2687,7 +2690,7 @@ func _show_pop(title: String, detail: String, tail: String, accent: Color) -> vo
 
 # Brief auto-dismissing notification used after the save_now item fires. Keeps
 # the player in the round instead of pulling them into a modal.
-func _show_save_toast(text: String) -> void:
+func _show_save_toast(text: String, hold: float = 1.6) -> void:
 	var toast: PanelContainer = PanelContainer.new()
 	toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	toast.anchor_left = 0.5
@@ -2720,9 +2723,9 @@ func _show_save_toast(text: String) -> void:
 	toast.add_child(lbl)
 	add_child(toast)
 
-	# Fade out after ~2 seconds.
+	# Hold, then fade out (default ~2s total; callers with an actionable message pass a longer hold).
 	var tween: Tween = create_tween()
-	tween.tween_interval(1.6)
+	tween.tween_interval(hold)
 	tween.tween_property(toast, "modulate:a", 0.0, 0.4)
 	tween.finished.connect(func() -> void: toast.queue_free())
 
@@ -2865,7 +2868,7 @@ func _handy_begin_round(fs_path: String) -> void:
 	# ensure_ready reuses the cached session clock-sync — only the FIRST round (or after a long gap) pays the
 	# full ~9-call handshake; later rounds skip straight to setup+play, so the device starts near-instantly.
 	if not await HandyService.ensure_ready():
-		_show_save_toast("✕  THE HANDY IS UNREACHABLE — CHECK KEYS / WIFI")
+		_show_save_toast("✕  THE HANDY IS UNREACHABLE — CHECK KEYS / WIFI", 5.0)
 		return
 	HandyService.load_actions(JourneyData.read_funscript_actions(fs_path))
 	# Bake in this round's active stroke effects (boss/curse modifiers are added
@@ -2877,7 +2880,7 @@ func _handy_begin_round(fs_path: String) -> void:
 	# server_time line up — the video keeps advancing during the setup round-trip, and a stale snapshot here
 	# is what left the device ~1s behind for the round.
 	if not await HandyService.start(_handy_video_ms):
-		_show_save_toast("✕  HANDY SYNC FAILED — ROUND PLAYS WITHOUT IT")
+		_show_save_toast("✕  HANDY SYNC FAILED — ROUND PLAYS WITHOUT IT", 5.0)
 		return
 	_handy_ready = true
 	await HandyService.set_slider(SettingsService.get_range_min(), SettingsService.get_range_max())

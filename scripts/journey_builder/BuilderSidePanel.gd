@@ -310,6 +310,24 @@ func show_journey_info_panel() -> void:
 			refresh_fog.call()
 	)
 
+	# Fork choices: show or hide the "N ROUNDS" tag on each choice (rounds distinct to that path).
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_side_field_label("FORK CHOICES"))
+	var fork_counts_toggle: CheckButton = CheckButton.new()
+	fork_counts_toggle.text = "SHOW ROUND COUNTS"
+	fork_counts_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			'Show the "N ROUNDS" tag on each fork choice — how many rounds are down that path before it rejoins another. Turn off to hide it and keep each choice a mystery.'
+		)
+	)
+	fork_counts_toggle.add_theme_font_size_override("font_size", 12)
+	fork_counts_toggle.button_pressed = _owner._journey_show_fork_counts
+	side_vbox.add_child(fork_counts_toggle)
+	fork_counts_toggle.toggled.connect(
+		func(on: bool) -> void: _owner._journey_show_fork_counts = on
+	)
+
 	# Auto-advance: a countdown on storyboards (per line) and interactive forks so a player can't
 	# park there to "rest". The seconds spin greys out until it's enabled.
 	side_vbox.add_child(_side_section_separator())
@@ -1488,6 +1506,7 @@ func show_graph_node_editor(node_id: String) -> void:
 		if node_type != "round":
 			side_vbox.add_child(_make_set_flags_field(data))
 			side_vbox.add_child(_make_set_counters_field(data))
+			side_vbox.add_child(_make_remove_items_field(data))
 		# Divider between the content editor (round types / fields) and the node-operations block
 		# (connect / duplicate / delete / add) below.
 		side_vbox.add_child(_side_divider_line())
@@ -1734,19 +1753,68 @@ func _known_flags_hint() -> Label:
 func _make_set_flags_field(target: Dictionary) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label("SETS FLAGS (COMMA-SEPARATED)"))
+	col.add_child(_side_field_label("SETS FLAGS  (COMMA-SEPARATED · PREFIX - TO CLEAR)"))
 	var edit: LineEdit = LineEdit.new()
-	edit.placeholder_text = "e.g. spared_boss, found_key"
-	edit.text = ", ".join(
-		PackedStringArray(JourneyData.clean_flag_list(target.get("set_flags", [])))
-	)
+	edit.placeholder_text = "e.g. found_key, -spared_boss"
+	edit.text = _join_flag_field(target)
 	UITheme.style_line_edit(edit)
-	edit.text_changed.connect(
-		func(v: String) -> void:
-			target["set_flags"] = JourneyData.clean_flag_list(Array(v.split(",")))
-	)
+	edit.text_changed.connect(func(v: String) -> void: _parse_flag_field(v, target))
 	col.add_child(edit)
 	col.add_child(_known_flags_hint())
+	return col
+
+
+# Splits the SETS FLAGS text into set_flags (plain names) and clear_flags (names written with a leading "-").
+# So "found_key, -spared_boss" sets found_key and clears spared_boss on the run's flag set.
+func _parse_flag_field(text: String, target: Dictionary) -> void:
+	var sets: Array = []
+	var clears: Array = []
+	for part: String in text.split(","):
+		var s: String = part.strip_edges()
+		if s.begins_with("-"):
+			var name: String = s.substr(1).strip_edges()
+			if name != "" and not (name in clears):
+				clears.append(name)
+		elif s != "" and not (s in sets):
+			sets.append(s)
+	target["set_flags"] = sets
+	target["clear_flags"] = clears
+
+
+# Rebuilds the field text from set_flags + clear_flags (each cleared flag shown with a leading "-").
+func _join_flag_field(target: Dictionary) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	for f: Variant in JourneyData.clean_flag_list(target.get("set_flags", [])):
+		parts.append(str(f))
+	for f: Variant in JourneyData.clean_flag_list(target.get("clear_flags", [])):
+		parts.append("-" + str(f))
+	return ", ".join(parts)
+
+
+# A multi-select dropdown (built-in + journey custom items) → target["remove_items"] (array of ids). Each
+# checked item has one held copy consumed when the node completes / the choice is taken. The item set mirrors
+# the give-item picker; MultiSelectDropdown keeps the list open for picking several.
+func _make_remove_items_field(target: Dictionary) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("REMOVES ITEMS"))
+
+	var entries: Array = []  # [{id, label}] — built-ins then journey custom items
+	for k: String in InventoryService.GetBuiltinItemIds():
+		entries.append({"id": k, "label": str(InventoryService.GetItemData(k).get("name", k))})
+	for it: Dictionary in _owner._journey_items:
+		var iid: String = str(it.get("id", ""))
+		if iid != "":
+			entries.append({"id": iid, "label": "%s  (custom)" % str(it.get("name", ""))})
+
+	var dd: MultiSelectDropdown = MultiSelectDropdown.new()
+	dd.empty_text = "None"
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(dd)  # add first so _ready wires the popup, then populate
+	dd.set_options(entries)
+	dd.set_selected(target.get("remove_items", []))
+	UITheme.style_menu_button(dd)
+	dd.selection_changed.connect(func(ids: Array) -> void: target["remove_items"] = ids)
 	return col
 
 
@@ -2341,9 +2409,11 @@ func _add_choice_resolution_and_effects(
 		var thr_label: String = "ACTIVATES AT ≥  (%s)" % metric_word
 		_add_path_int_field(sub, out, ei, "threshold", thr_label, 999999)
 
-	# A choice can set flags and bump counters when it's taken ("you chose mercy" / "+1 resolve").
+	# A choice can set/clear flags, bump counters, and remove items when it's taken ("you chose mercy" /
+	# "+1 resolve" / "hands over the key").
 	sub.add_child(_make_set_flags_field(edge))
 	sub.add_child(_make_set_counters_field(edge))
+	sub.add_child(_make_remove_items_field(edge))
 
 
 # One choice card inside the graph fork editor: name / description / card image, the per-
@@ -2894,6 +2964,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	col.add_child(_side_section_separator())
 	col.add_child(_make_set_flags_field(arr[idx]))
 	col.add_child(_make_set_counters_field(arr[idx]))
+	col.add_child(_make_remove_items_field(arr[idx]))
 
 	# ── Round behavior ───────────────────────────────────────────────────────────
 	# (Checkpoints are their own node type now — added from the canvas, not a round flag.)

@@ -17,6 +17,7 @@ var _resolution: String = "choice"  # how this fork resolves
 var _cond_metric: String = "score"  # conditional metric (score/coins/item)
 var _default_path: int = 0  # conditional fallback path index
 var show_map_button: bool = true  # GameLoop clears this when the journey hides the map
+var show_round_counts: bool = true  # GameLoop clears this when the journey hides fork "N ROUNDS" tags
 
 var _cond_decider: String = "game"  # conditional: "game" (auto-spin) or "player" (gated pick)
 var _cond_counter: String = ""  # conditional "counter" metric: which named counter each path's threshold gates on
@@ -177,17 +178,18 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 		desc_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(13))
 		col.add_child(desc_lbl)
 
-	# round_count = rounds reachable down this branch (GameState.CurrentFork fills it from
-	# LongestRoundPath). Fall back to a legacy "rounds" array if ever present.
-	var round_count: int = int(
-		path_data.get("round_count", (path_data.get("rounds", []) as Array).size())
-	)
-	var rounds_lbl: Label = Label.new()
-	rounds_lbl.text = "%d ROUND%s" % [round_count, "S" if round_count != 1 else ""]
-	rounds_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	rounds_lbl.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
-	rounds_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(13))
-	col.add_child(rounds_lbl)
+	# round_count = rounds distinct to this branch, up to the fork's convergence (GameState.CurrentFork fills
+	# it). Fall back to a legacy "rounds" array if ever present. The author can hide the tag per journey.
+	if show_round_counts:
+		var round_count: int = int(
+			path_data.get("round_count", (path_data.get("rounds", []) as Array).size())
+		)
+		var rounds_lbl: Label = Label.new()
+		rounds_lbl.text = "%d ROUND%s" % [round_count, "S" if round_count != 1 else ""]
+		rounds_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		rounds_lbl.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
+		rounds_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(13))
+		col.add_child(rounds_lbl)
 
 	# Conditional: show each path's requirement so an auto-pick reads as earned,
 	# not random.

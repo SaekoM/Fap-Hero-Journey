@@ -97,6 +97,7 @@ var _journey_desc: String = ""
 var _journey_difficulty_idx: int = 0
 var _journey_tags: Array = []  # Array[String] of tag ids (see TagRegistry)
 var _journey_map_enabled: bool = true  # author allows the in-play journey map (off = enforce surprise)
+var _journey_show_fork_counts: bool = true  # show the "N ROUNDS" tag on fork choices (off = hide for mystery)
 var _journey_map_fog: bool = false  # fog of war: reveal the map as the player discovers it (map must be enabled)
 var _journey_map_fog_reveal: int = 1  # fog reveal depth: ghost levels ahead of the trail (< 0 = whole structure)
 var _journey_auto_advance_enabled: bool = false  # countdown on storyboards / interactive forks (off = players self-pace)
@@ -383,10 +384,15 @@ func _all_set_flags() -> Dictionary:
 	var flags: Dictionary = {}
 	for id: String in _graph_model.get("nodes", {}):
 		var n: Dictionary = _graph_model["nodes"][id]
-		for f: Variant in (n.get("data", {}) as Dictionary).get("set_flags", []):
+		var d: Dictionary = n.get("data", {})
+		for f: Variant in d.get("set_flags", []):
+			flags[str(f)] = true
+		for f: Variant in d.get("clear_flags", []):  # a cleared flag is part of the flag universe too
 			flags[str(f)] = true
 		for e: Dictionary in n.get("out", []):
 			for f2: Variant in e.get("set_flags", []):
+				flags[str(f2)] = true
+			for f2: Variant in e.get("clear_flags", []):
 				flags[str(f2)] = true
 	return flags
 
@@ -447,6 +453,11 @@ func _apply_layout() -> void:
 	var animated_bg: Control = $AnimatedBackground
 	animated_bg.anchor_right = 1.0
 	animated_bg.anchor_bottom = 1.0
+	# Optional plain-black canvas: hide the animated layer (the black Background ColorRect shows through) and
+	# stop its per-frame processing — a hidden node still runs _process, so this makes "off" truly idle.
+	var bg_on: bool = SettingsService.get_builder_animated_bg_enabled()
+	animated_bg.visible = bg_on
+	animated_bg.set_process(bg_on)
 
 	_top_bar.anchor_right = 1.0
 	_top_bar.offset_left = 16
@@ -2426,6 +2437,7 @@ func _load_graph(journey: Dictionary) -> void:
 	_journey_difficulty_idx = parsed["difficulty_idx"]
 	_journey_tags = (parsed.get("tags", []) as Array).duplicate()
 	_journey_map_enabled = bool(parsed.get("map_enabled", true))
+	_journey_show_fork_counts = bool(parsed.get("show_fork_counts", true))
 	_journey_shown_counters = (parsed.get("shown_counters", []) as Array).duplicate()
 	# Custom journey items come from the scanner's resolved `items` on the raw journey dict —
 	# NOT from `parsed`, whose "items" key is JourneyData.parse_journey's NODE SEQUENCE (a name
@@ -4459,6 +4471,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"Difficulty": JourneyData.DIFFICULTIES[_journey_difficulty_idx],
 		"Tags": TagRegistry.sanitize(_journey_tags),
 		"MapEnabled": _journey_map_enabled,
+		"ShowForkCounts": _journey_show_fork_counts,
 		"MapFog": _journey_map_fog,
 		"MapFogReveal": _journey_map_fog_reveal,
 		"AutoAdvanceEnabled": _journey_auto_advance_enabled,
@@ -4979,7 +4992,9 @@ func _save_fork_node_edges(
 					"required_flag": str(e.get("required_flag", "")),
 					"cond_counter": str(e.get("cond_counter", "")),  # per-choice counter override (blank = fork default)
 					"set_flags": JourneyData.clean_flag_list(e.get("set_flags", [])),
+					"clear_flags": JourneyData.clean_flag_list(e.get("clear_flags", [])),
 					"set_counters": JourneyData.clean_counter_deltas(e.get("set_counters", {})),
+					"remove_items": JourneyData.clean_flag_list(e.get("remove_items", [])),
 				}
 			)
 		)

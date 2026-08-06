@@ -79,6 +79,7 @@ const DEFAULT_HUD_HIDE_DELAY: float = 3.0  # seconds
 const DEFAULT_UI_SCALE: float = 1.0  # Window.content_scale_factor multiplier
 const DEFAULT_BEAT_BAR_ENABLED: bool = false
 const DEFAULT_ROUND_TIMER_ENABLED: bool = false  # opt-in, like the beat bar
+const DEFAULT_BUILDER_ANIMATED_BG: bool = true  # animated builder backdrop; off = plain black canvas
 const DEFAULT_BEAT_BAR_SHAPE: String = "heart"  # see BeatBar.SHAPES
 # Readability scales, separate from UI_SCALE (which resizes the whole interface, layout and all).
 # These grow TEXT only, in the two places long-form reading actually happens.
@@ -364,6 +365,16 @@ func get_round_timer_enabled() -> bool:
 
 func set_round_timer_enabled(value: bool) -> void:
 	_config.set_value("display", "round_timer_enabled", value)
+
+
+# Animated backdrop in the journey builder. On by default; off gives a plain black canvas (less motion /
+# GPU load). Read when the builder opens.
+func get_builder_animated_bg_enabled() -> bool:
+	return bool(_config.get_value("display", "builder_animated_bg", DEFAULT_BUILDER_ANIMATED_BG))
+
+
+func set_builder_animated_bg_enabled(value: bool) -> void:
+	_config.set_value("display", "builder_animated_bg", value)
 
 
 # Multiplies the font size of narrative text — fork titles/descriptions, boss intro cards,

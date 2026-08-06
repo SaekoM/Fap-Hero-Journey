@@ -136,17 +136,44 @@ public partial class GameState : Node
     {
         var n = NodeOf(_currentId);
         if (n.ContainsKey("data"))
-            ApplyCounters(n["data"].AsGodotDictionary());
+        {
+            var d = n["data"].AsGodotDictionary();
+            ApplyCounters(d);
+            ApplyItemRemovals(d);  // node's remove_items — bestowed at completion, alongside counters
+        }
     }
 
-    // Adds every name in src["set_flags"] (a node's data, or a fork edge) to the run's flag set.
+    // Adds src["set_flags"] to the run's flag set and removes src["clear_flags"] from it (a node's data or
+    // a fork edge). clear_flags carries the "-flag" entries from the SETS FLAGS field. Both are idempotent
+    // (add/remove of a set), so a resume that re-enters this node is harmless — unlike ApplyItemRemovals.
     private void ApplyFlags(Dictionary src)
     {
-        if (!src.ContainsKey("set_flags")) return;
-        foreach (var f in src["set_flags"].AsGodotArray())
+        if (src.ContainsKey("set_flags"))
+            foreach (var f in src["set_flags"].AsGodotArray())
+            {
+                var name = f.AsString();
+                if (name != "") _flags.Add(name);
+            }
+        if (src.ContainsKey("clear_flags"))
+            foreach (var f in src["clear_flags"].AsGodotArray())
+            {
+                var name = f.AsString();
+                if (name != "") _flags.Remove(name);
+            }
+    }
+
+    // Removes one held copy of each id in src["remove_items"] (InventoryService.ConsumeItem). Applied ONLY
+    // at node COMPLETION / fork CHOICE — never on arrival — so a resume re-entering a node can't re-consume
+    // (removal isn't idempotent). A missing item is a silent no-op.
+    private void ApplyItemRemovals(Dictionary src)
+    {
+        if (!src.ContainsKey("remove_items")) return;
+        var inv = GetNodeOrNull<InventoryService>("/root/InventoryService");
+        if (inv == null) return;
+        foreach (var it in src["remove_items"].AsGodotArray())
         {
-            var name = f.AsString();
-            if (name != "") _flags.Add(name);
+            var id = it.AsString();
+            if (id != "") inv.ConsumeItem(id);
         }
     }
 
@@ -273,6 +300,15 @@ public partial class GameState : Node
         // Fork-level counter is the default for every choice; a choice may override it with its own
         // (per-path cond_counter), which lets one fork gate different choices on different counters.
         var forkCounter = data.ContainsKey("cond_counter") ? data["cond_counter"].AsString() : "";
+
+        // "N ROUNDS" per choice now counts only the rounds DISTINCT to that choice — up to where this fork's
+        // branches rejoin — so a shared tail after a convergence doesn't inflate every choice. Convergence =
+        // any node reachable from two or more of the fork's immediate branches (see ForkConvergence).
+        var branchTargets = new System.Collections.Generic.List<string>();
+        foreach (var edgeVariant in OutEdges(_currentId))
+            branchTargets.Add(edgeVariant.AsGodotDictionary().TryGetValue("to", out var tv) ? tv.AsString() : "");
+        var convergence = ForkConvergence(branchTargets);
+
         var paths = new Array();
         foreach (var edgeVariant in OutEdges(_currentId))
         {
@@ -291,10 +327,9 @@ public partial class GameState : Node
                 ["required_flag"] = e.ContainsKey("required_flag") ? e["required_flag"].AsString() : "",
                 // Effective per-choice counter: the choice's own, or the fork default when it left it blank.
                 ["cond_counter"] = edgeCounter != "" ? edgeCounter : forkCounter,
-                // Rounds reachable down this branch (longest path — matches TotalRounds'
-                // progress-bar semantics). ForkScreen renders this as the "N ROUNDS" tag;
-                // it was never populated after the graph migration, so it always read 0.
-                ["round_count"] = LongestRoundPath(to),
+                // Rounds distinct to this branch (longest path, stopping at the fork's convergence).
+                // ForkScreen renders this as the "N ROUNDS" tag.
+                ["round_count"] = LongestRoundPathBounded(to, convergence),
             });
         }
         return new Dictionary
@@ -351,8 +386,9 @@ public partial class GameState : Node
             ["depth"] = node.ContainsKey("depth") ? node["depth"].AsInt32() : 0,
         });
 
-        ApplyFlags(edge);      // the chosen choice's set_flags ("you chose X")
-        ApplyCounters(edge);   // …and its set_counters ("+1 notch for that choice")
+        ApplyFlags(edge);        // the chosen choice's set_flags / clear_flags ("you chose X")
+        ApplyCounters(edge);     // …its set_counters ("+1 notch for that choice")
+        ApplyItemRemovals(edge); // …and any remove_items ("that path costs you the key")
         _currentId = edge.ContainsKey("to") ? edge["to"].AsString() : "";
         EnterCurrent();
     }
@@ -410,6 +446,62 @@ public partial class GameState : Node
         foreach (var e in OutEdges(id))
             best = System.Math.Max(best, LongestRoundPathRec(e.AsGodotDictionary()["to"].AsString(), memo, seen));
 
+        seen.Remove(id);
+
+        int total = here + best;
+        memo[id] = total;
+        return total;
+    }
+
+    // Nodes reachable from `fromId` (inclusive). DAG; the accumulator also backstops a malformed cycle.
+    private HashSet<string> Reachable(string fromId)
+    {
+        var acc = new HashSet<string>();
+        ReachableRec(fromId, acc);
+        return acc;
+    }
+
+    private void ReachableRec(string id, HashSet<string> acc)
+    {
+        if (id == "" || !_nodes.ContainsKey(id) || acc.Contains(id))
+            return;
+        acc.Add(id);
+        foreach (var e in OutEdges(id))
+            ReachableRec(e.AsGodotDictionary()["to"].AsString(), acc);
+    }
+
+    // Where a fork's branches rejoin: nodes reachable from two or more of `branchTargets`. The shared tail
+    // past these belongs to no single choice, so the per-branch count stops here.
+    private HashSet<string> ForkConvergence(System.Collections.Generic.List<string> branchTargets)
+    {
+        var count = new System.Collections.Generic.Dictionary<string, int>();
+        foreach (var t in branchTargets)
+            foreach (var n in Reachable(t))
+                count[n] = count.TryGetValue(n, out int c) ? c + 1 : 1;
+        var conv = new HashSet<string>();
+        foreach (var kv in count)
+            if (kv.Value >= 2)
+                conv.Add(kv.Key);
+        return conv;
+    }
+
+    // Longest count of round nodes from `fromId`, STOPPING at any convergence node (shared tail excluded).
+    private int LongestRoundPathBounded(string fromId, HashSet<string> stopAt) =>
+        LongestRoundPathBoundedRec(fromId, stopAt, new System.Collections.Generic.Dictionary<string, int>(), new HashSet<string>());
+
+    private int LongestRoundPathBoundedRec(
+        string id, HashSet<string> stopAt, System.Collections.Generic.Dictionary<string, int> memo, HashSet<string> seen)
+    {
+        if (id == "" || !_nodes.ContainsKey(id) || seen.Contains(id) || stopAt.Contains(id))
+            return 0;
+        if (memo.TryGetValue(id, out int cached))
+            return cached;
+
+        seen.Add(id);
+        int here = TypeOf(id) == "round" ? 1 : 0;
+        int best = 0;
+        foreach (var e in OutEdges(id))
+            best = System.Math.Max(best, LongestRoundPathBoundedRec(e.AsGodotDictionary()["to"].AsString(), stopAt, memo, seen));
         seen.Remove(id);
 
         int total = here + best;

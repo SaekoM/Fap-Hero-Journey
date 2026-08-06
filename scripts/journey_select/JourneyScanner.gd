@@ -217,6 +217,7 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		# Journey-level: author can disable the player map to enforce surprise.
 		# Absent → true so the whole pre-existing catalogue keeps the map.
 		"map_enabled": bool(data.get("MapEnabled", true)),
+		"show_fork_counts": bool(data.get("ShowForkCounts", true)),
 		# Fog of war on the player map: reveal nodes as they're discovered (off → whole map shown).
 		"map_fog": bool(data.get("MapFog", false)),
 		# Fog reveal depth: ghost levels shown ahead of the visited trail (< 0 = whole structure ghosted).
@@ -543,6 +544,7 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		"author": data.get("Author", "Unknown"),
 		"tags": TagRegistry.sanitize(data.get("Tags", [])),
 		"map_enabled": bool(data.get("MapEnabled", true)),
+		"show_fork_counts": bool(data.get("ShowForkCounts", true)),
 		"map_fog": bool(data.get("MapFog", false)),
 		"map_fog_reveal": int(data.get("MapFogReveal", 1)),
 		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
