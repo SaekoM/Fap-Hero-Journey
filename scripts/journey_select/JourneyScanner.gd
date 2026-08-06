@@ -593,6 +593,8 @@ static func _parse_comments(data: Dictionary) -> Array:
 		var hex: String = str(c.get("Color", ""))
 		if hex != "" and Color.html_is_valid(hex):
 			entry["color"] = Color.html(hex)
+		if str(c.get("NodeId", "")) != "":
+			entry["node_id"] = str(c["NodeId"])
 		out.append(entry)
 	return out
 

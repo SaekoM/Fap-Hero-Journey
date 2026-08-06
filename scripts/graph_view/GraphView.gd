@@ -91,6 +91,7 @@ var _comment_ctrls: Array = []  # index -> Control, rebuilt each layout
 var _dragging_comment: int = -1  # the pressed comment index, or -1 when none
 var _comment_drag_moved: bool = false
 var _comment_drag_started: bool = false
+var _selected_comments: Array = []  # comment indices grabbed by a marquee — move + delete with the nodes
 
 # Group-frame drag/resize state — a labelled rectangle that moves the nodes inside it.
 var _frame_ctrls: Array = []  # index -> Control, rebuilt each layout
@@ -550,6 +551,7 @@ func _input(event: InputEvent) -> void:
 				n["pos"] = (n.get("pos", Vector2.ZERO) as Vector2) + delta
 				if _node_ctrls.has(id):
 					(_node_ctrls[id] as Control).position = n["pos"]
+		_move_selected_comments(delta)  # pinned + marquee-selected notes move with the drag
 		_drag_moved = true
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton:
@@ -561,6 +563,11 @@ func _input(event: InputEvent) -> void:
 					var n2: Dictionary = nodes.get(id, {})
 					if not n2.is_empty():
 						n2["pos"] = GraphLayout.snap(n2.get("pos", Vector2.ZERO))
+				var moved_cmts: Array = _graph_model.get("comments", [])
+				for ci: int in moved_cmts.size():
+					var c2: Dictionary = moved_cmts[ci]
+					if _selected_ids.has(str(c2.get("node_id", ""))) or _selected_comments.has(ci):
+						c2["pos"] = GraphLayout.snap(c2.get("pos", Vector2.ZERO))
 				refresh()  # re-render: highlights, grid-snapped positions, edges reconnected
 			elif _drag_collapse_to != "":
 				_set_selection([_drag_collapse_to])  # plain click on a multi-selected node → just it
@@ -713,8 +720,20 @@ func _ancestors_and_self(source: String) -> Dictionary:
 # helpers and the public select/clear all funnel through here so there's one emit path.
 func _set_selection(ids: Array) -> void:
 	_selected_ids = ids.duplicate()
+	_selected_comments = []  # a node click / clear resets any marquee note-selection (marquee re-sets it after)
 	refresh()
 	graph_selection_changed.emit(_selected_ids)
+
+
+# The comment indices grabbed by a marquee (for the builder's multi-delete).
+func get_selected_comments() -> Array:
+	return _selected_comments.duplicate()
+
+
+func clear_selected_comments() -> void:
+	if not _selected_comments.is_empty():
+		_selected_comments = []
+		refresh()
 
 
 # Ctrl+click: toggle a node in/out of the selection.
@@ -1287,7 +1306,9 @@ func _make_comment(_idx: int, comment: Dictionary) -> Control:
 	var color: Color = comment.get("color", UITheme.AMBER)
 	var panel: PanelContainer = PanelContainer.new()
 	panel.custom_minimum_size = Vector2(COMMENT_WIDTH, 0)
-	panel.add_theme_stylebox_override("panel", _comment_stylebox(color))
+	panel.add_theme_stylebox_override(
+		"panel", _comment_stylebox(color, _selected_comments.has(_idx))
+	)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE if map_mode else Control.MOUSE_FILTER_STOP
 	var margin: MarginContainer = MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 10)
@@ -1299,7 +1320,8 @@ func _make_comment(_idx: int, comment: Dictionary) -> Control:
 	var lbl: Label = Label.new()
 	var text: String = str(comment.get("text", ""))
 	var has_text: bool = text.strip_edges() != ""
-	lbl.text = text if has_text else "(empty note)"
+	var pinned: bool = str(comment.get("node_id", "")) != ""  # 📌 marks a note that follows a node
+	lbl.text = ("📌 " if pinned else "") + (text if has_text else "(empty note)")
 	lbl.add_theme_color_override("font_color", color if has_text else UITheme.DARK_TEXT)
 	lbl.add_theme_font_size_override("font_size", 12)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1311,9 +1333,21 @@ func _make_comment(_idx: int, comment: Dictionary) -> Control:
 	return panel
 
 
-func _comment_stylebox(color: Color) -> StyleBoxFlat:
+func _comment_stylebox(color: Color, selected: bool = false) -> StyleBoxFlat:
 	var s: StyleBoxFlat = StyleBoxFlat.new()
 	s.bg_color = Color(color.r * 0.18, color.g * 0.18, color.b * 0.18, 0.92)
+	# Marquee-selected notes get a full bright border (like a selected node) instead of the usual tab.
+	if selected:
+		s.border_color = UITheme.CYAN
+		s.border_width_left = 2
+		s.border_width_right = 2
+		s.border_width_top = 2
+		s.border_width_bottom = 2
+		s.corner_radius_top_left = 3
+		s.corner_radius_top_right = 3
+		s.corner_radius_bottom_left = 3
+		s.corner_radius_bottom_right = 3
+		return s
 	s.border_color = Color(color.r, color.g, color.b, 0.7)
 	s.border_width_left = 3  # a sticky-note "tab" down the left edge
 	s.border_width_right = 1
@@ -1331,6 +1365,10 @@ func _on_comment_gui_input(event: InputEvent, idx: int) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			# Pressing a note that's part of a marquee group keeps the group (drag moves them all); pressing
+			# any other note starts a fresh single-note drag.
+			if not _selected_comments.has(idx):
+				_selected_comments = []
 			_dragging_comment = idx
 			_comment_drag_moved = false
 			_comment_drag_started = false
@@ -1342,15 +1380,20 @@ func _handle_comment_drag(event: InputEvent) -> void:
 	if _dragging_comment >= comments.size():
 		_dragging_comment = -1
 		return
+	# A group drag: the pressed note belongs to a marquee selection, so move every selected note together.
+	var group: bool = _selected_comments.has(_dragging_comment)
 	if event is InputEventMouseMotion:
 		if not _comment_drag_started:
 			_comment_drag_started = true
 			nodes_drag_started.emit()  # one undo entry per drag (the builder snapshots comments too)
 		var delta: Vector2 = (event as InputEventMouseMotion).relative / _zoom
-		var c: Dictionary = comments[_dragging_comment]
-		c["pos"] = (c.get("pos", Vector2.ZERO) as Vector2) + delta
-		if _dragging_comment < _comment_ctrls.size():
-			(_comment_ctrls[_dragging_comment] as Control).position = c["pos"]
+		var move_idxs: Array = _selected_comments if group else [_dragging_comment]
+		for mi: int in move_idxs:
+			if mi < comments.size():
+				var mc: Dictionary = comments[mi]
+				mc["pos"] = (mc.get("pos", Vector2.ZERO) as Vector2) + delta
+				if mi < _comment_ctrls.size():
+					(_comment_ctrls[mi] as Control).position = mc["pos"]
 		_comment_drag_moved = true
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton:
@@ -1358,13 +1401,40 @@ func _handle_comment_drag(event: InputEvent) -> void:
 		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
 			var idx: int = _dragging_comment
 			_dragging_comment = -1
+			if group and _comment_drag_moved:
+				# Snap the whole group; keep it selected (no single-select, no pin-on-drop for a group).
+				for gi: int in _selected_comments:
+					if gi < comments.size():
+						var gc: Dictionary = comments[gi]
+						gc["pos"] = GraphLayout.snap(gc.get("pos", Vector2.ZERO))
+				refresh()
+				get_viewport().set_input_as_handled()
+				return
 			if _comment_drag_moved:
 				var cd: Dictionary = comments[idx]
 				cd["pos"] = GraphLayout.snap(cd.get("pos", Vector2.ZERO))
+				# Dropped onto a node → pin to it (the note then follows that node). Dropping over empty space
+				# keeps any existing pin, so a pinned note can be nudged; unpin from the note editor.
+				var over: String = _node_at_canvas_point(cd.get("pos", Vector2.ZERO))
+				if over != "":
+					cd["node_id"] = over
+			_selected_comments = []  # a single-note click/drag drops any marquee group
 			_selected_ids = []  # drop node highlights; the note becomes the active selection
 			refresh()
 			comment_clicked.emit(idx)  # select it (click or drag) so the side panel + Delete target it
 			get_viewport().set_input_as_handled()
+
+
+# Moves the sticky notes that should travel with a node drag by `delta`: notes pinned to a dragged node, plus
+# any grabbed by a marquee. One pass, so a note that's both pinned AND marquee-selected only moves once.
+func _move_selected_comments(delta: Vector2) -> void:
+	var comments: Array = _graph_model.get("comments", [])
+	for ci: int in comments.size():
+		var c: Dictionary = comments[ci]
+		if _selected_ids.has(str(c.get("node_id", ""))) or _selected_comments.has(ci):
+			c["pos"] = (c.get("pos", Vector2.ZERO) as Vector2) + delta
+			if ci < _comment_ctrls.size():
+				(_comment_ctrls[ci] as Control).position = c["pos"]
 
 
 # Canvas-space point at the centre of the current view (for placing a new comment).
@@ -1737,6 +1807,7 @@ func _finish_marquee() -> void:
 		if not _marquee_additive:
 			_set_selection([])
 		return
+	var prev_cmts: Array = _selected_comments.duplicate()  # _set_selection clears it; keep for additive
 	var ids: Array = _selected_ids.duplicate() if _marquee_additive else []
 	for id: String in _node_ctrls:
 		if _ghost_nodes.has(id):
@@ -1746,6 +1817,16 @@ func _finish_marquee() -> void:
 		if rect.intersects(screen_rect) and not ids.has(id):
 			ids.append(id)
 	_set_selection(ids)
+	# Sticky notes inside the box join the selection so they highlight, then move / delete with the nodes.
+	var cmts: Array = prev_cmts if _marquee_additive else []
+	for ci: int in _comment_ctrls.size():
+		var cc: Control = _comment_ctrls[ci]
+		var crect: Rect2 = Rect2(_canvas.position + cc.position * _zoom, cc.size * _zoom)
+		if rect.intersects(crect) and not cmts.has(ci):
+			cmts.append(ci)
+	if not cmts.is_empty():
+		_selected_comments = cmts
+		refresh()  # re-render to draw the note highlights
 
 
 func _zoom_at(focus: Vector2, new_zoom: float) -> void:

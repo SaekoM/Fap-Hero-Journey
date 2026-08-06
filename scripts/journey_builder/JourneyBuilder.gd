@@ -145,6 +145,7 @@ const UNDO_LIMIT: int = 50
 # selection is exclusive (nodes XOR a note). Nodes are deep [{id, node}] copies so paste can remap the
 # edges between them; a note is a plain comment dict. _paste_count cascades the offset on repeat paste.
 var _node_clipboard: Array = []
+var _clip_comments: Array = []  # sticky notes pinned to the copied nodes — travel with them on paste
 var _clip_comment: Dictionary = {}
 var _clip_kind: String = ""  # "" | "nodes" | "comment"
 var _paste_count: int = 0
@@ -1437,6 +1438,17 @@ func _delete_comment(idx: int) -> void:
 	_side_renderer.show_journey_info_panel()
 
 
+# Unpin a note from its node — it stops following the node and stays where it is.
+func _unpin_comment(idx: int) -> void:
+	var comments: Array = _graph_model.get("comments", [])
+	if idx < 0 or idx >= comments.size():
+		return
+	_push_undo()
+	(comments[idx] as Dictionary).erase("node_id")
+	_refresh_graph()
+	_side_renderer.show_comment_editor(idx)  # re-render the editor (now with the pin hint)
+
+
 # ── Group frames ─────────────────────────────────────────────────────────────
 
 
@@ -2144,6 +2156,9 @@ func _input(event: InputEvent) -> void:
 			elif not _selected_graph_node_ids.is_empty():
 				_delete_selected_nodes()
 				get_viewport().set_input_as_handled()
+			elif not _graph.get_selected_comments().is_empty():
+				_delete_marquee_comments()  # a notes-only marquee selection
+				get_viewport().set_input_as_handled()
 		KEY_ESCAPE:
 			# Cancel an in-progress edge wire, else drop the node selection. Only consume the event
 			# when there was actually something to cancel/clear.
@@ -2696,7 +2711,35 @@ func _delete_selected_nodes() -> void:
 		(nodes[id] as Dictionary)["out"] = kept
 	if str(_graph_model.get("start", "")) in doomed:
 		_graph_model["start"] = (nodes.keys()[0] as String) if not nodes.is_empty() else ""
+	_remove_comments_by_index(_graph.get_selected_comments())  # marquee-selected notes go with the nodes
 	_deselect_node()
+
+
+# Removes the comments at the given indices (a marquee's multi-note delete). Rebuilds the array so shifting
+# indices can't corrupt the removal. No undo of its own — the caller already snapshotted.
+func _remove_comments_by_index(idxs: Array) -> void:
+	if idxs.is_empty():
+		return
+	var drop: Dictionary = {}
+	for i: Variant in idxs:
+		drop[int(i)] = true
+	var kept: Array = []
+	var comments: Array = _graph_model.get("comments", [])
+	for ci: int in comments.size():
+		if not drop.has(ci):
+			kept.append(comments[ci])
+	_graph_model["comments"] = kept
+
+
+# Delete the notes a marquee selected when the selection is notes-only (no nodes). One undo step.
+func _delete_marquee_comments() -> void:
+	var idxs: Array = _graph.get_selected_comments()
+	if idxs.is_empty():
+		return
+	_push_undo()
+	_remove_comments_by_index(idxs)
+	_graph.clear_selected_comments()
+	_refresh_graph()
 
 
 # ── Clipboard (copy / cut / paste / duplicate) ───────────────────────────────
@@ -2714,6 +2757,26 @@ func _snapshot_selection() -> Array:
 	return entries
 
 
+# Deep copies of every sticky note pinned to a node in the current selection — captured alongside the nodes
+# so copy/cut/paste/duplicate carries a pinned note with its node (paste remaps node_id, see _paste_nodes).
+func _snapshot_pinned_comments() -> Array:
+	var out: Array = []
+	for c: Dictionary in _graph_model.get("comments", []):
+		if _selected_graph_node_ids.has(str(c.get("node_id", ""))):
+			out.append((c as Dictionary).duplicate(true))
+	return out
+
+
+# Removes every note pinned to one of `node_ids` (used on CUT so the notes travel with the cut nodes rather
+# than dangling). No undo push of its own — the caller's node delete already snapshotted the notes.
+func _remove_pinned_comments(node_ids: Array) -> void:
+	var kept: Array = []
+	for c: Dictionary in _graph_model.get("comments", []):
+		if not node_ids.has(str(c.get("node_id", ""))):
+			kept.append(c)
+	_graph_model["comments"] = kept
+
+
 # Ctrl+C — copy the active selection (a note or the node[s]). Mirrors the Delete priority:
 # note → nodes (the selection is exclusive, so at most one applies).
 func _copy_selection() -> void:
@@ -2727,6 +2790,7 @@ func _copy_selection() -> void:
 		_show_status("Copied note — Ctrl+V to paste.", false)
 	elif not _selected_graph_node_ids.is_empty():
 		_node_clipboard = _snapshot_selection()
+		_clip_comments = _snapshot_pinned_comments()
 		_clip_kind = "nodes"
 		_paste_count = 0
 		_show_status(
@@ -2749,10 +2813,14 @@ func _cut_selection() -> void:
 		_paste_count = 0
 		_delete_comment(_selected_comment_idx)
 	elif not _selected_graph_node_ids.is_empty():
+		var sel_ids: Array = _selected_graph_node_ids.duplicate()
 		_node_clipboard = _snapshot_selection()
+		_clip_comments = _snapshot_pinned_comments()
 		_clip_kind = "nodes"
 		_paste_count = 0
-		_delete_selected_nodes()
+		_delete_selected_nodes()  # pushes ONE undo snapshotting the nodes AND their pinned notes
+		_remove_pinned_comments(sel_ids)  # the notes leave with the cut nodes (same undo step)
+		_refresh_graph()
 
 
 # Ctrl+V — paste the clipboard into the CENTRE OF THE CURRENT VIEW (not back at the copied nodes'
@@ -2763,7 +2831,11 @@ func _paste_clipboard() -> void:
 	_paste_count += 1
 	match _clip_kind:
 		"nodes":
-			_paste_nodes(_node_clipboard, _view_paste_offset(_clip_positions(_node_clipboard)))
+			_paste_nodes(
+				_node_clipboard,
+				_view_paste_offset(_clip_positions(_node_clipboard)),
+				_clip_comments
+			)
 		"comment":
 			var cpos: Vector2 = _clip_comment.get("pos", Vector2.ZERO)
 			_paste_comment(_clip_comment, _view_paste_offset([cpos]))
@@ -2779,7 +2851,7 @@ func _duplicate_selection() -> void:
 				(comments[_selected_comment_idx] as Dictionary).duplicate(true), PASTE_OFFSET
 			)
 	elif not _selected_graph_node_ids.is_empty():
-		_paste_nodes(_snapshot_selection(), PASTE_OFFSET)
+		_paste_nodes(_snapshot_selection(), PASTE_OFFSET, _snapshot_pinned_comments())
 
 
 # Top-left positions of a clipboard-shaped node list, used to find the group's bounds for centering.
@@ -2811,7 +2883,7 @@ func _view_paste_offset(positions: Array) -> Vector2:
 # small nudge on duplicate). Edges between copied nodes are remapped to the new ids; an edge leaving
 # the copied set is dropped (regular node) or unwired (fork choice, so the fork keeps all its slots).
 # Pushes undo and selects the new nodes.
-func _paste_nodes(entries: Array, offset: Vector2) -> void:
+func _paste_nodes(entries: Array, offset: Vector2, pinned_comments: Array = []) -> void:
 	if entries.is_empty():
 		return
 	_push_undo()
@@ -2858,6 +2930,22 @@ func _paste_nodes(entries: Array, offset: Vector2) -> void:
 		if str(_graph_model.get("start", "")) == "":
 			_graph_model["start"] = new_id
 		pasted_ids.append(new_id)
+
+	# Re-create the notes that were pinned to the copied nodes, re-pinned to the new node ids and offset by
+	# the same amount so each note lands in the same spot beside its (pasted) node.
+	if not pinned_comments.is_empty():
+		if not _graph_model.has("comments"):
+			_graph_model["comments"] = []
+		var comments: Array = _graph_model["comments"]
+		for pc: Dictionary in pinned_comments:
+			var old_nid: String = str(pc.get("node_id", ""))
+			if not old_to_new_id.has(old_nid):
+				continue  # its node wasn't in the pasted set — skip rather than leave a dangling pin
+			var nc: Dictionary = (pc as Dictionary).duplicate(true)
+			nc["node_id"] = str(old_to_new_id[old_nid])
+			nc["pos"] = GraphLayout.snap((pc.get("pos", Vector2.ZERO) as Vector2) + offset)
+			comments.append(nc)
+
 	_graph.set_selection(pasted_ids)
 	_show_status(
 		"Pasted %d node%s." % [pasted_ids.size(), "" if pasted_ids.size() == 1 else "s"], false
@@ -4584,6 +4672,8 @@ func _serialize_comments(comments: Array) -> Array:
 		var entry: Dictionary = {"Pos": [p.x, p.y], "Text": str(c.get("text", ""))}
 		if c.has("color"):
 			entry["Color"] = (c["color"] as Color).to_html()
+		if str(c.get("node_id", "")) != "":
+			entry["NodeId"] = str(c["node_id"])  # pinned note — follows this node in the builder
 		out.append(entry)
 	return out
 

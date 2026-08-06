@@ -1600,6 +1600,22 @@ func show_comment_editor(idx: int) -> void:
 		swatch_row.add_child(sw)
 	side_vbox.add_child(swatch_row)
 	side_vbox.add_child(_side_section_separator())
+
+	# Pin status. A pinned note follows its node when the node is moved; pin by dragging the note onto a node.
+	if str((comments[idx] as Dictionary).get("node_id", "")) != "":
+		var unpin_btn: Button = UITheme.make_icon_btn("📌 UNPIN FROM NODE", false, UITheme.CYAN)
+		unpin_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		unpin_btn.pressed.connect(func() -> void: _owner._unpin_comment(idx))
+		side_vbox.add_child(unpin_btn)
+	else:
+		var pin_hint: Label = Label.new()
+		pin_hint.text = "Drag this note onto a node to pin it — it then moves with that node."
+		pin_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		pin_hint.add_theme_font_size_override("font_size", 11)
+		pin_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		side_vbox.add_child(pin_hint)
+
+	side_vbox.add_child(_side_section_separator())
 	var del_btn: Button = UITheme.make_icon_btn("🗑 DELETE NOTE", false, UITheme.ERROR_SOFT)
 	del_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	del_btn.pressed.connect(func() -> void: _owner._delete_comment(idx))
