@@ -88,7 +88,11 @@ static func auto_layout(graph: Dictionary) -> void:
 	var adj: Dictionary = _adjacency(graph)
 	var layer: Dictionary = _assign_layers(graph, adj)
 	var layers: Array = _build_layers(nodes, layer)
-	_reduce_crossings(layers, adj)
+	# Loop-aware: each Loop's body (Start + End + the nodes between them) shares a cluster id, so crossing
+	# reduction keeps the whole body together in every row instead of scattering a fork's branches — that
+	# keeps the drawn Loop band tight around its own nodes and off unrelated ones.
+	var cluster: Dictionary = _loop_clusters(graph, adj)
+	_reduce_crossings(layers, adj, cluster)
 	var x: Dictionary = _assign_x(layers, adj)
 	for l_idx in layers.size():
 		for id: String in layers[l_idx]:
@@ -159,16 +163,18 @@ static func _build_layers(nodes: Dictionary, layer: Dictionary) -> Array:
 
 
 # Median-heuristic crossing reduction: a few down+up passes, each ordering a layer by the median
-# position of its neighbours in the adjacent (already-ordered) layer.
-static func _reduce_crossings(layers: Array, adj: Dictionary) -> void:
+# position of its neighbours in the adjacent (already-ordered) layer. `cluster` keeps Loop bodies grouped.
+static func _reduce_crossings(layers: Array, adj: Dictionary, cluster: Dictionary) -> void:
 	for _i in LAYOUT_PASSES:
 		for l_idx in range(1, layers.size()):
-			_order_layer(layers, l_idx, l_idx - 1, adj["preds"])
+			_order_layer(layers, l_idx, l_idx - 1, adj["preds"], cluster)
 		for l_idx in range(layers.size() - 2, -1, -1):
-			_order_layer(layers, l_idx, l_idx + 1, adj["succ"])
+			_order_layer(layers, l_idx, l_idx + 1, adj["succ"], cluster)
 
 
-static func _order_layer(layers: Array, l_idx: int, ref_idx: int, neigh: Dictionary) -> void:
+static func _order_layer(
+	layers: Array, l_idx: int, ref_idx: int, neigh: Dictionary, cluster: Dictionary
+) -> void:
 	var ref_pos: Dictionary = {}
 	var ref_layer: Array = layers[ref_idx]
 	for i in ref_layer.size():
@@ -184,18 +190,73 @@ static func _order_layer(layers: Array, l_idx: int, ref_idx: int, neigh: Diction
 		positions.sort()
 		var key: float = _median(positions) if not positions.is_empty() else float(i)
 		keyed.append({"id": id, "key": key, "idx": i})
+	# A Loop body's nodes share a cluster id; the whole cluster moves as one block (keyed on its members'
+	# smallest median in this row) so its nodes stay contiguous instead of being split by outside nodes.
+	# Non-clustered nodes are their own singleton cluster, so they still order by their own median.
+	var group_key: Dictionary = {}
+	for k: Dictionary in keyed:
+		var cid: String = str(cluster.get(k["id"], k["id"]))
+		if not group_key.has(cid) or k["key"] < float(group_key[cid]):
+			group_key[cid] = k["key"]
 	keyed.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
-			return (
-				a["key"] < b["key"]
-				if not is_equal_approx(a["key"], b["key"])
-				else a["idx"] < b["idx"]
-			)
+			var ca: String = str(cluster.get(a["id"], a["id"]))
+			var cb: String = str(cluster.get(b["id"], b["id"]))
+			var ga: float = float(group_key[ca])
+			var gb: float = float(group_key[cb])
+			if not is_equal_approx(ga, gb):
+				return ga < gb
+			if ca != cb:
+				return ca < cb  # different clusters, same block position → stable by cluster id
+			if not is_equal_approx(float(a["key"]), float(b["key"])):
+				return a["key"] < b["key"]
+			return a["idx"] < b["idx"]
 	)
 	var ordered: Array = []
 	for k: Dictionary in keyed:
 		ordered.append(k["id"])
 	layers[l_idx] = ordered
+
+
+# Cluster id per node for loop-aware layout: every node in a Loop's body (Start + End + the nodes on a
+# path between them) maps to that Loop's End id; nodes in no loop are absent (they cluster as singletons).
+# loop_to is data, not an edge, so the body is found purely from forward flow — descendants of the Start
+# that are also ancestors of the End.
+static func _loop_clusters(graph: Dictionary, adj: Dictionary) -> Dictionary:
+	var nodes: Dictionary = graph.get("nodes", {})
+	var succ: Dictionary = adj["succ"]
+	var preds: Dictionary = adj["preds"]
+	var cluster: Dictionary = {}
+	for end_id: String in nodes:
+		if str((nodes[end_id] as Dictionary).get("type", "")) != "loop_end":
+			continue
+		var start_id: String = str(
+			((nodes[end_id] as Dictionary).get("data", {}) as Dictionary).get("loop_to", "")
+		)
+		if start_id == "" or not nodes.has(start_id):
+			continue
+		var down: Dictionary = _reach(start_id, succ)
+		var up: Dictionary = _reach(end_id, preds)
+		cluster[start_id] = end_id
+		cluster[end_id] = end_id
+		for nid: String in down:
+			if up.has(nid):
+				cluster[nid] = end_id
+	return cluster
+
+
+# Set (Dictionary-as-set) of node ids reachable from `from_id` along the given adjacency (succ or preds).
+static func _reach(from_id: String, adjmap: Dictionary) -> Dictionary:
+	var seen: Dictionary = {}
+	var stack: Array = [from_id]
+	while not stack.is_empty():
+		var id: String = str(stack.pop_back())
+		if seen.has(id):
+			continue
+		seen[id] = true
+		for n: Variant in adjmap.get(id, []):
+			stack.append(str(n))
+	return seen
 
 
 static func _median(sorted_positions: Array) -> float:

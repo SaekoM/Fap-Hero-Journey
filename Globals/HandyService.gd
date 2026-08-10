@@ -70,6 +70,12 @@ var _playing: bool = false
 var _last_feed_ms: int = -100000
 var _last_video_ms: int = 0  # most recent video clock (for a delay-change resync)
 var _feed_inflight: bool = false
+# Deferred play: when a round opens with a long no-action intro, the first stroke can be beyond LOOKAHEAD,
+# so the opening /hsp/play window is empty. Sending it anyway starves the device (pause_on_starving) and it
+# recovers ~LOOKAHEAD behind. Instead we DEFER the play — feed() fires the anchored /hsp/play once the first
+# stroke comes within reach. `_video_ms_source` is start()'s live position Callable, reused by that engage.
+var _deferred_play: bool = false
+var _video_ms_source: Callable = Callable()
 # Prewarm: a fresh /hsp/setup done ahead of the round so start() only needs /hsp/play. `_session_ready`
 # means one exists and hasn't been consumed yet; `_setup_inflight` means a prewarm's setup is in progress.
 var _session_ready: bool = false
@@ -254,10 +260,35 @@ func start(video_ms_source: Callable) -> bool:
 			return false
 	_playing = true
 	_last_feed_ms = -100000
-	var video_ms: int = int(video_ms_source.call())  # live, paired with _server_now() below
+	_video_ms_source = video_ms_source  # kept for the deferred engage in feed()
+	var video_ms: int = int(video_ms_source.call())  # live, paired with _server_now() in _send_play
 	_last_video_ms = video_ms
-	# Window from the CURRENT position, not index 0 — otherwise the device is handed the opening
-	# seconds of the script while it plays from video_ms, starves, and lags for seconds.
+	# If the first stroke is beyond the lookahead (a long no-action intro), DON'T play into an empty window —
+	# that starves the device. Defer; feed() fires the anchored play once a stroke comes into reach.
+	if (
+		HandyPoints
+		. points_in_window(
+			_transformed,
+			HandyPoints.index_at_or_after(_transformed, video_ms),
+			video_ms + LOOKAHEAD_MS
+		)["batch"]
+		. is_empty()
+	):
+		_deferred_play = true
+		return true  # session is set up; the real /hsp/play waits for strokes
+	_deferred_play = false
+	if (await _send_play(video_ms)).is_empty():
+		return false
+	_note_stream_ok()  # clear the failure counter on a clean (re)start
+	return true
+
+
+# Builds the point window from `video_ms` and sends one anchored /hsp/play (flush + server_time). Assumes an
+# HSP session already exists (setup done). Shared by start(), seek(), and the deferred engage. Window starts
+# at the CURRENT position (not index 0) so the device isn't handed the opening seconds while it plays here.
+func _send_play(video_ms: int) -> Dictionary:
+	_last_video_ms = video_ms
+	_last_feed_ms = Time.get_ticks_msec()
 	var from_idx: int = HandyPoints.index_at_or_after(_transformed, video_ms)
 	var win: Dictionary = HandyPoints.points_in_window(
 		_transformed, from_idx, video_ms + LOOKAHEAD_MS
@@ -269,21 +300,13 @@ func start(video_ms_source: Callable) -> bool:
 		"pause_on_starving": true,
 		"loop": false,
 		"add":
-		{
-			"points": win["batch"],
-			"flush": true,
-			"tail_point_stream_index": maxi(1, _send_idx),
-		},
+		{"points": win["batch"], "flush": true, "tail_point_stream_index": maxi(1, _send_idx)},
 	}
-	# Anchor the play to the server clock so the device compensates transit lag.
-	# Only when synced — a bad estimate would desync worse than omitting it.
+	# Anchor to the server clock so the device compensates transit lag (only when synced — a bad estimate
+	# would desync worse than omitting it).
 	if _server_synced:
 		play["server_time"] = _server_now()
-	var res: Dictionary = await _api_put("/hsp/play", play)
-	if res.is_empty():
-		return false
-	_note_stream_ok()  # clear the failure counter on a clean (re)start
-	return true
+	return await _api_put("/hsp/play", play)
 
 
 # Tops the buffer up to LOOKAHEAD_MS ahead of `video_ms`. Called every frame by
@@ -291,6 +314,34 @@ func start(video_ms_source: Callable) -> bool:
 # Fire-and-forget (no await at the call site).
 func feed(video_ms: int) -> void:
 	_last_video_ms = video_ms  # kept fresh even when we don't send, so recovery anchors to the live clock
+	# Deferred engage: the round opened with the first stroke beyond lookahead (long intro). Once a stroke
+	# comes within reach, fire the real anchored play now — a FRESH /hsp/setup first (the earlier one may
+	# have gone stale idling through the intro), then the anchored play read at the live position. This is
+	# the automatic version of the user's "pause when the strokes start → it syncs".
+	if _deferred_play:
+		if not _playing or _recovering or _feed_inflight:
+			return
+		if (
+			HandyPoints
+			. points_in_window(
+				_transformed,
+				HandyPoints.index_at_or_after(_transformed, video_ms),
+				video_ms + LOOKAHEAD_MS
+			)["batch"]
+			. is_empty()
+		):
+			return  # still nothing to stroke within reach
+		_deferred_play = false
+		_feed_inflight = true
+		var setup: Dictionary = await _api_put("/hsp/setup", {})
+		if not setup.is_empty():
+			var eng_ms: int = (
+				int(_video_ms_source.call()) if _video_ms_source.is_valid() else video_ms
+			)
+			if not (await _send_play(eng_ms)).is_empty():
+				_note_stream_ok()
+		_feed_inflight = false
+		return
 	if not _playing or _recovering or _feed_inflight or _send_idx >= _transformed.size():
 		return
 	var now: int = Time.get_ticks_msec()
@@ -353,6 +404,7 @@ func pause() -> void:
 
 func stop() -> void:
 	_session_ready = false  # the session is gone — the next round prewarms a fresh one
+	_deferred_play = false  # drop any pending deferred engage
 	_consecutive_failures = 0
 	_recovering = false
 	if _playing:
@@ -370,33 +422,26 @@ func _anchor(video_ms: int) -> int:
 	return maxi(0, video_ms)
 
 
-# Re-seats playback at a new position: flush the buffer and replay from
-# `video_ms` (used on unpause/seek so the device lands where the video is).
+# Re-seats playback at a new position: flush the buffer and replay from `video_ms` (used on unpause/seek so
+# the device lands where the video is). If there's no stroke within reach (still a no-action stretch), it
+# defers like start() instead of sending an empty window that would starve the device.
 func seek(video_ms: int) -> void:
 	if not _playing:
 		return
-	_last_video_ms = video_ms
-	# Batch the lookahead FROM the seek position, not index 0 (see start / index_at_or_after) —
-	# this is what made an effect change or unpause mid-round resume seconds behind.
-	var from_idx: int = HandyPoints.index_at_or_after(_transformed, video_ms)
-	var win: Dictionary = HandyPoints.points_in_window(
-		_transformed, from_idx, video_ms + LOOKAHEAD_MS
-	)
-	_send_idx = int(win["next_idx"])
-	_last_feed_ms = Time.get_ticks_msec()
-	var play: Dictionary = {
-		"start_time": _anchor(video_ms),
-		"pause_on_starving": true,
-		"add":
-		{
-			"points": win["batch"],
-			"flush": true,
-			"tail_point_stream_index": maxi(1, _send_idx),
-		},
-	}
-	if _server_synced:
-		play["server_time"] = _server_now()
-	await _api_put("/hsp/play", play)
+	if (
+		HandyPoints
+		. points_in_window(
+			_transformed,
+			HandyPoints.index_at_or_after(_transformed, video_ms),
+			video_ms + LOOKAHEAD_MS
+		)["batch"]
+		. is_empty()
+	):
+		_deferred_play = true
+		_last_video_ms = video_ms
+		return
+	_deferred_play = false
+	await _send_play(video_ms)
 
 
 # Re-times the stream for a live delay change (Quick Settings) and re-seats

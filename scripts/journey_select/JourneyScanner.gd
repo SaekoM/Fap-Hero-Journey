@@ -150,6 +150,7 @@ static func load_rendition_delta(rendition_folder: String) -> Dictionary:
 		return {}
 	var delta: Dictionary = JourneyRendition.parse_rendition(data)
 	JourneyRendition.resolve_delta_paths(delta, rendition_folder)
+	delta["map_backdrops"] = _parse_map_backdrops(data.get("MapBackdrops", []), rendition_folder)
 	return delta
 
 
@@ -188,6 +189,14 @@ static func compose_play_journey(
 	var totals: Dictionary = _graph_node_totals(mgraph)
 	base["total_actions"] = totals["actions"]
 	base["total_length_ms"] = totals["length_ms"]
+	# Backdrops STACK through the chain: the base's layers (bottom, resolved against the base folder) plus
+	# each rendition's own (resolved against ITS folder), so a composed rendition's map shows them all.
+	var backdrops: Array = (base.get("map_backdrops", []) as Array).duplicate(true)
+	for rf: Variant in chain_folders:
+		backdrops.append_array(
+			_parse_map_backdrops(_read_raw_json(str(rf)).get("MapBackdrops", []), str(rf))
+		)
+	base["map_backdrops"] = backdrops
 	return base
 
 
@@ -218,6 +227,8 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		# Absent → true so the whole pre-existing catalogue keeps the map.
 		"map_enabled": bool(data.get("MapEnabled", true)),
 		"show_fork_counts": bool(data.get("ShowForkCounts", true)),
+		"show_loops_on_map": bool(data.get("ShowLoopsOnMap", false)),
+		"map_backdrops": _parse_map_backdrops(data.get("MapBackdrops", []), path),
 		# Fog of war on the player map: reveal nodes as they're discovered (off → whole map shown).
 		"map_fog": bool(data.get("MapFog", false)),
 		# Fog reveal depth: ghost levels shown ahead of the visited trail (< 0 = whole structure ghosted).
@@ -545,6 +556,8 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		"tags": TagRegistry.sanitize(data.get("Tags", [])),
 		"map_enabled": bool(data.get("MapEnabled", true)),
 		"show_fork_counts": bool(data.get("ShowForkCounts", true)),
+		"show_loops_on_map": bool(data.get("ShowLoopsOnMap", false)),
+		"map_backdrops": _parse_map_backdrops(data.get("MapBackdrops", []), path),
 		"map_fog": bool(data.get("MapFog", false)),
 		"map_fog_reveal": int(data.get("MapFogReveal", 1)),
 		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
@@ -1062,14 +1075,38 @@ static func find_cover_image(path: String) -> String:
 	# for old journeys). No cover set → no cover. We deliberately do NOT fall back to "the first image
 	# we find" — media/ also holds fork / storyboard / boss / portrait art, and borrowing one of those
 	# as the cover is exactly the surprise we're removing.
-	var media_cover: String = _find_named_cover(path + "/media")
+	var media_cover: String = _find_named_image(path + "/media", "cover")
 	if media_cover != "":
 		return media_cover
-	return _find_named_cover(path)
+	return _find_named_image(path, "cover")
 
 
-# Returns the path to a file named cover.<image-ext> in `dir_path`, or "" if there isn't one.
-static func _find_named_cover(dir_path: String) -> String:
+# Resolves a journey's MapBackdrops meta into [{path, offset, scale, opacity}], each image made absolute
+# against the journey's media/ folder. Skips entries with no image. Shared by the editor + the in-game map.
+static func _parse_map_backdrops(raw: Array, path: String) -> Array:
+	var out: Array = []
+	for e: Variant in raw:
+		var d: Dictionary = e
+		var img: String = str(d.get("Image", ""))
+		if img == "":
+			continue
+		(
+			out
+			. append(
+				{
+					"path": path + "/media/" + img,
+					"offset": Vector2(float(d.get("X", 0.0)), float(d.get("Y", 0.0))),
+					"scale": float(d.get("Scale", 1.0)),
+					"opacity": float(d.get("Opacity", 0.6)),
+					"rotation": float(d.get("Rot", 0.0)),
+				}
+			)
+		)
+	return out
+
+
+# Returns the path to a file named <base_name>.<image-ext> in `dir_path`, or "" if there isn't one.
+static func _find_named_image(dir_path: String, base_name: String) -> String:
 	var dir: DirAccess = DirAccess.open(dir_path)
 	if dir == null:
 		return ""
@@ -1078,7 +1115,7 @@ static func _find_named_cover(dir_path: String) -> String:
 	while fname != "":
 		if (
 			not dir.current_is_dir()
-			and fname.get_basename().to_lower() == "cover"
+			and fname.get_basename().to_lower() == base_name
 			and fname.get_extension().to_lower() in IMAGE_EXTS
 		):
 			dir.list_dir_end()

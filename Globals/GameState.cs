@@ -33,6 +33,11 @@ public partial class GameState : Node
     // counter reads as 0, so a threshold works before anything has bumped it. Cleared on a fresh start.
     private System.Collections.Generic.Dictionary<string, int> _counters = new();
 
+    // Per-loop iteration counts (loop node id → how many times its body has run this pass). Bumped each time
+    // the walker reaches a loop node; reset to 0 when that loop exits (so a later re-entry counts fresh).
+    // Rides the save record so a resume mid-loop keeps its iteration progress. Cleared on a fresh start.
+    private System.Collections.Generic.Dictionary<string, int> _loopCounts = new();
+
     // Node ids the player has landed on this run (added in EnterCurrent). Drives the map's fog-of-war
     // reveal and rides the save record so a resumed run keeps what was found. Cleared on a fresh start —
     // discovery is per-run.
@@ -65,6 +70,7 @@ public partial class GameState : Node
         _playLog.Clear();
         _flags.Clear();
         _counters.Clear();
+        _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
         EnterCurrent();
@@ -83,6 +89,7 @@ public partial class GameState : Node
         _playLog.Clear();
         _flags.Clear();
         _counters.Clear();
+        _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
         EnterCurrent();
@@ -363,6 +370,76 @@ public partial class GameState : Node
         EnterCurrent();
     }
 
+    // Resolves a Loop End control node (GameLoop dispatches "loop_end" here): bump this loop's iteration count, then
+    // evaluate its exit conditions under the combine mode. Exit → take the normal out-edge and reset the
+    // count; keep looping → jump to `loop_to` (the body start). A missing loop_to exits (defensive; the
+    // presave validator requires one). Loops always terminate on a linear body — the save-time validator
+    // guarantees the body can satisfy a condition — so there's no runtime iteration cap.
+    public void ResolveLoop()
+    {
+        var node = NodeOf(_currentId);
+        var data = node.ContainsKey("data") ? node["data"].AsGodotDictionary() : new Dictionary();
+        var loopId = _currentId;
+
+        _loopCounts.TryGetValue(loopId, out int iters);
+        iters += 1;
+        _loopCounts[loopId] = iters;
+
+        var loopTo = data.ContainsKey("loop_to") ? data["loop_to"].AsString() : "";
+        if (loopTo != "" && _nodes.ContainsKey(loopTo) && !LoopExitReady(data, iters))
+        {
+            _currentId = loopTo;  // run the body again
+        }
+        else
+        {
+            _loopCounts.Remove(loopId);  // exiting — reset for any future re-entry
+            var edges = OutEdges(loopId);
+            _currentId = edges.Count > 0 ? edges[0].AsGodotDictionary()["to"].AsString() : "";
+        }
+        EnterCurrent();
+    }
+
+    // True when a loop's exit conditions are satisfied for iteration `iters`, under its combine mode
+    // ("all" = AND, anything else = ANY/OR). No conditions ⇒ exit immediately (the validator flags that).
+    private bool LoopExitReady(Dictionary data, int iters)
+    {
+        var conds = data.ContainsKey("loop_conditions") ? data["loop_conditions"].AsGodotArray() : new Array();
+        if (conds.Count == 0)
+            return true;
+        bool all = data.ContainsKey("loop_combine") && data["loop_combine"].AsString() == "all";
+        foreach (var cv in conds)
+        {
+            bool met = LoopConditionMet(cv.AsGodotDictionary(), iters);
+            if (all && !met)
+                return false;  // ALL: one unmet ⇒ not ready
+            if (!all && met)
+                return true;   // ANY: one met ⇒ ready
+        }
+        return all;  // ALL: every one met ⇒ true; ANY: none met ⇒ false
+    }
+
+    // Whether one loop exit condition is met now. counter ≥/≤ threshold · flag set · fixed repeats · has item.
+    private bool LoopConditionMet(Dictionary c, int iters)
+    {
+        switch (c.ContainsKey("kind") ? c["kind"].AsString() : "")
+        {
+            case "counter":
+                var counterVal = CounterValue(c.ContainsKey("counter") ? c["counter"].AsString() : "");
+                var threshold = c.ContainsKey("threshold") ? c["threshold"].AsInt32() : 0;
+                // cmp "lte" = count-down (exit when it drops to the value); default "gte" = climb to it.
+                var cmp = c.ContainsKey("cmp") ? c["cmp"].AsString() : "gte";
+                return cmp == "lte" ? counterVal <= threshold : counterVal >= threshold;
+            case "flag":
+                return HasFlag(c.ContainsKey("flag") ? c["flag"].AsString() : "");
+            case "repeats":
+                return iters >= (c.ContainsKey("count") ? c["count"].AsInt32() : 1);
+            case "item":
+                var inv = GetNodeOrNull<InventoryService>("/root/InventoryService");
+                return inv != null && inv.OwnsItem(c.ContainsKey("item") ? c["item"].AsString() : "");
+        }
+        return false;
+    }
+
     // Picks the fork's pathIndex-th out-edge and moves to its target. Out-of-range /
     // negative clamps to edge 0 (mirrors the old behaviour). No-op off a fork.
     public void ResolveFork(int pathIndex)
@@ -523,9 +600,19 @@ public partial class GameState : Node
         ["rounds_entered"] = _roundsEntered,
         ["flags"] = FlagsArray(),
         ["counters"] = CountersDict(),
+        ["loop_iters"] = LoopCountsDict(),
         ["discovered"] = DiscoveredNodes(),
         ["played_pool_clips"] = PlayedPoolClipsArray(),
     };
+
+    // Per-loop iteration counts {loop_node_id: int} for the save record, so a resume mid-loop keeps count.
+    private Dictionary LoopCountsDict()
+    {
+        var d = new Dictionary();
+        foreach (var kv in _loopCounts)
+            d[kv.Key] = kv.Value;
+        return d;
+    }
 
     // The drawn no-repeat pool clips as a Godot Array (for the save record).
     private Array PlayedPoolClipsArray()
@@ -577,6 +664,7 @@ public partial class GameState : Node
         _playLog.Clear();
         _flags.Clear();
         _counters.Clear();
+        _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
 
@@ -599,6 +687,16 @@ public partial class GameState : Node
                 {
                     var name = key.AsString();
                     if (name != "") _counters[name] = saved[key].AsInt32();
+                }
+            }
+            // Restore per-loop iteration counts so a resume mid-loop continues from the right pass.
+            if (saveData.ContainsKey("loop_iters"))
+            {
+                var savedLoops = saveData["loop_iters"].AsGodotDictionary();
+                foreach (var key in savedLoops.Keys)
+                {
+                    var lid = key.AsString();
+                    if (lid != "") _loopCounts[lid] = savedLoops[key].AsInt32();
                 }
             }
             // Restore the fog-of-war discovery set the same way (per-run, but persists across resume).

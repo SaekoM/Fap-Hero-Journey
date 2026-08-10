@@ -53,6 +53,19 @@ var _has_initial_center: bool = false
 # Edges: list of {from: Vector2, to: Vector2, color: Color, dashed?: bool}
 var _edges: Array = []
 
+# Region bands drawn beneath the edges/nodes — one per Loop pair: {rect: Rect2, color: Color}.
+var _bands: Array = []
+
+# Map backdrops (a journey's location images, a stack drawn beneath everything in canvas-local space). The
+# editor can toggle a reposition mode on ONE layer: a full-view catcher turns left-drag into "move that
+# layer" without disturbing the nodes. Emits backdrop_moved(index, offset) on release so the builder can
+# persist it. _backdrops mirrors what's on the canvas so drags/transforms can mutate in place.
+signal backdrop_moved(index: int, offset: Vector2)
+var _backdrops: Array = []  # [{texture, offset, scale, opacity}]
+var _backdrop_catcher: Control = null
+var _backdrop_dragging: bool = false
+var _reposition_index: int = -1  # which layer the catcher drags; -1 = off
+
 # The free-form graph model (GRAPH_EDITOR_OVERHAUL.md): {start, nodes:{id:{type,data,pos,out}}}.
 # Rendered by _layout_graph — nodes at their saved pos, edges from each node's out-list.
 var _graph_model: Dictionary = {}
@@ -406,6 +419,25 @@ func _layout_graph() -> void:
 				else:
 					color = Color(color, color.a * 0.22)
 			_add_edge_between(src_ctrl, tgt_ctrl, color, width)
+	# Loop pairs: the End's loop_to is a special back-jump (not an out-edge), drawn dashed in the loop
+	# colour so the replayed stretch reads as distinct from forward flow — and a faint band is laid behind
+	# the whole Start→body→End region so the looped stretch is legible at a glance.
+	_bands.clear()
+	for id: String in nodes:
+		var ln: Dictionary = nodes[id]
+		if str(ln.get("type", "")) != "loop_end":
+			continue
+		var back: String = str((ln.get("data", {}) as Dictionary).get("loop_to", ""))
+		if back == "":
+			continue
+		var lsrc: Control = _edge_endpoint_ctrl(id)
+		var ltgt: Control = _edge_endpoint_ctrl(back)
+		if lsrc == null or ltgt == null or lsrc == ltgt:
+			continue
+		if not map_mode:  # the region band is an editor aid — skip it on the player's (fogged) map
+			_add_loop_band(back, id, nodes)
+		_add_edge_between(lsrc, ltgt, UITheme.TOXIC_GREEN, 2.0, true)
+	_canvas.set_bands(_bands)
 	_canvas.set_edges(_edges)
 	_resize_canvas_to_content(_graph_content_size(_node_ctrls))
 	if not _has_initial_center:
@@ -1035,6 +1067,8 @@ func _type_color(item_type: String) -> Color:
 			return UITheme.MAGENTA
 		"checkpoint":
 			return UITheme.SUCCESS
+		"loop_start", "loop_end":
+			return UITheme.TOXIC_GREEN
 	return UITheme.PURPLE_MID
 
 
@@ -1050,6 +1084,10 @@ func _type_icon(item_type: String) -> String:
 			return "⑂"
 		"checkpoint":
 			return "⚑"
+		"loop_start":
+			return "▸"
+		"loop_end":
+			return "↺"
 	return "•"
 
 
@@ -1093,6 +1131,10 @@ func _type_label(item: Dictionary) -> String:
 		"checkpoint":
 			var cn: String = item.get("name", "")
 			return cn if cn != "" else "Checkpoint"
+		"loop_start":
+			return "Loop Start"
+		"loop_end":
+			return "Loop End"
 	return "?"
 
 
@@ -1152,7 +1194,36 @@ func _type_sublabel(item: Dictionary) -> String:
 			)
 		"checkpoint":
 			return "SAVE POINT"
+		"loop_start":
+			return "TOP OF THE LOOP"
+		"loop_end":
+			var conds: Array = item.get("loop_conditions", [])
+			if conds.is_empty():
+				return "LOOP   (PLAYS ONCE)"
+			if conds.size() == 1:
+				return "LOOP   " + _loop_cond_short(conds[0])  # show the actual rule, not "1 condition"
+			var combine: String = "ALL" if str(item.get("loop_combine", "any")) == "all" else "ANY"
+			return "LOOP   EXIT %s OF %d" % [combine, conds.size()]
 	return ""
+
+
+# A compact one-line description of a single loop exit condition, for the Loop End node sublabel.
+func _loop_cond_short(c: Dictionary) -> String:
+	match str(c.get("kind", "repeats")):
+		"repeats":
+			return "×%d" % int(c.get("count", 1))
+		"counter":
+			var cn: String = str(c.get("counter", "")).strip_edges()
+			var op: String = "≤" if str(c.get("cmp", "gte")) == "lte" else "≥"
+			return (
+				"UNTIL %s %s %d" % [cn if cn != "" else "COUNTER", op, int(c.get("threshold", 0))]
+			)
+		"flag":
+			var fn: String = str(c.get("flag", "")).strip_edges()
+			return "UNTIL %s SET" % (fn if fn != "" else "FLAG")
+		"item":
+			return "UNTIL HAS ITEM"
+	return "EXIT"
 
 
 # Sublabel prefix for a fork node, by resolution: "FORK" (choice), "RANDOM FORK",
@@ -1166,6 +1237,142 @@ func _fork_type_label(resolution: String) -> String:
 		"sacrifice":
 			return "SACRIFICE FORK"
 	return "FORK"
+
+
+# ---------------------------------------------------------------------------
+# Loop region bands
+# ---------------------------------------------------------------------------
+
+
+# Appends a faint region band behind a Loop pair: the bounding box of the Start, the End, and every body
+# node between them, padded a little. Canvas-local coords — drawn on _canvas beneath the edges and cards.
+func _add_loop_band(start_id: String, end_id: String, nodes: Dictionary) -> void:
+	var body: Dictionary = _loop_body_ids(start_id, end_id, nodes)
+	var min_p: Vector2 = Vector2(INF, INF)
+	var max_p: Vector2 = Vector2(-INF, -INF)
+	var found: bool = false
+	for nid: String in body:
+		if not _node_ctrls.has(nid):
+			continue
+		var c: Control = _node_ctrls[nid]
+		found = true
+		min_p.x = minf(min_p.x, c.position.x)
+		min_p.y = minf(min_p.y, c.position.y)
+		max_p.x = maxf(max_p.x, c.position.x + c.size.x)
+		max_p.y = maxf(max_p.y, c.position.y + c.size.y)
+	if not found:
+		return
+	var pad: float = 14.0
+	var rect: Rect2 = Rect2(min_p - Vector2(pad, pad), (max_p - min_p) + Vector2(pad, pad) * 2.0)
+	_bands.append({"rect": rect, "color": UITheme.TOXIC_GREEN})
+
+
+# Body node ids of a Loop pair: the Start, the End, and every node on a path from Start to End. A forward
+# walk from the Start intersected with the End's ancestors (loop_to isn't an edge, so the exit branch past
+# the End is excluded). Local to the display graph — no dependency on the editor model.
+func _loop_body_ids(start_id: String, end_id: String, nodes: Dictionary) -> Dictionary:
+	var forward: Dictionary = {}
+	var stack: Array = [start_id]
+	while not stack.is_empty():
+		var id: String = str(stack.pop_back())
+		if id == "" or forward.has(id) or not nodes.has(id):
+			continue
+		forward[id] = true
+		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
+			stack.append(str(e.get("to", "")))
+	var reaches_end: Dictionary = {}
+	stack = [end_id]
+	while not stack.is_empty():
+		var id: String = str(stack.pop_back())
+		if id == "" or reaches_end.has(id) or not nodes.has(id):
+			continue
+		reaches_end[id] = true
+		for pid: String in nodes:  # predecessors of `id`
+			for e: Dictionary in (nodes[pid] as Dictionary).get("out", []):
+				if str(e.get("to", "")) == id:
+					stack.append(pid)
+	var body: Dictionary = {start_id: true, end_id: true}
+	for id: String in forward:
+		if reaches_end.has(id):
+			body[id] = true
+	return body
+
+
+# ---------------------------------------------------------------------------
+# Map backdrop
+# ---------------------------------------------------------------------------
+
+
+# Sets the full backdrop stack (empty clears), forwarding to the canvas. Each entry is
+# {texture, offset, scale, opacity}. Offsets/scales are canvas-local — the same space as node positions —
+# so the same values give identical alignment in the editor and the in-game map.
+func set_backdrops(list: Array) -> void:
+	_backdrops = list
+	_canvas.set_backdrops(list)
+
+
+# Updates just one layer's placement, reusing the loaded texture — for live slider edits without reload.
+func set_backdrop_transform(
+	index: int, offset: Vector2, image_scale: float, opacity: float, rotation: float
+) -> void:
+	if index < 0 or index >= _backdrops.size():
+		return
+	var b: Dictionary = _backdrops[index]
+	b["offset"] = offset
+	b["scale"] = image_scale
+	b["opacity"] = opacity
+	b["rotation"] = rotation
+	_canvas.set_backdrops(_backdrops)
+
+
+# Editor only: reposition mode on layer `index` (-1 = off). While on, a full-view catcher turns left-drag
+# into "move that layer" (wheel still zooms) so the author can slide it under the nodes. Persists on release.
+func set_backdrop_reposition(index: int) -> void:
+	_reposition_index = index
+	if index >= 0 and _backdrop_catcher == null:
+		_backdrop_catcher = Control.new()
+		_backdrop_catcher.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_backdrop_catcher.mouse_filter = Control.MOUSE_FILTER_STOP
+		_backdrop_catcher.gui_input.connect(_on_backdrop_catcher_input)
+		var hint: Label = Label.new()
+		hint.text = "REPOSITIONING BACKDROP — DRAG TO MOVE, SCROLL TO ZOOM. TURN OFF WHEN DONE."
+		hint.add_theme_color_override("font_color", UITheme.CYAN)
+		hint.add_theme_font_size_override("font_size", 12)
+		hint.position = Vector2(12, 12)
+		hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_backdrop_catcher.add_child(hint)
+		add_child(_backdrop_catcher)
+	elif index < 0 and _backdrop_catcher != null:
+		_backdrop_catcher.queue_free()
+		_backdrop_catcher = null
+
+
+func _on_backdrop_catcher_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
+			_zoom_at(mb.position, _zoom + ZOOM_STEP)
+		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
+			_zoom_at(mb.position, _zoom - ZOOM_STEP)
+		elif mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_backdrop_dragging = true
+				_last_mouse = mb.position
+			elif _backdrop_dragging:
+				_backdrop_dragging = false
+				if _reposition_index >= 0 and _reposition_index < _backdrops.size():
+					backdrop_moved.emit(
+						_reposition_index, (_backdrops[_reposition_index] as Dictionary)["offset"]
+					)
+		_backdrop_catcher.accept_event()
+	elif event is InputEventMouseMotion and _backdrop_dragging:
+		if _reposition_index >= 0 and _reposition_index < _backdrops.size():
+			var mm := event as InputEventMouseMotion
+			var b: Dictionary = _backdrops[_reposition_index]
+			b["offset"] = (b["offset"] as Vector2) + (mm.position - _last_mouse) / _zoom
+			_last_mouse = mm.position
+			_canvas.set_backdrops(_backdrops)
+		_backdrop_catcher.accept_event()
 
 
 # ---------------------------------------------------------------------------
@@ -1187,10 +1394,21 @@ func _edge_endpoint_ctrl(id: String) -> Control:
 # Appends an orthogonal edge that leaves the source and enters the target on whichever faces point
 # toward each other (top / bottom / left / right) — so a sideways or upward connection lands on the
 # side or bottom of the node instead of always routing into its top.
-func _add_edge_between(src: Control, tgt: Control, color: Color, width: float = 2.0) -> void:
+func _add_edge_between(
+	src: Control, tgt: Control, color: Color, width: float = 2.0, dashed: bool = false
+) -> void:
 	var route: Dictionary = _edge_route(src, tgt)
-	_edges.append(
-		{"points": route["points"], "arrow_dir": route["arrow_dir"], "color": color, "width": width}
+	(
+		_edges
+		. append(
+			{
+				"points": route["points"],
+				"arrow_dir": route["arrow_dir"],
+				"color": color,
+				"width": width,
+				"dashed": dashed,
+			}
+		)
 	)
 
 

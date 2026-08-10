@@ -1408,6 +1408,23 @@ static func new_item(type: String) -> Dictionary:
 		"checkpoint":
 			# A save point between rounds — no media, no gameplay. `name` labels its banner.
 			return {"type": "checkpoint", "name": "", "node_id": new_node_id()}
+		"loop_start":
+			# The top marker of a Loop pair — a no-media passthrough that names where the replayed stretch
+			# begins. Its paired Loop End jumps back here (loop_end.loop_to = this node's id).
+			return {"type": "loop_start", "node_id": new_node_id()}
+		"loop_end":
+			# The bottom marker of a Loop pair. A control node that replays the body between its paired
+			# Loop Start (loop_to → … → here) until an exit condition holds. loop_combine: "any" (OR) |
+			# "all" (AND). loop_conditions: [{kind, …}] where kind ∈ counter/flag/repeats/item. Its single
+			# out-edge is the EXIT; loop_to is the special back-target (kept out of the DAG so analysis
+			# stays acyclic) and is auto-set to the paired Loop Start at creation.
+			return {
+				"type": "loop_end",
+				"node_id": new_node_id(),
+				"loop_to": "",
+				"loop_combine": "any",
+				"loop_conditions": [],
+			}
 		"storyboard":
 			# coins / item: optional reward granted when the storyboard is finished.
 			return {
@@ -1590,6 +1607,8 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"tags": journey.get("tags", []),
 		"map_enabled": bool(journey.get("map_enabled", true)),
 		"show_fork_counts": bool(journey.get("show_fork_counts", true)),
+		"show_loops_on_map": bool(journey.get("show_loops_on_map", false)),
+		"map_backdrops": journey.get("map_backdrops", []),
 		"map_fog": bool(journey.get("map_fog", false)),
 		"map_fog_reveal": int(journey.get("map_fog_reveal", 1)),
 		"shown_counters": journey.get("shown_counters", []),

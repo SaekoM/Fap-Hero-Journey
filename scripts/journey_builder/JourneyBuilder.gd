@@ -49,6 +49,8 @@ const CAUSE_NO_START: String = "no_start"
 const CAUSE_DANGLING_EDGE: String = "dangling_edge"
 const CAUSE_CYCLE: String = "cycle"
 const CAUSE_UNREACHABLE: String = "unreachable"
+const CAUSE_LOOP_UNSATISFIABLE: String = "loop_unsatisfiable"
+const CAUSE_LOOP_UNPAIRED: String = "loop_unpaired"
 
 const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
@@ -98,6 +100,16 @@ var _journey_difficulty_idx: int = 0
 var _journey_tags: Array = []  # Array[String] of tag ids (see TagRegistry)
 var _journey_map_enabled: bool = true  # author allows the in-play journey map (off = enforce surprise)
 var _journey_show_fork_counts: bool = true  # show the "N ROUNDS" tag on fork choices (off = hide for mystery)
+var _journey_show_loops_on_map: bool = false  # show Loop markers on the player's map (off = hide, the default)
+# Map backdrops: a STACK of location images drawn behind the graph (editor + in-game map) so nodes align
+# to places. Each entry is {path, offset, scale, opacity}; offset/scale are canvas-local (node) space, so
+# the same values drive both views. `_map_backdrops` are THIS journey's own (editable) layers.
+var _map_backdrops: Array = []
+# When editing a rendition, the base's backdrops load here as LOCKED context (drawn beneath the editable
+# ones, never re-saved). Empty for a normal base journey.
+var _base_backdrops: Array = []
+var _backdrop_reposition_idx: int = -1  # editable-layer index currently in drag-to-move mode (-1 = none)
+var _backdrop_tex_cache: Dictionary = {}  # path -> ImageTexture, shared by the graph push + panel thumbs
 var _journey_map_fog: bool = false  # fog of war: reveal the map as the player discovers it (map must be enabled)
 var _journey_map_fog_reveal: int = 1  # fog reveal depth: ghost levels ahead of the trail (< 0 = whole structure)
 var _journey_auto_advance_enabled: bool = false  # countdown on storyboards / interactive forks (off = players self-pace)
@@ -278,7 +290,16 @@ func _setup_graph_view() -> void:
 	_graph.node_context_menu_requested.connect(_on_node_context_menu_requested)
 	_graph.warning_provider = _compute_node_warnings  # GraphView pulls soft-validation badges each layout
 	_graph.finish_id_provider = func() -> String: return _journey_finish_node  # badges the FINISH node
+	# Drag-to-reposition a backdrop layer writes its new offset back (mapping the combined-stack index to
+	# this journey's editable list) so the placement persists.
+	_graph.backdrop_moved.connect(
+		func(idx: int, off: Vector2) -> void:
+			var ei: int = idx - _base_backdrops.size()
+			if ei >= 0 and ei < _map_backdrops.size():
+				(_map_backdrops[ei] as Dictionary)["offset"] = off
+	)
 	_graph.call_deferred("set_graph", _graph_model)
+	call_deferred("_push_backdrops")  # push any loaded backdrops once the graph exists
 
 
 # Rebuilds the graph view from _graph_model. Called after a structural change.
@@ -1217,6 +1238,7 @@ func _show_canvas_context_menu(world_pos: Vector2) -> void:
 		["＋ STORYBOARD", "storyboard"],
 		["＋ FORK", "fork"],
 		["＋ CHECKPOINT", "checkpoint"],
+		["＋ LOOP", "loop"],
 	]:
 		var t: String = spec[1]
 		var node_b: Button = _ctx_menu_button(
@@ -1224,7 +1246,10 @@ func _show_canvas_context_menu(world_pos: Vector2) -> void:
 			UITheme.PURPLE_BRIGHT,
 			func() -> void:
 				popup.queue_free()
-				_create_graph_node(t, world_pos)
+				if t == "loop":
+					_create_loop_pair(world_pos)  # a linked Loop Start + Loop End
+				else:
+					_create_graph_node(t, world_pos)
 		)
 		vbox.add_child(node_b)
 
@@ -2418,6 +2443,96 @@ func _on_cover_pressed() -> void:
 	dialog.canceled.connect(func() -> void: dialog.queue_free())
 
 
+# Deep-copies a backdrop list, normalizing each entry to {path, offset:Vector2, scale, opacity} so the
+# editor can mutate it without aliasing the scanner's dict.
+func _dup_backdrops(src: Array) -> Array:
+	var out: Array = []
+	for e: Variant in src:
+		var d: Dictionary = e
+		(
+			out
+			. append(
+				{
+					"path": str(d.get("path", "")),
+					"offset": d.get("offset", Vector2.ZERO),
+					"scale": float(d.get("scale", 1.0)),
+					"opacity": float(d.get("opacity", 0.6)),
+					"rotation": float(d.get("rotation", 0.0)),
+				}
+			)
+		)
+	return out
+
+
+# Builds the combined backdrop stack — locked base context first (bottom), then this journey's own editable
+# layers on top — with textures loaded, and pushes it to the graph. Called on load and on any set change.
+func _push_backdrops() -> void:
+	if not is_instance_valid(_graph):
+		return
+	var combined: Array = []
+	for b: Dictionary in _base_backdrops:
+		combined.append(_backdrop_render_entry(b))
+	for b: Dictionary in _map_backdrops:
+		combined.append(_backdrop_render_entry(b))
+	_graph.set_backdrops(combined)
+
+
+# One {texture, offset, scale, opacity} render entry for a stored {path, …} backdrop (texture loaded).
+func _backdrop_render_entry(b: Dictionary) -> Dictionary:
+	return {
+		"texture": _backdrop_texture(str(b.get("path", ""))),
+		"offset": b.get("offset", Vector2.ZERO),
+		"scale": float(b.get("scale", 1.0)),
+		"opacity": float(b.get("opacity", 0.6)),
+		"rotation": float(b.get("rotation", 0.0)),
+	}
+
+
+# Loads (and caches by path) a backdrop image as a texture — shared by the graph render and the side-panel
+# thumbnails so a big image is decoded once. Returns null for a blank/unreadable path.
+func _backdrop_texture(path: String) -> Texture2D:
+	if path == "":
+		return null
+	if _backdrop_tex_cache.has(path):
+		return _backdrop_tex_cache[path]
+	var img: Image = JourneyData.load_image_smart(path)
+	if img == null:
+		return null
+	var tex: ImageTexture = ImageTexture.create_from_image(img)
+	_backdrop_tex_cache[path] = tex
+	return tex
+
+
+# Reorders an editable backdrop layer in the z-stack: swaps layer `i` with its neighbour `i + dir` (+1 =
+# toward the front / drawn later, -1 = toward the back). Clears any active reposition (indices shift) and
+# re-pushes so the draw order updates. The side panel rebuilds after to refresh the cards.
+func _move_backdrop(i: int, dir: int) -> void:
+	var j: int = i + dir
+	if i < 0 or i >= _map_backdrops.size() or j < 0 or j >= _map_backdrops.size():
+		return
+	var tmp: Variant = _map_backdrops[i]
+	_map_backdrops[i] = _map_backdrops[j]
+	_map_backdrops[j] = tmp
+	_backdrop_reposition_idx = -1
+	if is_instance_valid(_graph):
+		_graph.set_backdrop_reposition(-1)
+	_push_backdrops()
+
+
+# Live placement push for editable layer `i` (slider edits) — maps to its index in the combined stack
+# (base layers sit before it), reusing the loaded texture so a big image isn't reloaded each tick.
+func _push_backdrop_transform(i: int) -> void:
+	if is_instance_valid(_graph) and i >= 0 and i < _map_backdrops.size():
+		var b: Dictionary = _map_backdrops[i]
+		_graph.set_backdrop_transform(
+			_base_backdrops.size() + i,
+			b["offset"],
+			float(b["scale"]),
+			float(b["opacity"]),
+			float(b.get("rotation", 0.0))
+		)
+
+
 # Loads the cover image from _cover_path into _cover_texture. The journey-info
 # side-panel view reads _cover_texture when building its preview widget.
 func _update_cover_preview() -> void:
@@ -2453,6 +2568,12 @@ func _load_graph(journey: Dictionary) -> void:
 	_journey_tags = (parsed.get("tags", []) as Array).duplicate()
 	_journey_map_enabled = bool(parsed.get("map_enabled", true))
 	_journey_show_fork_counts = bool(parsed.get("show_fork_counts", true))
+	_journey_show_loops_on_map = bool(parsed.get("show_loops_on_map", false))
+	# Map backdrops: the scanner resolved each layer's image (media/<file>) + placement into map_backdrops.
+	_backdrop_tex_cache.clear()
+	_map_backdrops = _dup_backdrops(journey.get("map_backdrops", []))
+	_base_backdrops = []  # a base journey has no locked context; renditions set this in their start hook
+	_push_backdrops()  # no-op until the graph exists; _setup_graph_view re-pushes on first load
 	_journey_shown_counters = (parsed.get("shown_counters", []) as Array).duplicate()
 	# Custom journey items come from the scanner's resolved `items` on the raw journey dict —
 	# NOT from `parsed`, whose "items" key is JourneyData.parse_journey's NODE SEQUENCE (a name
@@ -2517,8 +2638,16 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 	_journey_name = ""
 	_journey_desc = ""
 	_cover_path = ""
+	# A rendition starts with NO editable backdrops of its own; the base's load as LOCKED context (drawn
+	# beneath, view-only, never re-saved). A rendition-on-rendition uses the composed ancestor chain's set.
+	_map_backdrops = []
+	var base_bd: Array = base.get("map_backdrops", [])
+	if not rendition_over.is_empty():
+		base_bd = rendition_over.get("map_backdrops", base_bd)
+	_base_backdrops = _dup_backdrops(base_bd)
 	_original_journey_folder = ""
 	_graph.set_ghost_nodes(_rendition_parent_ids)  # the deferred set_graph reads this
+	_push_backdrops()
 	_show_rendition_banner(parent_title)
 
 
@@ -2567,6 +2696,9 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 	if rc != "":
 		_cover_path = rc
 		_update_cover_preview()
+	# The rendition's OWN backdrop layers (base layers stay in _base_backdrops as locked context).
+	_map_backdrops = _dup_backdrops(delta.get("map_backdrops", []))
+	_push_backdrops()
 	_refresh_graph()
 
 
@@ -2665,20 +2797,101 @@ func _create_graph_node(type: String, at_world: Variant = null) -> void:
 	_graph.select_graph_node(node_id)
 
 
-# Graph editor: delete a node and every edge pointing at it. Re-homes the start if needed.
+# Graph editor: drop a linked Loop pair — a Loop Start marker with a Loop End below it, pre-wired
+# start → end and with the End's back-jump (loop_to) auto-set to the Start (that pairing IS the loop, so
+# there's no "loop back to…" picker). The End seeds one "after 3 loops" exit so the loop is valid and
+# legible immediately; the author then inserts body nodes between the two markers.
+func _create_loop_pair(at_world: Variant = null) -> void:
+	_push_undo()
+	if not _graph_model.has("nodes"):
+		_graph_model["nodes"] = {}
+	var nodes: Dictionary = _graph_model["nodes"]
+
+	var start_tpl: Dictionary = JourneyData.new_item("loop_start")
+	var end_tpl: Dictionary = JourneyData.new_item("loop_end")
+	var start_id: String = str(start_tpl["node_id"])
+	var end_id: String = str(end_tpl["node_id"])
+
+	var start_data: Dictionary = start_tpl.duplicate(true)
+	start_data.erase("type")
+	start_data.erase("node_id")
+	var end_data: Dictionary = end_tpl.duplicate(true)
+	end_data.erase("type")
+	end_data.erase("node_id")
+	end_data["loop_to"] = start_id  # the pairing — the End replays back to this Start
+	end_data["loop_conditions"] = [{"kind": "repeats", "count": 3}]  # a valid, legible default exit
+
+	# Placement: Start at the click (or right of the selection), End one node-drop below it.
+	var start_pos: Vector2 = Vector2.ZERO
+	if at_world is Vector2:
+		start_pos = (
+			(at_world as Vector2) - Vector2(GraphView.NODE_WIDTH, GraphView.NODE_HEIGHT) * 0.5
+		)
+	elif _selected_graph_node_id != "" and nodes.has(_selected_graph_node_id):
+		start_pos = (
+			(nodes[_selected_graph_node_id] as Dictionary).get("pos", Vector2.ZERO)
+			+ Vector2(240.0, 0.0)
+		)
+	var end_pos: Vector2 = start_pos + Vector2(0.0, 200.0)
+
+	nodes[start_id] = {
+		"type": "loop_start",
+		"data": start_data,
+		"pos": GraphLayout.snap(start_pos),
+		"out": [{"to": end_id}],
+	}
+	nodes[end_id] = {
+		"type": "loop_end",
+		"data": end_data,
+		"pos": GraphLayout.snap(end_pos),
+		"out": [],
+	}
+	if str(_graph_model.get("start", "")) == "":
+		_graph_model["start"] = start_id
+	_graph.select_graph_node(end_id)  # open the End's editor — its exit rules live there
+
+
+# The other half of a Loop pair for a Loop Start / Loop End (or "" for any other node). Deleting one
+# marker takes its partner with it — a lone marker is invalid (a Start with no End, or an End with no
+# Start), so the two always live and die together.
+func _loop_pair_partner(node_id: String) -> String:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var node: Dictionary = nodes.get(node_id, {})
+	match str(node.get("type", "")):
+		"loop_end":
+			var start: String = str((node.get("data", {}) as Dictionary).get("loop_to", ""))
+			return start if nodes.has(start) else ""
+		"loop_start":
+			for nid: String in nodes:
+				var n: Dictionary = nodes[nid]
+				if (
+					str(n.get("type", "")) == "loop_end"
+					and str((n.get("data", {}) as Dictionary).get("loop_to", "")) == node_id
+				):
+					return str(nid)
+	return ""
+
+
+# Graph editor: delete a node and every edge pointing at it. Re-homes the start if needed. A Loop marker
+# takes its paired marker with it (a lone Loop Start / End is invalid).
 func _delete_graph_node(node_id: String) -> void:
 	var nodes: Dictionary = _graph_model.get("nodes", {})
 	if not nodes.has(node_id):
 		return
 	_push_undo()
-	nodes.erase(node_id)
+	var doomed: Dictionary = {node_id: true}
+	var partner: String = _loop_pair_partner(node_id)
+	if partner != "":
+		doomed[partner] = true
+	for id: String in doomed:
+		nodes.erase(id)
 	for id: String in nodes:
 		var kept: Array = []
 		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
-			if str(e.get("to", "")) != node_id:
+			if not doomed.has(str(e.get("to", ""))):
 				kept.append(e)
 		(nodes[id] as Dictionary)["out"] = kept
-	if str(_graph_model.get("start", "")) == node_id:
+	if doomed.has(str(_graph_model.get("start", ""))):
 		_graph_model["start"] = (nodes.keys()[0] as String) if not nodes.is_empty() else ""
 	_deselect_node()
 
@@ -2700,6 +2913,12 @@ func _delete_selected_nodes() -> void:
 	var doomed: Array = _selected_graph_node_ids.filter(
 		func(nid: String) -> bool: return not _rendition_parent_ids.has(nid)
 	)
+	# A Loop marker can't survive without its partner — pull the other half in too (dedup against the
+	# selection, e.g. when both halves were already marquee-selected).
+	for nid: String in doomed.duplicate():
+		var partner: String = _loop_pair_partner(nid)
+		if partner != "" and partner not in doomed:
+			doomed.append(partner)
 	for nid: String in doomed:
 		nodes.erase(nid)
 	# Strip every edge that pointed at a deleted node.
@@ -3975,6 +4194,9 @@ func _write_rendition_pack() -> bool:
 		"slot_fills": _pool_slot_fills(paths["abs_dir"]),  # channel scripts pooled after the nodes above
 	}
 	var data: Dictionary = JourneyRendition.coerce_rendition(rendition)
+	# The rendition's OWN backdrop layers (pooled into its media/) — the base's stay in the base and are
+	# NOT re-saved here; compose stacks them at play time.
+	data["MapBackdrops"] = _save_map_backdrops(paths["abs_media_dir"], paths["copied_images"])
 	_journey_id = str(data.get("JourneyId", ""))  # remember the minted id for a re-save
 	if not _write_journey_json(paths, data):
 		JourneyData.delete_dir_recursive(paths["abs_dir"])
@@ -4495,6 +4717,36 @@ func _create_save_progress_modal_if_needed() -> Control:
 	return modal
 
 
+# Copies this journey's OWN backdrop layers into media/map_<n>.<ext> (static images, deduped) and returns
+# their on-disk meta [{Image, X, Y, Scale, Opacity}]. Base context layers (_base_backdrops) are NOT saved —
+# they live in the base journey. Used by both the base save and the rendition delta save.
+func _save_map_backdrops(abs_media_dir: String, copied_images: Dictionary) -> Array:
+	var meta: Array = []
+	for i: int in _map_backdrops.size():
+		var b: Dictionary = _map_backdrops[i]
+		var src: String = str(b.get("path", ""))
+		if src == "" or MediaPoolService.is_animated_source(src):
+			continue
+		var ext: String = src.get_extension().to_lower()
+		var fname: String = "map_%d.%s" % [i + 1, ext]
+		_copy_image_deduped(src, abs_media_dir, fname, copied_images)
+		var off: Vector2 = b.get("offset", Vector2.ZERO)
+		(
+			meta
+			. append(
+				{
+					"Image": fname,
+					"X": off.x,
+					"Y": off.y,
+					"Scale": float(b.get("scale", 1.0)),
+					"Opacity": float(b.get("opacity", 0.6)),
+					"Rot": float(b.get("rotation", 0.0)),
+				}
+			)
+		)
+	return meta
+
+
 # Graph-editor save: walks _graph_model into the Format-2 journey.json shape
 # ({…meta…, Format, Start, Nodes:[{id,type,data,pos,out}]}) node-by-node — REUSING the shared
 # media copy/pool/transcode primitives, emitting lowercase node.data + out-edges. Returns the
@@ -4560,6 +4812,8 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"Tags": TagRegistry.sanitize(_journey_tags),
 		"MapEnabled": _journey_map_enabled,
 		"ShowForkCounts": _journey_show_fork_counts,
+		"ShowLoopsOnMap": _journey_show_loops_on_map,
+		"MapBackdrops": _save_map_backdrops(abs_media_dir, copied_images),
 		"MapFog": _journey_map_fog,
 		"MapFogReveal": _journey_map_fog_reveal,
 		"AutoAdvanceEnabled": _journey_auto_advance_enabled,
@@ -5932,6 +6186,10 @@ func _collect_presave_issues_graph() -> Array:
 				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
 				_save_check_fork_graph(n, "Fork %d" % ordinal, issues)
+			"loop_end":
+				_save_check_loop(id, data, "Loop %d" % ordinal, issues)
+			"loop_start":
+				_save_check_loop_start(id, "Loop %d" % ordinal, issues)
 
 	# Structural graph validation (L4): block on graphs the runtime can't cleanly play — a missing
 	# start, an edge to a deleted node, a cycle (the DAG walk would loop forever), or an unreachable
@@ -6000,6 +6258,10 @@ func _graph_issue_label(node_id: String) -> String:
 		"fork":
 			var fn: String = str(d.get("title", "")).strip_edges()
 			return 'Fork "%s"' % fn if fn != "" else "A fork"
+		"loop_start":
+			return "A Loop Start"
+		"loop_end":
+			return "A Loop End"
 	return "A node"
 
 
@@ -6007,6 +6269,171 @@ func _graph_issue_label(node_id: String) -> String:
 # _save_check_fork — ≥2 choices, a Sacrifice fork needs ≥1 free choice, and each choice needs a
 # name (the player sees it on the choice screen). Structural edge validity (cycles / dangling) is
 # handled separately by JourneyGraph.validate_graph; cycles are also prevented at wire time.
+# Loop End validation (L4). First the PAIRING: the End's loop_to must point at its Loop Start, or it
+# can't replay (a broken pair — e.g. the Start was deleted). Then SATISFIABILITY: a loop that jumps back
+# must have at least one exit condition its BODY can satisfy, or the player loops forever (a soft-lock).
+# Body = nodes on a path from the Start back to the End. Per condition: a fixed "after N loops" always
+# exits; counter ≥ N needs a net-positive body bump; flag needs a body set_flags; item needs a body award.
+# ANY → block when none can be met; ALL → block when any can't. No conditions ⇒ the body plays once and
+# continues (harmless), so it isn't checked.
+func _save_check_loop(loop_id: String, data: Dictionary, ctx: String, issues: Array) -> void:
+	var loop_to: String = str(data.get("loop_to", "")).strip_edges()
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var paired: bool = (
+		loop_to != ""
+		and nodes.has(loop_to)
+		and str((nodes[loop_to] as Dictionary).get("type", "")) == "loop_start"
+	)
+	if not paired:
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_LOOP_UNPAIRED,
+					"item": ctx,
+					"detail":
+					"This Loop End isn't paired with a Loop Start, so it has nothing to replay.",
+					"hint":
+					"Delete it and drop a fresh Loop from the canvas menu — the pair is created linked.",
+				}
+			)
+		)
+		return
+	var conds: Array = data.get("loop_conditions", [])
+	if conds.is_empty():
+		return
+	var body: Dictionary = _loop_body_effects(loop_to, loop_id)
+	var combine_all: bool = str(data.get("loop_combine", "any")) == "all"
+	var unsatisfiable: Array = []  # labels of conditions the body can never satisfy
+	var any_satisfiable: bool = false
+	for cv: Dictionary in conds:
+		if _loop_condition_satisfiable(cv, body):
+			any_satisfiable = true
+		else:
+			unsatisfiable.append(_loop_condition_label(cv))
+	var blocked: bool = (not unsatisfiable.is_empty()) if combine_all else (not any_satisfiable)
+	if not blocked:
+		return
+	var detail: String
+	if combine_all:
+		detail = (
+			"This loop exits only when ALL conditions are met, but its body can never satisfy: %s. The player would loop forever."
+			% ", ".join(PackedStringArray(unsatisfiable))
+		)
+	else:
+		detail = "None of this loop's exit conditions can be satisfied by its body, so the player would loop forever."
+	(
+		issues
+		. append(
+			{
+				"cause": CAUSE_LOOP_UNSATISFIABLE,
+				"item": ctx,
+				"detail": detail,
+				"hint":
+				"Add a fixed 'after N loops' exit, or make a body node set the flag / grant the item / raise the counter the exit needs.",
+			}
+		)
+	)
+
+
+# Loop Start validation: a Start with no Loop End looping back to it is an orphan — it plays as a
+# do-nothing passthrough and only clutters the graph. Require a matching End (the pair is created linked,
+# so this only trips when the End was deleted).
+func _save_check_loop_start(start_id: String, ctx: String, issues: Array) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for nid: String in nodes.keys():
+		var n: Dictionary = nodes[nid]
+		if (
+			str(n.get("type", "")) == "loop_end"
+			and str((n.get("data", {}) as Dictionary).get("loop_to", "")) == start_id
+		):
+			return  # paired
+	(
+		issues
+		. append(
+			{
+				"cause": CAUSE_LOOP_UNPAIRED,
+				"item": ctx,
+				"detail": "This Loop Start has no Loop End looping back to it.",
+				"hint":
+				"Delete it, or drop a fresh Loop from the canvas menu for a linked Start + End pair.",
+			}
+		)
+	)
+
+
+# The cumulative effects the loop body can produce: net counter deltas, flags it can set, items it can
+# award. Body = nodes reachable from loop_to that can also reach the loop (the replayed stretch). Fork
+# choice effects (on the out-edges) are folded in optimistically — the player may take the best choice.
+func _loop_body_effects(loop_to: String, loop_id: String) -> Dictionary:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var forward: Dictionary = JourneyGraph.reachable_ids(_graph_model, loop_to)
+	var counters: Dictionary = {}
+	var flags: Dictionary = {}
+	var items: Dictionary = {}
+	for nid: String in forward.keys():
+		if not JourneyGraph.reachable_ids(_graph_model, str(nid)).has(loop_id):
+			continue  # not on a path back to the loop → not part of the replayed body
+		var n: Dictionary = nodes.get(nid, {})
+		_accumulate_loop_effects(n.get("data", {}), counters, flags, items)
+		if str(n.get("type", "")) == "fork":
+			for e: Dictionary in n.get("out", []):
+				_accumulate_loop_effects(e, counters, flags, items)
+	return {"counters": counters, "flags": flags, "items": items}
+
+
+# Folds one effect-bearing dict (a node's data, or a fork choice edge) into the running body totals:
+# set_counters summed, set_flags / award_item unioned.
+func _accumulate_loop_effects(
+	d: Dictionary, counters: Dictionary, flags: Dictionary, items: Dictionary
+) -> void:
+	var sc: Dictionary = JourneyData.clean_counter_deltas(d.get("set_counters", {}))
+	for k: String in sc.keys():
+		counters[k] = int(counters.get(k, 0)) + int(sc[k])
+	for f: Variant in JourneyData.clean_flag_list(d.get("set_flags", [])):
+		flags[str(f)] = true
+	var aw: String = str(d.get("award_item", "")).strip_edges()
+	if aw != "":
+		items[aw] = true
+
+
+# Whether the loop body can ever satisfy one exit condition. repeats always exits; a ≥ counter needs a
+# threshold ≤ 0 (met on arrival) or a net-positive body bump; a ≤ counter (count-down) needs a
+# net-negative body bump to drive it down (counters aren't floored, so a downward trend reaches any
+# threshold); flag / item need a body that sets / grants it.
+func _loop_condition_satisfiable(c: Dictionary, body: Dictionary) -> bool:
+	match str(c.get("kind", "repeats")):
+		"repeats":
+			return true
+		"counter":
+			var thr: int = int(c.get("threshold", 0))
+			var delta: int = int((body["counters"] as Dictionary).get(str(c.get("counter", "")), 0))
+			if str(c.get("cmp", "gte")) == "lte":
+				return delta < 0
+			return thr <= 0 or delta > 0
+		"flag":
+			return (body["flags"] as Dictionary).has(str(c.get("flag", "")))
+		"item":
+			return (body["items"] as Dictionary).has(str(c.get("item", "")))
+	return true  # unknown kind → don't block
+
+
+func _loop_condition_label(c: Dictionary) -> String:
+	match str(c.get("kind", "repeats")):
+		"counter":
+			var op: String = "≤" if str(c.get("cmp", "gte")) == "lte" else "≥"
+			return (
+				"counter '%s' %s %d" % [str(c.get("counter", "?")), op, int(c.get("threshold", 0))]
+			)
+		"flag":
+			return "flag '%s' set" % str(c.get("flag", "?"))
+		"item":
+			return "has item '%s'" % str(c.get("item", "?"))
+		"repeats":
+			return "after %d loops" % int(c.get("count", 1))
+	return "condition"
+
+
 func _save_check_fork_graph(node: Dictionary, ctx: String, issues: Array) -> void:
 	var edges: Array = node.get("out", [])
 	var fork_audio: String = str((node.get("data", {}) as Dictionary).get("audio", ""))

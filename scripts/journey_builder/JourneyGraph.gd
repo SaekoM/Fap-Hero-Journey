@@ -262,6 +262,38 @@ static func apply_redirects(graph: Dictionary, redirects: Dictionary) -> void:
 		n["out"] = [] if to_id == "" else [{"to": to_id}]
 
 
+# Rewrites `graph` in place to drop every Loop marker (loop_start / loop_end), splicing each one's single
+# out-edge through so the surviving flow stays continuous — the player map hides loops unless the journey
+# opts in. Every edge pointing at a marker is re-pointed to the first non-marker it reaches (an empty
+# target becomes an ending). The End's loop_to back-jump is data, not an edge, so it vanishes with the node.
+static func strip_loop_markers(graph: Dictionary) -> void:
+	var nodes: Dictionary = graph.get("nodes", {})
+	var redirect: Dictionary = {}  # marker id -> its single out target ("" = ends)
+	for id: String in nodes:
+		var t: String = str((nodes[id] as Dictionary).get("type", ""))
+		if t == "loop_start" or t == "loop_end":
+			var out: Array = (nodes[id] as Dictionary).get("out", [])
+			redirect[id] = str((out[0] as Dictionary).get("to", "")) if not out.is_empty() else ""
+	if redirect.is_empty():
+		return
+	for id: String in redirect:
+		nodes.erase(id)
+	for id: String in nodes:
+		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
+			e["to"] = _skip_markers(str(e.get("to", "")), redirect)
+	graph["start"] = _skip_markers(str(graph.get("start", "")), redirect)
+
+
+# Follows a chain of removed markers to the first surviving node id (or "" when it runs off the end).
+# The guard is defensive — out-edges form a DAG, so a marker chain can't actually cycle.
+static func _skip_markers(to: String, redirect: Dictionary) -> String:
+	var guard: int = 0
+	while redirect.has(to) and guard < 10000:
+		to = str(redirect[to])
+		guard += 1
+	return to
+
+
 # ── Validation (free-form authoring) ─────────────────────────────────────────
 
 

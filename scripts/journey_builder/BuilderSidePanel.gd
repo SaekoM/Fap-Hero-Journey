@@ -280,13 +280,32 @@ func show_journey_info_panel() -> void:
 	whole_toggle.button_pressed = _owner._journey_map_fog_reveal < 0
 	side_vbox.add_child(whole_toggle)
 
+	# Loops on the map: hidden by default (the markers are spliced out so the flow reads as a clean run);
+	# the author opts in to reveal them. Only offered when the journey actually has a loop.
+	var loops_toggle: CheckButton = null
+	if _journey_has_loops():
+		loops_toggle = CheckButton.new()
+		loops_toggle.text = "SHOW LOOPS ON MAP"
+		loops_toggle.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"Show Loop Start / Loop End markers on the player's map. Off (the default) hides them, so the map shows the looped rounds as one straight run."
+			)
+		)
+		loops_toggle.add_theme_font_size_override("font_size", 12)
+		loops_toggle.button_pressed = _owner._journey_show_loops_on_map
+		side_vbox.add_child(loops_toggle)
+		loops_toggle.toggled.connect(func(on: bool) -> void: _owner._journey_show_loops_on_map = on)
+
 	# Shared enable-state refresh: reveal controls need the map AND fog on; the step spin also greys out
-	# under "whole structure".
+	# under "whole structure"; the loops toggle needs the map on.
 	var refresh_fog: Callable = func() -> void:
 		var fog_on: bool = _owner._journey_map_enabled and _owner._journey_map_fog
 		fog_toggle.disabled = not _owner._journey_map_enabled
 		whole_toggle.disabled = not fog_on
 		reveal_spin.editable = fog_on and not whole_toggle.button_pressed
+		if loops_toggle != null:
+			loops_toggle.disabled = not _owner._journey_map_enabled
 	refresh_fog.call()
 
 	reveal_spin.value_changed.connect(
@@ -309,6 +328,10 @@ func show_journey_info_panel() -> void:
 			_owner._journey_map_enabled = on
 			refresh_fog.call()
 	)
+
+	# Map backdrop — an image behind the graph (editor + in-game map) to align nodes to locations.
+	side_vbox.add_child(_side_section_separator())
+	_build_map_backdrop_section(side_vbox)
 
 	# Fork choices: show or hide the "N ROUNDS" tag on each choice (rounds distinct to that path).
 	side_vbox.add_child(_side_section_separator())
@@ -383,6 +406,234 @@ func show_journey_info_panel() -> void:
 
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(_make_graph_add_buttons())
+
+
+# The MAP BACKDROPS section of the journey-info panel: a stack of location images. Locked base layers show
+# first (rendition context), then this journey's own editable layers (opacity/scale/reposition/remove each),
+# then an "add" drop-zone. Live edits push straight to the graph view.
+func _build_map_backdrop_section(side_vbox: VBoxContainer) -> void:
+	side_vbox.add_child(_side_field_label("MAP BACKDROPS"))
+	var hint: Label = Label.new()
+	hint.text = "Images drawn behind the graph — and behind the in-game map — so you can align nodes to places. Stack several; each has its own placement + rotation. Top of the list is in FRONT. Static images only."
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	side_vbox.add_child(hint)
+
+	# Front layer at the TOP of the list (image-editor convention). Editable layers first (they sit in
+	# front of the base), then the locked base context beneath — each group front-most first.
+	for i: int in range(_owner._map_backdrops.size() - 1, -1, -1):
+		side_vbox.add_child(_make_backdrop_row(i))
+	for i: int in range(_owner._base_backdrops.size() - 1, -1, -1):
+		side_vbox.add_child(_make_locked_backdrop_row(_owner._base_backdrops[i], i))
+
+	var add_zone: PanelContainer = DropZoneScript.new()
+	add_zone.accepted_extensions = ["png", "jpg", "jpeg", "webp", "bmp"]
+	add_zone.picker_title = "Add Map Backdrop"
+	add_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp,*.bmp ; Image Files"]
+	add_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	side_vbox.add_child(add_zone)
+	add_zone.file_dropped.connect(
+		func(p: String) -> void:
+			_owner._map_backdrops.append(
+				{"path": p, "offset": Vector2.ZERO, "scale": 1.0, "opacity": 0.6}
+			)
+			_owner._push_backdrops()
+			show_journey_info_panel()  # rebuild so the new layer's controls appear
+	)
+
+
+# A card StyleBoxFlat for a backdrop layer: dark fill + a tinted accent border (cyan = editable, dim =
+# locked base), rounded, padded — so each layer reads as its own item in the list.
+func _backdrop_card_style(accent: Color) -> StyleBoxFlat:
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0.07, 0.05, 0.11, 0.85)
+	sb.border_color = Color(accent.r, accent.g, accent.b, 0.55)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(8)
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 9
+	sb.content_margin_bottom = 9
+	return sb
+
+
+# A small square image preview for a backdrop layer, so cards are told apart at a glance.
+func _backdrop_thumb(path: String) -> Control:
+	var frame: PanelContainer = PanelContainer.new()
+	var fs: StyleBoxFlat = StyleBoxFlat.new()
+	fs.bg_color = Color(0, 0, 0, 0.45)
+	fs.set_corner_radius_all(5)
+	frame.add_theme_stylebox_override("panel", fs)
+	frame.custom_minimum_size = Vector2(46, 46)
+	var tr: TextureRect = TextureRect.new()
+	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	tr.clip_contents = true
+	tr.custom_minimum_size = Vector2(46, 46)
+	tr.texture = _owner._backdrop_texture(path)
+	frame.add_child(tr)
+	return frame
+
+
+# A read-only CARD for a base backdrop shown as locked context while editing a rendition: thumbnail +
+# "🔒 base layer N" + filename, dimmed to read as untouchable.
+func _make_locked_backdrop_row(b: Dictionary, i: int) -> Control:
+	var card: PanelContainer = PanelContainer.new()
+	card.add_theme_stylebox_override("panel", _backdrop_card_style(UITheme.SEPARATOR))
+	card.modulate = Color(1, 1, 1, 0.75)
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	head.add_child(_backdrop_thumb(str(b.get("path", ""))))
+	var titles: VBoxContainer = VBoxContainer.new()
+	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	titles.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var t1: Label = Label.new()
+	t1.text = "🔒 BASE LAYER %d" % (i + 1)
+	t1.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	t1.add_theme_font_size_override("font_size", 11)
+	t1.uppercase = true
+	titles.add_child(t1)
+	titles.add_child(_backdrop_filename_label(str(b.get("path", ""))))
+	head.add_child(titles)
+	card.add_child(head)
+	return card
+
+
+# An editable CARD for this journey's own backdrop layer `i`: header (thumbnail + label + remove), then
+# opacity + scale sliders and a reposition toggle (only one layer repositions at a time).
+func _make_backdrop_row(i: int) -> Control:
+	var b: Dictionary = _owner._map_backdrops[i]
+	var card: PanelContainer = PanelContainer.new()
+	card.add_theme_stylebox_override("panel", _backdrop_card_style(UITheme.CYAN))
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	card.add_child(body)
+
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	head.add_child(_backdrop_thumb(str(b.get("path", ""))))
+	var titles: VBoxContainer = VBoxContainer.new()
+	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	titles.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var t1: Label = Label.new()
+	t1.text = "LAYER %d" % (i + 1)
+	t1.add_theme_color_override("font_color", UITheme.CYAN)
+	t1.add_theme_font_size_override("font_size", 12)
+	t1.uppercase = true
+	titles.add_child(t1)
+	titles.add_child(_backdrop_filename_label(str(b.get("path", ""))))
+	head.add_child(titles)
+	# Z-order: ▲ brings this layer toward the FRONT (drawn on top), ▼ sends it toward the back.
+	var last: int = _owner._map_backdrops.size() - 1
+	var up: Button = UITheme.make_icon_btn("▲", i >= last, UITheme.CYAN)
+	up.tooltip_text = UITheme.wrap_tip("Bring forward (overlay the layer in front of it)")
+	up.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	up.pressed.connect(
+		func() -> void:
+			_owner._move_backdrop(i, 1)
+			show_journey_info_panel()
+	)
+	head.add_child(up)
+	var down: Button = UITheme.make_icon_btn("▼", i <= 0, UITheme.CYAN)
+	down.tooltip_text = UITheme.wrap_tip("Send back (behind the next layer)")
+	down.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	down.pressed.connect(
+		func() -> void:
+			_owner._move_backdrop(i, -1)
+			show_journey_info_panel()
+	)
+	head.add_child(down)
+	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	rm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	rm.pressed.connect(
+		func() -> void:
+			_delete_saved_image(str((_owner._map_backdrops[i] as Dictionary).get("path", "")))
+			_owner._map_backdrops.remove_at(i)
+			_owner._backdrop_reposition_idx = -1
+			if is_instance_valid(_owner._graph):
+				_owner._graph.set_backdrop_reposition(-1)
+			_owner._push_backdrops()
+			show_journey_info_panel()
+	)
+	head.add_child(rm)
+	body.add_child(head)
+
+	body.add_child(_side_field_label("OPACITY"))
+	var op: HSlider = HSlider.new()
+	op.min_value = 0.05
+	op.max_value = 1.0
+	op.step = 0.05
+	op.value = float(b.get("opacity", 0.6))
+	op.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(op)
+	op.value_changed.connect(
+		func(v: float) -> void:
+			b["opacity"] = v
+			_owner._push_backdrop_transform(i)
+	)
+
+	body.add_child(_side_field_label("SCALE"))
+	var sc: HSlider = HSlider.new()
+	sc.min_value = 0.1
+	sc.max_value = 4.0
+	sc.step = 0.05
+	sc.value = float(b.get("scale", 1.0))
+	sc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(sc)
+	sc.value_changed.connect(
+		func(v: float) -> void:
+			b["scale"] = v
+			_owner._push_backdrop_transform(i)
+	)
+
+	body.add_child(_side_field_label("ROTATION"))
+	var ro: HSlider = HSlider.new()
+	ro.min_value = -180.0
+	ro.max_value = 180.0
+	ro.step = 1.0
+	ro.value = float(b.get("rotation", 0.0))
+	ro.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(ro)
+	ro.value_changed.connect(
+		func(v: float) -> void:
+			b["rotation"] = v
+			_owner._push_backdrop_transform(i)
+	)
+
+	var repos: CheckButton = CheckButton.new()
+	repos.text = "REPOSITION  (DRAG ON CANVAS)"
+	repos.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Turn on, then drag on the canvas to slide THIS layer under your nodes (scroll still zooms)."
+		)
+	)
+	repos.add_theme_font_size_override("font_size", 11)
+	repos.button_pressed = _owner._backdrop_reposition_idx == i
+	repos.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	repos.toggled.connect(
+		func(on: bool) -> void:
+			_owner._backdrop_reposition_idx = i if on else -1
+			if is_instance_valid(_owner._graph):
+				_owner._graph.set_backdrop_reposition(
+					(_owner._base_backdrops.size() + i) if on else -1
+				)
+			show_journey_info_panel()  # rebuild so only the active layer's toggle reads on
+	)
+	body.add_child(repos)
+	return card
+
+
+# A small muted filename label (ellipsised) for a backdrop card.
+func _backdrop_filename_label(path: String) -> Label:
+	var lbl: Label = Label.new()
+	lbl.text = path.get_file() if path != "" else "—"
+	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_font_size_override("font_size", 10)
+	lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	lbl.clip_text = true
+	return lbl
 
 
 # A labelled seconds SpinBox row (5–600, step 1) added to `parent`; returns the spin so the caller
@@ -1459,6 +1710,12 @@ func _make_graph_add_buttons() -> Control:
 # refresh (re-selecting a node, or a structural change).
 func show_graph_node_editor(node_id: String) -> void:
 	var side_vbox: VBoxContainer = _owner._side_vbox
+	# Leaving the journey-info panel to edit a node exits backdrop-reposition mode, so its drag-catcher
+	# can never linger and block node editing (the toggles only live in the journey-info panel).
+	if _owner._backdrop_reposition_idx >= 0:
+		_owner._backdrop_reposition_idx = -1
+		if is_instance_valid(_owner._graph):
+			_owner._graph.set_backdrop_reposition(-1)
 	_pool_drop = {}  # the panel is being rebuilt — drop the stale pool drop-zone registration
 	for c in side_vbox.get_children():
 		c.queue_free()
@@ -1502,8 +1759,10 @@ func show_graph_node_editor(node_id: String) -> void:
 			show_graph_node_editor(node_id)
 		_build_side_panel_editor(side_vbox, display, arr, 0, reselect)
 		# Round nodes group SETS FLAGS / COUNTERS with Coins inside their editor (Rewards group); shop /
-		# storyboard nodes, whose editors aren't grouped, get both appended here.
-		if node_type != "round":
+		# storyboard editors aren't grouped, so both are appended here. Loop markers are pure control nodes
+		# (no rewards) and checkpoints carry their rewards in the ON-CONTINUE block instead — so only shop /
+		# storyboard get the generic fields (elsewhere they'd be dead or duplicate the on-continue ones).
+		if node_type == "shop" or node_type == "storyboard":
 			side_vbox.add_child(_make_set_flags_field(data))
 			side_vbox.add_child(_make_set_counters_field(data))
 			side_vbox.add_child(_make_remove_items_field(data))
@@ -2723,6 +2982,12 @@ func _build_side_panel_editor(
 		"checkpoint":
 			hdr.text = "// CHECKPOINT //"
 			accent = UITheme.AMBER
+		"loop_start":
+			hdr.text = "// LOOP START //"
+			accent = UITheme.TOXIC_GREEN
+		"loop_end":
+			hdr.text = "// LOOP END //"
+			accent = UITheme.TOXIC_GREEN
 		_:
 			hdr.text = "// ITEM //"
 			accent = UITheme.PURPLE_MID
@@ -2744,6 +3009,10 @@ func _build_side_panel_editor(
 			container.add_child(_make_side_storyboard_editor(arr, idx, reselect))
 		"checkpoint":
 			container.add_child(_make_side_checkpoint_editor(arr, idx))
+		"loop_start":
+			container.add_child(_make_side_loop_start_editor())
+		"loop_end":
+			container.add_child(_make_side_loop_editor(arr, idx, reselect))
 
 
 # A checkpoint node's editor: just an optional banner label. The save point itself needs no
@@ -2767,7 +3036,413 @@ func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(val: String) -> void: arr[idx]["name"] = val)
 	col.add_child(name_edit)
+
+	# ON CONTINUE — a reward for pressing on instead of taking the break. Applied only when the player
+	# clicks Continue (never on a resume), so an author can reward not-saving: give an item, bump a
+	# counter, and/or set a flag, then gate a secret path or ending on it.
+	col.add_child(_side_divider_line())
+	var rhint: Label = Label.new()
+	rhint.text = "ON CONTINUE — GRANTED WHEN THE PLAYER SKIPS THE SAVE AND KEEPS GOING (NOT WHEN THEY SAVE & QUIT, THEN RESUME). USE IT TO REWARD PRESSING ON, THEN GATE A SECRET PATH OR ENDING ON WHAT'S COLLECTED."
+	rhint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rhint.add_theme_font_size_override("font_size", 10)
+	rhint.uppercase = true
+	rhint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(rhint)
+	if not arr[idx].has("continue_reward"):
+		arr[idx]["continue_reward"] = {}
+	var reward: Dictionary = arr[idx]["continue_reward"]
+	col.add_child(_award_item_field(reward))
+	col.add_child(_make_set_counters_field(reward))
+	col.add_child(_make_set_flags_field(reward))
 	return col
+
+
+# An "award item" picker (built-ins + journey custom items, plus a None) → target["award_item"]. Used by
+# the checkpoint ON-CONTINUE reward; None (empty id) grants nothing.
+func _award_item_field(target: Dictionary) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("AWARD ITEM"))
+	var entries: Array = [{"id": "", "label": "None"}]
+	for k: String in InventoryService.GetBuiltinItemIds():
+		entries.append({"id": k, "label": str(InventoryService.GetItemData(k).get("name", k))})
+	for it: Dictionary in _owner._journey_items:
+		var iid: String = str(it.get("id", ""))
+		if iid != "":
+			entries.append({"id": iid, "label": "%s  (custom)" % str(it.get("name", ""))})
+	var dd: OptionButton = OptionButton.new()
+	var cur: String = str(target.get("award_item", ""))
+	var sel: int = 0
+	for i: int in entries.size():
+		var e: Dictionary = entries[i]
+		dd.add_item(str(e["label"]), i)
+		dd.set_item_metadata(i, str(e["id"]))
+		if str(e["id"]) == cur:
+			sel = i
+	dd.selected = sel
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(i: int) -> void: target["award_item"] = str(dd.get_item_metadata(i))
+	)
+	col.add_child(dd)
+	return col
+
+
+# A Loop Start marker's editor: nothing to configure — it just names where its pair's replay begins.
+# The exit rules live on the paired Loop End.
+func _make_side_loop_start_editor() -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+	var hint: Label = Label.new()
+	hint.text = "MARKS THE TOP OF A LOOPED STRETCH. EVERYTHING WIRED FROM HERE DOWN TO ITS LOOP END PLAYS AGAIN EACH TIME. THE EXIT RULES LIVE ON THE LOOP END."
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.uppercase = true
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(hint)
+	return col
+
+
+# The Loop End editor. The End replays the body from its paired Loop Start (loop_to) until an exit
+# condition is met, then continues down its out-edge. The pairing is automatic (created with the Start),
+# so there's no back-target picker — just the exit rules, a plain-English read-back of the whole loop, and
+# the wired REPLAY FROM / CONTINUES TO targets surfaced so nothing about the flow stays hidden.
+func _make_side_loop_editor(arr: Array, idx: int, reselect: Callable) -> Control:
+	var data: Dictionary = arr[idx]
+	var loop_id: String = _find_node_id_for_data(data)
+	var conds: Array = data.get("loop_conditions", [])
+	var combine_all: bool = str(data.get("loop_combine", "any")) == "all"
+	var exit_label: String = _loop_exit_target_label(loop_id)
+
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+
+	# Plain-English read-back of the whole loop, so the author can see what they built at a glance.
+	col.add_child(_loop_readback_card(data, conds, combine_all, exit_label))
+
+	# EXIT WHEN — the condition list. The ANY/ALL combine only means something with 2+ conditions, so it's
+	# hidden until then (with 0–1 conditions it's just noise).
+	col.add_child(_side_field_label("EXIT WHEN"))
+	if conds.size() >= 2:
+		var combine_dd: OptionButton = OptionButton.new()
+		combine_dd.add_item("ANY condition is met", 0)
+		combine_dd.add_item("ALL conditions are met", 1)
+		combine_dd.selected = 1 if combine_all else 0
+		combine_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_option_button(combine_dd)
+		combine_dd.item_selected.connect(
+			func(i: int) -> void:
+				data["loop_combine"] = "all" if i == 1 else "any"
+				reselect.call(0)
+		)
+		col.add_child(combine_dd)
+
+	if conds.is_empty():
+		var empty: Label = Label.new()
+		empty.text = "No exit rule — the body plays once, then continues. Add a rule to loop it."
+		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_font_size_override("font_size", 10)
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(empty)
+	for ci: int in conds.size():
+		col.add_child(_make_loop_condition_row(data, ci, reselect))
+
+	var add_btn: Button = UITheme.make_icon_btn("＋ ADD CONDITION", false, UITheme.TOXIC_GREEN)
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_btn.pressed.connect(
+		func() -> void:
+			var list: Array = data.get("loop_conditions", [])
+			list.append(_default_loop_condition("repeats"))
+			data["loop_conditions"] = list
+			reselect.call(0)
+	)
+	col.add_child(add_btn)
+
+	col.add_child(_side_section_separator())
+
+	# REPLAY FROM — the paired Start, read-only (the pairing is automatic).
+	col.add_child(_side_field_label("REPLAY FROM"))
+	col.add_child(UITheme.make_tag_chip("▸ " + _loop_paired_start_label(data), UITheme.TOXIC_GREEN))
+
+	# CONTINUES TO — the wired exit, surfaced so it's never invisible. Warns when nothing is wired yet.
+	col.add_child(_side_field_label("CONTINUES TO"))
+	if exit_label == "":
+		col.add_child(UITheme.make_tag_chip("⚠ not wired — journey ends here", UITheme.AMBER))
+	else:
+		col.add_child(UITheme.make_tag_chip("▷ " + exit_label, UITheme.PURPLE_BRIGHT))
+	return col
+
+
+# A green-tinted card holding the plain-English read-back sentence for a Loop End.
+func _loop_readback_card(
+	data: Dictionary, conds: Array, combine_all: bool, exit_label: String
+) -> Control:
+	var panel: PanelContainer = PanelContainer.new()
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(UITheme.TOXIC_GREEN.r, UITheme.TOXIC_GREEN.g, UITheme.TOXIC_GREEN.b, 0.08)
+	sb.border_color = Color(
+		UITheme.TOXIC_GREEN.r, UITheme.TOXIC_GREEN.g, UITheme.TOXIC_GREEN.b, 0.4
+	)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(8)
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 9
+	sb.content_margin_bottom = 9
+	panel.add_theme_stylebox_override("panel", sb)
+	var lbl: Label = Label.new()
+	lbl.text = _loop_readback_text(data, conds, combine_all, exit_label)
+	lbl.add_theme_color_override("font_color", Color(0.85, 1.0, 0.8))
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	panel.add_child(lbl)
+	return panel
+
+
+# The read-back sentence: "Replays from Loop Start until <conditions>, then continues to <exit>."
+func _loop_readback_text(
+	data: Dictionary, conds: Array, combine_all: bool, exit_label: String
+) -> String:
+	var start: String = _loop_paired_start_label(data)
+	var cont: String = ("continues to %s" % exit_label) if exit_label != "" else "the journey ends"
+	if conds.is_empty():
+		return "Plays the stretch from %s once, then %s." % [start, cont]
+	return (
+		"Replays from %s until %s, then %s."
+		% [start, _loop_conditions_phrase(conds, combine_all), cont]
+	)
+
+
+# A natural-language phrase for the exit conditions, joined by "and" (ALL) or "or" (ANY).
+func _loop_conditions_phrase(conds: Array, combine_all: bool) -> String:
+	var parts: PackedStringArray = PackedStringArray()
+	for c: Dictionary in conds:
+		parts.append(_loop_condition_phrase(c))
+	return (" and " if combine_all else " or ").join(parts)
+
+
+func _loop_condition_phrase(c: Dictionary) -> String:
+	match str(c.get("kind", "repeats")):
+		"repeats":
+			var n: int = int(c.get("count", 1))
+			return "the player has looped %d %s" % [n, "time" if n == 1 else "times"]
+		"counter":
+			var cn: String = str(c.get("counter", "")).strip_edges()
+			var name: String = cn if cn != "" else "a counter"
+			var verb: String = "drops to" if str(c.get("cmp", "gte")) == "lte" else "reaches"
+			return "%s %s %d" % [name, verb, int(c.get("threshold", 0))]
+		"flag":
+			var fn: String = str(c.get("flag", "")).strip_edges()
+			return "%s is set" % [fn if fn != "" else "a flag"]
+		"item":
+			return "the player has %s" % _loop_item_name(str(c.get("item", "")))
+	return "its rule is met"
+
+
+# The paired Loop Start's label (it carries no name, so just the marker name — or a note if unpaired).
+func _loop_paired_start_label(data: Dictionary) -> String:
+	var to: String = str(data.get("loop_to", ""))
+	var nodes: Dictionary = _owner._graph_model.get("nodes", {})
+	if to == "" or not nodes.has(to):
+		return "Loop Start (unpaired)"
+	return "Loop Start"
+
+
+# The label of the End's wired exit target (its single out-edge), or "" when nothing is wired.
+func _loop_exit_target_label(loop_id: String) -> String:
+	var nodes: Dictionary = _owner._graph_model.get("nodes", {})
+	var out: Array = (nodes.get(loop_id, {}) as Dictionary).get("out", [])
+	if out.is_empty():
+		return ""
+	var to: String = str((out[0] as Dictionary).get("to", ""))
+	if to == "" or not nodes.has(to):
+		return ""
+	return _loop_node_label(to)
+
+
+# A readable item name (built-in or journey custom) for an item id, for the read-back phrasing.
+func _loop_item_name(item_id: String) -> String:
+	if item_id == "":
+		return "an item"
+	if item_id in InventoryService.GetBuiltinItemIds():
+		return str(InventoryService.GetItemData(item_id).get("name", item_id))
+	for it: Dictionary in _owner._journey_items:
+		if str(it.get("id", "")) == item_id:
+			return str(it.get("name", item_id))
+	return item_id
+
+
+# One row in a loop's exit-condition list: a KIND picker, the params that kind needs, and a ✕ to remove
+# it. Switching kind swaps in that kind's default params. Edits write straight into conds[ci].
+func _make_loop_condition_row(data: Dictionary, ci: int, reselect: Callable) -> Control:
+	var conds: Array = data.get("loop_conditions", [])
+	var cond: Dictionary = conds[ci]
+
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 6)
+	var kinds: Array = ["repeats", "counter", "flag", "item"]
+	var kind_labels: Array = ["After N loops", "Counter ≥ value", "Flag is set", "Has item"]
+	var kind_dd: OptionButton = OptionButton.new()
+	for i: int in kinds.size():
+		kind_dd.add_item(str(kind_labels[i]), i)
+	kind_dd.selected = maxi(0, kinds.find(str(cond.get("kind", "repeats"))))
+	kind_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(kind_dd)
+	kind_dd.item_selected.connect(
+		func(i: int) -> void:
+			conds[ci] = _default_loop_condition(str(kinds[i]))
+			reselect.call(0)
+	)
+	head.add_child(kind_dd)
+	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	rm.pressed.connect(
+		func() -> void:
+			conds.remove_at(ci)
+			reselect.call(0)
+	)
+	head.add_child(rm)
+	box.add_child(head)
+
+	match str(cond.get("kind", "repeats")):
+		"repeats":
+			box.add_child(_loop_int_field("LOOP COUNT", cond, "count", 1))
+		"counter":
+			box.add_child(_loop_text_field("COUNTER NAME", cond, "counter", "e.g. belt"))
+			box.add_child(_loop_cmp_field(cond, reselect))
+			box.add_child(_loop_int_field("VALUE", cond, "threshold", 0))
+		"flag":
+			box.add_child(_loop_text_field("FLAG NAME", cond, "flag", "e.g. found_key"))
+		"item":
+			box.add_child(_loop_item_field(cond))
+	return box
+
+
+# A fresh condition dict for `kind`, pre-filled so a just-added row is already save-valid.
+func _default_loop_condition(kind: String) -> Dictionary:
+	match kind:
+		"counter":
+			return {"kind": "counter", "counter": "", "threshold": 1}
+		"flag":
+			return {"kind": "flag", "flag": ""}
+		"item":
+			return {"kind": "item", "item": ""}
+		_:
+			return {"kind": "repeats", "count": 3}
+
+
+# The ≥ / ≤ picker for a counter condition. "gte" (default) exits when the counter climbs to the value;
+# "lte" is a count-down — exit when it drops to the value. Reselects so the read-back re-renders.
+func _loop_cmp_field(target: Dictionary, reselect: Callable) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("COMPARISON"))
+	var values: Array = ["gte", "lte"]
+	var dd: OptionButton = OptionButton.new()
+	dd.add_item("Reaches (≥) the value", 0)
+	dd.add_item("Drops to (≤) the value", 1)
+	dd.selected = maxi(0, values.find(str(target.get("cmp", "gte"))))
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(i: int) -> void:
+			target["cmp"] = str(values[i])
+			reselect.call(0)
+	)
+	col.add_child(dd)
+	return col
+
+
+func _loop_int_field(label: String, target: Dictionary, key: String, min_v: int) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label(label))
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = min_v
+	spin.max_value = 9999
+	spin.step = 1
+	spin.value = float(int(target.get(key, min_v)))
+	UITheme.style_spin_box(spin)
+	spin.value_changed.connect(func(v: float) -> void: target[key] = int(v))
+	col.add_child(spin)
+	return col
+
+
+func _loop_text_field(
+	label: String, target: Dictionary, key: String, placeholder: String
+) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label(label))
+	var edit: LineEdit = LineEdit.new()
+	edit.placeholder_text = placeholder
+	edit.text = str(target.get(key, ""))
+	UITheme.style_line_edit(edit)
+	edit.text_changed.connect(func(v: String) -> void: target[key] = v.strip_edges())
+	col.add_child(edit)
+	return col
+
+
+# The item picker for a "has item" loop condition — built-ins then journey custom items, same set as
+# the give / remove pickers. Selecting writes the item id to cond["item"].
+func _loop_item_field(target: Dictionary) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("ITEM"))
+	var entries: Array = []
+	for k: String in InventoryService.GetBuiltinItemIds():
+		entries.append({"id": k, "label": str(InventoryService.GetItemData(k).get("name", k))})
+	for it: Dictionary in _owner._journey_items:
+		var iid: String = str(it.get("id", ""))
+		if iid != "":
+			entries.append({"id": iid, "label": "%s  (custom)" % str(it.get("name", ""))})
+	var dd: OptionButton = OptionButton.new()
+	var cur: String = str(target.get("item", ""))
+	var sel: int = 0
+	for i: int in entries.size():
+		var e: Dictionary = entries[i]
+		dd.add_item(str(e["label"]), i)
+		dd.set_item_metadata(i, str(e["id"]))
+		if str(e["id"]) == cur:
+			sel = i
+	dd.selected = sel
+	if cur == "" and not entries.is_empty():
+		target["item"] = str((entries[0] as Dictionary)["id"])  # default to first so save is valid
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(func(i: int) -> void: target["item"] = str(dd.get_item_metadata(i)))
+	col.add_child(dd)
+	return col
+
+
+# A short "Type — Name" label for a node id (used for the End's CONTINUES-TO target).
+func _loop_node_label(nid: String) -> String:
+	var node: Dictionary = (_owner._graph_model.get("nodes", {}) as Dictionary).get(nid, {})
+	var t: String = str(node.get("type", ""))
+	var nm: String = str((node.get("data", {}) as Dictionary).get("name", "")).strip_edges()
+	var pretty: String = t.capitalize() if t != "" else "Node"
+	return "%s — %s" % [pretty, nm] if nm != "" else pretty
+
+
+# The graph node id whose live data dict IS `data` (reference identity — arr[0] IS node.data, so two
+# loop nodes with identical values never collide the way value-equality would).
+func _find_node_id_for_data(data: Dictionary) -> String:
+	var nodes: Dictionary = _owner._graph_model.get("nodes", {})
+	for nid: String in nodes.keys():
+		if is_same((nodes[nid] as Dictionary).get("data"), data):
+			return str(nid)
+	return ""
+
+
+# Whether the journey has at least one Loop (a Loop End node) — gates the "show loops on map" toggle.
+func _journey_has_loops() -> bool:
+	for n: Dictionary in (_owner._graph_model.get("nodes", {}) as Dictionary).values():
+		if str(n.get("type", "")) == "loop_end":
+			return true
+	return false
 
 
 # ── Internal: small helpers ─────────────────────────────────────────────────

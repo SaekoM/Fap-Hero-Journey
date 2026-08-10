@@ -108,6 +108,7 @@ var _current_overlay: Control = null
 # case the map is never built and the buttons never appear.
 var _map_enabled: bool = true  # journey-level: author allows the player map
 var _show_fork_counts: bool = true  # journey-level: show the "N ROUNDS" tag on fork choices
+var _show_loops_on_map: bool = false  # journey-level: show Loop markers on the player map (off = hide)
 # Finish ("I came") — journey-level opt-in. When on, an always-available hold-to-confirm button ends the
 # run early; if a finish node (any type — a gentle round or a storyboard) is designated it plays as
 # aftercare before the end screen.
@@ -210,6 +211,13 @@ var _warmup_skip_btn: Button = null  # free ⏭ skip on an author-marked warmup 
 var _finish_btn: Button = null  # hold-to-confirm FINISH ("I came") button, shown during rounds when enabled
 var _finish_hold_tween: Tween = null  # fills while FINISH is held; fires _finish_journey at completion
 var _finishing: bool = false  # set once FINISH is confirmed, so a late button_up can't re-trigger
+# Exit-to-menu is hold-to-confirm (Esc key held, or the MENU button held) so a stray press can't dump a
+# run. A centered overlay fills while held; release cancels, completion leaves to the menu.
+const EXIT_HOLD_SECS: float = 1.0
+var _exit_hold_tween: Tween = null
+var _exit_hold_layer: CanvasLayer = null
+var _exit_hold_fill: Label = null
+var _exiting: bool = false  # guards _confirm_exit so a late key/button-up can't re-trigger
 # _on_round_ended is bound to BOTH round-end signals (_video.finished / _end_timer.timeout) and is
 # also called manually (FINISH / warmup skip). This guards its once-per-round side effects — counter
 # bestowal, payout, advance — against a double-fire. Reset at the top of each _begin_round.
@@ -248,6 +256,7 @@ func _ready() -> void:
 	# Journey-level: the author can disable the player map to enforce surprise.
 	_map_enabled = bool(GameState.Journey.get("map_enabled", true))
 	_show_fork_counts = bool(GameState.Journey.get("show_fork_counts", true))
+	_show_loops_on_map = bool(GameState.Journey.get("show_loops_on_map", false))
 	_map_fog = bool(GameState.Journey.get("map_fog", false))
 	# Journey-level: auto-advance countdown on storyboards / interactive forks.
 	_allow_finish = bool(GameState.Journey.get("allow_finish", false))
@@ -418,6 +427,14 @@ func _load_current_item() -> void:
 				_advance_from_checkpoint()  # resumed onto it → don't re-show its banner
 			else:
 				_show_checkpoint_gate()
+		"loop_start":
+			# The top marker of a Loop pair — a no-media passthrough. Advance into the body it precedes.
+			GameState.Advance()
+			_load_current_item()
+		"loop_end":
+			# The bottom marker: bump/evaluate the loop, then replay from the paired Start or take the exit.
+			GameState.ResolveLoop()
+			_load_current_item()
 		_:
 			_load_current_round()
 
@@ -839,6 +856,7 @@ func _begin_round(round: Dictionary) -> void:
 	# after the boss/effect setup above (so forced modifiers are baked into the streamed script). The old
 	# slow per-round handshake used to defer this by accident; now that ensure_ready is instant, the order is
 	# explicit. Scoring + beat bar stay on FunscriptPlayer's clock regardless.
+	#
 	_handy_begin_round(fs_path)
 
 
@@ -907,11 +925,24 @@ func _show_checkpoint_gate() -> void:
 		func() -> void:
 			modal.queue_free()
 			_is_overlay_open = false
+			_apply_checkpoint_continue_reward(data)  # reward for skipping the break (not on resume)
 			_advance_from_checkpoint()
 	)
 	btn_row.add_child(continue_btn)
 
 	add_child(modal)
+
+
+# Grants a checkpoint's ON-CONTINUE reward — only when the player skips the save and keeps going (the
+# interactive Continue button), never on a resume (which re-enters the checkpoint after taking the break).
+# Lets an author reward pressing on: an item, a counter bump, and/or a flag, then gate a secret path or
+# ending on it (e.g. "collected every safe word → bonus finale"). No-op when nothing is configured.
+func _apply_checkpoint_continue_reward(data: Dictionary) -> void:
+	var reward: Dictionary = data.get("continue_reward", {})
+	if reward.is_empty():
+		return
+	_grant_item(str(reward.get("award_item", "")))  # guards "" internally, pops "✦ RECEIVED"
+	GameState.ApplyItemFlagsCounters(reward)  # reward carries set_counters / set_flags in the node shape
 
 
 # Continue past a checkpoint node → advance to the next item (mirrors _on_shop_closed: a
@@ -1620,6 +1651,87 @@ func _finish_journey() -> void:
 		_transition_to_end_screen()
 
 
+# Exit-to-menu hold-to-confirm. Begins on Esc-key-down or MENU-button-down; a centered overlay fills over
+# EXIT_HOLD_SECS and leaves to the menu at completion. Releasing (key / button up) cancels before then.
+func _begin_exit_hold() -> void:
+	if _exiting:
+		return
+	_cancel_exit_hold()
+	_show_exit_hold_overlay()
+	_exit_hold_tween = create_tween()
+	_exit_hold_tween.tween_method(_set_exit_hold_fill, 0.0, 1.0, EXIT_HOLD_SECS)
+	_exit_hold_tween.finished.connect(_confirm_exit)
+
+
+func _cancel_exit_hold() -> void:
+	if _exit_hold_tween != null and _exit_hold_tween.is_valid():
+		_exit_hold_tween.kill()
+	_exit_hold_tween = null
+	_hide_exit_hold_overlay()
+
+
+func _confirm_exit() -> void:
+	if _exiting:
+		return
+	_exiting = true
+	_exit_hold_tween = null
+	_hide_exit_hold_overlay()
+	_go_to_menu()
+
+
+# A centered "keep holding to exit" card with a filling bar, on its own layer above the HUD.
+func _show_exit_hold_overlay() -> void:
+	_hide_exit_hold_overlay()
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.layer = 4
+	_exit_hold_layer = layer
+	add_child(layer)
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(center)
+	var card: PanelContainer = PanelContainer.new()
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0.04, 0.0, 0.06, 0.92)
+	sb.border_color = UITheme.MAGENTA
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(10)
+	sb.content_margin_left = 22
+	sb.content_margin_right = 22
+	sb.content_margin_top = 16
+	sb.content_margin_bottom = 16
+	card.add_theme_stylebox_override("panel", sb)
+	center.add_child(card)
+	var vb: VBoxContainer = VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	card.add_child(vb)
+	var lbl: Label = Label.new()
+	lbl.text = "HOLD TO EXIT TO MENU"
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(lbl, UITheme.MAGENTA, 15, true)
+	vb.add_child(lbl)
+	var fill: Label = Label.new()
+	fill.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(fill, UITheme.WHITE_SOFT, 18, false)
+	vb.add_child(fill)
+	_exit_hold_fill = fill
+	_set_exit_hold_fill(0.0)
+
+
+func _hide_exit_hold_overlay() -> void:
+	if is_instance_valid(_exit_hold_layer):
+		_exit_hold_layer.queue_free()
+	_exit_hold_layer = null
+	_exit_hold_fill = null
+
+
+func _set_exit_hold_fill(t: float) -> void:
+	if not is_instance_valid(_exit_hold_fill):
+		return
+	var filled: int = clampi(int(round(t * 8.0)), 0, 8)
+	_exit_hold_fill.text = "%s%s" % ["▰".repeat(filled), "▱".repeat(8 - filled)]
+
+
 # Same exit as the Bail Out item: no payout, marked on the route. One skip semantic, not two.
 func _on_warmup_skip_pressed() -> void:
 	_video.stop()
@@ -2177,7 +2289,10 @@ func _transition_swap(swap_action: Callable) -> void:
 
 	# Fade the HUD back in only when we've landed on a round — the gates (fork / shop /
 	# storyboard / checkpoint) cover the screen and own their own UI.
-	if not (GameState.CurrentItemType() in ["fork", "shop", "storyboard", "checkpoint"]):
+	if not (
+		GameState.CurrentItemType()
+		in ["fork", "shop", "storyboard", "checkpoint", "loop_start", "loop_end"]
+	):
 		_show_hud(true)
 
 
@@ -2215,6 +2330,34 @@ func _free_current_overlay() -> void:
 # button. Self-contained: reads the journey accent locally. Skipped entirely when
 # the author has disabled the map for this journey — _map_view stays null, so
 # _open_map_viewer no-ops and the overlay map buttons aren't shown.
+# Pushes the journey's map backdrop STACK (if any) onto a map GraphView — always fully visible beneath the
+# (possibly fogged) nodes, layered in order. For a composed rendition the stack already carries the base's
+# layers plus each overlay's (see compose). Placement rides GameState.Journey, matching the editor exactly.
+func _apply_map_backdrop_to(view: Node) -> void:
+	var stack: Array = GameState.Journey.get("map_backdrops", [])
+	if stack.is_empty():
+		return
+	var render: Array = []
+	for e: Variant in stack:
+		var b: Dictionary = e
+		var img: Image = JourneyData.load_image_smart(str(b.get("path", "")))
+		if img == null:
+			continue
+		(
+			render
+			. append(
+				{
+					"texture": ImageTexture.create_from_image(img),
+					"offset": b.get("offset", Vector2.ZERO),
+					"scale": float(b.get("scale", 1.0)),
+					"opacity": float(b.get("opacity", 0.6)),
+					"rotation": float(b.get("rotation", 0.0)),
+				}
+			)
+		)
+	view.set_backdrops(render)
+
+
 func _build_map() -> void:
 	if not _map_enabled:
 		return
@@ -2253,11 +2396,16 @@ func _build_map() -> void:
 		"start": str(GameState.Journey.get("start", "")),
 		"nodes": (GameState.Journey.get("nodes", {}) as Dictionary).duplicate(true),
 	}
+	# Loops are hidden on the player map by default — splice the markers out so the flow reads clean.
+	# The author opts in per journey to reveal them.
+	if not _show_loops_on_map:
+		JourneyGraph.strip_loop_markers(map_graph)
 	for nid: String in map_graph["nodes"]:
 		if not (map_graph["nodes"][nid] as Dictionary).has("pos"):
 			GraphLayout.seed_positions(map_graph)  # any node missing a pos → seed the whole graph
 			break
 	_map_view.set_graph(map_graph)
+	_apply_map_backdrop_to(_map_view)
 
 	var title: Label = Label.new()
 	title.text = "◇  JOURNEY MAP"
@@ -3155,16 +3303,17 @@ func _input(event: InputEvent) -> void:
 						_on_inventory_pressed()
 						get_viewport().set_input_as_handled()
 				KEY_ESCAPE:
-					# Esc: close the Quick Settings drawer or inventory if open, otherwise leave to menu.
-					# Overlay screens (shop/storyboard) capture Esc themselves before
-					# it reaches here; the fork screen intentionally does not (no escape).
+					# Esc: close the Quick Settings drawer or inventory if open, otherwise begin the
+					# hold-to-exit (a stray tap can't dump the run; releasing cancels — see the key-up
+					# branch below). Overlay screens (shop/storyboard) capture Esc themselves before it
+					# reaches here; the fork screen intentionally does not (no escape).
 					if not _is_overlay_open:
 						if is_instance_valid(_session_panel):
 							_session_panel.close()
 						elif is_instance_valid(_inventory_panel):
 							_inventory_panel.close()
 						else:
-							_go_to_menu()
+							_begin_exit_hold()
 						get_viewport().set_input_as_handled()
 				KEY_S:
 					# S: toggle the in-play Quick Settings drawer (stroke range + delay).
@@ -3205,6 +3354,9 @@ func _input(event: InputEvent) -> void:
 					if not _is_overlay_open:
 						_nudge_intiface_delay(DELAY_STEP)
 						get_viewport().set_input_as_handled()
+		elif not key_event.pressed and key_event.keycode == KEY_ESCAPE:
+			# Esc released — abort an in-progress hold-to-exit (a no-op when none is running).
+			_cancel_exit_hold()
 
 
 # ---------------------------------------------------------------------------
@@ -3292,7 +3444,10 @@ func _connect_signals() -> void:
 	_video.finished.connect(_on_round_ended)
 	_end_timer.timeout.connect(_on_round_ended)
 	_pause_btn.pressed.connect(_toggle_pause)
-	_menu_btn.pressed.connect(_go_to_menu)
+	# MENU is hold-to-confirm too (matches Esc), so a misclick can't drop the run mid-play.
+	_menu_btn.button_down.connect(_begin_exit_hold)
+	_menu_btn.button_up.connect(_cancel_exit_hold)
+	_menu_btn.tooltip_text = "Hold to exit to the main menu"
 	_hide_timer.timeout.connect(_on_hide_timer_timeout)
 	_pause_btn.mouse_entered.connect(_show_hud)
 	_menu_btn.mouse_entered.connect(_show_hud)
