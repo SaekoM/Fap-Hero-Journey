@@ -493,7 +493,12 @@ static func _migrate_checkpoint_flags(graph: Dictionary) -> void:
 
 	for round_id: String in flagged:
 		var round_node: Dictionary = nodes[round_id]
-		var cp_id: String = JourneyData.new_node_id()
+		# DETERMINISTIC id (derived from the round it guards), NOT a random one: this migration re-runs on
+		# every load of a not-yet-re-saved legacy journey, so a random id would differ each time — and a
+		# Save & Quit made at the checkpoint would never match on resume (current_node not in _nodes →
+		# LoadFromSave resets to the journey start, losing the player's place). "cp_" + round_id is stable
+		# and can't collide with author ids (which are "n_<hex>").
+		var cp_id: String = "cp_" + round_id
 		# Reroute inbound edges (from any node) BEFORE adding C → R, so the new edge isn't caught.
 		for other_id: String in nodes:
 			for e: Dictionary in (nodes[other_id] as Dictionary).get("out", []):

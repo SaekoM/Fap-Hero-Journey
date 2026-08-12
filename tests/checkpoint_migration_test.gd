@@ -97,3 +97,25 @@ func test_adjacent_flagged_rounds() -> void:
 	assert_dict(_checkpoint_before(graph, "r2")).is_not_empty()
 	# 2 rounds + 2 checkpoints.
 	assert_int((graph["nodes"] as Dictionary).size()).is_equal(4)
+
+
+# The synthesized checkpoint id must be STABLE across loads (derived from the round, not random): a Save &
+# Quit stores current_node = that id, and resume re-migrates the same journey — a fresh random id each load
+# would never match on resume and reset the player to the start. Migrating the SAME json twice must yield the
+# same checkpoint id.
+func test_checkpoint_id_is_deterministic() -> void:
+	var src: Dictionary = _json(
+		"r1", {"r1": _round_node("A", "r2"), "r2": _round_node("B", "", true)}
+	)
+	var a: Dictionary = JourneyGraph.from_json(src.duplicate(true))
+	var b: Dictionary = JourneyGraph.from_json(src.duplicate(true))
+	var id_a: String = ""
+	for id: String in a["nodes"]:
+		if str((a["nodes"][id] as Dictionary).get("type", "")) == "checkpoint":
+			id_a = id
+	var id_b: String = ""
+	for id: String in b["nodes"]:
+		if str((b["nodes"][id] as Dictionary).get("type", "")) == "checkpoint":
+			id_b = id
+	assert_str(id_a).is_not_empty()
+	assert_str(id_a).is_equal(id_b)  # same across loads → a checkpoint save can be resumed

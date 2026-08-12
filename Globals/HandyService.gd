@@ -314,20 +314,17 @@ func _send_play(video_ms: int) -> Dictionary:
 # Fire-and-forget (no await at the call site).
 func feed(video_ms: int) -> void:
 	_last_video_ms = video_ms  # kept fresh even when we don't send, so recovery anchors to the live clock
-	# Deferred engage: the round opened with the first stroke beyond lookahead (long intro). Once a stroke
-	# comes within reach, fire the real anchored play now — a FRESH /hsp/setup first (the earlier one may
-	# have gone stale idling through the intro), then the anchored play read at the live position. This is
-	# the automatic version of the user's "pause when the strokes start → it syncs".
+	# Deferred engage: no stroke is within lookahead yet — either a long no-action INTRO (round start) or a
+	# long no-action GAP mid-round (the empty-window arm below sets the flag). Once the next unsent stroke
+	# (`_send_idx`) comes within reach, fire the real anchored play now — a FRESH /hsp/setup (the prior one
+	# may have gone stale idling through the gap) + the anchored play at the live position. The automatic
+	# version of the user's "pause when the strokes start → it syncs".
 	if _deferred_play:
 		if not _playing or _recovering or _feed_inflight:
 			return
 		if (
 			HandyPoints
-			. points_in_window(
-				_transformed,
-				HandyPoints.index_at_or_after(_transformed, video_ms),
-				video_ms + LOOKAHEAD_MS
-			)["batch"]
+			. points_in_window(_transformed, _send_idx, video_ms + LOOKAHEAD_MS)["batch"]
 			. is_empty()
 		):
 			return  # still nothing to stroke within reach
@@ -351,6 +348,11 @@ func feed(video_ms: int) -> void:
 		_transformed, _send_idx, video_ms + LOOKAHEAD_MS
 	)
 	if (win["batch"] as Array).is_empty():
+		# Entering a long no-action GAP: the next unsent stroke is beyond lookahead, so the device plays out
+		# its buffer and starves. Defer — the branch above re-engages with a fresh anchored play when that
+		# stroke comes back into reach, instead of a bare /hsp/add that can't lift the device cleanly out of
+		# the starving-pause (leaving it ~LOOKAHEAD behind — the mid-round desync).
+		_deferred_play = true
 		return
 	_last_feed_ms = now
 	var next_idx: int = int(win["next_idx"])  # NOT committed until the add succeeds — a dropped packet

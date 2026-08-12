@@ -1,55 +1,52 @@
 # Changelog
 
-## v0.7.4
+## v0.7.5
 
-New output support for **e-stim** devices, via [restim](https://github.com/diglet48/restim) — contributed by
-a community member. If you don't use e-stim, nothing here touches you: it stays completely inert unless you
-turn it on and connect.
+A creator-focused release: **two new ways to shape a journey** — Loops and map backdrops — a batch of
+builder quality-of-life, and two fixes that matter in play (your saved place actually comes back, and the
+Handy stays in sync through quiet stretches).
 
-### ⚡ Drive e-stim from your journeys
-Fap Hero Journey can now stream to a running **restim** instance over its WebSocket T-code connection, so a
-journey's scripts drive your e-stim session the same way they drive a stroker. The main stroke maps to
-restim's position (Alpha), and multi-axis scripts map onto restim's parameters (surge, carrier frequency,
-pulse, vibe channels) — and items, curses, and boss effects reach it just like every other output.
+### 🔁 Loops
+Wrap a stretch of your journey in a pair of markers — a **Loop Start** and a **Loop End** — and it repeats
+until an exit condition is met.
+- **Exit on your terms** — after a number of repeats, when a flag or item is present, or when a counter
+  reaches a value (count **up to** N or **down to** N).
+- **Hidden on the map by default** — loops don't clutter the in-game map unless you opt in per journey.
+- **Paired for real** — deleting one marker removes its partner, ⊞ ARRANGE lays loops out cleanly, and
+  forks work inside a loop.
 
-- **Connect** from Options → the restim section: point it at your restim WebSocket address and connect
-  (defaults to the usual local `ws://127.0.0.1:12346/tcode`).
-- **Per-axis manual levels** in a new **E-STIM DEVICE** section (Options → Device), for the parameters you'd
-  rather set by hand than by script. The existing device ranges are now labelled **T-CODE DEVICE** so the
-  two are easy to tell apart.
-- **E-stim scripts in journeys** — authors can include dedicated e-stim parameter scripts (alpha/beta,
-  volume, carrier frequency, pulse, vib…); they're detected by filename and travel with their round like any
-  other axis.
-- Runs **alongside** your other output — e-stim plays in parallel with a Buttplug stroker (it takes over the
-  serial T-code slot, since both speak the same protocol).
+(This replaces the old single-node "Repeat"; the wording is now **Loop** throughout.)
 
-Requires [restim](https://github.com/diglet48/restim) running with its WebSocket server enabled. Big thanks
-to [@oleg-nasan](https://github.com/oleg-nasan) for building and testing this.
+### 🗺 Map backdrops
+Put location art *behind* your journey graph — in the builder and on the in-game map.
+- **Stack layers** — combine multiple images, each with its own **opacity, scale, and rotation**, and
+  reorder them with **z-order** controls.
+- **Rendition-aware** — a rendition can add its own backdrops on top of the base journey's.
 
-## v0.7.3
+### 🧰 Builder quality-of-life
+- **Pin sticky notes to nodes** — a pinned note follows its node and travels with it on copy / cut / paste /
+  duplicate. Marquee-select notes to move or delete several at once.
+- **Image fit for fork & boss art** — choose **Fit** (whole image, letterboxed), **Crop** (fill & crop), or
+  **Stretch** (fill, distort). Existing journeys look exactly as before.
+- **Truer fork "N ROUNDS" counts** — each choice now counts only the rounds unique to that branch and stops
+  where the paths rejoin, instead of over-counting the shared tail.
+- **Remove items on a node** — a node can take an item away on completion, alongside the counters and flags
+  it grants.
+- **Animated builder background toggle** (Options → Display) — turn the moving orbs off for a plain black
+  canvas: less motion, lighter on the GPU.
 
-A focused quality release for **The Handy over WiFi**. If you drive a Handy directly (no Intiface), this is
-a big one — startup, sync, and reliability are all dramatically better, and this time it's confirmed on real
-hardware. This time I am getting it right!
+### 🎮 In the run
+- **Hold to exit** — leaving to the menu (ESC, or the HUD **MENU** button) now takes a brief hold, so a
+  stray tap can't drop you out of a scene.
+- **Checkpoint "on continue" rewards** — a checkpoint can grant an item, counters, and flags that land only
+  when you **Continue** from it — not on Save & Quit, and not simply by resuming.
 
-### 🛠 Sync that actually lands
-The device used to take several seconds to start each round and then play a beat behind the video. Now it
-**starts promptly and strokes in time** with what's on screen. Round starts that once took the better part
-of ten seconds are down to about one, and the old "playing a second or two late" feeling is gone — sync is
-tight now.
+### 💾 Saving your place — fixed
+Save in a journey and come back later, and you now **return to where you left off** instead of restarting
+from the beginning. (Your coins and purchased items were already kept — now your position is too.) Note:
+saves made *before* this release will still start over the first time.
 
-### ▶ Smooth between rounds
-Moving from one round to the next no longer leaves the device frozen until you pause/resume or open the menu
-— each round picks the device back up on its own, in sync, with any boss or curse effects already baked into
-the very first stroke.
-
-### 🔌 Know it's working
-- A quick **"Getting the Handy ready"** moment when a journey starts (WiFi Handy only), so the first round
-  is as smooth as the rest — with a short confirmation stroke so you can feel it's live before you play.
-- A new **Test** button (Options → the Handy section) sends a stroke on demand to confirm the device
-  responds.
-- The connection status now shows a live green **● Connected** instead of a stale "Not checked."
-
-### 🩹 Rides out a blip
-If your WiFi stutters or the device briefly drops mid-round, it now quietly **reconnects and resumes** on
-its own within about a second, instead of going silent until the next scene.
+### 🛰 Handy over WiFi — sync through quiet stretches
+Scripts with a long no-action stretch — a slow intro, or a lull in the middle of a round — used to leave the
+device lagging about 8 seconds behind once the action resumed. It now **engages fresh and in time** right as
+the strokes come back, whether the quiet part is at the start of a round or in the middle.
