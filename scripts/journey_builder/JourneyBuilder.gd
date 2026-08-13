@@ -228,6 +228,8 @@ var _pending_test_location: Dictionary = {}
 var _test_seed_score: int = 0
 var _test_seed_coins: int = 0
 var _test_seed_flags: Array = []  # flag names to pre-set for a Test-From-Here run (exercise flag forks)
+var _test_seed_items: Array = []  # item ids to grant for a Test-From-Here run (exercise item forks / shops)
+var _test_seed_counters: Dictionary = {}  # counter name->value to pre-set (exercise counter forks)
 var _test_panel_expanded: bool = false  # side-panel "Test From Here" group open/closed, persisted across node selections (panel rebuilds)
 
 # Streaming-copy tuning. Chunks are read/written 1 MB at a time; the main thread
@@ -691,7 +693,18 @@ func _on_arrange_pressed() -> void:
 			members.append((g.get("members", []) as Array).duplicate())
 		else:
 			members.append(_nodes_in_rect(g.get("rect", Rect2())))
+	# Snapshot node positions so pinned notes can follow their node through the relayout.
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var old_pos: Dictionary = {}
+	for id: String in nodes:
+		old_pos[id] = (nodes[id] as Dictionary).get("pos", Vector2.ZERO)
 	GraphLayout.auto_layout(_graph_model)
+	# Pinned notes travel with their node: shift each by the delta its node moved.
+	for c: Dictionary in _graph_model.get("comments", []):
+		var nid: String = str(c.get("node_id", ""))
+		if nid != "" and old_pos.has(nid) and nodes.has(nid):
+			var moved: Vector2 = (nodes[nid] as Dictionary).get("pos", Vector2.ZERO) - old_pos[nid]
+			c["pos"] = (c.get("pos", Vector2.ZERO) as Vector2) + moved
 	# Re-fit each (non-empty) frame around its members' new positions so nodes never end up outside it.
 	for gi: int in groups.size():
 		var ids: Array = members[gi]
@@ -3653,6 +3666,8 @@ func _launch_test_play(paths: Dictionary) -> void:
 	GameState.set_meta("_test_seed_score", _test_seed_score)
 	GameState.set_meta("_test_seed_coins", _test_seed_coins)
 	GameState.set_meta("_test_seed_flags", _test_seed_flags)
+	GameState.set_meta("_test_seed_items", _test_seed_items)
+	GameState.set_meta("_test_seed_counters", _test_seed_counters)
 	Transition.change_scene("res://scenes/game_loop/GameLoop.tscn")
 
 
