@@ -449,7 +449,10 @@ func make_separator_style(alpha: float = 1.0) -> StyleBoxFlat:
 # Standard panel size is 720×520. Pass `panel_size` to override (e.g. a wider
 # error modal listing many issues, or a narrower confirmation prompt).
 func build_centered_modal(
-	title: String, accent: Color, panel_size: Vector2i = Vector2i(720, 520)
+	title: String,
+	accent: Color,
+	panel_size: Vector2i = Vector2i(720, 520),
+	backdrop_alpha: float = 0.85
 ) -> Dictionary:
 	var modal: Control = Control.new()
 	modal.anchor_right = 1.0
@@ -457,7 +460,7 @@ func build_centered_modal(
 	modal.mouse_filter = Control.MOUSE_FILTER_STOP
 
 	var backdrop: ColorRect = ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.85)
+	backdrop.color = Color(0.0, 0.0, 0.0, backdrop_alpha)
 	backdrop.anchor_right = 1.0
 	backdrop.anchor_bottom = 1.0
 	modal.add_child(backdrop)

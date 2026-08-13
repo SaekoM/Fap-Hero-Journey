@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.7.6
+
+A hotfix that smooths the round → shop → round flow and clears up a handful of visual bugs.
+
+### 🎬 Cleaner round transitions
+- Boss, effect, and mystery-encounter **intro cards now fade away to reveal the round** instead of
+  hard-cutting, and they no longer show the previous round's frozen last frame behind them.
+- **Shops, checkpoints, and forks** now open on a clean black background — the last frame of the round you
+  just finished no longer bleeds through behind them.
+
+### ✨ Rewards you can actually see
+- Item / coin / counter **pop-ups now sit above the shop and other full-screen screens**, so a reward
+  handed to you right before a shop (or storyboard) isn't buried behind it.
+- Buying an item in a shop now shows a clear **"✓ added to inventory"** confirmation — the old feedback was
+  a quick flash that was easy to miss.
+
+### 🧰 For creators (builder & QC)
+- **Test From Here** can now **pre-grant items and pre-set counters** for the run (alongside the existing
+  score / coins / flags seeds), so a mid-journey node can be tested with the state it expects — item- and
+  counter-gated forks and shops finally exercise from any starting point.
+- In **test mode**, press **→** to **complete the current round instantly and still collect its rewards**
+  (coins, items, counters) — QCing a long journey no longer means watching every video end to end.
+- The shop's item pickers in the builder are now **compact multi-select dropdowns** — with each item's
+  description on hover — instead of long checkbox columns.
+
+### 🩹 Fixes
+- **Tunnel** sensory effect: its intensity now visibly changes the strength — low is a faint vignette, high
+  closes to near-black. (Before, 1% and 100% looked the same.)
+- Shop: the **rightmost item card's border is no longer clipped** when a row is full.
+- Builder: **⊞ ARRANGE** now moves pinned notes along with their nodes.
+- The **warmup-round SKIP button now fades in with the HUD** at round start instead of popping in solid.
+
 ## v0.7.5
 
 A creator-focused release: **two new ways to shape a journey** — Loops and map backdrops — a batch of

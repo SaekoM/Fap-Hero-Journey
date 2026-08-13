@@ -294,7 +294,7 @@ func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true)
 			_murk.color.a = _ival(roll, intensity)
 			_murk.visible = true
 		"tunnel":
-			_set_tunnel_intensity(_ival(roll, intensity))
+			_set_tunnel_intensity(_ival(roll, intensity), intensity)
 			_tunnel.visible = true
 		"strobe":
 			_strobe.visible = true
@@ -432,11 +432,19 @@ func _reset_video_fx() -> void:
 	_video.material = null
 
 
-# Moves the Tunnel vignette's mid ramp point — smaller offset = narrower clear
-# centre = a tighter tunnel. (imin/imax for tunnel are offsets, not 0–1.)
-func _set_tunnel_intensity(mid_offset: float) -> void:
-	if _tunnel_grad != null:
-		_tunnel_grad.set_offset(1, clampf(mid_offset, 0.05, 0.95))
+# Sets the Tunnel vignette from intensity: `mid_offset` (from imin/imax) moves the ramp point — smaller
+# = narrower clear centre = a tighter tunnel — and `strength` (raw 0–1 intensity) scales the DARKNESS.
+func _set_tunnel_intensity(mid_offset: float, strength: float) -> void:
+	if _tunnel_grad == null:
+		return
+	_tunnel_grad.set_offset(1, clampf(mid_offset, 0.05, 0.95))
+	# Scale the vignette darkness with intensity too — not just the ramp position — so a low setting is a
+	# faint tunnel and a high one crushes to near-black. Without this only the ramp moved, so 1% and 100%
+	# both read as "dark-edged vignette" and felt identical. Baked into the gradient, independent of
+	# modulate.a (which the fade-out owns), so fades still work.
+	var s: float = clampf(strength, 0.0, 1.0)
+	_tunnel_grad.set_color(1, Color(0, 0, 0, lerpf(0.12, 0.40, s)))  # mid ramp point
+	_tunnel_grad.set_color(2, Color(0, 0, 0, lerpf(0.30, 0.99, s)))  # dark edge
 
 
 # ---------------------------------------------------------------------------

@@ -2926,6 +2926,39 @@ func _make_test_controls(item: Dictionary, arr: Array) -> Control:
 	)
 	panel.add_child(flag_edit)
 
+	# Pre-grant items for the run, so item-gated forks / shops can be exercised from a mid-journey node.
+	panel.add_child(_side_field_label("SEED ITEMS"))
+	var seed_item_entries: Array = []  # [{id, label}] — built-ins then journey custom items
+	for k: String in _all_item_ids():
+		seed_item_entries.append(
+			{"id": k, "label": str(InventoryService.GetItemData(k).get("name", k))}
+		)
+	for it: Dictionary in _owner._journey_items:
+		var iid: String = str(it.get("id", ""))
+		if iid != "":
+			seed_item_entries.append({"id": iid, "label": "%s  (custom)" % str(it.get("name", ""))})
+	var seed_items_dd: MultiSelectDropdown = MultiSelectDropdown.new()
+	seed_items_dd.empty_text = "None"
+	seed_items_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_child(seed_items_dd)  # add first so _ready wires the popup, then populate
+	seed_items_dd.set_options(seed_item_entries)
+	seed_items_dd.set_selected(_owner._test_seed_items)
+	UITheme.style_menu_button(seed_items_dd)
+	seed_items_dd.selection_changed.connect(func(ids: Array) -> void: _owner._test_seed_items = ids)
+
+	# Pre-set counters for the run (name:value), so counter-gated forks can be exercised.
+	panel.add_child(_side_field_label("SEED COUNTERS  (name:value, comma-separated)"))
+	var counter_edit: LineEdit = LineEdit.new()
+	counter_edit.placeholder_text = "e.g. belt:2, arousal:3"
+	counter_edit.text = JourneyData.counter_deltas_to_text(
+		JourneyData.clean_counter_deltas(_owner._test_seed_counters)
+	)
+	UITheme.style_line_edit(counter_edit)
+	counter_edit.text_changed.connect(
+		func(v: String) -> void: _owner._test_seed_counters = JourneyData.parse_counter_deltas(v)
+	)
+	panel.add_child(counter_edit)
+
 	toggle_btn.toggled.connect(
 		func(pressed: bool) -> void:
 			toggle_btn.text = ("▾  TEST FROM HERE" if pressed else "▸  TEST FROM HERE")
@@ -3875,13 +3908,13 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	# lineup ("items"); pool mode picks the always-included subset ("guaranteed" —
 	# the rest of the lineup is drawn randomly). Both lists persist across mode
 	# switches so toggling the dropdown is non-destructive.
-	var fixed_section: VBoxContainer = _shop_item_checklist(
+	var fixed_section: VBoxContainer = _shop_item_multiselect(
 		arr, idx, "items", "ITEMS", "PICK THE EXACT ITEMS THIS SHOP SELLS.", all_item_ids
 	)
 	fixed_section.visible = shop_data.get("mode", "pool") == "fixed"
 	col.add_child(fixed_section)
 
-	var pool_section: VBoxContainer = _shop_item_checklist(
+	var pool_section: VBoxContainer = _shop_item_multiselect(
 		arr,
 		idx,
 		"guaranteed",
@@ -3894,7 +3927,7 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 
 	# Exclusions bar items from the random draw. Pool mode only — in fixed mode the lineup IS
 	# the authored list, so "never draw this" has nothing to act on.
-	var excluded_section: VBoxContainer = _shop_item_checklist(
+	var excluded_section: VBoxContainer = _shop_item_multiselect(
 		arr,
 		idx,
 		"excluded",
@@ -4134,7 +4167,7 @@ func _apply_item_tooltips(dd: OptionButton, values: Array) -> void:
 			dd.set_item_tooltip(i, _item_tooltip(id))
 
 
-func _shop_item_checklist(
+func _shop_item_multiselect(
 	arr: Array, idx: int, key: String, label: String, hint_text: String, all_item_ids: Array
 ) -> VBoxContainer:
 	var section: VBoxContainer = VBoxContainer.new()
@@ -4152,31 +4185,40 @@ func _shop_item_checklist(
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	section.add_child(hint)
 
+	# One MultiSelectDropdown over the registry (built-ins + this journey's custom items), name + price
+	# per row — a compact picker in place of the old long checkbox column.
+	var entries: Array = []  # [{id, label, tooltip}]
 	for item_id: String in all_item_ids:
-		var item_data: Dictionary = InventoryService.GetItemData(item_id)
-		var iname: String = _item_display_name(item_id)
-		var iprice: int = int(item_data.get("price", 0))
-		if item_data.is_empty():  # custom item — price lives in the journey's item list, not InventoryService
-			for it: Dictionary in _owner._journey_items:
-				if str(it.get("id", "")) == item_id:
-					iprice = int(it.get("price", 0))
-					break
-		var cb: CheckBox = CheckBox.new()
-		cb.text = "%s  (♦%d)" % [iname, iprice]
-		cb.tooltip_text = UITheme.wrap_tip(_item_tooltip(item_id))
-		cb.button_pressed = item_id in (arr[idx].get(key, []) as Array)
-		cb.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-		cb.add_theme_font_size_override("font_size", 12)
-		cb.toggled.connect(
-			func(pressed: bool) -> void:
-				var list: Array = arr[idx][key]
-				if pressed and item_id not in list:
-					list.append(item_id)
-				elif not pressed:
-					list.erase(item_id)
+		(
+			entries
+			. append(
+				{
+					"id": item_id,
+					"label": "%s  (♦%d)" % [_item_display_name(item_id), _shop_item_price(item_id)],
+					"tooltip": UITheme.wrap_tip(_item_tooltip(item_id)),  # what it does / costs / lasts, on hover
+				}
+			)
 		)
-		section.add_child(cb)
+	var dd: MultiSelectDropdown = MultiSelectDropdown.new()
+	dd.empty_text = "None"
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	section.add_child(dd)  # add first so _ready wires the popup, then populate
+	dd.set_options(entries)
+	dd.set_selected(arr[idx].get(key, []))
+	UITheme.style_menu_button(dd)
+	dd.selection_changed.connect(func(ids: Array) -> void: arr[idx][key] = ids)
 	return section
+
+
+# Price for a shop-picker row: built-in items from the registry, custom items from the journey's list.
+func _shop_item_price(item_id: String) -> int:
+	var data: Dictionary = InventoryService.GetItemData(item_id)
+	if not data.is_empty():
+		return int(data.get("price", 0))
+	for it: Dictionary in _owner._journey_items:
+		if str(it.get("id", "")) == item_id:
+			return int(it.get("price", 0))
+	return 0
 
 
 func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> Control:

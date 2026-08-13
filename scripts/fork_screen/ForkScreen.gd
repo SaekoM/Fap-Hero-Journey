@@ -576,6 +576,8 @@ func _apply_layout() -> void:
 	_backdrop.offset_top = 0
 	_backdrop.offset_right = 0
 	_backdrop.offset_bottom = 0
+	# Opaque so the paused round's frozen last frame doesn't bleed through behind the fork.
+	_backdrop.color = Color(0.0, 0.0, 0.0, 1.0)
 
 	_center_box.anchor_left = 0.1
 	_center_box.anchor_right = 0.9

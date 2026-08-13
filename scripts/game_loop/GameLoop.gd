@@ -217,6 +217,7 @@ const EXIT_HOLD_SECS: float = 1.0
 var _exit_hold_tween: Tween = null
 var _exit_hold_layer: CanvasLayer = null
 var _exit_hold_fill: Label = null
+var _pop_layer: CanvasLayer = null  # high layer for reward pops so they clear full-screen overlays (shop)
 var _exiting: bool = false  # guards _confirm_exit so a late key/button-up can't re-trigger
 # _on_round_ended is bound to BOTH round-end signals (_video.finished / _end_timer.timeout) and is
 # also called manually (FINISH / warmup skip). This guards its once-per-round side effects — counter
@@ -240,6 +241,8 @@ var _test_return_journey: Dictionary = {}
 var _test_seed_score: int = 0
 var _test_seed_coins: int = 0
 var _test_seed_flags: Array = []
+var _test_seed_items: Array = []  # item ids to grant before the first node loads
+var _test_seed_counters: Dictionary = {}  # counter name -> value to pre-set
 # Set once this run's outcome has been logged to the scoreboard (on completion)
 # or when leaving via Save & Quit (a resume, not an abandon) — so the menu exit
 # doesn't also record an abandoned run.
@@ -284,11 +287,15 @@ func _ready() -> void:
 		_test_seed_score = int(GameState.get_meta("_test_seed_score", 0))
 		_test_seed_coins = int(GameState.get_meta("_test_seed_coins", 0))
 		_test_seed_flags = GameState.get_meta("_test_seed_flags", [])
+		_test_seed_items = GameState.get_meta("_test_seed_items", [])
+		_test_seed_counters = GameState.get_meta("_test_seed_counters", {})
 		GameState.remove_meta("_test_mode")
 		GameState.remove_meta("_test_return_journey")
 		GameState.remove_meta("_test_seed_score")
 		GameState.remove_meta("_test_seed_coins")
 		GameState.remove_meta("_test_seed_flags")
+		GameState.remove_meta("_test_seed_items")
+		GameState.remove_meta("_test_seed_counters")
 
 	# Author-defined journey items — load into the inventory registry every run (fresh OR resumed),
 	# since they're journey definitions, not run-state. Before Reset so a fresh run's registry is
@@ -321,6 +328,10 @@ func _ready() -> void:
 			ScoreService.SeedLastRoundScore(_test_seed_score)
 		if not _test_seed_flags.is_empty():
 			GameState.SeedFlags(_test_seed_flags)
+		for seed_item_id: Variant in _test_seed_items:
+			InventoryService.AddItem(str(seed_item_id))
+		if not _test_seed_counters.is_empty():
+			GameState.SeedCounters(_test_seed_counters)
 	_build_round_timer()
 	_refresh_coin_label(true)
 	# Handy WiFi only: sync the device ONCE before the first round (behind a brief overlay) so round 1 isn't
@@ -716,14 +727,19 @@ func _load_current_round() -> void:
 # then boss rounds telegraph with their intro card (playback waits for BEGIN); everything
 # else begins now.
 func _start_round_after_gates(round: Dictionary) -> void:
+	var enc_root: Control = null
 	if _pending_encounter_card:
 		_pending_encounter_card = false
-		await _show_encounter_card()
+		enc_root = await _show_encounter_card()
 		_apply_round_label(round)  # reveal the real (possibly BOSS) label now the card is done
 	if _is_boss_round:
+		# A rolled boss: fade the encounter card out, THEN telegraph with the boss intro card.
+		if enc_root != null:
+			await _fade_and_free_overlay(enc_root)
 		_show_boss_intro(round)
 	else:
-		_begin_round(round)
+		# Non-boss: keep the encounter card up over the video load, then fade it to reveal the round.
+		_begin_round(round, enc_root)
 
 
 # Sets the HUD round label from the round's resolved type. Split out so a pool round can defer
@@ -747,7 +763,7 @@ func _apply_round_label(round: Dictionary) -> void:
 
 # Loads the round's scripts + video and starts playback. For boss rounds this
 # runs after the intro card's BEGIN; for normal rounds, immediately.
-func _begin_round(round: Dictionary) -> void:
+func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	_round_ended_guard = false  # a fresh round can end once again
 	ScoreService.StartRound()
 	# Clear any pause left by a pre-round gate (boss intro / checkpoint banner) —
@@ -840,8 +856,9 @@ func _begin_round(round: Dictionary) -> void:
 	# Effect rounds get an animated intro card before playback starts (auto-advances; any
 	# cleanse choice stays in-round) — whenever the author left it on, even with no effects
 	# (a pure-visual round shows just the header). Normal/boss rounds never show it.
+	var reveal_root: Control = null
 	if _is_effect_round and bool(round.get("show_reveal", true)):
-		await _show_reveal_card(round)
+		reveal_root = await _show_reveal_card(round)
 
 	# Prefer the explicit video_path (set by the scanner from VideoPath, or by
 	# JourneyData._round_video); fall back to a folder-scan for pre-VideoPath
@@ -858,6 +875,14 @@ func _begin_round(round: Dictionary) -> void:
 	# explicit. Scoring + beat bar stay on FunscriptPlayer's clock regardless.
 	#
 	_handy_begin_round(fs_path)
+
+	# The effect reveal card held over the (opaque) video load; now the round is playing, fade it out so
+	# it reveals the round rather than hard-cutting from black.
+	if reveal_root != null and is_instance_valid(reveal_root):
+		_fade_and_free_overlay(reveal_root)
+	# A pool encounter card (passed in as the cover) held over the same load — fade it out to reveal too.
+	if cover != null and is_instance_valid(cover):
+		_fade_and_free_overlay(cover)
 
 
 # ---------------------------------------------------------------------------
@@ -878,7 +903,7 @@ func _show_checkpoint_gate() -> void:
 	_halt_playback_for_gate()  # freeze any leftover playback so the score can't tick
 
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"◆  CHECKPOINT REACHED  ◆", UITheme.AMBER, Vector2i(620, 320)
+		"◆  CHECKPOINT REACHED  ◆", UITheme.AMBER, Vector2i(620, 320), 1.0  # opaque — sits over the video
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -973,6 +998,19 @@ func _halt_playback_for_gate() -> void:
 
 # Telegraphed intro card. The round's scripts/video do not load and playback
 # does not start until the player clicks BEGIN.
+# Fades a full-screen intro-card overlay out (over the round video now playing beneath it) and frees it —
+# the smooth exit once the round has started under the card, instead of a hard cut from black. Non-blocking.
+func _fade_and_free_overlay(node: Control, dur: float = 0.4) -> void:
+	if not is_instance_valid(node):
+		return
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE  # don't eat input while it fades
+	var t: Tween = create_tween()
+	t.tween_property(node, "modulate:a", 0.0, dur)
+	await t.finished
+	if is_instance_valid(node):
+		node.queue_free()
+
+
 func _show_boss_intro(round: Dictionary) -> void:
 	_is_overlay_open = true  # suppress gameplay hotkeys while the card is up
 	_halt_playback_for_gate()  # don't let leftover playback tick the score behind the card
@@ -982,7 +1020,7 @@ func _show_boss_intro(round: Dictionary) -> void:
 	add_child(overlay)
 
 	var backdrop: ColorRect = ColorRect.new()
-	backdrop.color = Color(0, 0, 0, 0.92)
+	backdrop.color = Color(0, 0, 0, 1.0)  # opaque — don't bleed the previous round's frozen frame
 	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.add_child(backdrop)
 
@@ -1084,9 +1122,9 @@ func _show_boss_intro(round: Dictionary) -> void:
 	col.add_child(begin_btn)
 	begin_btn.pressed.connect(
 		func() -> void:
-			overlay.queue_free()
 			_is_overlay_open = false
-			_begin_round(round)
+			_begin_round(round)  # loads + plays the round's video under the card
+			_fade_and_free_overlay(overlay)  # then fade the black card out, revealing it
 	)
 
 
@@ -1259,7 +1297,7 @@ func _nonblank_str(value: String, fallback: String) -> String:
 # Animated pre-round reveal card naming the effect(s) and what they do. Fades + pops
 # in, holds, fades out — then the round's video plays. Awaited by _begin_round so
 # playback waits for it. Header / icon / accent come from the round's effect visuals.
-func _show_reveal_card(round: Dictionary) -> void:
+func _show_reveal_card(round: Dictionary) -> Control:
 	var v: Dictionary = _effect_visuals(round)
 	var accent: Color = v["accent"]
 
@@ -1270,7 +1308,7 @@ func _show_reveal_card(round: Dictionary) -> void:
 
 	var backdrop: ColorRect = ColorRect.new()
 	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
-	backdrop.color = Color(0, 0, 0, 0.6)
+	backdrop.color = Color(0, 0, 0, 1.0)  # opaque — don't bleed the previous round's frozen frame
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(backdrop)
 
@@ -1333,11 +1371,10 @@ func _show_reveal_card(round: Dictionary) -> void:
 	await tin.finished
 	await get_tree().create_timer(REVEAL_HOLD_SECS).timeout
 	if not is_inside_tree():
-		return
-	var tout: Tween = create_tween()
-	tout.tween_property(root, "modulate:a", 0.0, 0.3)
-	await tout.finished
-	root.queue_free()
+		return null
+	# Leave the card up and hand it back — the caller loads the video, then fades this out over it so the
+	# card reveals the round instead of a hard cut to black.
+	return root
 
 
 # Pool round: weighted-pick one encounter entry and swap its resolved media into the
@@ -1384,7 +1421,7 @@ func _resolve_pool_round(round: Dictionary) -> void:
 # The mystery "ENCOUNTER!" reveal for a pool round: slides in from the right, holds,
 # slides out to the left. Awaited by _begin_round before playback. Deliberately shows
 # no name — the video reveals which encounter it is.
-func _show_encounter_card() -> void:
+func _show_encounter_card() -> Control:
 	var accent: Color = UITheme.MAGENTA
 
 	var root: Control = Control.new()
@@ -1394,7 +1431,7 @@ func _show_encounter_card() -> void:
 
 	var backdrop: ColorRect = ColorRect.new()
 	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
-	backdrop.color = Color(0, 0, 0, 0.6)
+	backdrop.color = Color(0, 0, 0, 1.0)  # opaque — don't bleed the previous round's frozen frame
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(backdrop)
 
@@ -1428,12 +1465,10 @@ func _show_encounter_card() -> void:
 	await tin.finished
 	await get_tree().create_timer(ENCOUNTER_HOLD_SECS).timeout
 	if not is_inside_tree():
-		return
-	var tout: Tween = create_tween().set_parallel(true)
-	tout.tween_property(root, "modulate:a", 0.0, 0.3)
-	tout.tween_property(panel, "position", target - off, 0.3).set_ease(Tween.EASE_IN)
-	await tout.finished
-	root.queue_free()
+		return null
+	# Hand the card back up — the caller fades it out after the round starts (video reveal), or before the
+	# boss intro, instead of self-fading to black here.
+	return root
 
 
 # Slow drift on the effect-round frame — breathes rather than snaps. The colour is
@@ -1521,9 +1556,11 @@ func _show_warmup_skip_button() -> void:
 	btn.pressed.connect(_on_warmup_skip_pressed)
 	add_child(btn)
 	_warmup_skip_btn = btn
-	# Starts visible and joins the HUD's cycle from the next _show_hud — which the round-start
-	# transition always fires. Deliberately not calling _show_hud here: this runs *under* the
-	# transition black, and would start the idle timer before the player can see anything.
+	# Match the HUD's current fade state so it FADES IN with the HUD (via the next _show_hud, which the
+	# round-start transition always fires) instead of popping in solid over the transition black.
+	# Deliberately not calling _show_hud here — that runs *under* the transition black and would start
+	# the idle timer before the player can see anything.
+	btn.modulate.a = 1.0 if _hud.visible else 0.0
 
 
 # Fades the warmup skip in/out on the HUD's idle cycle so it doesn't sit over the video for the
@@ -2615,7 +2652,7 @@ func _exit_test_to_builder() -> void:
 # Top-center "TEST MODE" indicator shown for the duration of a test play, so the
 # author always knows this is a preview and how to leave it.
 func _show_test_banner() -> void:
-	var text: String = "▶  TEST MODE  —  ESC TO EXIT"
+	var text: String = "▶  TEST MODE  —  →  SKIP ROUND (KEEP REWARDS)  ·  ESC TO EXIT"
 	if _test_seed_score > 0 or _test_seed_coins > 0:
 		text += "    (SEED  %d PTS / ♦ %d)" % [_test_seed_score, _test_seed_coins]
 	var banner: Label = Label.new()
@@ -2713,6 +2750,20 @@ func _on_skip_item_used() -> void:
 	_on_round_ended(true)
 
 
+# Test mode only: finish the current round NOW and pay out its rewards (coins / items / counters), then
+# advance — so QCing a long journey doesn't mean watching every video end to end. Unlike the Bail Out
+# skip (no payout), this ends the round as if COMPLETED so downstream nodes see the grants.
+func _on_test_skip_round() -> void:
+	if not _test_mode or _round_ended_guard:
+		return
+	if str(GameState.CurrentItemType()) != "round":
+		return
+	_video.stop()
+	_end_timer.stop()  # funscript-only rounds run on the end timer, not the video clock
+	_show_save_toast("⏭  ROUND COMPLETED (TEST)")
+	_on_round_ended(false)  # false = completed → grants this round's rewards
+
+
 func _on_save_item_used() -> void:
 	if _test_mode:
 		_show_save_toast("✕  SAVING DISABLED IN TEST")
@@ -2772,8 +2823,19 @@ func _grant_item(item_id: String) -> bool:
 	return true
 
 
-# Slides a chip in from the right, holds, slides out. Non-blocking. Parented to the GameLoop
-# root (not the HUD, which hides during play). `tail` may be "" for a two-part chip.
+# The high CanvasLayer that carries reward pops above full-screen overlays (shop / intro cards, all on
+# layer 0) so a chip is never hidden behind one. Layer 3 — above the transition (1) and map (2), below
+# the exit-hold (4). Created lazily.
+func _ensure_pop_layer() -> CanvasLayer:
+	if _pop_layer == null or not is_instance_valid(_pop_layer):
+		_pop_layer = CanvasLayer.new()
+		_pop_layer.layer = 3
+		add_child(_pop_layer)
+	return _pop_layer
+
+
+# Slides a chip in from the right, holds, slides out. Non-blocking. Parented to a high CanvasLayer so it
+# stays above full-screen overlays (the HUD hides during play). `tail` may be "" for a two-part chip.
 func _show_pop(title: String, detail: String, tail: String, accent: Color) -> void:
 	var slot: int = _alloc_counter_pop_slot()
 
@@ -2806,7 +2868,7 @@ func _show_pop(title: String, detail: String, tail: String, accent: Color) -> vo
 		UITheme.style_label(tail_lbl, UITheme.DARK_TEXT, 13, true)
 		row.add_child(tail_lbl)
 
-	add_child(pop)
+	_ensure_pop_layer().add_child(pop)
 	await get_tree().process_frame  # let it size before we place it
 	if not is_instance_valid(pop):
 		_counter_pop_slots.erase(slot)
@@ -3301,6 +3363,12 @@ func _input(event: InputEvent) -> void:
 					# Tab: toggle inventory panel — disabled during boss rounds.
 					if not _is_overlay_open and not _is_boss_round:
 						_on_inventory_pressed()
+						get_viewport().set_input_as_handled()
+				KEY_RIGHT:
+					# Test mode only: complete this round now (grant its rewards) and advance, so a long
+					# journey can be QC'd without watching each video through. No-op outside test mode.
+					if _test_mode and not _is_overlay_open:
+						_on_test_skip_round()
 						get_viewport().set_input_as_handled()
 				KEY_ESCAPE:
 					# Esc: close the Quick Settings drawer or inventory if open, otherwise begin the
