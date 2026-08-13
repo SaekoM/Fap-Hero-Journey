@@ -921,7 +921,7 @@ static func new_node_id() -> String:
 # gating, never manually used). Stored in the journey meta; loaded into InventoryService each run.
 # Effects are resolved {kind, params} dicts — the same shape built-in items use — so the C# runtime
 # consumes them directly. Ids are minted once and preserved so award/shop/gate references survive edits.
-const ITEM_CATEGORIES: Array = ["modifier", "key"]
+const ITEM_CATEGORIES: Array = ["modifier", "key", "override"]
 const ITEM_DEFAULT_DURATION_MS: int = 30000
 
 
@@ -945,6 +945,14 @@ static func coerce_journey_item(item: Dictionary) -> Dictionary:
 	if str(item.get("image", "")) != "":
 		out["Image"] = str(item.get("image", ""))
 	if category == "key":
+		return out
+	if category == "override":
+		# An override carries a funscript BUNDLE (main + axes + vibes) instead of an effects list; the
+		# save has already rewritten the paths to pooled content/ rels. DurationMs is the derived clip
+		# length (0 when unknown — the runtime bundle recomputes it), kept for shop display.
+		out["ImmuneToEffects"] = bool(item.get("immune_to_effects", false))
+		out["DurationMs"] = maxi(0, int(item.get("duration_ms", 0)))
+		out["Scripts"] = _coerce_override_scripts(item.get("scripts", {}))
 		return out
 	out["DurationMs"] = maxi(0, int(item.get("duration_ms", ITEM_DEFAULT_DURATION_MS)))
 	var effects_out: Array = []
@@ -987,6 +995,13 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 	if category == "key":
 		item["kind"] = "key"
 		return item
+	if category == "override":
+		# No `kind` — activation is category-driven (InventoryService branches on category=="override"),
+		# so it stays manually usable (unlike a key). Scripts resolve to absolute in the scanner.
+		item["immune_to_effects"] = bool(raw.get("ImmuneToEffects", false))
+		item["duration_ms"] = int(raw.get("DurationMs", 0))
+		item["scripts"] = _parse_override_scripts(raw.get("Scripts", {}))
+		return item
 	item["duration_ms"] = int(raw.get("DurationMs", ITEM_DEFAULT_DURATION_MS))
 	var effects: Array = []
 	for e: Variant in raw.get("Effects", []):
@@ -1002,6 +1017,34 @@ static func parse_journey_items(raw: Array) -> Array:
 		if r is Dictionary:
 			out.append(parse_journey_item(r))
 	return out
+
+
+# Override script bundle: runtime {main, axes{name:path}, vibes{ch(int):path}} ⇄ journey.json
+# {Main, Axes{name:path}, Vibes{ch(str):path}}. Paths are pooled content/ rels on disk (the save
+# rewrites the author's sources); the scanner resolves them to absolute on load. Empty channels drop.
+static func _coerce_override_scripts(scripts: Dictionary) -> Dictionary:
+	var out: Dictionary = {"Main": str(scripts.get("main", ""))}
+	var axes: Dictionary = {}
+	for axis_name: Variant in scripts.get("axes", {}):
+		axes[str(axis_name)] = str(scripts["axes"][axis_name])
+	if not axes.is_empty():
+		out["Axes"] = axes
+	var vibes: Dictionary = {}
+	for channel: Variant in scripts.get("vibes", {}):
+		vibes[str(channel)] = str(scripts["vibes"][channel])
+	if not vibes.is_empty():
+		out["Vibes"] = vibes
+	return out
+
+
+static func _parse_override_scripts(raw: Dictionary) -> Dictionary:
+	var axes: Dictionary = {}
+	for axis_name: Variant in raw.get("Axes", {}):
+		axes[str(axis_name)] = str(raw["Axes"][axis_name])
+	var vibes: Dictionary = {}
+	for channel: Variant in raw.get("Vibes", {}):
+		vibes[int(channel)] = str(raw["Vibes"][channel])  # runtime uses int channel keys (0/1)
+	return {"main": str(raw.get("Main", "")), "axes": axes, "vibes": vibes}
 
 
 # ── Characters (the storyboard cast) ────────────────────────────────────────

@@ -1370,17 +1370,25 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 	var type_dd: OptionButton = OptionButton.new()
 	type_dd.add_item("Modifier (effect bundle)")  # 0
 	type_dd.add_item("Key (fork gate)")  # 1
-	type_dd.selected = 1 if str(item.get("category", "modifier")) == "key" else 0
+	type_dd.add_item("Override (funscript takeover)")  # 2
+	type_dd.selected = ({"modifier": 0, "key": 1, "override": 2}).get(
+		str(item.get("category", "modifier")), 0
+	)
 	type_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(type_dd)
 	type_dd.item_selected.connect(
 		func(i: int) -> void:
-			item["category"] = "key" if i == 1 else "modifier"
+			item["category"] = ["modifier", "key", "override"][clampi(i, 0, 2)]
 			if item["category"] == "modifier":
 				if not item.has("effects"):
 					item["effects"] = []
 				if not item.has("duration_ms"):
 					item["duration_ms"] = JourneyData.ITEM_DEFAULT_DURATION_MS
+			elif item["category"] == "override":
+				if not item.has("scripts"):
+					item["scripts"] = {"main": "", "axes": {}, "vibes": {}}
+				if not item.has("immune_to_effects"):
+					item["immune_to_effects"] = true
 			rebuild.call()
 	)
 	body.add_child(type_dd)
@@ -1444,6 +1452,9 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 		)
 		body.add_child(add_fx)
 
+	if str(item.get("category", "modifier")) == "override":
+		_fill_item_override_section(body, item, rebuild)
+
 	body.add_child(_side_field_label("ITEM IMAGE (OPTIONAL)"))
 	var img_zone: PanelContainer = DropZoneScript.new()
 	img_zone.accepted_extensions = ["png", "jpg", "jpeg", "webp"]
@@ -1470,6 +1481,149 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 			img_rm.visible = p != ""
 	)
 	body.add_child(img_rm)
+
+
+# ── Override item authoring (see OVERRIDE_ITEMS_DESIGN.md §7) ─────────────────
+# An override item plays a bundled funscript over the round when used. The author drops a MAIN stroke
+# funscript; sibling axis (.L1/.R1/…) and vib (.vib1/.vib2) files next to it are paired automatically,
+# mirroring the round importer. A small curve preview + a read-back (duration + channels) shows what
+# was imported, and a toggle sets whether it plays raw (immune to active effects/curses) or not.
+func _fill_item_override_section(body: VBoxContainer, item: Dictionary, rebuild: Callable) -> void:
+	var scripts: Dictionary = item.get("scripts", {})
+	var main_path: String = str(scripts.get("main", ""))
+
+	body.add_child(_side_field_label("MAIN FUNSCRIPT"))
+	var main_zone: PanelContainer = DropZoneScript.new()
+	main_zone.accepted_extensions = JourneyData.FUNSCRIPT_EXTENSIONS.duplicate()
+	main_zone.picker_title = "Select Override Funscript"
+	main_zone.picker_filters = ["*.funscript ; Funscript"]
+	main_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_child(main_zone)
+	if main_path != "":
+		main_zone.call_deferred("set_file", main_path)
+	main_zone.file_dropped.connect(
+		func(p: String) -> void:
+			_set_override_main(item, p)
+			rebuild.call()
+	)
+
+	if main_path != "":
+		body.add_child(_make_funscript_curve(JourneyData.read_funscript_actions(main_path)))
+		body.add_child(_side_hint(_override_bundle_summary(scripts)))
+		var clear_btn: Button = Button.new()
+		clear_btn.text = "✕ CLEAR BUNDLE"
+		clear_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(clear_btn, UITheme.MAGENTA)
+		clear_btn.pressed.connect(
+			func() -> void:
+				item["scripts"] = {"main": "", "axes": {}, "vibes": {}}
+				item["duration_ms"] = 0
+				rebuild.call()
+		)
+		body.add_child(clear_btn)
+	else:
+		(
+			body
+			. add_child(
+				_side_hint(
+					"Drop a .funscript. Sibling axis (.L1/.R1/…) and vib (.vib1/.vib2) files next to it are added automatically."
+				)
+			)
+		)
+
+	body.add_child(_side_section_separator())
+	var immune_chk: CheckBox = CheckBox.new()
+	immune_chk.text = "Ignore active effects / curses (play raw)"
+	immune_chk.button_pressed = bool(item.get("immune_to_effects", true))
+	immune_chk.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	immune_chk.toggled.connect(func(on: bool) -> void: item["immune_to_effects"] = on)
+	body.add_child(immune_chk)
+
+
+# Sets the override's MAIN funscript and auto-pairs sibling axis/vib scripts by filename (like the round
+# importer). Stores the derived bundle duration for shop display (the runtime recomputes it exactly).
+func _set_override_main(item: Dictionary, path: String) -> void:
+	var scripts: Dictionary = {"main": path, "axes": {}, "vibes": {}}
+	var siblings: Dictionary = ImportScanner.find_sibling_scripts(
+		path.get_base_dir(), ImportScanner.strip_script_suffix(path)
+	)
+	for axis_name: Variant in siblings.get("axis", {}):
+		scripts["axes"][str(axis_name)] = str(siblings["axis"][axis_name])
+	for vib_name: Variant in siblings.get("vib", {}):
+		scripts["vibes"][0 if str(vib_name) == "vib1" else 1] = str(siblings["vib"][vib_name])
+	item["scripts"] = scripts
+	item["duration_ms"] = _override_bundle_duration_ms(scripts)
+
+
+# Exact bundle length (ms) across every channel — reuses the runtime OverrideBundle so the editor and
+# the device agree. Reads the files fresh; 0 when the main is missing/empty.
+func _override_bundle_duration_ms(scripts: Dictionary) -> int:
+	var main: Array = JourneyData.read_funscript_actions(str(scripts.get("main", "")))
+	var axes: Dictionary = {}
+	for axis_name: Variant in scripts.get("axes", {}):
+		axes[str(axis_name)] = JourneyData.read_funscript_actions(str(scripts["axes"][axis_name]))
+	var vibes: Dictionary = {}
+	for channel: Variant in scripts.get("vibes", {}):
+		vibes[int(channel)] = JourneyData.read_funscript_actions(str(scripts["vibes"][channel]))
+	return OverrideBundle.from_channels(main, axes, vibes).duration_ms
+
+
+# Human read-back of an override bundle: duration + which axis/vib channels it carries.
+func _override_bundle_summary(scripts: Dictionary) -> String:
+	var parts: Array = ["Duration ~%.1fs" % (_override_bundle_duration_ms(scripts) / 1000.0)]
+	var axes: Dictionary = scripts.get("axes", {})
+	if not axes.is_empty():
+		parts.append("Axes: " + ", ".join(axes.keys()))
+	var vibes: Dictionary = scripts.get("vibes", {})
+	if not vibes.is_empty():
+		var labels: Array = []
+		for channel: Variant in vibes:
+			labels.append("vib%d" % (int(channel) + 1))
+		parts.append("Vibes: " + ", ".join(labels))
+	return "  ·  ".join(parts)
+
+
+# A small inline stroke-curve preview of a funscript's action points (time on X, 0–100 pos on Y).
+func _make_funscript_curve(actions: Array) -> Control:
+	var frame: PanelContainer = PanelContainer.new()
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0.30)
+	sb.set_corner_radius_all(4)
+	sb.set_content_margin_all(4)
+	frame.add_theme_stylebox_override("panel", sb)
+	var canvas: Control = Control.new()
+	canvas.custom_minimum_size = Vector2(0, 84)
+	canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	canvas.resized.connect(canvas.queue_redraw)  # repaint at the resolved size after layout
+	canvas.draw.connect(func() -> void: _draw_funscript_curve(canvas, actions))
+	frame.add_child(canvas)
+	return frame
+
+
+func _draw_funscript_curve(canvas: Control, actions: Array) -> void:
+	var box: Vector2 = canvas.size
+	if actions.size() < 2 or box.x <= 1.0 or box.y <= 1.0:
+		return
+	var t_max: float = (actions[actions.size() - 1] as Vector2).x
+	if t_max <= 0.0:
+		return
+	var line: PackedVector2Array = PackedVector2Array()
+	for a: Variant in actions:
+		var v: Vector2 = a
+		var x: float = (v.x / t_max) * box.x
+		var y: float = box.y - (clampf(v.y, 0.0, 100.0) / 100.0) * box.y
+		line.append(Vector2(x, y))
+	canvas.draw_polyline(line, UITheme.TOXIC_GREEN, 2.0, true)
+
+
+# A small wrapped hint label under a field (dimmer + smaller than a section label).
+func _side_hint(text: String) -> Label:
+	var lbl: Label = Label.new()
+	lbl.text = text
+	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return lbl
 
 
 # One effect row in an item's bundle: kind label + magnitude field(s) + remove.

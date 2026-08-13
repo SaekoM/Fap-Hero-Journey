@@ -373,12 +373,15 @@ func _process(delta: float) -> void:
 		var len: float = _video.get_stream_length()
 		if len > 0.0:
 			_progress.value = _video.stream_position / len
-		# Keep funscript in sync with video clock
-		FunscriptPlayer.SyncTo(_video.stream_position)
 		# Re-fit every frame: cheap, and keeps the video covering the screen even
 		# if the viewport or UI scale changes mid-playback.
 		_fit_video_cover()
-		_handy_feed()  # top up the HSP buffer ahead of the clock (Handy-direct only)
+		if _override_session.is_active():
+			_tick_override(delta)  # an override owns the device — drive its own clock, not the video's
+		else:
+			# Keep funscript in sync with the video clock (Handy tops up its HSP buffer too).
+			FunscriptPlayer.SyncTo(_video.stream_position)
+			_handy_feed()
 	_apply_pause_penalty(delta)
 	_update_chip_countdowns()
 	if _is_boss_round:
@@ -749,6 +752,7 @@ func _apply_round_label(round: Dictionary) -> void:
 # runs after the intro card's BEGIN; for normal rounds, immediately.
 func _begin_round(round: Dictionary) -> void:
 	_round_ended_guard = false  # a fresh round can end once again
+	_cancel_override()  # cut any override still playing from the previous round (cut-at-round-end)
 	ScoreService.StartRound()
 	# Clear any pause left by a pre-round gate (boss intro / checkpoint banner) —
 	# _video.play() below doesn't reset the paused flag on its own.
@@ -3069,7 +3073,13 @@ func _handy_resume() -> void:
 	# Re-anchor to the video clock rather than a bare /hsp/resume. Pause/resume aren't
 	# simultaneous with the device (each command is a network round-trip), so a plain resume
 	# leaves the device drifted by that latency; seeking to the current position wipes it.
-	if _handy_ready:
+	if not _handy_ready:
+		return
+	if HandyService.is_override_active() and _override_bundle != null:
+		# An override owns the device — seek() is suppressed, so re-anchor its OWN stream to the
+		# override clock instead (start_override is replace-safe: it keeps the round stash).
+		HandyService.start_override(_override_bundle.main, _override_immune, _override_ms)
+	else:
 		HandyService.seek(int(_video.stream_position * 1000.0))
 
 
@@ -3077,6 +3087,96 @@ func _handy_stop() -> void:
 	# Always call stop(): it clears any prewarmed-but-unused session flag and only sends /hsp/stop when the
 	# device is actually playing, so it's safe even on a round that never engaged the Handy.
 	HandyService.stop()
+
+
+# ---------------------------------------------------------------------------
+# Override items — device takeover coordinator
+# ---------------------------------------------------------------------------
+# Owns the source-agnostic OverrideSession (see OVERRIDE_ITEMS_DESIGN.md): when an override item is
+# activated, load its funscript bundle, seize both device paths (FunscriptPlayer + HandyService), tick
+# the session each frame on its OWN clock, and hand control back — re-anchoring to the live video
+# position — when it completes. Replace-on-reactivate; cut at round end.
+
+var _override_session: OverrideSession = OverrideSession.new()
+var _override_bundle: OverrideBundle = null
+var _override_immune: bool = false
+var _override_item_name: String = ""  # shown on the HUD override chip while active
+
+
+# The override's own elapsed-ms clock — passed to HandyService.start_override so its stream stays ahead
+# of the OVERRIDE position (not the video), and fed each frame while active.
+func _override_ms() -> int:
+	return _override_session.position_ms()
+
+
+# An override item was activated. Load its bundle and seize the device on its own clock; a second
+# activation REPLACES the running one (the device paths keep their round stash). No-op if the item or
+# its funscript is missing.
+func _on_override_activated(item_id: String) -> void:
+	var item: Dictionary = InventoryService.GetItemData(item_id)
+	if item.is_empty():
+		return
+	var bundle: OverrideBundle = _load_override_bundle(item)
+	if bundle == null or bundle.is_empty():
+		return
+	_override_bundle = bundle
+	_override_immune = bool(item.get("immune_to_effects", false))
+	_override_item_name = str(item.get("name", ""))
+	_override_session.begin(bundle, _override_immune, "item")
+	FunscriptPlayer.BeginOverride(bundle.main, bundle.axes, bundle.vibes, _override_immune)
+	if _handy_ready:
+		HandyService.start_override(bundle.main, _override_immune, _override_ms)
+
+
+# Loads an override item's funscript bundle from its `scripts` map ({main, axes{name:path},
+# vibes{ch:path}}). Paths are read as-is (absolute / res:// / already resolved by the scanner); a
+# missing file yields an empty channel, so a bad reference degrades to a shorter/empty bundle.
+func _load_override_bundle(item: Dictionary) -> OverrideBundle:
+	var scripts: Dictionary = item.get("scripts", {})
+	var main: Array = JourneyData.read_funscript_actions(str(scripts.get("main", "")))
+	var axes: Dictionary = {}
+	for axis_name: Variant in scripts.get("axes", {}):
+		var pts: Array = JourneyData.read_funscript_actions(str(scripts["axes"][axis_name]))
+		if not pts.is_empty():
+			axes[str(axis_name)] = pts
+	var vibes: Dictionary = {}
+	for channel: Variant in scripts.get("vibes", {}):
+		var pts: Array = JourneyData.read_funscript_actions(str(scripts["vibes"][channel]))
+		if not pts.is_empty():
+			vibes[int(channel)] = pts
+	return OverrideBundle.from_channels(main, axes, vibes)
+
+
+# Per-frame while an override owns the device: advance its clock, keep the Handy buffer fed on that
+# clock, and hand control back when the bundle finishes.
+func _tick_override(delta: float) -> void:
+	# is_playing() stays true while the video is PAUSED, so gate the clock on _video.paused — the
+	# override freezes with the game (in lockstep with the C# free-run, which Pause() also halts).
+	_override_session.set_paused(_video.paused)
+	var event: String = _override_session.tick(int(delta * 1000.0))
+	if _handy_ready and not _video.paused:
+		HandyService.feed(_override_session.position_ms())
+	if event == OverrideSession.EVENT_COMPLETED:
+		_end_override()
+
+
+# The override finished: restore both device paths to the round and re-anchor to where the video is
+# NOW (it kept playing underneath).
+func _end_override() -> void:
+	var live_sec: float = _video.stream_position
+	FunscriptPlayer.EndOverride(live_sec)
+	if _handy_ready:
+		HandyService.stop_override(int(live_sec * 1000.0))
+	_override_bundle = null
+	_override_item_name = ""
+
+
+# Cuts any override in progress at a round boundary (the "cut at round end" rule). The device paths
+# also self-clean on the next round's load/stop, but resetting the session here keeps state tidy.
+func _cancel_override() -> void:
+	if _override_session.is_active():
+		_override_session.cut()
+		_end_override()
 
 
 # ---------------------------------------------------------------------------
@@ -3465,6 +3565,8 @@ func _connect_signals() -> void:
 	InventoryService.ActiveEffectsChanged.connect(_handy_effects_changed)
 	InventoryService.ActiveEffectsChanged.connect(_reconcile_sensory)
 	InventoryService.ActiveEffectsChanged.connect(_reconcile_hud_hide)
+	# Override items don't join the effect list — they seize the device via the takeover coordinator.
+	InventoryService.OverrideActivated.connect(_on_override_activated)
 	# save_now utility item: writes a save mid-round so the player can resume
 	# from the start of this round if they quit later. Doesn't end the run.
 	InventoryService.connect("SaveRequested", _on_save_item_used)
@@ -3614,6 +3716,9 @@ func _refresh_effect_chips() -> void:
 	for effect: Dictionary in InventoryService.GetActiveEffects():
 		if effect.get("kind", "") == "blackout":
 			has_blackout = true
+	# The override chip leads the row while a takeover is active (overrides aren't in the effect list).
+	if _override_session.is_active():
+		_chips_row.add_child(_make_override_chip())
 	for effect: Dictionary in _visible_effects():
 		_chips_row.add_child(_make_chip(effect))
 	_video.visible = not has_blackout
@@ -3686,14 +3791,56 @@ func _update_chip_text(lbl: Label, effect: Dictionary) -> void:
 
 func _update_chip_countdowns() -> void:
 	var effects: Array = _visible_effects()
-	if effects.size() != _chips_row.get_child_count():
+	var override_on: bool = _override_session.is_active()
+	# The override chip (when active) leads the row; a count mismatch (an override began/ended, or an
+	# effect changed) triggers a full rebuild so the row re-forms with the right chips.
+	if effects.size() + (1 if override_on else 0) != _chips_row.get_child_count():
 		_refresh_effect_chips()
 		return
+	var offset: int = 0
+	if override_on:
+		var olbl: Label = _chips_row.get_child(0).get_meta("chip_label", null)
+		if olbl != null:
+			olbl.text = _override_chip_text()
+		offset = 1
 	for i in effects.size():
-		var chip: Node = _chips_row.get_child(i)
+		var chip: Node = _chips_row.get_child(i + offset)
 		var lbl: Label = chip.get_meta("chip_label", null)
 		if lbl != null:
 			_update_chip_text(lbl, effects[i])
+
+
+# The HUD chip shown while an override owns the device. Toxic-green to match the override visual
+# language; counts down the remaining bundle time like an effect chip.
+func _make_override_chip() -> Control:
+	var accent: Color = UITheme.TOXIC_GREEN
+	var chip: PanelContainer = PanelContainer.new()
+	var s: StyleBoxFlat = StyleBoxFlat.new()
+	s.bg_color = Color(accent.r, accent.g, accent.b, 0.14)
+	s.border_color = accent
+	s.border_width_left = 1
+	s.border_width_right = 1
+	s.border_width_top = 1
+	s.border_width_bottom = 1
+	s.content_margin_left = 10
+	s.content_margin_right = 10
+	s.content_margin_top = 4
+	s.content_margin_bottom = 4
+	chip.add_theme_stylebox_override("panel", s)
+	var lbl: Label = Label.new()
+	lbl.add_theme_color_override("font_color", accent)
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.text = _override_chip_text()
+	chip.add_child(lbl)
+	chip.set_meta("chip_label", lbl)
+	return chip
+
+
+func _override_chip_text() -> String:
+	var title: String = (
+		("▶ " + _override_item_name.to_upper()) if _override_item_name != "" else "▶ OVERRIDE"
+	)
+	return "%s  %ds" % [title, int(ceil(_override_session.remaining_ms() / 1000.0))]
 
 
 # ---------------------------------------------------------------------------

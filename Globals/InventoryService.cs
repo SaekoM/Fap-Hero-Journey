@@ -13,6 +13,10 @@ public partial class InventoryService : Node
     // Fired when a utility item with kind == "skip_round" is activated. Same shape as
     // SaveRequested: instantaneous, never enters _active.
     [Signal] public delegate void SkipRoundRequestedEventHandler();
+    // Fired when an override item (category == "override") is activated. GameLoop's takeover
+    // coordinator loads the item's funscript bundle and plays it over the round. Like save_now/
+    // skip_round it's instantaneous here (consumed, never enters _active).
+    [Signal] public delegate void OverrideActivatedEventHandler(string itemId);
 
     // ---------------------------------------------------------------------------
     // Item registry
@@ -474,6 +478,15 @@ public partial class InventoryService : Node
         if (itemKind == "skip_round")
         {
             EmitSignal(SignalName.SkipRoundRequested);
+            EmitSignal(SignalName.InventoryChanged);
+            return true;
+        }
+
+        // Override items hand off to GameLoop's takeover coordinator (it loads the bundled funscript
+        // and plays it over the round) rather than joining the active-effect list. Consumed here.
+        if ((item.ContainsKey("category") ? item["category"].AsString() : "") == "override")
+        {
+            EmitSignal(SignalName.OverrideActivated, item.ContainsKey("id") ? item["id"].AsString() : "");
             EmitSignal(SignalName.InventoryChanged);
             return true;
         }

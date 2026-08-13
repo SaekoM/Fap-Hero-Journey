@@ -515,14 +515,34 @@ static func _journey_items_resolved(data: Dictionary, base: String) -> Array:
 	var items: Array = JourneyData.parse_journey_items(data.get("Items", []))
 	for it: Dictionary in items:
 		var img: String = str(it.get("image", ""))
-		if (
-			img != ""
-			and not (
-				img.begins_with("res://") or img.begins_with("user://") or img.is_absolute_path()
-			)
-		):
+		if img != "" and not _is_resolved_path(img):
 			it["image"] = base.path_join(img)
+		if str(it.get("category", "")) == "override":
+			_resolve_override_scripts(it.get("scripts", {}), base)
 	return items
+
+
+# True when a path is already absolute (res:// / user:// / OS-absolute) and must NOT be joined onto the
+# journey base — only pooled content/ rels are relative.
+static func _is_resolved_path(p: String) -> bool:
+	return p.begins_with("res://") or p.begins_with("user://") or p.is_absolute_path()
+
+
+# Resolves an override item's funscript bundle (main + axes + vibes) from pooled content/ rels to
+# absolute paths, in place, so GameLoop's bundle loader can read them directly. Mirrors the item-icon
+# and cast-portrait resolution.
+static func _resolve_override_scripts(scripts: Dictionary, base: String) -> void:
+	var main_path: String = str(scripts.get("main", ""))
+	if main_path != "" and not _is_resolved_path(main_path):
+		scripts["main"] = base.path_join(main_path)
+	for axis_name: Variant in scripts.get("axes", {}):
+		var axis_path: String = str(scripts["axes"][axis_name])
+		if axis_path != "" and not _is_resolved_path(axis_path):
+			scripts["axes"][axis_name] = base.path_join(axis_path)
+	for channel: Variant in scripts.get("vibes", {}):
+		var vib_path: String = str(scripts["vibes"][channel])
+		if vib_path != "" and not _is_resolved_path(vib_path):
+			scripts["vibes"][channel] = base.path_join(vib_path)
 
 
 # Storyboard cast — parsed to runtime (snake-case) with every portrait's relative pooled path resolved

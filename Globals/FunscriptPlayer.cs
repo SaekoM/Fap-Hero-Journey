@@ -342,6 +342,14 @@ public partial class FunscriptPlayer : Node
         _vibeRoutes.Clear();
         _outputResolved = false;
 
+        // A new round starts clean — drop any override still mid-play (a cut at the round boundary).
+        _overrideActive = false;
+        _overrideImmune = false;
+        _savedActions = null;
+        _savedAxes = null;
+        _savedVibs = null;
+        _savedRestim = null;
+
         foreach (var kv in _axes)
             kv.Value.Index = 0;
         foreach (var kv in _vibScripts)
@@ -665,6 +673,15 @@ public partial class FunscriptPlayer : Node
         _easing = false;
         _fillerActive = false; // cancel any storyboard filler that may still be running
 
+        // Clear any active override so a run ending mid-takeover doesn't leak override state onto the
+        // (autoload) player into the next journey; EaseToNeutral below homes the device.
+        _overrideActive = false;
+        _overrideImmune = false;
+        _savedActions = null;
+        _savedAxes = null;
+        _savedVibs = null;
+        _savedRestim = null;
+
         EaseToNeutral();
         _positionMs = 0.0;
         _actionIndex = 0;
@@ -696,6 +713,177 @@ public partial class FunscriptPlayer : Node
         _vibeRoutes.Clear();
         _constrictRoutes.Clear();
         _outputResolved = false;
+    }
+
+    // ── Override takeover ────────────────────────────────────────────────────────
+    // A source-agnostic device takeover (see OVERRIDE_ITEMS_DESIGN.md): pause the round's funscript,
+    // play a bundled override on its own clock, then hand control back and re-anchor to the LIVE video
+    // position. The GDScript coordinator (GameLoop) owns the lifecycle + the OverrideSession clock and
+    // drives these two calls; this is the C# (serial / Buttplug / restim) half of the swap.
+
+    private bool _overrideActive = false;
+    private bool _overrideImmune = false;
+    private List<Action> _savedActions;
+    private System.Collections.Generic.Dictionary<string, AxisState> _savedAxes;
+    private System.Collections.Generic.Dictionary<int, VibState> _savedVibs;
+    private System.Collections.Generic.Dictionary<string, AxisState> _savedRestim;
+
+    /// True while an override owns the device — the round's own re-anchors stay suppressed until it ends.
+    public bool OverrideActive => _overrideActive;
+
+    /// Begins an override: stashes the round's channels, installs the bundle's, resets the clock to the
+    /// override's own t=0, and eases in. Channels the bundle doesn't define are parked to neutral.
+    /// `mainPts` is Array[Vector2(at_ms, pos)]; `axisPts` is {axis_name: Array[Vector2]}; `vibPts` is
+    /// {channel(int): Array[Vector2]}. `immune` makes the override ignore active stroke effects/curses.
+    public void BeginOverride(Godot.Collections.Array mainPts, Godot.Collections.Dictionary axisPts,
+        Godot.Collections.Dictionary vibPts, bool immune)
+    {
+        if (!_overrideActive) // first takeover — a REPLACE keeps the existing round stash
+        {
+            _savedActions = _actions;
+            _savedAxes = new System.Collections.Generic.Dictionary<string, AxisState>(_axes);
+            _savedVibs = new System.Collections.Generic.Dictionary<int, VibState>(_vibScripts);
+            _savedRestim = new System.Collections.Generic.Dictionary<string, AxisState>(_restimScripts);
+        }
+
+        _actions = ActionsFromPoints(mainPts);
+        _axes.Clear();
+        if (axisPts != null)
+            foreach (var key in axisPts.Keys)
+                _axes[key.AsString()] = new AxisState { Actions = ActionsFromPoints(axisPts[key].AsGodotArray()) };
+        _vibScripts.Clear();
+        if (vibPts != null)
+            foreach (var key in vibPts.Keys)
+                _vibScripts[key.AsInt32()] = new VibState { Actions = ActionsFromPoints(vibPts[key].AsGodotArray()) };
+        _restimScripts.Clear(); // the override's main stroke drives restim L0; no dedicated estim scripts
+
+        _ExtractBeats();
+
+        _positionMs = 0.0;
+        _actionIndex = 0;
+        _interpIndex = 0;
+        _clockPrimed = false;
+        _lastSerialTarget = _homePosition;
+        _strokeActivity = 0.0;
+
+        _overrideActive = true;
+        _overrideImmune = immune;
+        _playing = true;
+
+        _ParkUndefinedOverrideChannels();
+        _StartEaseIn();
+    }
+
+    /// Ends the override and restores the round's channels, then re-anchors to where the video is NOW
+    /// (`resumeVideoSec`) — it kept playing under the override — seeking the play cursors silently so the
+    /// skipped stretch is neither scored nor blasted out in one catch-up frame.
+    public void EndOverride(double resumeVideoSec)
+    {
+        if (!_overrideActive)
+            return;
+
+        _actions = _savedActions ?? new List<Action>();
+        _savedActions = null;
+        _axes.Clear();
+        if (_savedAxes != null)
+            foreach (var kv in _savedAxes)
+                _axes[kv.Key] = kv.Value;
+        _vibScripts.Clear();
+        if (_savedVibs != null)
+            foreach (var kv in _savedVibs)
+                _vibScripts[kv.Key] = kv.Value;
+        _restimScripts.Clear();
+        if (_savedRestim != null)
+            foreach (var kv in _savedRestim)
+                _restimScripts[kv.Key] = kv.Value;
+        _savedAxes = null;
+        _savedVibs = null;
+        _savedRestim = null;
+
+        _ExtractBeats();
+
+        double posMs = resumeVideoSec * 1000.0;
+        _positionMs = posMs;
+        _SeekIndicesTo(posMs);
+        _clockPrimed = true;
+        _lastSerialTarget = _homePosition;
+
+        _overrideActive = false;
+        _overrideImmune = false;
+
+        _StartEaseIn();
+    }
+
+    // Effects the OUTPUT path should honour: NONE while an immune override is active (it ignores
+    // items / curses / boss modifiers, including block and mirror), else the live inventory set.
+    private Godot.Collections.Array ActiveEffectsForOutput()
+    {
+        if (_overrideActive && _overrideImmune)
+            return null;
+        return _inventory?.GetActiveEffects();
+    }
+
+    // Builds a List<Action> from an Array[Vector2(at_ms, pos)] the coordinator passes in.
+    private static List<Action> ActionsFromPoints(Godot.Collections.Array pts)
+    {
+        var list = new List<Action>();
+        if (pts == null)
+            return list;
+        foreach (var p in pts)
+        {
+            Vector2 v = p.AsVector2();
+            list.Add(new Action { AtMs = v.X, Pos = (int)Math.Round(v.Y) });
+        }
+        return list;
+    }
+
+    // Eases every channel the override does NOT define toward neutral (serial axes + mapped restim
+    // motion axes to centre; vibe1/vibe2 actuators with no override script silenced). The stroke and
+    // any follow-stroke vibe keep tracking the override.
+    private void _ParkUndefinedOverrideChannels()
+    {
+        var serial = _serial;
+        if (serial != null && serial.SerialConnected)
+            foreach (var axis in KnownAxes)
+                if (!_axes.ContainsKey(axis))
+                    serial.SendAxis(axis, _homeEaseMs, 0.5);
+
+        var restim = _restim;
+        if (restim != null && restim.RestimConnected)
+            foreach (var kv in RestimService.MotionAxisMap)
+                if (!_axes.ContainsKey(kv.Key))
+                    restim.SendTCode(kv.Value, 0.5, _homeEaseMs);
+
+        var bp = _buttplug;
+        if (bp != null && bp.BpConnected)
+            foreach (var route in _vibeRoutes)
+                if ((route.Source == "vibe1" && !_vibScripts.ContainsKey(0))
+                    || (route.Source == "vibe2" && !_vibScripts.ContainsKey(1)))
+                    bp.SendVibrateChannel(route.Index, route.Channel, 0.0);
+    }
+
+    // Fast-forwards every channel's play cursor to `posMs` WITHOUT dispatching (no scoring, no sends),
+    // so re-anchoring after an override doesn't replay the stretch that ran underneath it.
+    private void _SeekIndicesTo(double posMs)
+    {
+        _actionIndex = SkipTo(_actions, posMs);
+        _interpIndex = Math.Max(0, _actionIndex - 1);
+        foreach (var kv in _axes)
+            kv.Value.Index = SkipTo(kv.Value.Actions, posMs);
+        foreach (var kv in _vibScripts)
+            kv.Value.Index = SkipTo(kv.Value.Actions, posMs);
+        foreach (var kv in _restimScripts)
+            kv.Value.Index = SkipTo(kv.Value.Actions, posMs);
+    }
+
+    // Count of actions already elapsed at `posMs` (points are time-sorted) — the cursor value the
+    // per-frame play loops expect for that clock position.
+    private static int SkipTo(List<Action> actions, double posMs)
+    {
+        int i = 0;
+        while (i < actions.Count && actions[i].AtMs <= posMs)
+            i++;
+        return i;
     }
 
     // Begin the storyboard filler: alternating hi→lo→hi strokes at the given
@@ -814,6 +1002,11 @@ public partial class FunscriptPlayer : Node
     // Only reconciles _positionMs — _Process and _PhysicsProcess dispatch/stream the output.
     public void SyncTo(double videoPositionSec)
     {
+        // While an override owns the device it runs on its OWN clock — ignore the video position until
+        // EndOverride re-anchors (the override drives _positionMs via the free-run in _PhysicsProcess).
+        if (_overrideActive)
+            return;
+
         // Reconcile our smooth clock toward the video instead of hard-snapping every frame: the raw
         // video position steps a whole frame at a time and jitters, which the stroker would faithfully
         // reproduce. The first sample after a (re)start, or any large gap (a seek), snaps; otherwise we
@@ -1037,7 +1230,7 @@ public partial class FunscriptPlayer : Node
         if (serial == null || !serial.SerialConnected)
             return;
 
-        var effects = _inventory?.GetActiveEffects();
+        var effects = ActiveEffectsForOutput();
         UpdateMirrorBlend(effects); // clock-driven; advance once per tick, even under block
 
         if (effects != null && HasBlockEffect(effects))
@@ -1267,7 +1460,7 @@ public partial class FunscriptPlayer : Node
     private void ProcessKeyframe(int index)
     {
         ResolveOutput();
-        var effects = _inventory?.GetActiveEffects();
+        var effects = ActiveEffectsForOutput();
 
         // Serial advances the eased mirror factor in its physics tick; every other backend advances
         // it here — before the block early-out, so it keeps settling even while block suppresses output.

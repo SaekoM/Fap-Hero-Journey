@@ -4777,6 +4777,8 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		var img_src: String = str(saved_item.get("image", ""))
 		if img_src != "":
 			saved_item["image"] = _pool_small_file(img_src, abs_dir)
+		if str(saved_item.get("category", "")) == "override":
+			saved_item["scripts"] = _pool_override_scripts(saved_item.get("scripts", {}), abs_dir)
 		items_for_save.append(saved_item)
 
 	# Store each cast portrait through the same image path as boss/storyboard art — a still is deduped
@@ -5764,6 +5766,31 @@ func _pool_small_file(
 	return pool["rel"]
 
 
+# Pools an override item's funscript bundle into content/ (hash-deduped, funscript-family), rewriting the
+# author's source paths to journey-root-relative pooled rels so the saved item — and the .fhj — carry the
+# files. Empty channels are dropped. Mirrors the round's per-channel pooling, minus segments (never cut).
+func _pool_override_scripts(scripts: Dictionary, abs_dir: String) -> Dictionary:
+	var out: Dictionary = {}
+	var main_src: String = str(scripts.get("main", ""))
+	if main_src != "":
+		out["main"] = _pool_small_file(main_src, abs_dir, "funscript")
+	var axes_out: Dictionary = {}
+	for axis_name: Variant in scripts.get("axes", {}):
+		var axis_src: String = str(scripts["axes"][axis_name])
+		if axis_src != "":
+			axes_out[str(axis_name)] = _pool_small_file(axis_src, abs_dir, "funscript")
+	if not axes_out.is_empty():
+		out["axes"] = axes_out
+	var vibes_out: Dictionary = {}
+	for channel: Variant in scripts.get("vibes", {}):
+		var vib_src: String = str(scripts["vibes"][channel])
+		if vib_src != "":
+			vibes_out[str(channel)] = _pool_small_file(vib_src, abs_dir, "funscript")
+	if not vibes_out.is_empty():
+		out["vibes"] = vibes_out
+	return out
+
+
 # Writes `src` to `dst` with its actions rebuilt from the round's segments — each window cut,
 # rebased and laid end to end (JourneyData.edl_funscript_json; other metadata preserved). This
 # is the one funscript writer: a trim is a single segment, a loop is a repeated one.
@@ -6129,6 +6156,33 @@ func _collect_custom_item_issues(issues: Array) -> void:
 					}
 				)
 			)
+		if str(it.get("category", "modifier")) == "override":
+			var main_src: String = str((it.get("scripts", {}) as Dictionary).get("main", ""))
+			if main_src == "":
+				(
+					issues
+					. append(
+						{
+							"cause": CAUSE_ITEM_INVALID,
+							"item": label,
+							"detail":
+							"This override item has no main funscript — using it would do nothing.",
+							"hint": "Drop a main .funscript into the item editor.",
+						}
+					)
+				)
+			elif not _save_source_exists(main_src):
+				(
+					issues
+					. append(
+						{
+							"cause": CAUSE_MISSING_SOURCE,
+							"item": label,
+							"detail": "Override funscript no longer exists at: %s" % main_src,
+							"hint": "Re-drop the override's main funscript in the item editor.",
+						}
+					)
+				)
 		var img: String = str(it.get("image", ""))
 		if img != "" and not _save_source_exists(img):
 			(

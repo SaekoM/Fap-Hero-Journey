@@ -200,6 +200,12 @@ func load_actions(actions: Array) -> void:
 # device — the caller flush-refeeds (seek) so the change lands from the current
 # position. Non-stroke kinds are ignored by the transform.
 func set_effects(effects: Array, hold_pos: int = 50) -> void:
+	if _override_active:
+		# An effect changed while an override owns the device — stash it for the round so it lands on
+		# restore; the live override buffer is left as-is (immune plays raw; non-immune keeps its snapshot).
+		_saved_effects = effects
+		_saved_hold_pos = hold_pos
+		return
 	_effects = effects
 	_hold_pos = hold_pos
 	_rebuild_transformed()
@@ -407,11 +413,99 @@ func pause() -> void:
 func stop() -> void:
 	_session_ready = false  # the session is gone — the next round prewarms a fresh one
 	_deferred_play = false  # drop any pending deferred engage
+	_override_active = false  # a stop cancels any active override
+	_saved_points = []
+	_saved_effects = []
 	_consecutive_failures = 0
 	_recovering = false
 	if _playing:
 		_playing = false
 		await _api_put("/hsp/stop", {})
+
+
+# ── Override takeover ──────────────────────────────────────────────────────────
+# The Handy half of the source-agnostic override (see OVERRIDE_ITEMS_DESIGN.md). Handy is stroke-only, so
+# only the override's MAIN points stream (axes/vibes are ignored here). The override runs on its OWN clock
+# (override_ms_source) from t=0; on stop we re-anchor to the live video position. While active, GameLoop
+# feeds the override clock and the round's own re-anchors are suppressed (seek() no-ops on _override_active).
+
+var _override_active: bool = false
+var _saved_points: Array = []
+var _saved_effects: Array = []
+var _saved_hold_pos: int = 50
+var _saved_video_ms_source: Callable = Callable()
+
+
+func is_override_active() -> bool:
+	return _override_active
+
+
+# Begins — or, while already active, REPLACES — an override. On the FIRST takeover it stashes the round's
+# script + video clock (a replace keeps that stash). It then installs the override's MAIN points (raw when
+# `immune`, else with the round's active effects baked in) and re-anchors playback to the override's own
+# clock at t=0 via a fresh session. `override_ms_source` returns override-elapsed ms; false on setup fail.
+func start_override(main_points: Array, immune: bool, override_ms_source: Callable) -> bool:
+	if not _playing:
+		return false
+	if not _override_active:  # first takeover — a REPLACE keeps the existing round stash
+		_saved_points = _points
+		_saved_effects = _effects
+		_saved_hold_pos = _hold_pos
+		_saved_video_ms_source = _video_ms_source
+
+	_points = HandyPoints.actions_to_points(main_points)
+	_effects = [] if immune else _saved_effects.duplicate()
+	_rebuild_transformed()
+	_send_idx = 0
+	_video_ms_source = override_ms_source
+	_deferred_play = false
+	_override_active = true
+
+	# Fresh session + anchored play from the override's t=0 (the round's session was mid-stream). A short,
+	# dense override normally strokes immediately; if it opens quiet, defer like start() rather than starve.
+	# _feed_inflight blocks a concurrent feed() from firing an /hsp/add before this play lands.
+	_feed_inflight = true
+	var setup: Dictionary = await _api_put("/hsp/setup", {})
+	if setup.is_empty():
+		_feed_inflight = false
+		return false
+	var ov_ms: int = int(override_ms_source.call())
+	if (
+		HandyPoints
+		. points_in_window(
+			_transformed, HandyPoints.index_at_or_after(_transformed, ov_ms), ov_ms + LOOKAHEAD_MS
+		)["batch"]
+		. is_empty()
+	):
+		_deferred_play = true
+		_feed_inflight = false
+		return true
+	var res: Dictionary = await _send_play(ov_ms)
+	_feed_inflight = false
+	if res.is_empty():
+		return false
+	_note_stream_ok()
+	return true
+
+
+# Ends the override, restores the round's streamed script (rebuilt so an effect that changed mid-override
+# lands), and re-anchors playback to where the video is NOW (`resume_video_ms`) — it kept playing under the
+# override — via seek(). The cursor is pointed at the live position first so a deferred re-engage streams
+# from HERE, not the stale pre-override index.
+func stop_override(resume_video_ms: int) -> void:
+	if not _override_active:
+		return
+	_points = _saved_points
+	_effects = _saved_effects
+	_hold_pos = _saved_hold_pos
+	_video_ms_source = _saved_video_ms_source
+	_saved_points = []
+	_saved_effects = []
+	_override_active = false
+	_deferred_play = false
+	_rebuild_transformed()
+	_send_idx = HandyPoints.index_at_or_after(_transformed, resume_video_ms)
+	await seek(resume_video_ms)
 
 
 # Play/seek anchor: the device's script clock sits level with the video clock. The Handy delay
@@ -428,8 +522,8 @@ func _anchor(video_ms: int) -> int:
 # the device lands where the video is). If there's no stroke within reach (still a no-action stretch), it
 # defers like start() instead of sending an empty window that would starve the device.
 func seek(video_ms: int) -> void:
-	if not _playing:
-		return
+	if not _playing or _override_active:
+		return  # the override owns the device on its own clock — suppress round re-anchors until it ends
 	if (
 		HandyPoints
 		. points_in_window(
