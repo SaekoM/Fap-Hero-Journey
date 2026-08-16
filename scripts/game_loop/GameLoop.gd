@@ -32,6 +32,10 @@ const VIDEO_EXTS: Array = ["mp4", "mkv", "webm", "avi", "mov", "ogv"]
 # Sequence-boundary fade timings (~1.2s total).
 const TRANSITION_FADE_TIME: float = 0.45
 const TRANSITION_HOLD_TIME: float = 0.30
+# Per-clip audio/video fade at a round's tail (before the black transition takes over) and at
+# the next clip's head (as the black lifts) — independent of TRANSITION_FADE_TIME above, which
+# only owns the opaque ColorRect. This one only ever touches _video.volume_db / _video.modulate.
+const CLIP_FADE_TIME: float = 0.4
 
 # Boss rounds: the red frame pulses during the round's final stretch.
 const BOSS_CLIMAX_SECS: float = 30.0
@@ -223,6 +227,15 @@ var _exiting: bool = false  # guards _confirm_exit so a late key/button-up can't
 # also called manually (FINISH / warmup skip). This guards its once-per-round side effects — counter
 # bestowal, payout, advance — against a double-fire. Reset at the top of each _begin_round.
 var _round_ended_guard: bool = false
+# Guards the tail-of-clip audio/video fade (see _update_clip_end_fade) so it starts at most once
+# per round — otherwise a round that dips under CLIP_FADE_TIME remaining on several consecutive
+# frames would keep re-triggering it. Reset at the top of each _begin_round.
+var _clip_fade_started: bool = false
+# Shared handle for the tail-fade-out and head-fade-in tweens on _video.volume_db / _video.modulate
+# (see _update_clip_end_fade and _transition_swap). Killed before each reuse — same pattern as
+# _delay_toast_tween below — so a premature round end or a very short clip can never leave two
+# tweens fighting over the same properties.
+var _clip_fade_tween: Tween = null
 const FINISH_HOLD_SECS: float = 1.2  # hold time to confirm FINISH
 var _effect_cleanse_cost: int = CLEANSE_COST_DEFAULT  # per-round, set on enter
 
@@ -392,6 +405,7 @@ func _process(delta: float) -> void:
 		_handy_feed()  # top up the HSP buffer ahead of the clock (Handy-direct only)
 	_apply_pause_penalty(delta)
 	_update_chip_countdowns()
+	_update_clip_end_fade()
 	if _is_boss_round:
 		_update_boss_frame()
 	elif _is_effect_round:
@@ -413,6 +427,26 @@ func _apply_pause_penalty(delta: float) -> void:
 	while _pause_penalty_accum >= 1.0:
 		_pause_penalty_accum -= 1.0
 		ScoreService.PenalizeScore(PAUSE_PENALTY_PER_SEC)
+
+
+# Starts the tail-of-clip audio/video fade once a round's remaining time drops to CLIP_FADE_TIME,
+# so a clip dies out instead of cutting hard into the black transition. _round_time_left already
+# unifies both ways a round can end — the video's own clock, or the no-video fallback's _end_timer —
+# so this covers both without caring which one is driving. Skipped while paused (pause button /
+# Options / an active overlay all set _video.paused) or behind a full-screen overlay, and guarded
+# to fire once per round so pausing/resuming near the tail can't retrigger it.
+func _update_clip_end_fade() -> void:
+	if _clip_fade_started or _video.paused or _is_overlay_open:
+		return
+	var remaining: float = _round_time_left()
+	if remaining < 0.0 or remaining > CLIP_FADE_TIME:
+		return
+	_clip_fade_started = true
+	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
+	_clip_fade_tween = create_tween().set_parallel(true)
+	_clip_fade_tween.tween_property(_video, "volume_db", -40.0, CLIP_FADE_TIME)
+	_clip_fade_tween.tween_property(_video, "modulate", Color.BLACK, CLIP_FADE_TIME)
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +799,7 @@ func _apply_round_label(round: Dictionary) -> void:
 # runs after the intro card's BEGIN; for normal rounds, immediately.
 func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	_round_ended_guard = false  # a fresh round can end once again
+	_clip_fade_started = false  # a fresh round can run its own tail-of-clip fade once again
 	ScoreService.StartRound()
 	# Clear any pause left by a pre-round gate (boss intro / checkpoint banner) —
 	# _video.play() below doesn't reset the paused flag on its own.
@@ -2292,10 +2327,19 @@ func _on_round_ended(skipped: bool = false) -> void:
 func _transition_swap(swap_action: Callable) -> void:
 	_transition.mouse_filter = Control.MOUSE_FILTER_STOP
 
-	var tween_in: Tween = create_tween()
+	# A clip fade already in flight (tail-fade-out from _update_clip_end_fade, or a head-fade-in
+	# from a previous, very short swap) must not keep animating _video.volume_db / modulate
+	# underneath the safety net and the fresh fade-in below — kill it before either can start.
+	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
+
+	var tween_in: Tween = create_tween().set_parallel(true)
 	tween_in.tween_property(_transition, "modulate:a", 1.0, TRANSITION_FADE_TIME).set_ease(
 		Tween.EASE_IN
 	)
+	# Safety net for round-end paths that never ran their own tail fade (skipped, FINISHed,
+	# routed off by a checkpoint): silence the outgoing clip's audio by the time black is opaque.
+	tween_in.tween_property(_video, "volume_db", -40.0, TRANSITION_FADE_TIME)
 	await tween_in.finished
 
 	# Black now fully covers the screen — including any overlay we're leaving.
@@ -2315,6 +2359,20 @@ func _transition_swap(swap_action: Callable) -> void:
 	# Hold the black until the next round's video actually has a frame, so the
 	# fade never reveals the bare background between rounds.
 	await _await_video_ready()
+
+	# Head-of-clip fade-in: only when the swap actually landed on a playing video (a fresh round's
+	# clip) — a no-video round or a fork/shop/storyboard leaves _video idle/silent, and nothing here
+	# should tween properties nobody is watching or listening to. This is the ONE place that both
+	# resets the incoming clip to its silent/dark starting point and fades it back up, so
+	# _begin_round / _load_video never need their own copy of this logic.
+	if _video.is_playing():
+		_video.volume_db = -40.0
+		_video.modulate = Color.BLACK
+		if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+			_clip_fade_tween.kill()
+		_clip_fade_tween = create_tween().set_parallel(true)
+		_clip_fade_tween.tween_property(_video, "volume_db", 0.0, CLIP_FADE_TIME)
+		_clip_fade_tween.tween_property(_video, "modulate", Color.WHITE, CLIP_FADE_TIME)
 
 	var tween_out: Tween = create_tween()
 	tween_out.tween_property(_transition, "modulate:a", 0.0, TRANSITION_FADE_TIME).set_ease(
