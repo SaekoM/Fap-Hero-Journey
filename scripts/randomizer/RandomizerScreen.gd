@@ -26,6 +26,7 @@ const GraphViewScene := preload("res://scenes/graph_view/GraphView.tscn")
 var _lib_list: VBoxContainer
 var _lib_count: Label
 var _status: Label
+var _prebake_status: Label
 var _generate_btn: Button
 var _cancel_btn: Button
 var _busy: bool = false
@@ -35,6 +36,11 @@ var _cancel_requested: bool = false
 # it; Re-roll replaces it). Empty when no preview is open.
 var _pending_run: Dictionary = {}
 var _preview_overlay: Control = null
+
+# True when the current preview was adopted from RandomizerPrebake rather than freshly
+# generated — drives the "· prepared" summary suffix. Set/cleared exclusively in
+# _generate_and_preview.
+var _preview_prepared: bool = false
 
 # id → (pseudo-)entry of the most recently generated run, parallel to _pending_run.
 # Needed because part pseudo-entries aren't in RandomizerLibrary — only the video
@@ -61,6 +67,15 @@ func _ready() -> void:
 	anchor_right = 1.0
 	anchor_bottom = 1.0
 	_build_ui()
+	# There is no way back into this scene after a Play: it is instantiated afresh and every
+	# control sits at its default. Without this, Generate would run against a prebake made
+	# with different settings and throw it away.
+	var pre_settings: Dictionary = RandomizerPrebake.held_settings()
+	if not pre_settings.is_empty():
+		_apply_settings(pre_settings)
+	RandomizerPrebake.state_changed.connect(_on_prebake_state_changed)
+	RandomizerPrebake.progress_changed.connect(_on_prebake_progress_changed)
+	_update_prebake_line()  # first sync: the screen can come up MID-bake
 	# Back-fill "parts" on entries imported before the cutting feature existed. Runs
 	# here and not at app start so only opening the randomizer pays for the funscript
 	# analysis (contract §6.4), and before the library_changed hookup so the migration's
@@ -151,6 +166,12 @@ func _build_ui() -> void:
 	UITheme.style_label(_status, UITheme.DARK_TEXT, 13)
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(_status)
+
+	_prebake_status = Label.new()
+	UITheme.style_label(_prebake_status, UITheme.DARK_TEXT, 12)
+	_prebake_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_prebake_status.visible = false
+	root.add_child(_prebake_status)
 
 
 func _build_library_column() -> Control:
@@ -718,8 +739,19 @@ func _on_generate_pressed() -> void:
 # overlay. `force_random` ignores the seed field so Re-roll always differs.
 func _generate_and_preview(force_random: bool) -> void:
 	var settings: Dictionary = _read_settings()
+	_preview_prepared = false
 	if force_random:
 		settings["seed"] = 0
+	else:
+		# A prebaked run for the current settings may already be sitting in
+		# RandomizerPrebake, ready or still baking — adopt it instead of rolling a fresh
+		# one. Re-roll (force_random) never adopts: the user explicitly wants a new draw.
+		var pre: Dictionary = RandomizerPrebake.adopt(settings)
+		if not pre.is_empty():
+			_pending_entries = pre["entries"]
+			_preview_prepared = true
+			_show_preview(pre)
+			return
 	# Resolve the seed here, not in the generator: the expansion (part cutting) and
 	# the generator (round selection) each get their own RandomNumberGenerator, and
 	# both must see the identical seed for a run to be reproducible. Formula copied
@@ -775,6 +807,10 @@ func _play_pending() -> void:
 
 	GameState.StartJourney(play)
 	UISound.start_journey()
+	# The next run should roll fresh, so the seed field is cleared for the commission.
+	var next_settings: Dictionary = _read_settings()
+	next_settings["seed"] = 0
+	RandomizerPrebake.schedule(next_settings)
 	Transition.change_scene("res://scenes/game_loop/GameLoop.tscn")
 
 
@@ -817,6 +853,38 @@ func _prepare_and_materialize(res: Dictionary) -> Dictionary:
 		return {}
 	RandomizerLibrary.mark_used(res["used_ids"])
 	return mat
+
+
+# ── Prebake status line ──────────────────────────────────────────────────────
+
+
+func _on_prebake_state_changed(_state: int) -> void:
+	_update_prebake_line()
+
+
+func _on_prebake_progress_changed(_done: int, _total: int, _name: String) -> void:
+	_update_prebake_line()
+
+
+# Reflects RandomizerPrebake's current state/progress in the dedicated status line
+# below the footer status. Reads state()/progress() directly rather than caching the
+# signal args, so the call right after _ready (before any signal has fired) is correct
+# too — the screen can come up mid-bake.
+func _update_prebake_line() -> void:
+	var state: int = RandomizerPrebake.state()
+	if state == RandomizerPrebake.State.BAKING:
+		var p: Dictionary = RandomizerPrebake.progress()
+		var total: int = int(p.get("total", 0))
+		if total <= 0:
+			_prebake_status.text = "Preparing next run…"
+		else:
+			_prebake_status.text = "Preparing next run %d/%d…" % [int(p.get("done", 0)), total]
+		_prebake_status.visible = true
+	elif state == RandomizerPrebake.State.READY:
+		_prebake_status.text = "Next run ready"
+		_prebake_status.visible = true
+	else:
+		_prebake_status.visible = false
 
 
 # ── Preview overlay ──────────────────────────────────────────────────────────
@@ -868,7 +936,8 @@ func _show_preview(res: Dictionary) -> void:
 	gv.set_graph(JourneyGraph.from_json(res["journey"]))
 
 	var summary := Label.new()
-	summary.text = _summary_text(res["summary"])
+	# The suffix names the reason Play is about to start (almost) instantly.
+	summary.text = _summary_text(res["summary"]) + (" · prepared" if _preview_prepared else "")
 	UITheme.style_label(summary, UITheme.WHITE_SOFT, 14)
 	summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(summary)

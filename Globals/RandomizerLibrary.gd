@@ -24,6 +24,9 @@ const CONTENT_DIR: String = "user://randomizer_library/content"
 # ("<video_id>#trim:<a>-<b>"). See _video_id_of for why it lives here as well.
 const PART_ID_SEP: String = "#"
 
+# Block size of the chunked pooled-video copy (see _copy_file_chunked).
+const COPY_CHUNK_BYTES: int = 8 * 1024 * 1024
+
 # Ordered list of entry dicts (see RandomizerGenerator's header for the shape).
 var _entries: Array = []
 
@@ -34,6 +37,7 @@ var _unanalysed_ids: Dictionary = {}
 
 
 func _ready() -> void:
+	_sweep_scratch_files()
 	load_registry()
 
 
@@ -423,16 +427,21 @@ func get_entry(id: String) -> Dictionary:
 # the entry's predicted rels. Idempotent — skips anything already pooled, so a
 # re-roll that reuses a clip pays the transcode only once. Called at Generate time
 # for each clip the run actually uses. on_progress / should_cancel drive the
-# transcode. Returns { ok, reason }.
+# transcode. `priority` selects the EncodeGate lane (default FOREGROUND); the only
+# BACKGROUND caller is RandomizerPrebake, pooling the next run while a session plays.
+# Returns { ok, reason }.
 func prepare_entry_media(
-	entry: Dictionary, on_progress: Callable = Callable(), should_cancel: Callable = Callable()
+	entry: Dictionary,
+	on_progress: Callable = Callable(),
+	should_cancel: Callable = Callable(),
+	priority: int = EncodeGate.Priority.FOREGROUND
 ) -> Dictionary:
 	var video_src: String = str(entry.get("video_src", ""))
 	if video_src == "" or not FileAccess.file_exists(ProjectSettings.globalize_path(video_src)):
 		return {"ok": false, "reason": "video_missing"}
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(CONTENT_DIR))
 
-	var vreason: String = await _pool_video(entry, video_src, on_progress, should_cancel)
+	var vreason: String = await _pool_video(entry, video_src, on_progress, should_cancel, priority)
 	if vreason != "":
 		return {"ok": false, "reason": vreason}
 	if not _pool_all_scripts(entry):
@@ -441,9 +450,15 @@ func prepare_entry_media(
 
 
 # Ensures the entry's video is pooled (transcode or copy). Returns "" on success,
-# else a failure reason. Idempotent (skips an already-pooled file).
+# else a failure reason. Idempotent (skips an already-pooled file). No default for
+# `priority` — a forgotten argument here should be a parse error, not a silently
+# dropped foreground encode.
 func _pool_video(
-	entry: Dictionary, video_src: String, on_progress: Callable, should_cancel: Callable
+	entry: Dictionary,
+	video_src: String,
+	on_progress: Callable,
+	should_cancel: Callable,
+	priority: int
 ) -> String:
 	var video_dst: String = STORE_DIR + "/" + str(entry.get("video_rel", ""))
 	if FileAccess.file_exists(video_dst):
@@ -455,7 +470,7 @@ func _pool_video(
 		if not MediaPoolService.is_available():
 			return "ffmpeg_unavailable"
 		var baked: bool = await MediaPoolService.bake_edl(
-			video_src, video_dst, segments, on_progress, should_cancel
+			video_src, video_dst, segments, on_progress, should_cancel, priority
 		)
 		if not baked:
 			# bake_edl wipes only its own scratch dir; a killed concat can still leave a
@@ -468,7 +483,7 @@ func _pool_video(
 			return "ffmpeg_unavailable"
 		var dur: float = float(entry.get("duration_ms", 0)) / 1000.0
 		var ok: bool = await MediaPoolService.transcode_video(
-			video_src, video_dst, dur, 0, 0, on_progress, should_cancel
+			video_src, video_dst, dur, 0, 0, on_progress, should_cancel, priority
 		)
 		if not ok:
 			# A killed/failed encode leaves a truncated file that would later look
@@ -476,7 +491,7 @@ func _pool_video(
 			_remove_if_exists(video_dst)
 			return "transcode_failed"
 		return ""
-	if not _copy_file(video_src, video_dst):
+	if not await _copy_file_chunked(video_src, video_dst, should_cancel):
 		_remove_if_exists(video_dst)
 		return "copy_failed"
 	return ""
@@ -641,6 +656,30 @@ func _remove_if_exists(path: String) -> void:
 		push_warning("RandomizerLibrary: could not delete stale pooled file %s" % abs)
 
 
+# Deletes orphaned encode/copy scratch from a previous session (app closed mid-bake). The
+# process kill on shutdown ends the ffmpeg, but the coroutine waiting on it is never
+# resumed, so its scratch file — `<name>.mp4.part.mp4`, possibly hundreds of megabytes —
+# stays behind, once for every session that ended while a background bake was running. The
+# rename-publish pattern (here and in MediaPoolService alike) guarantees these are never
+# valid pool content, so anything still carrying the marker is dead weight. Runs once at
+# start, before anything can be writing: CONTENT_DIR is flat (every pooled rel is exactly
+# "content/<name>.<ext>"), so a single non-recursive pass covers it.
+func _sweep_scratch_files() -> void:
+	var da: DirAccess = DirAccess.open(CONTENT_DIR)
+	if da == null:
+		return
+	da.list_dir_begin()
+	var to_delete: PackedStringArray = []
+	var fname: String = da.get_next()
+	while fname != "":
+		if not da.current_is_dir() and (fname.contains(".part.") or fname.ends_with(".tmp")):
+			to_delete.append(CONTENT_DIR + "/" + fname)
+		fname = da.get_next()
+	da.list_dir_end()
+	for p: String in to_delete:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+
+
 func _copy_file(src: String, dst: String) -> bool:
 	var sf: FileAccess = FileAccess.open(src, FileAccess.READ)
 	if sf == null:
@@ -653,6 +692,55 @@ func _copy_file(src: String, dst: String) -> bool:
 		return false
 	df.store_buffer(bytes)
 	df.close()
+	return true
+
+
+# The copy path for a POOLED VIDEO — the only file here big enough to matter (a whole clip
+# without a funscript is routinely gigabytes). _copy_file reads the entire source into RAM
+# and writes it back in one synchronous burst; on the BACKGROUND prebake path that is
+# seconds of frozen gameplay plus a RAM spike the size of the source file. This one moves
+# COPY_CHUNK_BYTES at a time and hands a frame back between blocks, so the running session
+# keeps drawing, and it honours should_cancel at the same granularity.
+#
+# Writes beside the target and renames into place, exactly like _pool_script: the rename is
+# the only publishing step, so an app exit mid-copy can never leave a truncated file at the
+# final name, which the already-pooled check would wave through on the next run.
+func _copy_file_chunked(src: String, dst: String, should_cancel: Callable) -> bool:
+	var sf: FileAccess = FileAccess.open(src, FileAccess.READ)
+	if sf == null:
+		return false
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dst.get_base_dir()))
+	var tmp: String = dst + ".tmp"
+	var df: FileAccess = FileAccess.open(tmp, FileAccess.WRITE)
+	if df == null:
+		sf.close()
+		return false
+	var total: int = sf.get_length()
+	var done: int = 0
+	var cancelled: bool = false
+	while done < total:
+		var chunk: PackedByteArray = sf.get_buffer(mini(COPY_CHUNK_BYTES, total - done))
+		if chunk.is_empty():
+			break  # short read: the source shrank or went away mid-copy
+		df.store_buffer(chunk)
+		done += chunk.size()
+		if done >= total:
+			break  # last block written — no point yielding another frame first
+		await get_tree().process_frame
+		if should_cancel.is_valid() and should_cancel.call():
+			cancelled = true
+			break
+	sf.close()
+	df.close()
+	if cancelled or done < total:
+		_remove_if_exists(tmp)
+		return false
+	var moved: int = DirAccess.rename_absolute(
+		ProjectSettings.globalize_path(tmp), ProjectSettings.globalize_path(dst)
+	)
+	if moved != OK:
+		_remove_if_exists(tmp)
+		return false
 	return true
 
 
