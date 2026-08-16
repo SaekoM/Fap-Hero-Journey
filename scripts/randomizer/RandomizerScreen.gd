@@ -17,6 +17,10 @@ const VIDEO_EXTS: Array[String] = [
 const PART_RANGE_MIN_S: float = 15.0
 const PART_RANGE_MAX_S: float = 600.0
 
+# How many rounds must be baked before Play starts the session. The encode runs faster
+# than playback, so RandomizerBaker builds a lead during play instead of losing one.
+const START_BUFFER_ROUNDS: int = 2
+
 # Reused for the per-card "attach a funscript" affordance (drop + browse).
 const DropZoneScript := preload("res://scripts/journey_builder/DropZone.gd")
 
@@ -26,7 +30,6 @@ const GraphViewScene := preload("res://scenes/graph_view/GraphView.tscn")
 var _lib_list: VBoxContainer
 var _lib_count: Label
 var _status: Label
-var _prebake_status: Label
 var _generate_btn: Button
 var _cancel_btn: Button
 var _busy: bool = false
@@ -36,11 +39,6 @@ var _cancel_requested: bool = false
 # it; Re-roll replaces it). Empty when no preview is open.
 var _pending_run: Dictionary = {}
 var _preview_overlay: Control = null
-
-# True when the current preview was adopted from RandomizerPrebake rather than freshly
-# generated — drives the "· prepared" summary suffix. Set/cleared exclusively in
-# _generate_and_preview.
-var _preview_prepared: bool = false
 
 # id → (pseudo-)entry of the most recently generated run, parallel to _pending_run.
 # Needed because part pseudo-entries aren't in RandomizerLibrary — only the video
@@ -67,15 +65,6 @@ func _ready() -> void:
 	anchor_right = 1.0
 	anchor_bottom = 1.0
 	_build_ui()
-	# There is no way back into this scene after a Play: it is instantiated afresh and every
-	# control sits at its default. Without this, Generate would run against a prebake made
-	# with different settings and throw it away.
-	var pre_settings: Dictionary = RandomizerPrebake.held_settings()
-	if not pre_settings.is_empty():
-		_apply_settings(pre_settings)
-	RandomizerPrebake.state_changed.connect(_on_prebake_state_changed)
-	RandomizerPrebake.progress_changed.connect(_on_prebake_progress_changed)
-	_update_prebake_line()  # first sync: the screen can come up MID-bake
 	# Back-fill "parts" on entries imported before the cutting feature existed. Runs
 	# here and not at app start so only opening the randomizer pays for the funscript
 	# analysis (contract §6.4), and before the library_changed hookup so the migration's
@@ -166,12 +155,6 @@ func _build_ui() -> void:
 	UITheme.style_label(_status, UITheme.DARK_TEXT, 13)
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(_status)
-
-	_prebake_status = Label.new()
-	UITheme.style_label(_prebake_status, UITheme.DARK_TEXT, 12)
-	_prebake_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_prebake_status.visible = false
-	root.add_child(_prebake_status)
 
 
 func _build_library_column() -> Control:
@@ -739,19 +722,8 @@ func _on_generate_pressed() -> void:
 # overlay. `force_random` ignores the seed field so Re-roll always differs.
 func _generate_and_preview(force_random: bool) -> void:
 	var settings: Dictionary = _read_settings()
-	_preview_prepared = false
 	if force_random:
 		settings["seed"] = 0
-	else:
-		# A prebaked run for the current settings may already be sitting in
-		# RandomizerPrebake, ready or still baking — adopt it instead of rolling a fresh
-		# one. Re-roll (force_random) never adopts: the user explicitly wants a new draw.
-		var pre: Dictionary = RandomizerPrebake.adopt(settings)
-		if not pre.is_empty():
-			_pending_entries = pre["entries"]
-			_preview_prepared = true
-			_show_preview(pre)
-			return
 	# Resolve the seed here, not in the generator: the expansion (part cutting) and
 	# the generator (round selection) each get their own RandomNumberGenerator, and
 	# both must see the identical seed for a run to be reproducible. Formula copied
@@ -795,7 +767,7 @@ func _play_pending() -> void:
 	var res: Dictionary = _pending_run
 	_close_preview()
 	_set_busy(true)
-	var mat: Dictionary = await _prepare_and_materialize(res)
+	var mat: Dictionary = await _prepare_and_materialize(res, true)
 	if mat.is_empty():
 		return  # helper set the status + cleared busy
 
@@ -807,10 +779,9 @@ func _play_pending() -> void:
 
 	GameState.StartJourney(play)
 	UISound.start_journey()
-	# The next run should roll fresh, so the seed field is cleared for the commission.
-	var next_settings: Dictionary = _read_settings()
-	next_settings["seed"] = 0
-	RandomizerPrebake.schedule(next_settings)
+	# The rest of the run keeps baking during the session. Hand it off BEFORE the scene
+	# change: this screen does not survive it, the autoload does.
+	RandomizerBaker.begin(res, _pending_entries, mat["folder"])
 	Transition.change_scene("res://scenes/game_loop/GameLoop.tscn")
 
 
@@ -840,51 +811,33 @@ func _keep_pending() -> void:
 # Transcodes the run's used clips (deferred; cached) and materializes the temp
 # journey. Returns the materialize dict on success, or {} on failure/cancel (status
 # + busy already handled). Shared by Play and Keep.
-func _prepare_and_materialize(res: Dictionary) -> Dictionary:
-	if not await _prepare_used_media(res["used_ids"]):
+# `partial` = the Play path: only the parts of the first START_BUFFER_ROUNDS rounds are
+# visibly baked, the run folder is materialized partially, and RandomizerBaker takes over
+# the rest. Keep stays full-bake (default false) — nobody is waiting to play there.
+func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Dictionary:
+	var all_ids: Array = res["used_ids"] as Array
+	var ids: Array = all_ids
+	if partial:
+		ids = all_ids.slice(0, mini(START_BUFFER_ROUNDS, all_ids.size()))
+	if not await _prepare_used_media(ids):
 		return {}  # _prepare_used_media set the status + cleared busy
 	RandomizerRun.clear_all()  # wipe prior temp runs
-	var mat: Dictionary = RandomizerRun.materialize(
-		res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
-	)
+	var mat: Dictionary = {}
+	if partial:
+		mat = RandomizerRun.materialize_partial(
+			res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
+		)
+	else:
+		mat = RandomizerRun.materialize(
+			res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
+		)
 	if not bool(mat["ok"]):
 		_set_busy(false)
 		_status.text = "Could not prepare the run (%s)." % str(mat["reason"])
 		return {}
-	RandomizerLibrary.mark_used(res["used_ids"])
+	# ALWAYS the full list: freshness applies to the whole run, not just its start buffer.
+	RandomizerLibrary.mark_used(all_ids)
 	return mat
-
-
-# ── Prebake status line ──────────────────────────────────────────────────────
-
-
-func _on_prebake_state_changed(_state: int) -> void:
-	_update_prebake_line()
-
-
-func _on_prebake_progress_changed(_done: int, _total: int, _name: String) -> void:
-	_update_prebake_line()
-
-
-# Reflects RandomizerPrebake's current state/progress in the dedicated status line
-# below the footer status. Reads state()/progress() directly rather than caching the
-# signal args, so the call right after _ready (before any signal has fired) is correct
-# too — the screen can come up mid-bake.
-func _update_prebake_line() -> void:
-	var state: int = RandomizerPrebake.state()
-	if state == RandomizerPrebake.State.BAKING:
-		var p: Dictionary = RandomizerPrebake.progress()
-		var total: int = int(p.get("total", 0))
-		if total <= 0:
-			_prebake_status.text = "Preparing next run…"
-		else:
-			_prebake_status.text = "Preparing next run %d/%d…" % [int(p.get("done", 0)), total]
-		_prebake_status.visible = true
-	elif state == RandomizerPrebake.State.READY:
-		_prebake_status.text = "Next run ready"
-		_prebake_status.visible = true
-	else:
-		_prebake_status.visible = false
 
 
 # ── Preview overlay ──────────────────────────────────────────────────────────
@@ -936,8 +889,7 @@ func _show_preview(res: Dictionary) -> void:
 	gv.set_graph(JourneyGraph.from_json(res["journey"]))
 
 	var summary := Label.new()
-	# The suffix names the reason Play is about to start (almost) instantly.
-	summary.text = _summary_text(res["summary"]) + (" · prepared" if _preview_prepared else "")
+	summary.text = _summary_text(res["summary"])
 	UITheme.style_label(summary, UITheme.WHITE_SOFT, 14)
 	summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(summary)

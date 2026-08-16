@@ -100,6 +100,10 @@ var _pause_penalty_accum: float = 0.0
 # True while a full-screen overlay (shop / fork / storyboard) is active.
 # Used to suppress gameplay hotkeys that should not fire through an overlay.
 var _is_overlay_open: bool = false
+# True only for the duration of _wait_for_baked_round (progressive baking). The wait image
+# suppresses gameplay hotkeys like any other overlay, but the Esc exit-hold has to stay reachable
+# there — the wait has no timeout, so the menu route is the player's only way out.
+var _bake_waiting: bool = false
 # The current full-screen overlay (storyboard / shop / fork), or null. It is
 # freed by the transition (after the black covers it), not by itself — see
 # _transition_swap.
@@ -711,6 +715,21 @@ func _on_fork_path_chosen(path_index: int) -> void:
 
 
 func _load_current_round() -> void:
+	# Progressive baking: this round's media may still be encoding, or may have failed for good.
+	# Everything below assumes its files are on disk. Without an active baker (normal journeys,
+	# kept runs) the answer is always READY and this block is an integer compare — no await, no
+	# extra frame. Covers every route into a round: the first one, one after a shop / storyboard /
+	# fork / checkpoint, and one after a skipped round.
+	var bake_idx: int = GameState.RoundNumber - 1
+	var bake_state: int = RandomizerBaker.round_state(bake_idx)
+	if bake_state == RandomizerBaker.RoundState.PENDING:
+		bake_state = await _wait_for_baked_round(bake_idx)
+		if bake_state == RandomizerBaker.RoundState.PENDING:
+			return  # session was cancelled while we waited — load nothing, the scene is going away
+	if bake_state == RandomizerBaker.RoundState.FAILED:
+		_skip_failed_round()
+		return
+
 	var round: Dictionary = GameState.CurrentRound().duplicate(true)
 	if round.is_empty():
 		push_error("GameLoop: GameState has no current round — returning to menu")
@@ -918,6 +937,113 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	# A pool encounter card (passed in as the cover) held over the same load — fade it out to reveal too.
 	if cover != null and is_instance_valid(cover):
 		_fade_and_free_overlay(cover)
+
+
+# ---------------------------------------------------------------------------
+# Progressive baking (randomizer runs)
+#
+# A randomizer run starts playing while RandomizerBaker is still encoding the
+# rest of its clips. Overtaking the encoder is the rare edge case; when it
+# happens the loop parks on a black frame until the round's media lands.
+# ---------------------------------------------------------------------------
+
+
+# Blocks until video round `index` is baked or has finally failed. Cuts hard to black with a
+# plain line fed from RandomizerBaker.progress() and freezes video, funscript and Handy. No
+# timeout — the player bails out over the existing menu route. Returns the resolved RoundState:
+# READY or FAILED normally, PENDING when the session was cancelled mid-wait (abort signal, see
+# the tail of this function).
+func _wait_for_baked_round(index: int) -> int:
+	# Hard cut instead of a fade: there is nothing left to fade out — the outgoing round is
+	# already over (or never started), and its last frame must not sit under the wait line.
+	# _transition is deliberately NOT touched here (neither modulate nor mouse_filter): its layer
+	# is 100, i.e. ABOVE both the wait image and the exit-hold card, and on the _ready path nobody
+	# would ever fade it back out. The black comes from this function's own ColorRect; black
+	# continuity for a following swap is set by _on_round_ended after the wait returns.
+	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
+	_video.volume_db = -40.0
+	_hud.modulate.a = 0.0
+	# Freeze the outputs and mute the gameplay hotkeys exactly like a pre-round gate does
+	# (boss intro / checkpoint banner); _bake_waiting reopens the Esc exit alone.
+	_halt_playback_for_gate()
+	_handy_pause()
+	_is_overlay_open = true
+	_bake_waiting = true
+
+	# Own layer: the wait can happen INSIDE a swap_action, where _transition fades out from under
+	# us. Layer 3 sits above the map (2) and below the exit-hold card (4), which has to stay
+	# visible while the player holds Esc. The click blocker sits on this ColorRect — it dies
+	# with the layer, unlike a mouse_filter left behind on _transition.
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.layer = 3
+	add_child(layer)
+	var backdrop: ColorRect = ColorRect.new()
+	backdrop.color = Color(0, 0, 0, 1)
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	layer.add_child(backdrop)
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(center)
+	var lbl: Label = Label.new()
+	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 16, false)
+	center.add_child(lbl)
+
+	# Polled rather than wired to round_ready/progress_changed: no connect/disconnect pair on an
+	# autoload signal that would have to survive a scene change mid-wait — this coroutine simply
+	# dies with the node. One dictionary read per frame, in a state that normally never happens.
+	while (
+		is_inside_tree()
+		and RandomizerBaker.round_state(index) == RandomizerBaker.RoundState.PENDING
+	):
+		lbl.text = _bake_wait_text()
+		await get_tree().process_frame
+
+	_bake_waiting = false
+	_is_overlay_open = false
+	# Undo the hard cut ourselves. _transition_swap's own restore hangs off `if _video.is_playing()`
+	# and does not run on the _ready path, nor mid-swap after a skip chain — without these three
+	# lines the following round would play black and silent. On the round→round path they are safe:
+	# the swap that follows resets volume/modulate and fades them in anyway.
+	_video.volume_db = 0.0
+	_video.modulate = Color.WHITE
+	_hud.modulate.a = 1.0
+	layer.queue_free()
+	# Deliberately no Resume / _handy_resume / unpause here: both continuations rebuild that state
+	# themselves — _begin_round clears the pause and reloads scripts + video, the skip path
+	# re-dispatches through _load_current_item. Same shape as the boss intro's BEGIN handler.
+
+	# The loop also ends when the session was cancelled mid-wait (Esc-hold → _go_to_menu →
+	# session_ended), after which round_state() reports READY for every index and we would happily
+	# start the next round under the running scene change. PENDING is the abort signal — a regular
+	# wait never returns it, and both call sites bail out on it.
+	if not RandomizerBaker.active():
+		return RandomizerBaker.RoundState.PENDING
+	return RandomizerBaker.round_state(index)
+
+
+# The wait line. Deliberately plain: in the normal case it is never seen.
+func _bake_wait_text() -> String:
+	var p: Dictionary = RandomizerBaker.progress()
+	var total: int = int(p.get("total", 0))
+	if total <= 0:
+		return "Preparing next round…"
+	return "Preparing next round… %d/%d" % [int(p.get("done", 0)), total]
+
+
+# Skips a round whose media could not be baked: on to the next node, without comment. Same shape
+# as the loop_start / loop_end passthrough in _load_current_item.
+func _skip_failed_round() -> void:
+	if GameState.IsLastRound():
+		_transition_to_end_screen()
+		return
+	GameState.Advance()
+	if GameState.IsSequenceDone():
+		_transition_to_end_screen()
+		return
+	_load_current_item()
 
 
 # ---------------------------------------------------------------------------
@@ -2313,6 +2439,21 @@ func _on_round_ended(skipped: bool = false) -> void:
 	if GameState.IsLastRound():
 		_transition_to_end_screen()
 		return
+	# Progressive baking: if the NEXT video round is still PENDING, the swap must not even start —
+	# its fade-out would expose the dead still frame behind the wait image. Cut hard to black, wait
+	# there, and only then swap normally. Index without -1: we are still ON the old round, so the
+	# next video round carries exactly GameState.RoundNumber. Only the abort signal is acted on — a
+	# round that FAILS while we wait is entered by Advance() and skipped by the gate in
+	# _load_current_round.
+	if RandomizerBaker.round_state(GameState.RoundNumber) == RandomizerBaker.RoundState.PENDING:
+		var next_state: int = await _wait_for_baked_round(GameState.RoundNumber)
+		if next_state == RandomizerBaker.RoundState.PENDING:
+			return  # session was cancelled while we waited — no swap, the scene is going away
+		# Black continuity: the wait image is gone, and the old (faded-out) frame must not flash
+		# before the swap has built its own black. This line lives at the call site, NOT in
+		# _wait_for_baked_round — there it would never be taken back on the _ready path, because
+		# nothing else drives the transition overlay (layer 100) there.
+		_transition.modulate.a = 1.0
 	await _transition_swap(
 		func() -> void:
 			GameState.Advance()
@@ -2613,6 +2754,10 @@ func _go_to_menu() -> void:
 	if _test_mode:
 		_exit_test_to_builder()
 		return
+	# Progressive baking: the session is over — stop the background bake. The run folder stays put
+	# (marker included) and is cleared by the next generate or the next app start.
+	if RandomizerBaker.active():
+		RandomizerBaker.session_ended()
 	# Quitting mid-journey is an abandoned run — unless we already accounted for
 	# this run (completed it, or left via Save & Quit to resume later).
 	if not _run_accounted:
@@ -2630,6 +2775,10 @@ func _transition_to_end_screen() -> void:
 	if _test_mode:
 		_exit_test_to_builder()
 		return
+	# Progressive baking: the session is over — stop the background bake. The run folder stays put
+	# (marker included) and is cleared by the next generate or the next app start.
+	if RandomizerBaker.active():
+		RandomizerBaker.session_ended()
 	_record_run(true)  # completed run → scoreboard
 	_capture_completion_carryover()  # feature #5: stash Part-1 end-state so an installed sequel can resume
 	JourneySaveService.delete_save(GameState.Journey.get("folder_name", ""))
@@ -3432,8 +3581,10 @@ func _input(event: InputEvent) -> void:
 					# Esc: close the Quick Settings drawer or inventory if open, otherwise begin the
 					# hold-to-exit (a stray tap can't dump the run; releasing cancels — see the key-up
 					# branch below). Overlay screens (shop/storyboard) capture Esc themselves before it
-					# reaches here; the fork screen intentionally does not (no escape).
-					if not _is_overlay_open:
+					# reaches here; the fork screen intentionally does not (no escape). The bake
+					# wait mutes the hotkeys through _is_overlay_open too, but it has no timeout —
+					# Esc stays open there so the menu route is always reachable.
+					if not _is_overlay_open or _bake_waiting:
 						if is_instance_valid(_session_panel):
 							_session_panel.close()
 						elif is_instance_valid(_inventory_panel):
