@@ -50,6 +50,98 @@ const DEFAULT_CFG: Dictionary = {
 }
 
 
+## Read-only, flattened view of the normalized action list, built once per segment()
+## call. It exists purely for speed: the passes below ask the same two questions over
+## and over — "how fast is this index range?" and "what is the tempo score at this
+## action?" — and answering them by slicing the action array was quadratic on scripts
+## that keep changing tempo without ever pausing (the tempo pass rescans its whole
+## block on every recursion level, and every candidate paid for two Array.slice()
+## allocations plus two summation loops).
+##
+## The dictionaries are gone; what survives is what the passes read.
+class _Prep:
+	extends RefCounted
+
+	# Timestamps, STRICTLY ascending — _normalized() collapsed the duplicates, which
+	# is what lets every "first/last index at time t" question be a bsearch and every
+	# window boundary be monotone in the index.
+	var at: PackedInt64Array
+
+	# travel[i] = sum of |pos delta| over acts[0..i], i.e. FunscriptIntensity's `dist`
+	# accumulated from the very first action instead of from a slice's first action.
+	var travel: PackedFloat64Array
+
+	# win_lo[i] / win_hi[i] — the ±tempo_window_ms window around action i, expressed
+	# as indices and NOT clamped to any block. See _tempo_blocks() for why the block
+	# clamp can be applied later instead of baked in here.
+	var win_lo: PackedInt32Array
+	var win_hi: PackedInt32Array
+
+	# delta[i] — the tempo score of a cut at action i using the unclamped windows.
+	var delta: PackedFloat64Array
+
+	func _init(acts: Array, win_ms: int) -> void:
+		var n: int = acts.size()
+		at.resize(n)
+		travel.resize(n)
+		win_lo.resize(n)
+		win_hi.resize(n)
+		delta.resize(n)
+
+		var prev: float = 0.0
+		var sum: float = 0.0
+		for i in n:
+			var a: Dictionary = acts[i]
+			at[i] = int(a.get("at", 0))
+			var pos: float = float(a.get("pos", 0))
+			if i > 0:
+				sum += absf(pos - prev)
+			travel[i] = sum
+			prev = pos
+
+		# Both window edges move monotonically with i, so one pass with two trailing
+		# pointers replaces the per-candidate linear walk the old _window_before() /
+		# _window_after() did. The `lo < i` / `hi >= i` clamps reproduce those walks'
+		# own guards, which never let a window drop its centre action.
+		var lo: int = 0
+		var hi: int = 0
+		for i in n:
+			var lo_at: int = at[i] - win_ms
+			while lo < i and at[lo] < lo_at:
+				lo += 1
+			win_lo[i] = lo
+			var hi_at: int = at[i] + win_ms
+			if hi < i:
+				hi = i
+			while hi + 1 < n and at[hi + 1] <= hi_at:
+				hi += 1
+			win_hi[i] = hi
+
+		for i in n:
+			delta[i] = score(win_lo[i], i, win_hi[i])
+
+	# FunscriptIntensity.average_speed() of the actions at[a..b], inclusive, without
+	# materialising them. Same terms in the same order (the prefix difference cancels
+	# everything before a), same division, and the same two zero cases: fewer than two
+	# actions, or a non-positive span. Positions are integers in practice, so the
+	# partial sums are exact and the subtraction is exact too.
+	func speed(a: int, b: int) -> float:
+		if b <= a:
+			return 0.0
+		var span_ms: float = float(at[b] - at[a])
+		if span_ms <= 0.0:
+			return 0.0
+		return (travel[b] - travel[a]) / (span_ms / 1000.0)
+
+	# Tempo score of a cut at action m whose windows reach to `lo` and `hi`.
+	# Relative to the faster side; the floor of 1.0 keeps a near-silent pair from
+	# turning a rounding difference into a 100 % change.
+	func score(lo: int, m: int, hi: int) -> float:
+		var left: float = speed(lo, m)
+		var right: float = speed(m, hi)
+		return absf(right - left) / maxf(1.0, maxf(left, right))
+
+
 # Segments a raw funscript action list [{at:ms, pos:0-100}, …] into beats.
 # Returns [] for anything unusable (empty, one action, all too short, all too slow).
 static func segment(actions: Array, cfg: Dictionary = {}) -> Array:
@@ -66,23 +158,23 @@ static func segment(actions: Array, cfg: Dictionary = {}) -> Array:
 	var acts: Array = _normalized(actions)
 	if acts.size() < 2:
 		return []
+	var prep := _Prep.new(acts, win_ms)
 
-	# Blocks are index ranges [x, y] into `acts`, inclusive on both ends. Until the
-	# final filter they always tile the whole list, which is what makes merging two
-	# neighbours a plain union of adjacent ranges.
+	# Blocks are index ranges [x, y] into the action list, inclusive on both ends.
+	# Until the final filter they always tile the whole list, which is what makes
+	# merging two neighbours a plain union of adjacent ranges.
 	var blocks: Array = []
-	for gap_block: Vector2i in _gap_blocks(acts, gap_ms):
-		blocks.append_array(_tempo_blocks(acts, gap_block, min_ms, max_ms, win_ms, delta_min))
+	for gap_block: Vector2i in _gap_blocks(prep, gap_ms):
+		blocks.append_array(_tempo_blocks(prep, gap_block, min_ms, max_ms, win_ms, delta_min))
 
 	var beats: Array = []
-	for blk: Vector2i in _merge_fragments(acts, blocks, min_ms):
-		var in_ms: int = _at(acts, blk.x)
-		var out_ms: int = _at(acts, blk.y)
+	for blk: Vector2i in _merge_fragments(prep, blocks, min_ms):
+		var in_ms: int = prep.at[blk.x]
+		var out_ms: int = prep.at[blk.y]
 		# Still too short after merging (no neighbour, or the neighbours were used up).
 		if blk.y - blk.x < 1 or out_ms - in_ms < min_ms:
 			continue
-		var slice: Array = acts.slice(blk.x, blk.y + 1)
-		var speed: float = FunscriptIntensity.average_speed(slice)
+		var speed: float = prep.speed(blk.x, blk.y)
 		if speed < min_speed:
 			continue
 		var beat: Dictionary = {
@@ -90,7 +182,7 @@ static func segment(actions: Array, cfg: Dictionary = {}) -> Array:
 			"out_ms": out_ms,
 			"speed": speed,
 			"intensity": FunscriptIntensity.bucket(speed),
-			"action_count": slice.size(),
+			"action_count": blk.y - blk.x + 1,
 		}
 		beats.append(beat)
 	return beats
@@ -126,14 +218,15 @@ static func _normalized(actions: Array) -> Array:
 
 # Step 1 — a pause longer than the threshold ends a block. Strictly longer: a gap of
 # exactly gap_ms is still rhythm.
-static func _gap_blocks(acts: Array, gap_ms: int) -> Array:
+static func _gap_blocks(prep: _Prep, gap_ms: int) -> Array:
+	var at: PackedInt64Array = prep.at
 	var out: Array = []
 	var start: int = 0
-	for i in range(1, acts.size()):
-		if _at(acts, i) - _at(acts, i - 1) > gap_ms:
+	for i in range(1, at.size()):
+		if at[i] - at[i - 1] > gap_ms:
 			out.append(Vector2i(start, i - 1))
 			start = i
-	out.append(Vector2i(start, acts.size() - 1))
+	out.append(Vector2i(start, at.size() - 1))
 	return out
 
 
@@ -142,36 +235,74 @@ static func _gap_blocks(acts: Array, gap_ms: int) -> Array:
 # differs most from the window after it. Both halves must stay usable, so a change
 # too close to an edge is not a candidate. Each split moves at least one action to
 # either side, which is what terminates the recursion.
+#
+# The naive form scored every candidate from scratch on every recursion level, which
+# is quadratic when the sharpest change sits near a block start (the big remainder is
+# rescanned in full, over and over). Two observations make the rescan cheap without
+# changing which action wins:
+#
+#  1. A candidate's score depends ONLY on its two windows — never on the block — as
+#     long as neither window is clamped by a block edge. Those scores are therefore
+#     the same on every recursion level and are precomputed once, in prep.delta.
+#  2. Clamping happens exactly to the candidates within win_ms of an edge, and "within
+#     win_ms of an edge" is monotone in at[m]. So the clamped candidates form a prefix
+#     and a suffix of the candidate range; only those are rescored here, and they are
+#     rescored with the identical expression, so an over-wide zone would still give
+#     the identical number.
+#
+# The three sub-scans below therefore visit the same candidates, in the same ascending
+# order, with the same values as the single loop they replace — and keep the same
+# `strictly greater` comparison, so a tie still keeps the earliest action.
 static func _tempo_blocks(
-	acts: Array, blk: Vector2i, min_ms: int, max_ms: int, win_ms: int, delta_min: float
+	prep: _Prep, blk: Vector2i, min_ms: int, max_ms: int, win_ms: int, delta_min: float
 ) -> Array:
-	var in_ms: int = _at(acts, blk.x)
-	var out_ms: int = _at(acts, blk.y)
+	var at: PackedInt64Array = prep.at
+	var in_ms: int = at[blk.x]
+	var out_ms: int = at[blk.y]
 	if out_ms - in_ms <= max_ms:
 		return [blk]
 
+	# Candidate range. From blk.x + 1: the cut hands action m to the right half, so at
+	# least one action has to stay on the left. The two min_ms edge exclusions are
+	# monotone in at[m], hence a binary search each instead of a skipping scan.
+	var first: int = maxi(blk.x + 1, at.bsearch(in_ms + min_ms, true))
+	var last: int = mini(blk.y, at.bsearch(out_ms - min_ms, false) - 1)
+
 	var best: int = -1
 	var best_delta: float = -1.0
-	# From blk.x + 1: the cut hands action m to the right half, so at least one action
-	# has to stay on the left.
-	for m in range(blk.x + 1, blk.y + 1):
-		var at: int = _at(acts, m)
-		if at - in_ms < min_ms or out_ms - at < min_ms:
-			continue
-		var left: float = FunscriptIntensity.average_speed(_window_before(acts, blk, m, win_ms))
-		var right: float = FunscriptIntensity.average_speed(_window_after(acts, blk, m, win_ms))
-		# Relative to the faster side; the floor of 1.0 keeps a near-silent pair from
-		# turning a rounding difference into a 100 % change.
-		var delta: float = absf(right - left) / maxf(1.0, maxf(left, right))
-		if delta > best_delta:  # strictly greater → a tie keeps the earlier action
-			best_delta = delta
-			best = m
+	if first <= last:
+		# Last candidate whose backward window still reaches past blk.x, i.e. the last
+		# one with at[m] <= at[blk.x - 1] + win_ms. At the list head nothing is clamped.
+		var edge_l: int = blk.x - 1
+		if blk.x > 0:
+			edge_l = mini(last, at.bsearch(at[blk.x - 1] + win_ms, false) - 1)
+		# Mirror image: first candidate whose forward window reaches past blk.y.
+		var edge_r: int = blk.y + 1
+		if blk.y + 1 < at.size():
+			edge_r = maxi(first, at.bsearch(at[blk.y + 1] - win_ms, true))
+
+		for m in range(first, mini(edge_l, last) + 1):
+			var d: float = prep.score(maxi(blk.x, prep.win_lo[m]), m, mini(blk.y, prep.win_hi[m]))
+			if d > best_delta:
+				best_delta = d
+				best = m
+		var deltas: PackedFloat64Array = prep.delta
+		for m in range(maxi(first, edge_l + 1), mini(last, edge_r - 1) + 1):
+			var d: float = deltas[m]
+			if d > best_delta:
+				best_delta = d
+				best = m
+		for m in range(maxi(first, edge_r), last + 1):
+			var d: float = prep.score(maxi(blk.x, prep.win_lo[m]), m, mini(blk.y, prep.win_hi[m]))
+			if d > best_delta:
+				best_delta = d
+				best = m
 
 	if best < 0 or best_delta <= delta_min:
-		return _even_blocks(acts, blk, max_ms)
+		return _even_blocks(prep, blk, max_ms)
 	return (
-		_tempo_blocks(acts, Vector2i(blk.x, best - 1), min_ms, max_ms, win_ms, delta_min)
-		+ _tempo_blocks(acts, Vector2i(best, blk.y), min_ms, max_ms, win_ms, delta_min)
+		_tempo_blocks(prep, Vector2i(blk.x, best - 1), min_ms, max_ms, win_ms, delta_min)
+		+ _tempo_blocks(prep, Vector2i(best, blk.y), min_ms, max_ms, win_ms, delta_min)
 	)
 
 
@@ -179,15 +310,15 @@ static func _tempo_blocks(
 # survive as one huge beat. Divides the span into equal pieces and snaps each ideal
 # cut onto the nearest action; snaps that collide or would leave an empty block are
 # dropped. No recursion: a piece that stays too long has already refused to be cut.
-static func _even_blocks(acts: Array, blk: Vector2i, max_ms: int) -> Array:
-	var in_ms: int = _at(acts, blk.x)
-	var span: int = _at(acts, blk.y) - in_ms
+static func _even_blocks(prep: _Prep, blk: Vector2i, max_ms: int) -> Array:
+	var in_ms: int = prep.at[blk.x]
+	var span: int = prep.at[blk.y] - in_ms
 	var pieces: int = maxi(1, ceili(float(span) / float(maxi(1, max_ms))))
 	var out: Array = []
 	var start: int = blk.x
 	for p in range(1, pieces):
 		var ideal: int = in_ms + roundi(float(span) * float(p) / float(pieces))
-		var m: int = _nearest_action(acts, blk, ideal)
+		var m: int = _nearest_action(prep, blk, ideal)
 		if m <= start:
 			continue
 		out.append(Vector2i(start, m - 1))
@@ -200,19 +331,20 @@ static func _even_blocks(acts: Array, blk: Vector2i, max_ms: int) -> Array:
 # closest to its own, lowest index first, until nothing short is left to merge. The
 # order matters: merging changes the speed of the survivor and therefore what the
 # next fragment finds attractive.
-static func _merge_fragments(acts: Array, blocks: Array, min_ms: int) -> Array:
+static func _merge_fragments(prep: _Prep, blocks: Array, min_ms: int) -> Array:
+	var at: PackedInt64Array = prep.at
 	var out: Array = blocks.duplicate()
 	while out.size() > 1:
 		var k: int = -1
 		for i in out.size():
 			var b: Vector2i = out[i]
-			if _at(acts, b.y) - _at(acts, b.x) < min_ms:
+			if at[b.y] - at[b.x] < min_ms:
 				k = i
 				break
 		if k < 0:
 			break
 		var cur: Vector2i = out[k]
-		if _prefers_previous(acts, out, k):
+		if _prefers_previous(prep, out, k):
 			var prev: Vector2i = out[k - 1]
 			out[k - 1] = Vector2i(prev.x, cur.y)
 			out.remove_at(k)
@@ -223,54 +355,33 @@ static func _merge_fragments(acts: Array, blocks: Array, min_ms: int) -> Array:
 	return out
 
 
-static func _prefers_previous(acts: Array, blocks: Array, k: int) -> bool:
+static func _prefers_previous(prep: _Prep, blocks: Array, k: int) -> bool:
 	if k == 0:
 		return false
 	if k == blocks.size() - 1:
 		return true
-	var mine: float = _speed_of(acts, blocks[k])
-	var to_prev: float = absf(mine - _speed_of(acts, blocks[k - 1]))
-	var to_next: float = absf(mine - _speed_of(acts, blocks[k + 1]))
+	var mine: float = _speed_of(prep, blocks[k])
+	var to_prev: float = absf(mine - _speed_of(prep, blocks[k - 1]))
+	var to_next: float = absf(mine - _speed_of(prep, blocks[k + 1]))
 	return to_prev <= to_next  # tie → the previous block
 
 
-static func _speed_of(acts: Array, blk: Vector2i) -> float:
-	return FunscriptIntensity.average_speed(acts.slice(blk.x, blk.y + 1))
-
-
-# The block's actions in [at(m) - win_ms, at(m)] resp. [at(m), at(m) + win_ms].
-# Both include action m, so a window pair shares exactly the split point.
-static func _window_before(acts: Array, blk: Vector2i, m: int, win_ms: int) -> Array:
-	var lo: int = _at(acts, m) - win_ms
-	var i: int = m
-	while i > blk.x and _at(acts, i - 1) >= lo:
-		i -= 1
-	return acts.slice(i, m + 1)
-
-
-static func _window_after(acts: Array, blk: Vector2i, m: int, win_ms: int) -> Array:
-	var hi: int = _at(acts, m) + win_ms
-	var i: int = m
-	while i < blk.y and _at(acts, i + 1) <= hi:
-		i += 1
-	return acts.slice(m, i + 1)
+static func _speed_of(prep: _Prep, blk: Vector2i) -> float:
+	return prep.speed(blk.x, blk.y)
 
 
 # Index of the block's action closest to t_ms; on a tie the earlier one, so the
 # result never depends on scan direction.
-static func _nearest_action(acts: Array, blk: Vector2i, t_ms: int) -> int:
+static func _nearest_action(prep: _Prep, blk: Vector2i, t_ms: int) -> int:
+	var at: PackedInt64Array = prep.at
 	var lo: int = blk.x
 	var hi: int = blk.y
 	while lo < hi:
 		var mid: int = (lo + hi) / 2
-		if _at(acts, mid) < t_ms:
+		if at[mid] < t_ms:
 			lo = mid + 1
 		else:
 			hi = mid
-	if lo > blk.x and t_ms - _at(acts, lo - 1) <= _at(acts, lo) - t_ms:
+	if lo > blk.x and t_ms - at[lo - 1] <= at[lo] - t_ms:
 		return lo - 1
 	return lo
-
-
-static func _at(acts: Array, i: int) -> int:
-	return int((acts[i] as Dictionary).get("at", 0))
