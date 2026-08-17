@@ -50,6 +50,39 @@ static func points_in_window(points: Array, from_idx: int, until_t: int) -> Dict
 	return {"batch": batch, "next_idx": i}
 
 
+# Interpolated position (0-100) at time `t` across a time-sorted point stream; clamped to the ends.
+# Used to read where the device currently is so a replacing override can ease in from there.
+static func sample_pos(points: Array, t: int) -> int:
+	if points.is_empty():
+		return 50
+	if t <= int((points[0] as Dictionary)["t"]):
+		return int((points[0] as Dictionary)["x"])
+	var last: Dictionary = points[points.size() - 1]
+	if t >= int(last["t"]):
+		return int(last["x"])
+	var i: int = index_at_or_after(points, t)  # first point at/after t → bracket is [i-1, i]
+	var a: Dictionary = points[i - 1]
+	var b: Dictionary = points[i]
+	var ta: int = int(a["t"])
+	var tb: int = int(b["t"])
+	if tb <= ta:
+		return int(b["x"])
+	var f: float = float(t - ta) / float(tb - ta)
+	return clampi(roundi(lerpf(float(a["x"]), float(b["x"]), f)), 0, 100)
+
+
+# Prepends a bridge point at `from_pos` (where the device currently is) and shifts the stream back by
+# `bridge_ms`, so the device eases from its current position into the script over that window instead of
+# snapping to the script's first point — the jerk when one override flush-replaces another (or a round).
+static func bridge_from(points: Array, from_pos: int, bridge_ms: int) -> Array:
+	if points.is_empty() or bridge_ms <= 0 or from_pos < 0:
+		return points
+	var out: Array = [{"t": 0, "x": clampi(from_pos, 0, 100)}]
+	for p: Variant in points:
+		out.append({"t": int((p as Dictionary)["t"]) + bridge_ms, "x": int((p as Dictionary)["x"])})
+	return out
+
+
 # Applies the active stroke effects to a point stream so the Handy plays the
 # MODIFIED script (items / curses / boss modifiers reach the device). `effects`
 # is InventoryService.GetActiveEffects()'s shape — [{kind, factor?/min?/max?}];

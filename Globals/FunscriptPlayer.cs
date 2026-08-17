@@ -194,6 +194,7 @@ public partial class FunscriptPlayer : Node
     private bool _easing = false;
     private double _easeStartMs = 0.0;
     private double _easeDurationMs = 0.0;
+    private float _easeFromPos = 50f; // the ease blends FROM here (the device's current pos), not home
     private const float EaseSpeedUnitsPerMs = 40f / 1000f; // 40 units/sec
     private const double EaseMinMs = 50.0;
     private const double EaseMaxMs = 1500.0;
@@ -763,7 +764,8 @@ public partial class FunscriptPlayer : Node
         _actionIndex = 0;
         _interpIndex = 0;
         _clockPrimed = false;
-        _lastSerialTarget = _homePosition;
+        // _lastSerialTarget is deliberately NOT reset — it holds the device's current stroke position so
+        // _StartEaseIn below eases the override IN from there instead of snapping via home.
         _strokeActivity = 0.0;
 
         _overrideActive = true;
@@ -806,7 +808,7 @@ public partial class FunscriptPlayer : Node
         _positionMs = posMs;
         _SeekIndicesTo(posMs);
         _clockPrimed = true;
-        _lastSerialTarget = _homePosition;
+        // Keep _lastSerialTarget (the override's last position) so the round eases back IN from there.
 
         _overrideActive = false;
         _overrideImmune = false;
@@ -937,8 +939,11 @@ public partial class FunscriptPlayer : Node
         if (_actions.Count == 0)
             return;
 
+        // Ease FROM where the device currently is (last commanded stroke) so a mid-round override — or one
+        // override replacing another — glides into the new script instead of snapping via home.
+        _easeFromPos = (float)_lastSerialTarget;
         int idx = Math.Min(_actionIndex, _actions.Count - 1);
-        float gap = Math.Abs(_actions[idx].Pos - _homePosition);
+        float gap = Math.Abs(_actions[idx].Pos - _easeFromPos);
 
         if (gap <= 2f)
         {
@@ -1555,7 +1560,7 @@ public partial class FunscriptPlayer : Node
         double elapsed = _positionMs - _easeStartMs;
         float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
         float smooth = t * t * (3f - 2f * t); // smoothstep (ease-in-out Hermite) — natural for device motion
-        return (int)Math.Round(_homePosition + (pos - _homePosition) * smooth);
+        return (int)Math.Round(_easeFromPos + (pos - _easeFromPos) * smooth);
     }
 
     // Linearly interpolates the processed stroke position at `now` between the bracketing keyframes

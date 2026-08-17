@@ -482,13 +482,17 @@ public partial class InventoryService : Node
             return true;
         }
 
-        // Override items hand off to GameLoop's takeover coordinator (it loads the bundled funscript
-        // and plays it over the round) rather than joining the active-effect list. Consumed here.
+        // Override items hand off to GameLoop's takeover coordinator (it loads the bundled funscript and
+        // plays it over the round). A PLAIN override is done here; one that ALSO bundles effects falls
+        // through to apply them (for the override's duration) alongside the device takeover.
         if ((item.ContainsKey("category") ? item["category"].AsString() : "") == "override")
         {
             EmitSignal(SignalName.OverrideActivated, item.ContainsKey("id") ? item["id"].AsString() : "");
-            EmitSignal(SignalName.InventoryChanged);
-            return true;
+            if (!item.ContainsKey("effects") || item["effects"].AsGodotArray().Count == 0)
+            {
+                EmitSignal(SignalName.InventoryChanged);
+                return true;
+            }
         }
 
         // Wildcard resolves to a random concrete modifier at activation time: the

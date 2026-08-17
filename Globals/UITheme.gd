@@ -458,6 +458,9 @@ func build_centered_modal(
 	modal.anchor_right = 1.0
 	modal.anchor_bottom = 1.0
 	modal.mouse_filter = Control.MOUSE_FILTER_STOP
+	# So the journey builder can tell a modal is open and swallow stray OS file drops (which arrive via a
+	# viewport signal that ignores mouse_filter) instead of bulk-importing rounds behind the modal.
+	modal.add_to_group("ui_modal")
 
 	var backdrop: ColorRect = ColorRect.new()
 	backdrop.color = Color(0.0, 0.0, 0.0, backdrop_alpha)

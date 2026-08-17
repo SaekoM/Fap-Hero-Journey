@@ -69,3 +69,46 @@ func test_stroke_only_override_round_trips() -> void:
 	assert_str(str(scripts["main"])).is_equal("content/a.funscript")
 	assert_bool((scripts["axes"] as Dictionary).is_empty()).is_true()
 	assert_bool((scripts["vibes"] as Dictionary).is_empty()).is_true()
+
+
+# An override can ALSO carry an effects bundle (applied while it plays) — it round-trips like a modifier's.
+func test_override_carries_effects_bundle() -> void:
+	var item := {
+		"id": "x",
+		"category": "override",
+		"scripts": {"main": "content/a.funscript"},
+		"effects": [{"kind": "score_multiplier", "factor": 2.0}, {"kind": "blackout"}],
+	}
+	var back: Dictionary = JourneyData.parse_journey_item(JourneyData.coerce_journey_item(item))
+	var effects: Array = back["effects"]
+	assert_int(effects.size()).is_equal(2)
+	assert_str(str((effects[0] as Dictionary)["kind"])).is_equal("score_multiplier")
+	assert_str(str((effects[1] as Dictionary)["kind"])).is_equal("blackout")
+
+
+# The trim window (lift a section out of a longer script) round-trips through the disk envelope.
+func test_override_trim_window_round_trips() -> void:
+	var item := {
+		"id": "x",
+		"category": "override",
+		"scripts": {"main": "content/a.funscript"},
+		"trim": {"in_ms": 4000, "out_ms": 12000},
+	}
+	var back: Dictionary = JourneyData.parse_journey_item(JourneyData.coerce_journey_item(item))
+	var trim: Dictionary = back["trim"]
+	assert_int(int(trim["in_ms"])).is_equal(4000)
+	assert_int(int(trim["out_ms"])).is_equal(12000)
+
+
+# apply_override_trim lifts + rebases the window; a full/empty window is a pass-through.
+func test_apply_override_trim() -> void:
+	var actions := [Vector2(0, 0), Vector2(1000, 100), Vector2(2000, 0), Vector2(3000, 100)]
+	var cut: Array = JourneyData.apply_override_trim(actions, {"in_ms": 1000, "out_ms": 2000})
+	assert_int((cut[0] as Vector2).x).is_equal(0)  # rebased to 0
+	assert_int((cut[cut.size() - 1] as Vector2).x).is_equal(1000)  # 2000 − 1000 in-point
+	# No window, or a window covering the whole clip → the original array, untouched.
+	assert_int(JourneyData.apply_override_trim(actions, {}).size()).is_equal(4)
+	(
+		assert_int(JourneyData.apply_override_trim(actions, {"in_ms": 0, "out_ms": 3000}).size())
+		. is_equal(4)
+	)

@@ -49,6 +49,7 @@ const REQUEST_TIMEOUT_S: float = 10.0
 # ~9-call handshake that delayed the device by several seconds at every round start.
 const RESYNC_AFTER_MS: int = 600000  # 10 min
 const RECOVER_AFTER_FAILURES: int = 2  # consecutive stream-call failures before a full re-establish
+const OVERRIDE_BRIDGE_MS: int = 200  # ease-in window prepended to an override so it doesn't snap-jump
 
 var _connected: bool = false
 var _clock_offset_ms: int = 0  # device/server clock offset from /hstp/clocksync
@@ -447,6 +448,12 @@ func is_override_active() -> bool:
 func start_override(main_points: Array, immune: bool, override_ms_source: Callable) -> bool:
 	if not _playing:
 		return false
+	# Where the device is RIGHT NOW (end of the outgoing round / override) — read from the current stream
+	# before we swap it, so the new override eases in from there instead of the device snapping to the new
+	# script's first point (the jerk when one override flush-replaces another).
+	var from_pos: int = (
+		HandyPoints.sample_pos(_transformed, _last_video_ms) if not _transformed.is_empty() else -1
+	)
 	if not _override_active:  # first takeover — a REPLACE keeps the existing round stash
 		_saved_points = _points
 		_saved_effects = _effects
@@ -456,6 +463,7 @@ func start_override(main_points: Array, immune: bool, override_ms_source: Callab
 	_points = HandyPoints.actions_to_points(main_points)
 	_effects = [] if immune else _saved_effects.duplicate()
 	_rebuild_transformed()
+	_transformed = HandyPoints.bridge_from(_transformed, from_pos, OVERRIDE_BRIDGE_MS)
 	_send_idx = 0
 	_video_ms_source = override_ms_source
 	_deferred_play = false

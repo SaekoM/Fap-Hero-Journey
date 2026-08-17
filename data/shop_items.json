@@ -143,5 +143,75 @@
 		"price":        30,
 		"duration_ms":  0,
 		"kind":         "cleanse"
+	},
+	{
+		"id":                "the_undertow",
+		"name":              "The Undertow",
+		"description":       "A shallow, restless pull that never lets up.",
+		"category":          "override",
+		"price":             30,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/the_undertow/main.funscript" }
+	},
+	{
+		"id":                "live_wire",
+		"name":              "Live Wire",
+		"description":       "A full-length buzz — relentless and electric.",
+		"category":          "override",
+		"price":             50,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/live_wire/main.funscript" }
+	},
+	{
+		"id":                "full_throttle",
+		"name":              "Full Throttle",
+		"description":       "Long, steady full strokes at full power.",
+		"category":          "override",
+		"price":             45,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/full_throttle/main.funscript" }
+	},
+	{
+		"id":                "the_sweet_spot",
+		"name":              "The Sweet Spot",
+		"description":       "Works the middle of the range, over and over.",
+		"category":          "override",
+		"price":             40,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/the_sweet_spot/main.funscript" }
+	},
+	{
+		"id":                "clockwork",
+		"name":              "Clockwork",
+		"description":       "Precise, machine-even strokes. No mercy, no rhythm.",
+		"category":          "override",
+		"price":             35,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/clockwork/main.funscript" }
+	},
+	{
+		"id":                "smooth_operator",
+		"name":              "Smooth Operator",
+		"description":       "Effortless, flowing full strokes.",
+		"category":          "override",
+		"price":             35,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/smooth_operator/main.funscript" }
+	},
+	{
+		"id":                "head_rush",
+		"name":              "Head Rush",
+		"description":       "Builds fast and drives to a hard finish.",
+		"category":          "override",
+		"price":             55,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           { "main": "res://data/overrides/head_rush/main.funscript" }
 	}
 ]

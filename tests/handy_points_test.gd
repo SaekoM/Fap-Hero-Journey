@@ -207,3 +207,34 @@ func test_best_offset_single_sample() -> void:
 	var samples := [{"sent": 1000, "recv": 1080, "server_time": 999040}]
 	# offset = 999040 + 40 − 1080 = 998000
 	assert_int(HandyPoints.best_offset_from_samples(samples)).is_equal(998000)
+
+
+# sample_pos interpolates between bracketing points and clamps to the ends — reads where the device
+# currently is so a replacing override can ease in from there.
+func test_sample_pos_interpolates_and_clamps() -> void:
+	var pts: Array = [{"t": 0, "x": 0}, {"t": 1000, "x": 100}]
+	assert_int(HandyPoints.sample_pos(pts, 500)).is_equal(50)  # halfway
+	assert_int(HandyPoints.sample_pos(pts, 0)).is_equal(0)
+	assert_int(HandyPoints.sample_pos(pts, 1000)).is_equal(100)
+	assert_int(HandyPoints.sample_pos(pts, -100)).is_equal(0)  # before start → first x
+	assert_int(HandyPoints.sample_pos(pts, 5000)).is_equal(100)  # past end → last x
+	assert_int(HandyPoints.sample_pos([], 500)).is_equal(50)  # empty → neutral
+
+
+# bridge_from prepends the device's current position at t=0 and shifts the script back by the window,
+# so the stream ramps in from where the device is instead of snapping to the script's first point.
+func test_bridge_from_prepends_and_shifts() -> void:
+	var pts: Array = [{"t": 0, "x": 0}, {"t": 500, "x": 100}]
+	var bridged: Array = HandyPoints.bridge_from(pts, 80, 200)
+	assert_int(bridged.size()).is_equal(3)
+	assert_int(int((bridged[0] as Dictionary)["t"])).is_equal(0)  # bridge at the current position
+	assert_int(int((bridged[0] as Dictionary)["x"])).is_equal(80)
+	assert_int(int((bridged[1] as Dictionary)["t"])).is_equal(200)  # script shifted back by the window
+	assert_int(int((bridged[2] as Dictionary)["t"])).is_equal(700)
+
+
+# No bridge when there's nothing to ease from (unknown position) or no window — returns as-is.
+func test_bridge_from_noop_guards() -> void:
+	var pts: Array = [{"t": 0, "x": 50}]
+	assert_int((HandyPoints.bridge_from(pts, -1, 200) as Array).size()).is_equal(1)  # unknown pos
+	assert_int((HandyPoints.bridge_from(pts, 50, 0) as Array).size()).is_equal(1)  # no window

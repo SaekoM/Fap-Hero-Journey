@@ -61,6 +61,9 @@ var _pool_drop: Dictionary = {}
 # side panel is rebuilt underneath it (e.g. a save mid-edit frees the old container). The
 # modal never holds a direct reference; it rebuilds through this, guarded by validity.
 var _custom_items_list: VBoxContainer = null
+# The side panel shows only a "Manage Items (N)" button; the list itself lives in a modal. Kept so the
+# count stays live as items are added/removed. _custom_items_list points at the open modal's container.
+var _manage_items_btn: Button = null
 var _characters_list: VBoxContainer = null  # same live-container pattern as _custom_items_list
 
 
@@ -775,15 +778,44 @@ func _make_custom_items_section() -> Control:
 	header.add_theme_font_size_override("font_size", 13)
 	box.add_child(header)
 	var hint: Label = Label.new()
-	hint.text = "Journey-specific items that bundle tuned effects. They appear in the item dropdowns."
+	hint.text = "Journey-specific items that bundle tuned effects or an override stroke. They appear in the item dropdowns."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
+	# The list itself opens in a modal (it can get long); the side panel keeps only this entry point.
+	var manage_btn: Button = Button.new()
+	manage_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(manage_btn, UITheme.PURPLE_MID)
+	manage_btn.pressed.connect(_open_items_manager_modal)
+	_manage_items_btn = manage_btn
+	_update_manage_items_label()
+	box.add_child(manage_btn)
+	return box
+
+
+# The custom-item LIST lives in its own modal (not the cramped side panel) so a journey can define many
+# items without crowding the builder. Rows edit/delete; ＋ ADD appends and opens the editor on top.
+# _custom_items_list points at this modal's container while it's open, so any edit refreshes the list.
+func _open_items_manager_modal() -> void:
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"CUSTOM ITEMS", UITheme.PURPLE_BRIGHT, Vector2i(560, 640)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	_owner.add_child(modal)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+
 	var list: VBoxContainer = VBoxContainer.new()
 	list.add_theme_constant_override("separation", 8)
-	box.add_child(list)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
 	_custom_items_list = list
 	_rebuild_custom_items_list()
 
@@ -791,25 +823,55 @@ func _make_custom_items_section() -> Control:
 	add_btn.text = "＋ ADD ITEM"
 	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
-	# Add appends a default item and opens its editor straight away, so the flow is
-	# still "click add, fill it in" — the fields just live in a modal now, not inline.
 	add_btn.pressed.connect(
 		func() -> void:
 			_owner._journey_items.append(_default_custom_item())
 			_rebuild_custom_items_list()
 			_open_item_editor_modal(_owner._journey_items.size() - 1, true)
 	)
-	box.add_child(add_btn)
-	return box
+	vbox.add_child(add_btn)
+
+	var close_btn: Button = Button.new()
+	close_btn.text = "DONE"
+	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
+	# Drop the container reference so a stray rebuild after close no-ops (the guard checks validity).
+	var on_close: Callable = func() -> void:
+		_custom_items_list = null
+		_update_manage_items_label()
+		modal.queue_free()
+	close_btn.pressed.connect(on_close)
+	vbox.add_child(close_btn)
+
+	var backdrop: Control = modal.get_child(0) as Control
+	if backdrop:
+		backdrop.gui_input.connect(
+			func(event: InputEvent) -> void:
+				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+					on_close.call()
+		)
 
 
-# Re-renders the custom-items rows into the tracked list container. No-op if the panel
-# has been rebuilt and the container freed (the fresh build re-renders itself).
+func _update_manage_items_label() -> void:
+	if is_instance_valid(_manage_items_btn):
+		_manage_items_btn.text = "⚙ MANAGE ITEMS (%d)" % _owner._journey_items.size()
+
+
+# Re-renders the custom-items rows into the tracked list container (the open modal's). No-op if no modal
+# is up (the container is null/freed); always refreshes the side button's count.
 func _rebuild_custom_items_list() -> void:
+	_update_manage_items_label()
 	if not is_instance_valid(_custom_items_list):
 		return
 	for c: Node in _custom_items_list.get_children():
 		c.queue_free()
+	if _owner._journey_items.is_empty():
+		var empty: Label = Label.new()
+		empty.text = "No custom items yet — add one below."
+		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_font_size_override("font_size", 11)
+		_custom_items_list.add_child(empty)
+		return
 	for i: int in _owner._journey_items.size():
 		_custom_items_list.add_child(_make_custom_item_row(i))
 
@@ -914,7 +976,7 @@ func _item_effect_label(kind: String) -> String:
 # panel stays short no matter how many items a journey defines.
 func _make_custom_item_row(item_idx: int) -> Control:
 	var item: Dictionary = _owner._journey_items[item_idx]
-	var is_key: bool = str(item.get("category", "modifier")) == "key"
+	var category: String = str(item.get("category", "modifier"))
 
 	var card: PanelContainer = PanelContainer.new()
 	var style: StyleBoxFlat = StyleBoxFlat.new()
@@ -943,12 +1005,21 @@ func _make_custom_item_row(item_idx: int) -> Control:
 	info.add_child(name_lbl)
 
 	var badge: Label = Label.new()
-	if is_key:
-		badge.text = "KEY"
-	else:
-		var n: int = (item.get("effects", []) as Array).size()
-		badge.text = "MODIFIER · %d effect%s" % [n, "" if n == 1 else "s"]
-	badge.add_theme_color_override("font_color", UITheme.CYAN if is_key else UITheme.PURPLE_BRIGHT)
+	var fx_count: int = (item.get("effects", []) as Array).size()
+	var fx_suffix: String = (
+		(" · %d effect%s" % [fx_count, "" if fx_count == 1 else "s"]) if fx_count > 0 else ""
+	)
+	var badge_color: Color = UITheme.PURPLE_BRIGHT
+	match category:
+		"key":
+			badge.text = "KEY"
+			badge_color = UITheme.CYAN
+		"override":
+			badge.text = "OVERRIDE" + fx_suffix
+			badge_color = UITheme.TOXIC_GREEN
+		_:
+			badge.text = "MODIFIER · %d effect%s" % [fx_count, "" if fx_count == 1 else "s"]
+	badge.add_theme_color_override("font_color", badge_color)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
 
@@ -976,8 +1047,12 @@ func _open_item_editor_modal(item_idx: int, is_new: bool = false) -> void:
 		return
 	var item: Dictionary = _owner._journey_items[item_idx]
 
+	# Fill most of the window so the override timeline has room to show real script detail; a modifier/key
+	# just leaves the extra space unused. Capped so it doesn't get absurd on very large monitors.
+	var vp: Vector2 = _owner.get_viewport_rect().size
+	var modal_size: Vector2i = Vector2i(mini(1400, int(vp.x * 0.94)), mini(980, int(vp.y * 0.92)))
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"CUSTOM ITEM", UITheme.PURPLE_BRIGHT, Vector2i(520, 640)
+		"CUSTOM ITEM", UITheme.PURPLE_BRIGHT, modal_size
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -1020,26 +1095,37 @@ func _open_item_editor_modal(item_idx: int, is_new: bool = false) -> void:
 func _close_item_editor(modal: Control, item_idx: int, item: Dictionary, is_new: bool) -> void:
 	if is_new and not _journey_item_complete(item):
 		var nm: String = str(item.get("name", "")).strip_edges()
+		var is_override: bool = str(item.get("category", "modifier")) == "override"
 		var has_effects: bool = not (item.get("effects", []) as Array).is_empty()
+		var has_script: bool = str((item.get("scripts", {}) as Dictionary).get("main", "")) != ""
 		_discard_journey_item(item_idx, item)
 		# A bare Add-then-dismiss (nothing filled in) is a silent cancel. If the author put in SOME
 		# content but it's still not keepable, say why it vanished rather than dropping it silently.
-		if nm != "" or has_effects:
-			var reason: String = (
-				"items need a name" if nm == "" else "a modifier needs at least one effect"
-			)
+		if nm != "" or has_effects or has_script:
+			var reason: String
+			if nm == "":
+				reason = "items need a name"
+			elif is_override:
+				reason = "an override needs a main funscript"
+			else:
+				reason = "a modifier needs at least one effect"
 			_owner._show_status("Discarded incomplete item — %s." % reason, true)
 	modal.queue_free()
 	_rebuild_custom_items_list()
 
 
-# An item is complete enough to keep: it has a name, and — unless it is a key — at least one effect.
+# An item is complete enough to keep: it has a name, plus whatever its type needs to function — a key
+# needs nothing more, an override needs a main funscript, a modifier needs at least one effect.
 func _journey_item_complete(item: Dictionary) -> bool:
 	if str(item.get("name", "")).strip_edges() == "":
 		return false
-	if str(item.get("category", "modifier")) == "key":
-		return true
-	return not (item.get("effects", []) as Array).is_empty()
+	match str(item.get("category", "modifier")):
+		"key":
+			return true
+		"override":
+			return str((item.get("scripts", {}) as Dictionary).get("main", "")) != ""
+		_:
+			return not (item.get("effects", []) as Array).is_empty()
 
 
 # Removes an item from the journey list, preferring the captured index but verifying identity (the
@@ -1414,43 +1500,7 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 		dur_spin.value_changed.connect(func(v: float) -> void: item["duration_ms"] = int(v) * 1000)
 		body.add_child(dur_spin)
 
-		body.add_child(_side_field_label("EFFECTS"))
-		var effects: Array = item.get("effects", [])
-		for ei: int in effects.size():
-			body.add_child(_make_item_effect_row(item, ei, rebuild))
-		# The dropdown lists gameplay/stroke/coin kinds, then a separator, then the full sensory
-		# (visual/audio) catalog by display name. `fx_kinds` is kept parallel to every row (including
-		# the placeholder and separator, which occupy indices) so item_selected maps back to a kind.
-		var add_fx: OptionButton = OptionButton.new()
-		var fx_kinds: Array = [""]  # index 0 = placeholder
-		add_fx.add_item("＋ Add effect…")
-		for kind: String in _ITEM_EFFECT_KINDS:
-			add_fx.add_item(_item_effect_label(kind))
-			add_fx.set_item_tooltip(
-				add_fx.get_item_count() - 1, UITheme.wrap_tip(_effect_kind_desc(kind))
-			)
-			fx_kinds.append(kind)
-		add_fx.add_separator("SENSORY (VISUAL / AUDIO)")
-		fx_kinds.append("")  # the separator occupies an index but isn't selectable
-		for e: Dictionary in JourneyData.SENSORY_CATALOG:
-			var skind: String = str(e.get("kind", ""))
-			if skind in _ITEM_EFFECT_KINDS:
-				continue  # "blackout" (Blinded) is already offered as a gameplay kind — no duplicate
-			add_fx.add_item(str(e.get("name", skind)))
-			add_fx.set_item_tooltip(
-				add_fx.get_item_count() - 1, UITheme.wrap_tip(str(e.get("desc", "")))
-			)
-			fx_kinds.append(skind)
-		add_fx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		UITheme.style_option_button(add_fx)
-		add_fx.item_selected.connect(
-			func(i: int) -> void:
-				if i <= 0 or i >= fx_kinds.size() or str(fx_kinds[i]) == "":
-					return
-				(item["effects"] as Array).append(_default_item_effect(str(fx_kinds[i])))
-				rebuild.call()
-		)
-		body.add_child(add_fx)
+		_fill_item_effects_editor(body, item, rebuild, "EFFECTS")
 
 	if str(item.get("category", "modifier")) == "override":
 		_fill_item_override_section(body, item, rebuild)
@@ -1483,6 +1533,56 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 	body.add_child(img_rm)
 
 
+# The shared EFFECTS bundle editor (existing rows + an add dropdown). Used by modifier items and — so a
+# custom override can pack a punch beyond the stroke — by override items too. `label` heads the section.
+func _fill_item_effects_editor(
+	body: VBoxContainer,
+	item: Dictionary,
+	rebuild: Callable,
+	label: String,
+	on_tune: Callable = Callable()
+) -> void:
+	if not item.has("effects"):
+		item["effects"] = []
+	body.add_child(_side_field_label(label))
+	var effects: Array = item.get("effects", [])
+	for ei: int in effects.size():
+		body.add_child(_make_item_effect_row(item, ei, rebuild, on_tune))
+	# The dropdown lists gameplay/stroke/coin kinds, then a separator, then the full sensory (visual/audio)
+	# catalog by display name. `fx_kinds` is kept parallel to every row (including the placeholder and
+	# separator, which occupy indices) so item_selected maps back to a kind.
+	var add_fx: OptionButton = OptionButton.new()
+	var fx_kinds: Array = [""]  # index 0 = placeholder
+	add_fx.add_item("＋ Add effect…")
+	for kind: String in _ITEM_EFFECT_KINDS:
+		add_fx.add_item(_item_effect_label(kind))
+		add_fx.set_item_tooltip(
+			add_fx.get_item_count() - 1, UITheme.wrap_tip(_effect_kind_desc(kind))
+		)
+		fx_kinds.append(kind)
+	add_fx.add_separator("SENSORY (VISUAL / AUDIO)")
+	fx_kinds.append("")  # the separator occupies an index but isn't selectable
+	for e: Dictionary in JourneyData.SENSORY_CATALOG:
+		var skind: String = str(e.get("kind", ""))
+		if skind in _ITEM_EFFECT_KINDS:
+			continue  # "blackout" (Blinded) is already offered as a gameplay kind — no duplicate
+		add_fx.add_item(str(e.get("name", skind)))
+		add_fx.set_item_tooltip(
+			add_fx.get_item_count() - 1, UITheme.wrap_tip(str(e.get("desc", "")))
+		)
+		fx_kinds.append(skind)
+	add_fx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(add_fx)
+	add_fx.item_selected.connect(
+		func(i: int) -> void:
+			if i <= 0 or i >= fx_kinds.size() or str(fx_kinds[i]) == "":
+				return
+			(item["effects"] as Array).append(_default_item_effect(str(fx_kinds[i])))
+			rebuild.call()
+	)
+	body.add_child(add_fx)
+
+
 # ── Override item authoring (see OVERRIDE_ITEMS_DESIGN.md §7) ─────────────────
 # An override item plays a bundled funscript over the round when used. The author drops a MAIN stroke
 # funscript; sibling axis (.L1/.R1/…) and vib (.vib1/.vib2) files next to it are paired automatically,
@@ -1500,16 +1600,18 @@ func _fill_item_override_section(body: VBoxContainer, item: Dictionary, rebuild:
 	main_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_child(main_zone)
 	if main_path != "":
-		main_zone.call_deferred("set_file", main_path)
+		# Display only — pass emit=false so restoring the path on a rebuild doesn't re-fire file_dropped,
+		# which would call rebuild again → set_file → file_dropped → … an infinite loop that crashes.
+		main_zone.call_deferred("set_file", main_path, false)
 	main_zone.file_dropped.connect(
 		func(p: String) -> void:
 			_set_override_main(item, p)
 			rebuild.call()
 	)
 
+	var refresh_preview: Callable = Callable()  # re-applies the effect preview to the stroke, view-preserving
 	if main_path != "":
-		body.add_child(_make_funscript_curve(JourneyData.read_funscript_actions(main_path)))
-		body.add_child(_side_hint(_override_bundle_summary(scripts)))
+		refresh_preview = _fill_override_timeline(body, item, scripts)
 		var clear_btn: Button = Button.new()
 		clear_btn.text = "✕ CLEAR BUNDLE"
 		clear_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1518,6 +1620,7 @@ func _fill_item_override_section(body: VBoxContainer, item: Dictionary, rebuild:
 			func() -> void:
 				item["scripts"] = {"main": "", "axes": {}, "vibes": {}}
 				item["duration_ms"] = 0
+				item.erase("trim")
 				rebuild.call()
 		)
 		body.add_child(clear_btn)
@@ -1536,8 +1639,21 @@ func _fill_item_override_section(body: VBoxContainer, item: Dictionary, rebuild:
 	immune_chk.text = "Ignore active effects / curses (play raw)"
 	immune_chk.button_pressed = bool(item.get("immune_to_effects", true))
 	immune_chk.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	immune_chk.toggled.connect(func(on: bool) -> void: item["immune_to_effects"] = on)
+	# Refresh the preview on toggle — a stroke effect only shows on the stroke when it won't play raw.
+	immune_chk.toggled.connect(
+		func(on: bool) -> void:
+			item["immune_to_effects"] = on
+			if refresh_preview.is_valid():
+				refresh_preview.call()
+	)
 	body.add_child(immune_chk)
+
+	# An override can ALSO carry an effects bundle (score / sensory / modifier), applied while it plays.
+	# `refresh_preview` (on_tune) repaints the stroke preview live as a stroke effect is tuned.
+	body.add_child(_side_section_separator())
+	_fill_item_effects_editor(
+		body, item, rebuild, "EFFECTS  (OPTIONAL — APPLIED WHILE IT PLAYS)", refresh_preview
+	)
 
 
 # Sets the override's MAIN funscript and auto-pairs sibling axis/vib scripts by filename (like the round
@@ -1552,25 +1668,260 @@ func _set_override_main(item: Dictionary, path: String) -> void:
 	for vib_name: Variant in siblings.get("vib", {}):
 		scripts["vibes"][0 if str(vib_name) == "vib1" else 1] = str(siblings["vib"][vib_name])
 	item["scripts"] = scripts
+	item.erase("trim")  # a freshly dropped script starts untrimmed
 	item["duration_ms"] = _override_bundle_duration_ms(scripts)
 
 
-# Exact bundle length (ms) across every channel — reuses the runtime OverrideBundle so the editor and
-# the device agree. Reads the files fresh; 0 when the main is missing/empty.
-func _override_bundle_duration_ms(scripts: Dictionary) -> int:
-	var main: Array = JourneyData.read_funscript_actions(str(scripts.get("main", "")))
+# The override authoring timeline: a wide, seekable curve of every channel with draggable IN/OUT handles
+# and exact Start/End fields (two-way synced), so a favourite script can be sliced to a section by feel or
+# by number. Edits write the window straight onto the item — no panel rebuild, so focus/scroll hold.
+# Returns a `refresh_preview` Callable: the effects editor / immune toggle call it to re-apply the effect
+# preview to the main stroke in place (no panel rebuild, so zoom/window hold). Empty Callable if no script.
+func _fill_override_timeline(
+	body: VBoxContainer, item: Dictionary, scripts: Dictionary
+) -> Callable:
+	var full_ms: int = _override_bundle_duration_ms(scripts)  # untrimmed length bounds the window
+	if full_ms <= 0:
+		body.add_child(_side_hint("Couldn't read the funscript."))
+		return Callable()
+	var trim: Dictionary = item.get("trim", {})
+	var in_ms0: int = clampi(int(trim.get("in_ms", 0)), 0, full_ms)
+	var out_raw: int = int(trim.get("out_ms", 0))
+	var out_ms0: int = out_raw if out_raw > 0 else full_ms
+
+	var timeline: OverrideTimeline = OverrideTimeline.new()
+	# A comfortable slice of the window height — tall enough to read, not so tall the stroke looks stretched.
+	timeline.custom_minimum_size = Vector2(
+		0, clampi(int(_owner.get_viewport_rect().size.y * 0.36), 240, 460)
+	)
+	var main_raw: Array = JourneyData.read_funscript_actions(str(scripts.get("main", "")))
+	# When it won't play raw AND carries a stroke effect (scale/clamp/reverse/block), preview the TRANSFORMED
+	# stroke — the same transform the device runs — with the raw stroke ghosted under it, so the author sees
+	# what it will actually feel like. Reads item state live so tuning/immune changes refresh it.
+	var refresh_preview: Callable = func() -> void:
+		var immune: bool = bool(item.get("immune_to_effects", true))
+		if not immune and _has_stroke_effect(item.get("effects", [])):
+			timeline.set_main(
+				_apply_stroke_effects_preview(main_raw, item.get("effects", [])),
+				"MAIN + EFFECTS",
+				main_raw
+			)
+		else:
+			timeline.set_main(main_raw, "MAIN", [])
+	timeline.setup(main_raw, _override_lane_data(scripts), full_ms, in_ms0, out_ms0)
+	refresh_preview.call()  # apply the effect preview to the main stroke if applicable
+	body.add_child(timeline)
+
+	# A pan scrollbar under the timeline, two-way synced with its zoom/pan view. `page` = the visible span,
+	# so its thumb shows how much of the clip is on screen; it fills (no scroll) at full zoom.
+	var hscroll: HScrollBar = HScrollBar.new()
+	hscroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hscroll.min_value = 0
+	hscroll.max_value = full_ms
+	hscroll.page = full_ms
+	hscroll.value = 0
+	body.add_child(hscroll)
+	var view_syncing: Array = [false]
+	timeline.view_changed.connect(
+		func(start_ms: int, span_ms: int) -> void:
+			view_syncing[0] = true
+			hscroll.page = span_ms
+			hscroll.value = start_ms
+			view_syncing[0] = false
+	)
+	hscroll.value_changed.connect(
+		func(v: float) -> void:
+			if not view_syncing[0]:
+				timeline.set_view_start(int(v))
+	)
+
+	var summary: Label = _side_hint(_override_window_summary(scripts, in_ms0, out_ms0))
+
+	body.add_child(_side_field_label("TRIM  (SECONDS — DRAG THE HANDLES OR TYPE)"))
+	var full_s: float = full_ms / 1000.0
+	var start_spin: SpinBox = _make_trim_spin("Start ", full_s, in_ms0 / 1000.0)
+	var end_spin: SpinBox = _make_trim_spin("End ", full_s, out_ms0 / 1000.0)
+	# Guards the field↔handle mirror so a programmatic value set doesn't loop back into the timeline.
+	var syncing: Array = [false]
+	var refresh_summary: Callable = func() -> void:
+		summary.text = _override_window_summary(
+			scripts, timeline.get_in_ms(), timeline.get_out_ms()
+		)
+
+	timeline.trim_changed.connect(
+		func(in_ms: int, out_ms: int) -> void:
+			_set_override_trim_ms(item, in_ms, out_ms, full_ms)
+			syncing[0] = true
+			start_spin.value = in_ms / 1000.0
+			end_spin.value = out_ms / 1000.0
+			syncing[0] = false
+			refresh_summary.call()
+	)
+	var on_field: Callable = func(_v: float) -> void:
+		if syncing[0]:
+			return
+		var typed_in: int = clampi(roundi(start_spin.value * 1000.0), 0, full_ms)
+		var typed_out: int = clampi(roundi(end_spin.value * 1000.0), 0, full_ms)
+		if typed_out <= typed_in:
+			typed_out = full_ms
+		timeline.set_window(typed_in, typed_out)
+		_set_override_trim_ms(item, timeline.get_in_ms(), timeline.get_out_ms(), full_ms)
+		refresh_summary.call()
+	start_spin.value_changed.connect(on_field)
+	end_spin.value_changed.connect(on_field)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	row.add_child(start_spin)
+	row.add_child(end_spin)
+	body.add_child(row)
+	body.add_child(summary)
+
+	# Test on device: play the current slice on the connected device (serial / Buttplug / Handy) so the
+	# author can feel it. The player lives under the timeline, so closing the editor or rebuilding it stops
+	# the device automatically. The playhead sweeps the lit window while it plays.
+	var test_player: OverrideTestPlayer = OverrideTestPlayer.new()
+	timeline.add_child(test_player)
+	var test_btn: Button = Button.new()
+	test_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(test_btn, UITheme.CYAN)
+	var set_test_label: Callable = func(playing: bool) -> void:
+		test_btn.text = "■ STOP TEST" if playing else "▶ TEST ON DEVICE"
+	set_test_label.call(false)
+	test_player.state_changed.connect(set_test_label)
+	test_btn.pressed.connect(
+		func() -> void:
+			if test_player.is_playing():
+				test_player.stop()
+			else:
+				test_player.start(
+					_build_override_test_bundle(item, scripts),
+					timeline,
+					int((item.get("trim", {}) as Dictionary).get("in_ms", 0))
+				)
+	)
+	body.add_child(test_btn)
+	return refresh_preview
+
+
+# True if the bundle carries an effect that reshapes the stroke (vs. score / sensory / coin, which don't).
+func _has_stroke_effect(effects: Array) -> bool:
+	for e: Variant in effects:
+		if str((e as Dictionary).get("kind", "")) in ["scale", "clamp", "reverse", "block"]:
+			return true
+	return false
+
+
+# The main stroke with its stroke effects baked in, for the editor preview. Reuses HandyPoints.apply_effects
+# (the exact transform the device runs), so the preview matches playback; non-stroke kinds are ignored there.
+func _apply_stroke_effects_preview(actions: Array, effects: Array) -> Array:
+	var transformed: Array = HandyPoints.apply_effects(
+		HandyPoints.actions_to_points(actions), effects
+	)
+	var out: Array = []
+	for p: Dictionary in transformed:
+		out.append(Vector2(int(p["t"]), int(p["x"])))
+	return out
+
+
+# Builds the bundle the device test-play streams: the trimmed slice on every channel, with stroke effects
+# baked into the main (when not immune) so the device matches the on-screen preview. Play-time immunity is
+# therefore always "raw" — the effects are already in the points.
+func _build_override_test_bundle(item: Dictionary, scripts: Dictionary) -> OverrideBundle:
+	var trim: Dictionary = item.get("trim", {})
+	var main: Array = JourneyData.apply_override_trim(
+		JourneyData.read_funscript_actions(str(scripts.get("main", ""))), trim
+	)
+	if (
+		not bool(item.get("immune_to_effects", true))
+		and _has_stroke_effect(item.get("effects", []))
+	):
+		main = _apply_stroke_effects_preview(main, item.get("effects", []))
 	var axes: Dictionary = {}
 	for axis_name: Variant in scripts.get("axes", {}):
-		axes[str(axis_name)] = JourneyData.read_funscript_actions(str(scripts["axes"][axis_name]))
+		var a: Array = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(scripts["axes"][axis_name])), trim
+		)
+		if not a.is_empty():
+			axes[str(axis_name)] = a
 	var vibes: Dictionary = {}
 	for channel: Variant in scripts.get("vibes", {}):
-		vibes[int(channel)] = JourneyData.read_funscript_actions(str(scripts["vibes"][channel]))
+		var v: Array = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(scripts["vibes"][channel])), trim
+		)
+		if not v.is_empty():
+			vibes[int(channel)] = v
+	return OverrideBundle.from_channels(main, axes, vibes)
+
+
+# Axis + vib channels as timeline lanes (name + points + colour). Empty channels are skipped.
+func _override_lane_data(scripts: Dictionary) -> Array:
+	var lanes: Array = []
+	for axis_name: Variant in scripts.get("axes", {}):
+		var apts: Array = JourneyData.read_funscript_actions(str(scripts["axes"][axis_name]))
+		if not apts.is_empty():
+			lanes.append({"name": str(axis_name), "points": apts, "color": UITheme.CYAN})
+	for channel: Variant in scripts.get("vibes", {}):
+		var vpts: Array = JourneyData.read_funscript_actions(str(scripts["vibes"][channel]))
+		if not vpts.is_empty():
+			lanes.append(
+				{"name": "vib%d" % (int(channel) + 1), "points": vpts, "color": UITheme.MAGENTA}
+			)
+	return lanes
+
+
+func _make_trim_spin(prefix: String, max_s: float, value_s: float) -> SpinBox:
+	var s: SpinBox = SpinBox.new()
+	s.min_value = 0.0
+	s.max_value = max_s
+	s.step = 0.1
+	s.prefix = prefix
+	s.suffix = "s"
+	s.value = clampf(value_s, 0.0, max_s)
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(s)
+	return s
+
+
+# Writes the trim window (ms) onto the item. Inverted/empty picks fall back to "to end"; a full-range pick
+# clears the trim (an untrimmed override carries no window). duration_ms tracks the section length for shop
+# display; the runtime recomputes it exactly from the trimmed bundle.
+func _set_override_trim_ms(item: Dictionary, in_ms: int, out_ms: int, full_ms: int) -> void:
+	in_ms = clampi(in_ms, 0, full_ms)
+	out_ms = clampi(out_ms, 0, full_ms)
+	if out_ms <= in_ms:
+		out_ms = full_ms
+	if in_ms <= 0 and out_ms >= full_ms:
+		item.erase("trim")
+		item["duration_ms"] = full_ms
+		return
+	item["trim"] = {"in_ms": in_ms, "out_ms": out_ms}
+	item["duration_ms"] = maxi(0, out_ms - in_ms)
+
+
+# Exact bundle length (ms) across every channel — reuses the runtime OverrideBundle so the editor and
+# the device agree. Reads the files fresh and applies the trim window; 0 when the main is missing/empty.
+func _override_bundle_duration_ms(scripts: Dictionary, trim: Dictionary = {}) -> int:
+	var main: Array = JourneyData.apply_override_trim(
+		JourneyData.read_funscript_actions(str(scripts.get("main", ""))), trim
+	)
+	var axes: Dictionary = {}
+	for axis_name: Variant in scripts.get("axes", {}):
+		axes[str(axis_name)] = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(scripts["axes"][axis_name])), trim
+		)
+	var vibes: Dictionary = {}
+	for channel: Variant in scripts.get("vibes", {}):
+		vibes[int(channel)] = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(scripts["vibes"][channel])), trim
+		)
 	return OverrideBundle.from_channels(main, axes, vibes).duration_ms
 
 
-# Human read-back of an override bundle: duration + which axis/vib channels it carries.
-func _override_bundle_summary(scripts: Dictionary) -> String:
-	var parts: Array = ["Duration ~%.1fs" % (_override_bundle_duration_ms(scripts) / 1000.0)]
+# Read-back for the override editor: window duration + which axis/vib channels it carries. Uses the window
+# LENGTH rather than re-reading every funscript, so it's cheap to refresh live while a handle is dragged.
+func _override_window_summary(scripts: Dictionary, in_ms: int, out_ms: int) -> String:
+	var parts: Array = ["Duration ~%.1fs" % ((out_ms - in_ms) / 1000.0)]
 	var axes: Dictionary = scripts.get("axes", {})
 	if not axes.is_empty():
 		parts.append("Axes: " + ", ".join(axes.keys()))
@@ -1581,39 +1932,6 @@ func _override_bundle_summary(scripts: Dictionary) -> String:
 			labels.append("vib%d" % (int(channel) + 1))
 		parts.append("Vibes: " + ", ".join(labels))
 	return "  ·  ".join(parts)
-
-
-# A small inline stroke-curve preview of a funscript's action points (time on X, 0–100 pos on Y).
-func _make_funscript_curve(actions: Array) -> Control:
-	var frame: PanelContainer = PanelContainer.new()
-	var sb: StyleBoxFlat = StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.30)
-	sb.set_corner_radius_all(4)
-	sb.set_content_margin_all(4)
-	frame.add_theme_stylebox_override("panel", sb)
-	var canvas: Control = Control.new()
-	canvas.custom_minimum_size = Vector2(0, 84)
-	canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	canvas.resized.connect(canvas.queue_redraw)  # repaint at the resolved size after layout
-	canvas.draw.connect(func() -> void: _draw_funscript_curve(canvas, actions))
-	frame.add_child(canvas)
-	return frame
-
-
-func _draw_funscript_curve(canvas: Control, actions: Array) -> void:
-	var box: Vector2 = canvas.size
-	if actions.size() < 2 or box.x <= 1.0 or box.y <= 1.0:
-		return
-	var t_max: float = (actions[actions.size() - 1] as Vector2).x
-	if t_max <= 0.0:
-		return
-	var line: PackedVector2Array = PackedVector2Array()
-	for a: Variant in actions:
-		var v: Vector2 = a
-		var x: float = (v.x / t_max) * box.x
-		var y: float = box.y - (clampf(v.y, 0.0, 100.0) / 100.0) * box.y
-		line.append(Vector2(x, y))
-	canvas.draw_polyline(line, UITheme.TOXIC_GREEN, 2.0, true)
 
 
 # A small wrapped hint label under a field (dimmer + smaller than a section label).
@@ -1627,8 +1945,11 @@ func _side_hint(text: String) -> Label:
 
 
 # One effect row in an item's bundle: kind label + magnitude field(s) + remove.
-# `rebuild` refills the editor body after a removal.
-func _make_item_effect_row(item: Dictionary, fx_idx: int, rebuild: Callable) -> Control:
+# `rebuild` refills the editor body after a removal; `on_tune` (optional) fires when a STROKE effect's
+# magnitude changes, so the override editor can repaint its live stroke preview.
+func _make_item_effect_row(
+	item: Dictionary, fx_idx: int, rebuild: Callable, on_tune: Callable = Callable()
+) -> Control:
 	var fx: Dictionary = (item["effects"] as Array)[fx_idx]
 	var kind: String = str(fx.get("kind", ""))
 	var sensory: Dictionary = JourneyData.sensory_entry_by_kind(kind)
@@ -1648,7 +1969,7 @@ func _make_item_effect_row(item: Dictionary, fx_idx: int, rebuild: Callable) -> 
 
 	match kind:
 		"scale":
-			row.add_child(_make_factor_spin(fx, "factor", 0.1, 3.0, 0.05, "×", 1.0))
+			row.add_child(_make_factor_spin(fx, "factor", 0.1, 3.0, 0.05, "×", 1.0, on_tune))
 		"score_multiplier":
 			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "score ×", 2.0))
 		"coin_jackpot":
@@ -1663,7 +1984,12 @@ func _make_item_effect_row(item: Dictionary, fx_idx: int, rebuild: Callable) -> 
 			mn.value = int(fx.get("min", 0))
 			mn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			UITheme.style_spin_box(mn)
-			mn.value_changed.connect(func(v: float) -> void: fx["min"] = int(v))
+			mn.value_changed.connect(
+				func(v: float) -> void:
+					fx["min"] = int(v)
+					if on_tune.is_valid():
+						on_tune.call()
+			)
 			row.add_child(mn)
 			var mx: SpinBox = SpinBox.new()
 			mx.min_value = 0
@@ -1672,7 +1998,12 @@ func _make_item_effect_row(item: Dictionary, fx_idx: int, rebuild: Callable) -> 
 			mx.value = int(fx.get("max", 100))
 			mx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			UITheme.style_spin_box(mx)
-			mx.value_changed.connect(func(v: float) -> void: fx["max"] = int(v))
+			mx.value_changed.connect(
+				func(v: float) -> void:
+					fx["max"] = int(v)
+					if on_tune.is_valid():
+						on_tune.call()
+			)
 			row.add_child(mx)
 		"toll":
 			row.add_child(_make_int_spin(fx, "amount", 0, 9999, "lose ♦", 40))
@@ -1742,7 +2073,14 @@ func _item_display_name(id: String) -> String:
 
 # One float-parameter SpinBox for an effect (e.g. scale/score/coin factor), writing fx[key] live.
 func _make_factor_spin(
-	fx: Dictionary, key: String, lo: float, hi: float, step: float, prefix: String, default: float
+	fx: Dictionary,
+	key: String,
+	lo: float,
+	hi: float,
+	step: float,
+	prefix: String,
+	default: float,
+	on_change: Callable = Callable()
 ) -> SpinBox:
 	var s: SpinBox = SpinBox.new()
 	s.min_value = lo
@@ -1752,7 +2090,12 @@ func _make_factor_spin(
 	s.value = float(fx.get(key, default))
 	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_spin_box(s)
-	s.value_changed.connect(func(v: float) -> void: fx[key] = v)
+	s.value_changed.connect(
+		func(v: float) -> void:
+			fx[key] = v
+			if on_change.is_valid():
+				on_change.call()
+	)
 	return s
 
 
@@ -3663,20 +4006,34 @@ func _side_divider_line() -> HSeparator:
 	return line
 
 
-# Fills `lbl` with a round's funscript length + action count (e.g. "4:32 · 812
-# actions"), or flags an empty/missing script. Cleared when no funscript is set.
-func _update_funscript_readout(lbl: Label, path: String) -> void:
+# Fills `lbl` with a round's PLAYED funscript length + action count (e.g. "4:32 · 812 actions"), or flags
+# an empty/missing script. Any pending segments — trims and section LOOPS — are baked in, so the readout is
+# what will actually play (a looped section shows its repeated length, with the raw length for reference).
+# Cleared when no funscript is set. Takes the round data so it can read those segments.
+func _update_funscript_readout(lbl: Label, round_data: Dictionary) -> void:
+	var path: String = str(round_data.get("funscript_path", ""))
 	if path == "":
 		lbl.text = ""
 		return
 	var stats: Dictionary = JourneyData.read_funscript_stats(path)
-	var count: int = stats["count"]
-	if count <= 0:
+	if int(stats.get("count", 0)) <= 0:
 		lbl.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
 		lbl.text = "⚠ funscript has no actions"
 		return
 	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
-	lbl.text = "%s  ·  %d actions" % [_format_duration(stats["length_ms"]), count]
+	var raw_ms: int = int(stats.get("length_ms", 0))
+	var segments: Array = JourneyData.normalize_segments(round_data)
+	if segments.is_empty():
+		lbl.text = "%s  ·  %d actions" % [_format_duration(raw_ms), int(stats.get("count", 0))]
+		return
+	var played: Array = JourneyData.build_edl_action_points(
+		JourneyData.read_funscript_actions(path), segments
+	)
+	var played_ms: int = int((played[-1] as Vector2).x) if not played.is_empty() else 0
+	lbl.text = (
+		"%s  ·  %d actions  (from %s raw)"
+		% [_format_duration(played_ms), played.size(), _format_duration(raw_ms)]
+	)
 
 
 # Formats milliseconds as m:ss for the funscript readout.
@@ -3771,7 +4128,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 		fs_zone.file_dropped.connect(
 			func(p: String) -> void:
 				arr[idx]["funscript_path"] = p
-				_update_funscript_readout(fs_stats_lbl, p)
+				_update_funscript_readout(fs_stats_lbl, arr[idx])
 				fs_rm.disabled = (p == "")
 				# Removal (cleared zone): nothing to auto-fill or rename — just refresh.
 				if p == "":
@@ -3789,7 +4146,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 				_owner._refresh_graph()  # update the node's validation badge live
 		)
 		# Length / action-count readout (sits just under the funscript zone).
-		_update_funscript_readout(fs_stats_lbl, round_data.get("funscript_path", ""))
+		_update_funscript_readout(fs_stats_lbl, round_data)
 		col.add_child(fs_stats_lbl)
 
 		# Opens the round's clip editor: the funscript curve, any stroke modifiers the round
@@ -5639,8 +5996,62 @@ func _rebuild_pool_entries(arr: Array, idx: int, list: VBoxContainer, reselect: 
 		empty.add_theme_font_size_override("font_size", 10)
 		list.add_child(empty)
 		return
+	# Aggregate readout: the runtime rolls ONE encounter by weight, so show the weighted average + the
+	# min–max range across entries (mirrors the balance audit's pool bounds).
+	var summary_text: String = _pool_entries_summary(entries)
+	if summary_text != "":
+		var summary: Label = Label.new()
+		summary.text = summary_text
+		summary.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		summary.add_theme_font_size_override("font_size", 10)
+		summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		list.add_child(summary)
 	for i: int in entries.size():
 		list.add_child(_make_pool_entry_row(arr, idx, list, i, reselect))
+
+
+# Aggregate readout for a pool round: the weighted-AVERAGE runtime + action count (the expected value), plus
+# the min–max RANGE an actual roll can hit. Skips entries with no readable funscript; "" when none read yet.
+func _pool_entries_summary(entries: Array) -> String:
+	var len_lo: int = -1
+	var len_hi: int = 0
+	var cnt_lo: int = -1
+	var cnt_hi: int = 0
+	var len_wsum: float = 0.0
+	var cnt_wsum: float = 0.0
+	var wtotal: float = 0.0
+	for e: Variant in entries:
+		var p: String = str((e as Dictionary).get("funscript_path", ""))
+		if p == "" or not FileAccess.file_exists(p):
+			continue
+		var st: Dictionary = JourneyData.read_funscript_stats(p)
+		var ms: int = int(st.get("length_ms", 0))
+		var c: int = int(st.get("count", 0))
+		var w: float = float(maxi(1, int((e as Dictionary).get("weight", 1))))
+		len_wsum += ms * w
+		cnt_wsum += c * w
+		wtotal += w
+		len_lo = ms if len_lo < 0 else mini(len_lo, ms)
+		len_hi = maxi(len_hi, ms)
+		cnt_lo = c if cnt_lo < 0 else mini(cnt_lo, c)
+		cnt_hi = maxi(cnt_hi, c)
+	if wtotal <= 0.0:
+		return ""
+	var len_avg: int = int(len_wsum / wtotal)
+	var cnt_avg: int = int(cnt_wsum / wtotal)
+	if len_lo == len_hi and cnt_lo == cnt_hi:  # every encounter is the same size — no range to show
+		return "Runtime %s  ·  %d actions" % [_format_duration(len_avg), cnt_avg]
+	return (
+		"Runtime %s–%s (avg %s)  ·  %d–%d actions (avg %d)"
+		% [
+			_format_duration(len_lo),
+			_format_duration(len_hi),
+			_format_duration(len_avg),
+			cnt_lo,
+			cnt_hi,
+			cnt_avg,
+		]
+	)
 
 
 func _make_pool_entry_row(

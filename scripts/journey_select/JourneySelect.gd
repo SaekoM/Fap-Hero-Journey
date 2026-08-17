@@ -1723,7 +1723,7 @@ func _update_node_view(journey: Dictionary) -> void:
 	_stat_rounds.text = str(total_rounds) + " ROUNDS"
 	_stat_actions.text = str(journey.get("total_actions", 0)) + " ACTIONS"
 	var total_secs: int = (journey.get("total_length_ms", 0) as int) / 1000
-	_stat_length.text = _format_duration(total_secs)
+	_stat_length.text = "~" + _format_duration(total_secs)  # expected runtime — an estimate
 
 	for child in _round_list.get_children():
 		child.queue_free()
@@ -2301,9 +2301,11 @@ func _add_seq_to_list(
 				)
 				name_lbl.add_theme_font_size_override("font_size", 13)
 				row.add_child(name_lbl)
+				var is_pool: bool = str(round_data.get("round_type", "normal")) == "pool"
 				var dur_secs: int = (round_data.get("length_ms", 0) as int) / 1000
 				var dur_lbl: Label = Label.new()
-				dur_lbl.text = _format_duration(dur_secs)
+				# A pool's duration is the weighted-average of its entries — mark it as an estimate.
+				dur_lbl.text = ("~" if is_pool else "") + _format_duration(dur_secs)
 				dur_lbl.custom_minimum_size = Vector2(56, 0)
 				dur_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 				dur_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)

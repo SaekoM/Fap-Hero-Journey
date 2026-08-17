@@ -456,7 +456,11 @@ static func parse_graph(path: String, folder: String) -> Dictionary:
 		result["total_rounds"] = JourneyGraph.longest_round_path(graph, str(graph["start"]))
 		var totals: Dictionary = _graph_node_totals(graph)
 		result["total_actions"] = totals["actions"]
-		result["total_length_ms"] = totals["length_ms"]
+		# Prefer the saved EXPECTED single-playthrough runtime — the builder's balance audit resolves loop
+		# repeats, fork path-selection and pool picks into one number. Fall back to the node-length sum for
+		# journeys saved before it existed (0 = not stored).
+		var est_ms: int = int(data.get("EstimatedDurationMs", 0))
+		result["total_length_ms"] = est_ms if est_ms > 0 else int(totals["length_ms"])
 		result["comments"] = _parse_comments(data)  # editor-only sticky notes; runtime ignores them
 		result["groups"] = _parse_groups(data)  # editor-only group frames; runtime ignores them
 		return result
@@ -665,10 +669,43 @@ static func _graph_node_totals(graph: Dictionary) -> Dictionary:
 	var length: int = 0
 	for id: String in graph.get("nodes", {}):
 		var n: Dictionary = graph["nodes"][id]
-		if n.get("type", "") == "round":
-			actions += int((n.get("data", {}) as Dictionary).get("action_count", 0))
-			length += int((n.get("data", {}) as Dictionary).get("length_ms", 0))
+		if n.get("type", "") != "round":
+			continue
+		var data: Dictionary = n.get("data", {})
+		# A pool round has no funscript of its own — the runtime rolls one entry by weight — so it would
+		# otherwise contribute 0. Count its weighted-AVERAGE entry instead, its expected length.
+		if str(data.get("round_type", "normal")) == "pool":
+			var pa: Dictionary = _pool_avg_totals(data.get("pool_entries", []))
+			actions += int(pa["actions"])
+			length += int(pa["length_ms"])
+		else:
+			actions += int(data.get("action_count", 0))
+			length += int(data.get("length_ms", 0))
 	return {"actions": actions, "length_ms": length}
+
+
+# Weighted-average action count + length across a pool round's entries (the expected value, since the
+# runtime rolls ONE by weight). Entries carry their own action_count / length_ms from save time.
+static func _pool_avg_totals(entries: Array) -> Dictionary:
+	var act_wsum: float = 0.0
+	var len_wsum: float = 0.0
+	var wtotal: float = 0.0
+	for e: Dictionary in entries:
+		var w: float = float(maxi(1, int(e.get("weight", 1))))
+		var ms: int = int(e.get("length_ms", 0))
+		var cnt: int = int(e.get("action_count", 0))
+		# Pool entries don't store their stats in journey.json — read them from the funscript (already
+		# resolved to an absolute path by from_json/resolve_paths before this runs).
+		if ms <= 0:
+			var st: Dictionary = JourneyData.read_funscript_stats(str(e.get("funscript_path", "")))
+			ms = int(st.get("length_ms", 0))
+			cnt = int(st.get("count", 0))
+		act_wsum += cnt * w
+		len_wsum += ms * w
+		wtotal += w
+	if wtotal <= 0.0:
+		return {"actions": 0, "length_ms": 0}
+	return {"actions": int(act_wsum / wtotal), "length_ms": int(len_wsum / wtotal)}
 
 
 # Catalogue sequence for a Format-2 (graph) journey's detail modal — reconstructs an approximate
@@ -759,6 +796,14 @@ static func _append_node(n: Dictionary, lists: Dictionary, pos: int) -> void:
 	var d: Dictionary = n.get("data", {})
 	match str(n.get("type", "")):
 		"round":
+			# A pool round's own funscript is empty (the runtime rolls an entry) — show the weighted-average
+			# entry so its per-round row reflects its expected length/actions instead of 0.
+			var acts: int = int(d.get("action_count", 0))
+			var ms: int = int(d.get("length_ms", 0))
+			if str(d.get("round_type", "normal")) == "pool":
+				var pa: Dictionary = _pool_avg_totals(d.get("pool_entries", []))
+				acts = int(pa["actions"])
+				ms = int(pa["length_ms"])
 			(
 				(lists["rounds"] as Array)
 				. append(
@@ -766,8 +811,8 @@ static func _append_node(n: Dictionary, lists: Dictionary, pos: int) -> void:
 						"name": d.get("name", ""),
 						"round_type": d.get("round_type", "normal"),
 						"coins": int(d.get("coins", 0)),
-						"action_count": int(d.get("action_count", 0)),
-						"length_ms": int(d.get("length_ms", 0)),
+						"action_count": acts,
+						"length_ms": ms,
 						"order": pos,
 					}
 				)

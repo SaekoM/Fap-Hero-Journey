@@ -122,6 +122,34 @@ func _ready() -> void:
 	apply_ui_scale()
 
 
+# F11 toggles fullscreen everywhere. Handled here on the autoload so it works in every scene (menus,
+# builder, game) without each one wiring it. F11 isn't a text key, so intercepting it in _input is safe.
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var key: InputEventKey = event
+		if key.pressed and not key.echo and key.keycode == KEY_F11:
+			toggle_fullscreen()
+			get_viewport().set_input_as_handled()
+
+
+# Flips between windowed and (exclusive) fullscreen and persists the choice. Reads the LIVE window mode so
+# it stays correct even if it was changed elsewhere (the Options toggle, a boot mismatch).
+func toggle_fullscreen() -> void:
+	var mode: int = DisplayServer.window_get_mode()
+	var is_fs: bool = (
+		mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
+		or mode == DisplayServer.WINDOW_MODE_FULLSCREEN
+	)
+	set_fullscreen(not is_fs)
+	DisplayServer.window_set_mode(
+		(
+			DisplayServer.WINDOW_MODE_WINDOWED
+			if is_fs
+			else DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
+		)
+	)
+
+
 # ── Getters ─────────────────────────────────────────────────────────────────
 
 

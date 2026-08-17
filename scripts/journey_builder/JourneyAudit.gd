@@ -37,6 +37,11 @@ const TOLL_AMOUNT: int = 40
 const DEFAULT_MC_RUNS: int = 1000
 const COLD_EDGE_PCT: float = 2.0
 
+# Safety backstop on simulated loop iterations: if a run's loop exit never fires (e.g. an authoring bug —
+# the presave validator catches real ones) it can't spin forever. High enough that real loops — repeats /
+# flag / item / counter — exit at their true count well under it.
+const LOOP_SIM_CAP: int = 256
+
 # A worst-route stretch without a checkpoint longer than this (playtime from
 # funscript lengths) earns an INFO finding. 30 minutes.
 const CHECKPOINT_GAP_MS: int = 1_800_000
@@ -133,6 +138,7 @@ static func _statistics(
 	end_coins["avg"] = float(visits.get("avg_end_coins", 0.0))
 	total_score["avg"] = float(visits.get("avg_total_score", 0.0))
 	rounds["avg"] = float(visits.get("avg_rounds", 0.0))
+	duration["avg"] = float(visits.get("avg_duration_ms", 0.0))
 
 	# Checkpoint spacing summary + the save-spacing bar's worst-route segments.
 	var cp: Dictionary = flow.get("cp", {})
@@ -1068,20 +1074,27 @@ static func simulate(
 	var sum_coins: int = 0
 	var sum_total: int = 0
 	var sum_rounds: int = 0
+	var sum_ms: int = 0  # summed round-length over completed runs → expected (loop/fork/pool-aware) duration
 	var completed: int = 0
 	var stretch_total_ms: int = 0
 	var stretch_count: int = 0
-	var step_cap: int = nodes.size() * 4  # cycle guard for mid-edit graphs
+	# Per-run step budget. Must clear a legit run's LOOPS (each body node revisited up to LOOP_SIM_CAP
+	# times) plus the linear path — sized so the per-loop backstop, not this, is what bounds a run. A raw
+	# mid-edit edge-cycle (no loop_end) still terminates here.
+	var step_cap: int = maxi(64, nodes.size() * (LOOP_SIM_CAP + 1))
 
 	for _run: int in runs:
 		var coins: int = 0
 		var score: int = 0
 		var total_score: int = 0
 		var rounds_seen: int = 0
+		var run_ms: int = 0
 		var seg_ms: int = 0
 		var seg_rounds: int = 0
 		var owned: Dictionary = {}  # item_id → count
 		var run_flags: Dictionary = {}
+		var loop_iters: Dictionary = {}  # loop_end id → iterations this run (mirrors GameState._loopCounts)
+		var counters: Dictionary = {}  # counter name → value (mirrors GameState._counters) for gates/loops
 		var id: String = start
 		var steps: int = 0
 
@@ -1097,6 +1110,7 @@ static func simulate(
 			var type: String = str(node.get("type", ""))
 			for f: String in JourneyData.clean_flag_list(data.get("set_flags", [])):
 				run_flags[f] = true
+			_apply_counters(counters, data)
 
 			match type:
 				"round":
@@ -1104,7 +1118,9 @@ static func simulate(
 					score = int(round_scores.get(id, 0))
 					total_score += score
 					rounds_seen += 1
-					seg_ms += int(round_lengths.get(id, 0))
+					var rlen: int = int(round_lengths.get(id, 0))
+					run_ms += rlen
+					seg_ms += rlen
 					seg_rounds += 1
 				"checkpoint":
 					# A save point closes the current stretch (segments run between saves).
@@ -1133,6 +1149,20 @@ static func simulate(
 						if coins >= price:
 							coins -= price
 							owned[iid] = int(owned.get(iid, 0)) + 1
+				"loop_end":
+					# Mirror GameState.ResolveLoop: bump this loop's iteration count; if its exit isn't ready,
+					# jump back to the body start (loop_to) so the body's rounds are counted again this run.
+					var liters: int = int(loop_iters.get(id, 0)) + 1
+					loop_iters[id] = liters
+					var lto: String = str(data.get("loop_to", ""))
+					if (
+						lto != ""
+						and nodes.has(lto)
+						and not _loop_exit_ready(data, liters, run_flags, owned, counters)
+					):
+						id = lto
+						continue  # re-enter the body — skip the exit-edge pick below
+					loop_iters.erase(id)
 
 			var out: Array = node.get("out", [])
 			if out.is_empty():
@@ -1141,15 +1171,17 @@ static func simulate(
 				sum_coins += coins
 				sum_total += total_score
 				sum_rounds += rounds_seen
+				sum_ms += run_ms
 				completed += 1
 				if seg_rounds > 0:
 					stretch_total_ms += seg_ms
 					stretch_count += 1
 				break
-			var ei: int = _pick_edge(data, out, type, coins, score, owned, run_flags, rng)
+			var ei: int = _pick_edge(data, out, type, coins, score, owned, run_flags, counters, rng)
 			var e: Dictionary = out[ei]
 			for f: String in JourneyData.clean_flag_list(e.get("set_flags", [])):
 				run_flags[f] = true
+			_apply_counters(counters, e)
 			if type == "fork" and str(data.get("resolution", "")) == "sacrifice":
 				coins = maxi(0, coins - int(e.get("cost", 0)))
 				var req: String = str(e.get("required_item", ""))
@@ -1175,6 +1207,7 @@ static func simulate(
 		"avg_end_coins": float(sum_coins) / denom,
 		"avg_total_score": float(sum_total) / denom,
 		"avg_rounds": float(sum_rounds) / denom,
+		"avg_duration_ms": float(sum_ms) / denom,
 		"avg_stretch_ms": float(stretch_total_ms) / maxi(1, stretch_count),
 		"avg_arrival_coins": avg_arrival_coins,
 		"avg_arrival_score": avg_arrival_score,
@@ -1224,6 +1257,53 @@ static func _roll_round_coins(
 			return delta
 
 
+# Applies a node's / fork-edge's set_counters ({name: signed delta}) to the run's counters — the sim's
+# mirror of GameState.ApplyCounters, so counter gates and counter-exit loops evaluate against real values.
+static func _apply_counters(counters: Dictionary, src: Dictionary) -> void:
+	var deltas: Dictionary = src.get("set_counters", {})
+	for cname: Variant in deltas:
+		counters[str(cname)] = int(counters.get(str(cname), 0)) + int(deltas[cname])
+
+
+# Mirrors GameState.LoopExitReady for the Monte-Carlo: is a loop_end's exit satisfied at iteration `iters`,
+# under its combine mode ("all" = AND, else ANY/OR)? Every condition kind is evaluated against the run's
+# tracked state — repeats (iters), flag, item, counter. No conditions ⇒ exit; LOOP_SIM_CAP is the backstop.
+static func _loop_exit_ready(
+	data: Dictionary, iters: int, flags: Dictionary, owned: Dictionary, counters: Dictionary
+) -> bool:
+	if iters >= LOOP_SIM_CAP:
+		return true  # backstop: a run where no condition ever fires can't spin forever
+	var conds: Array = data.get("loop_conditions", [])
+	if conds.is_empty():
+		return true
+	var all: bool = str(data.get("loop_combine", "")) == "all"
+	for cv: Variant in conds:
+		var met: bool = _loop_cond_met(cv as Dictionary, iters, flags, owned, counters)
+		if all and not met:
+			return false  # ALL: one unmet ⇒ keep looping
+		if not all and met:
+			return true  # ANY: one met ⇒ exit
+	return all  # ALL: every one met ⇒ exit; ANY: none met ⇒ loop
+
+
+static func _loop_cond_met(
+	c: Dictionary, iters: int, flags: Dictionary, owned: Dictionary, counters: Dictionary
+) -> bool:
+	match str(c.get("kind", "")):
+		"repeats":
+			return iters >= int(c.get("count", 1))
+		"flag":
+			return bool(flags.get(str(c.get("flag", "")), false))
+		"item":
+			return int(owned.get(str(c.get("item", "")), 0)) > 0
+		"counter":
+			var val: int = int(counters.get(str(c.get("counter", "")), 0))
+			var threshold: int = int(c.get("threshold", 0))
+			# cmp "lte" = count-down (exit when it drops to the value); default "gte" = climb to it.
+			return (val <= threshold) if str(c.get("cmp", "gte")) == "lte" else (val >= threshold)
+	return false
+
+
 # Picks the out-edge a baseline run takes, mirroring the runtime resolvers.
 static func _pick_edge(
 	data: Dictionary,
@@ -1233,6 +1313,7 @@ static func _pick_edge(
 	score: int,
 	owned: Dictionary,
 	run_flags: Dictionary,
+	counters: Dictionary,
 	rng: RandomNumberGenerator
 ) -> int:
 	if type != "fork" or out.size() <= 1:
@@ -1255,9 +1336,9 @@ static func _pick_edge(
 			var metric: String = str(data.get("cond_metric", "score"))
 			var value: int = score if metric == "score" else coins
 			var checker: Callable = has_flag if metric == "flag" else is_owned
-			# The sim tracks score/coins but not counters, so counter gates can't be evaluated here —
-			# every counter reads 0, so a threshold ≥ 1 fails and the fork resolves to its default path.
-			var counter_of: Callable = func(_cn: String) -> int: return 0
+			# Counters are tracked through the run (nodes'/edges' set_counters), so counter gates resolve
+			# against real values just like the runtime.
+			var counter_of: Callable = func(cn: String) -> int: return int(counters.get(cn, 0))
 			return ForkResolver.conditional_path(
 				out, metric, int(data.get("default_path", 0)), value, checker, counter_of
 			)

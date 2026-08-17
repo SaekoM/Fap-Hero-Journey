@@ -345,6 +345,10 @@ func test_statistics() -> void:
 	var avg: float = float((stats["total_score"] as Dictionary)["avg"])
 	assert_bool(avg >= 60.0 and avg <= 80.0).is_true()
 
+	# Expected (Monte-Carlo) duration: r1 (60s) + a 50/50 pick of a (30s) / b (90s) ≈ 120s, inside [lo, hi].
+	var dur_avg: float = float((stats["duration_ms"] as Dictionary)["avg"])
+	assert_bool(dur_avg >= 100000.0 and dur_avg <= 140000.0).is_true()
+
 	var endings: Array = stats["endings"]
 	assert_int(endings.size()).is_equal(2)
 	for e: Dictionary in endings:
@@ -551,3 +555,63 @@ func test_checkpoint_stats_and_bar() -> void:
 	assert_int(segments.size()).is_equal(2)
 	assert_int(int((segments[0] as Dictionary)["ms"])).is_equal(1_200_000)
 	assert_int(int((segments[1] as Dictionary)["rounds"])).is_equal(1)
+
+
+# A loop_end repeats its body: a fixed "repeats" count of 3 plays the body round 3x per run, so its
+# length counts 3x toward the expected duration (regression for loop-aware runtime).
+func test_loop_repeats_count_body_each_iteration() -> void:
+	var graph := {
+		"start": "r1",
+		"nodes":
+		{
+			"r1": {"type": "round", "data": {"round_type": "normal"}, "out": [_edge("le")]},
+			"le":
+			{
+				"type": "loop_end",
+				"data": {"loop_to": "r1", "loop_conditions": [{"kind": "repeats", "count": 10}]},
+				"out": [_edge("end")],
+			},
+			"end": _round(0),
+		}
+	}
+	var result := _audit(
+		graph, {"round_scores": {"r1": 0, "end": 0}, "round_lengths": {"r1": 10000, "end": 0}}
+	)
+	var dur_avg: float = float((result["stats"] as Dictionary)["duration_ms"]["avg"])
+	# 10× the 10s body. Also guards the step-cap: 10 iterations far exceed the old nodes×4 budget, so a
+	# too-small cap would have left every run incomplete (excluded → 0), not 100s.
+	assert_bool(dur_avg >= 99000.0 and dur_avg <= 101000.0).is_true()
+
+
+# A counter-exit loop: the body bumps a counter (+1 each pass) and the loop exits when it reaches the
+# threshold. The sim now tracks counters, so the body's rounds are counted the right number of times.
+func test_loop_counter_threshold_counts_body() -> void:
+	var graph := {
+		"start": "r1",
+		"nodes":
+		{
+			"r1":
+			{
+				"type": "round",
+				"data": {"round_type": "normal", "set_counters": {"belt": 1}},
+				"out": [_edge("le")],
+			},
+			"le":
+			{
+				"type": "loop_end",
+				"data":
+				{
+					"loop_to": "r1",
+					"loop_conditions":
+					[{"kind": "counter", "counter": "belt", "threshold": 3, "cmp": "gte"}],
+				},
+				"out": [_edge("end")],
+			},
+			"end": _round(0),
+		}
+	}
+	var result := _audit(
+		graph, {"round_scores": {"r1": 0, "end": 0}, "round_lengths": {"r1": 10000, "end": 0}}
+	)
+	var dur_avg: float = float((result["stats"] as Dictionary)["duration_ms"]["avg"])
+	assert_bool(dur_avg >= 29500.0 and dur_avg <= 30500.0).is_true()  # belt hits 3 after 3x body

@@ -92,7 +92,7 @@ func setup(journey: Dictionary) -> void:
 		% [
 			round_count,
 			"ROUND" if round_count == 1 else "ROUNDS",
-			_format_duration(total_secs),
+			"~" + _format_duration(total_secs),  # expected runtime — an estimate (audit / content sum)
 		]
 	)
 

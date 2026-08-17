@@ -947,12 +947,24 @@ static func coerce_journey_item(item: Dictionary) -> Dictionary:
 	if category == "key":
 		return out
 	if category == "override":
-		# An override carries a funscript BUNDLE (main + axes + vibes) instead of an effects list; the
-		# save has already rewritten the paths to pooled content/ rels. DurationMs is the derived clip
-		# length (0 when unknown — the runtime bundle recomputes it), kept for shop display.
+		# An override carries a funscript BUNDLE (main + axes + vibes); the save has already rewritten the
+		# paths to pooled content/ rels. DurationMs is the derived clip length (0 when unknown — the runtime
+		# bundle recomputes it), kept for shop display. It can ALSO carry an effects bundle (applied while it
+		# plays), same shape a modifier uses.
 		out["ImmuneToEffects"] = bool(item.get("immune_to_effects", false))
 		out["DurationMs"] = maxi(0, int(item.get("duration_ms", 0)))
 		out["Scripts"] = _coerce_override_scripts(item.get("scripts", {}))
+		var override_effects: Array = []
+		for e: Variant in item.get("effects", []):
+			if e is Dictionary:
+				override_effects.append((e as Dictionary).duplicate(true))
+		out["Effects"] = override_effects
+		var override_trim: Dictionary = item.get("trim", {})
+		if not override_trim.is_empty():
+			out["Trim"] = {
+				"InMs": int(override_trim.get("in_ms", 0)),
+				"OutMs": int(override_trim.get("out_ms", 0))
+			}
 		return out
 	out["DurationMs"] = maxi(0, int(item.get("duration_ms", ITEM_DEFAULT_DURATION_MS)))
 	var effects_out: Array = []
@@ -1001,6 +1013,16 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 		item["immune_to_effects"] = bool(raw.get("ImmuneToEffects", false))
 		item["duration_ms"] = int(raw.get("DurationMs", 0))
 		item["scripts"] = _parse_override_scripts(raw.get("Scripts", {}))
+		var override_effects: Array = []
+		for e: Variant in raw.get("Effects", []):
+			if e is Dictionary:
+				override_effects.append((e as Dictionary).duplicate(true))
+		item["effects"] = override_effects
+		var raw_trim: Dictionary = raw.get("Trim", {})
+		if not raw_trim.is_empty():
+			item["trim"] = {
+				"in_ms": int(raw_trim.get("InMs", 0)), "out_ms": int(raw_trim.get("OutMs", 0))
+			}
 		return item
 	item["duration_ms"] = int(raw.get("DurationMs", ITEM_DEFAULT_DURATION_MS))
 	var effects: Array = []
@@ -2167,6 +2189,21 @@ static func trim_action_points(points: Array, in_ms: int, out_ms: int) -> Array:
 				out.append(Vector2(end_ms - in_ms, _pos_at(a, b, end_ms)))
 				break
 	return out
+
+
+# Applies an override item's trim window {in_ms, out_ms} to one channel's actions (trimmed + rebased to 0
+# via trim_action_points). A no-op when the window isn't set or covers the whole clip, so an untrimmed
+# override is untouched. Bundle-wide: the SAME window is applied to every channel to keep them aligned, so
+# a user can lift a favourite section out of a long script instead of authoring one from scratch.
+static func apply_override_trim(actions: Array, trim: Dictionary) -> Array:
+	if actions.is_empty() or trim.is_empty():
+		return actions
+	var in_ms: int = maxi(0, int(trim.get("in_ms", 0)))
+	var out_ms: int = int(trim.get("out_ms", 0))
+	var full: int = int((actions[actions.size() - 1] as Vector2).x)
+	if in_ms <= 0 and (out_ms <= 0 or out_ms >= full):
+		return actions  # full range → nothing to cut
+	return trim_action_points(actions, in_ms, out_ms if out_ms > 0 else 0)
 
 
 # "m:ss" (or "h:mm:ss", or plain seconds) → milliseconds. Empty/garbage → 0.

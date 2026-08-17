@@ -687,12 +687,14 @@ func _on_arrange_pressed() -> void:
 	# Capture each frame's current members BEFORE the relayout, so the frame can re-wrap them after.
 	var groups: Array = _graph_model.get("groups", [])
 	var members: Array = []
+	var frame_comments: Array = []  # note indices inside each frame — so the re-fit wraps them too
 	for g: Dictionary in groups:
 		# A collapsed frame's members are frozen; an expanded one wraps whatever's currently inside.
 		if g.get("collapsed", false):
 			members.append((g.get("members", []) as Array).duplicate())
 		else:
 			members.append(_nodes_in_rect(g.get("rect", Rect2())))
+		frame_comments.append(_comments_in_rect(g.get("rect", Rect2())))
 	# Snapshot node positions so pinned notes can follow their node through the relayout.
 	var nodes: Dictionary = _graph_model.get("nodes", {})
 	var old_pos: Dictionary = {}
@@ -705,11 +707,13 @@ func _on_arrange_pressed() -> void:
 		if nid != "" and old_pos.has(nid) and nodes.has(nid):
 			var moved: Vector2 = (nodes[nid] as Dictionary).get("pos", Vector2.ZERO) - old_pos[nid]
 			c["pos"] = (c.get("pos", Vector2.ZERO) as Vector2) + moved
-	# Re-fit each (non-empty) frame around its members' new positions so nodes never end up outside it.
+	# Re-fit each (non-empty) frame around its members' new positions — plus any notes inside it — so
+	# nothing ends up outside the frame.
 	for gi: int in groups.size():
 		var ids: Array = members[gi]
-		if not ids.is_empty():
-			(groups[gi] as Dictionary)["rect"] = _frame_rect_for(_nodes_bounds(ids))
+		var cidx: Array = frame_comments[gi]
+		if not (ids.is_empty() and cidx.is_empty()):
+			(groups[gi] as Dictionary)["rect"] = _frame_rect_for(_content_bounds(ids, cidx))
 	# Collapsed frames: re-apply their space-reclaim reflow against the fresh layout (nodes AND the other
 	# frames below), so a later expand reverses against the arranged positions, not stale ones.
 	for gi: int in groups.size():
@@ -1560,6 +1564,32 @@ func _nodes_bounds(ids: Array) -> Rect2:
 	return rect
 
 
+# Sticky-note indices whose position is inside `rect` — a group's note membership.
+func _comments_in_rect(rect: Rect2) -> Array:
+	var indices: Array = []
+	var comments: Array = _graph_model.get("comments", [])
+	for ci: int in comments.size():
+		if rect.has_point((comments[ci] as Dictionary).get("pos", Vector2.ZERO)):
+			indices.append(ci)
+	return indices
+
+
+# Bounding box over a set of nodes AND a set of sticky-notes, so a group frame can wrap the notes inside it
+# too. A note uses its position + a nominal card size (width is fixed; height varies, so the approximate
+# height keeps the frame from clipping the note).
+func _content_bounds(node_ids: Array, comment_indices: Array) -> Rect2:
+	var rect: Rect2 = _nodes_bounds(node_ids)
+	var first: bool = node_ids.is_empty() or rect.size == Vector2.ZERO
+	var comments: Array = _graph_model.get("comments", [])
+	var note_size: Vector2 = Vector2(GraphView.COMMENT_WIDTH, 72.0)
+	for ci: int in comment_indices:
+		if ci >= 0 and ci < comments.size():
+			var cr: Rect2 = Rect2((comments[ci] as Dictionary).get("pos", Vector2.ZERO), note_size)
+			rect = cr if first else rect.merge(cr)
+			first = false
+	return rect
+
+
 # Node ids whose centre is inside `rect` — frame membership (mirrors GraphView._nodes_in_frame_rect).
 func _nodes_in_rect(rect: Rect2) -> Array:
 	var nodes: Dictionary = _graph_model.get("nodes", {})
@@ -2262,6 +2292,13 @@ const BULK_IMPORT_COL_GAP: float = 360.0  # gap to the right of existing content
 # the side panel is left to the per-field DropZones; over the canvas it bulk-imports rounds, falling
 # back to accepting a lone image as the journey cover.
 func _on_viewport_files_dropped(files: PackedStringArray) -> void:
+	# With a modal open over the canvas (the custom-item editor, its list, …), the ONLY valid drop target
+	# is a per-field DropZone — and those handle themselves via their own viewport hook. So swallow the drop
+	# here: a funscript that missed the override drop zone must not fall through to bulk-import rounds (or
+	# hijack the cover) hidden behind the modal.
+	if _modal_shield_open():
+		return
+
 	# A drop onto the selected pool round's encounter drop zone wins outright — it must be
 	# offered BEFORE the folder branch below, which would otherwise bulk-import the folder as
 	# new round nodes onto the canvas. No live zone under the cursor → falls through.
@@ -2355,6 +2392,17 @@ func _handle_side_panel_drop(files: PackedStringArray) -> void:
 				_cover_path = f
 				_update_cover_preview()
 				return
+
+
+# True when a centered modal is open (build_centered_modal joins every modal to "ui_modal"). While one is
+# up it covers the canvas, so an OS file drop that isn't caught by a per-field DropZone must be ignored
+# rather than bulk-imported / treated as a cover behind the modal.
+func _modal_shield_open() -> bool:
+	for m: Node in get_tree().get_nodes_in_group("ui_modal"):
+		var c: Control = m as Control
+		if c != null and c.is_visible_in_tree():
+			return true
+	return false
 
 
 # True when a visible per-field DropZone sits under the cursor. Those zones set their own value from
@@ -4849,6 +4897,13 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	result.merge(node_block)  # adds Format, Start, Nodes
 	result["Comments"] = _serialize_comments(_graph_model.get("comments", []))
 	result["Groups"] = _serialize_groups(_graph_model.get("groups", []))
+	# Expected single-playthrough runtime — the balance audit's Monte-Carlo resolves loops (repeat counts),
+	# forks (path selection) and pools (weighted pick) into one number, so the journey previewer can show
+	# "how long it'll take" without re-auditing on the select screen. 0 (→ scanner falls back to the sum)
+	# for an empty/unauditable graph.
+	var audit: Dictionary = _run_audit()
+	var audit_dur: Dictionary = (audit.get("stats", {}) as Dictionary).get("duration_ms", {})
+	result["EstimatedDurationMs"] = int(audit_dur.get("avg", 0))
 	return result
 
 

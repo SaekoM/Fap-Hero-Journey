@@ -3195,15 +3195,24 @@ func _on_override_activated(item_id: String) -> void:
 # missing file yields an empty channel, so a bad reference degrades to a shorter/empty bundle.
 func _load_override_bundle(item: Dictionary) -> OverrideBundle:
 	var scripts: Dictionary = item.get("scripts", {})
-	var main: Array = JourneyData.read_funscript_actions(str(scripts.get("main", "")))
+	# The trim window (if any) lifts the same section out of every channel, so an author can reuse a slice
+	# of a favourite script; an untrimmed override passes through unchanged.
+	var trim: Dictionary = item.get("trim", {})
+	var main: Array = JourneyData.apply_override_trim(
+		JourneyData.read_funscript_actions(str(scripts.get("main", ""))), trim
+	)
 	var axes: Dictionary = {}
 	for axis_name: Variant in scripts.get("axes", {}):
-		var pts: Array = JourneyData.read_funscript_actions(str(scripts["axes"][axis_name]))
+		var pts: Array = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(scripts["axes"][axis_name])), trim
+		)
 		if not pts.is_empty():
 			axes[str(axis_name)] = pts
 	var vibes: Dictionary = {}
 	for channel: Variant in scripts.get("vibes", {}):
-		var pts: Array = JourneyData.read_funscript_actions(str(scripts["vibes"][channel]))
+		var pts: Array = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(scripts["vibes"][channel])), trim
+		)
 		if not pts.is_empty():
 			vibes[int(channel)] = pts
 	return OverrideBundle.from_channels(main, axes, vibes)
