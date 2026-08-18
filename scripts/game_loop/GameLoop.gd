@@ -2622,6 +2622,9 @@ func _record_run(completed: bool) -> void:
 	var folder: String = GameState.Journey.get("folder_name", "")
 	if folder.is_empty():
 		return
+	# Persist the nodes reached this run into the journey's permanent discovered set (drives the mystery
+	# preview's reveal). Accumulates across every run, completed or abandoned.
+	ScoreboardService.merge_discovered(folder, GameState.DiscoveredNodes())
 	var total: int = GameState.TotalRounds()
 	var reached: int = total if completed else clampi(GameState.RoundNumber, 0, total)
 	var rank: int = (
@@ -2713,6 +2716,8 @@ func _write_journey_save() -> bool:
 	# sequence_index/sequence/fork_depth silently dropped them, which reset every
 	# resume to the journey start and lost pre-save flags + fog discovery.)
 	payload.merge(GameState.CaptureSaveData())
+	# Persist discovery on Save & Quit too, so a run left mid-way still reveals what it reached.
+	ScoreboardService.merge_discovered(folder_name, GameState.DiscoveredNodes())
 	return JourneySaveService.write_save(folder_name, payload)
 
 

@@ -1676,6 +1676,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"map_backdrops": journey.get("map_backdrops", []),
 		"map_fog": bool(journey.get("map_fog", false)),
 		"map_fog_reveal": int(journey.get("map_fog_reveal", 1)),
+		"mystery_preview": bool(journey.get("mystery_preview", false)),
 		"shown_counters": journey.get("shown_counters", []),
 		"auto_advance_enabled": bool(journey.get("auto_advance_enabled", false)),
 		"auto_advance_storyboard_secs": int(journey.get("auto_advance_storyboard_secs", 20)),

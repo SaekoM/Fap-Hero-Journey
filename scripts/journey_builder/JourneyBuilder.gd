@@ -112,6 +112,7 @@ var _backdrop_reposition_idx: int = -1  # editable-layer index currently in drag
 var _backdrop_tex_cache: Dictionary = {}  # path -> ImageTexture, shared by the graph push + panel thumbs
 var _journey_map_fog: bool = false  # fog of war: reveal the map as the player discovers it (map must be enabled)
 var _journey_map_fog_reveal: int = 1  # fog reveal depth: ghost levels ahead of the trail (< 0 = whole structure)
+var _journey_mystery_preview: bool = false  # blur the previewer's totals + flow until nodes are discovered
 var _journey_auto_advance_enabled: bool = false  # countdown on storyboards / interactive forks (off = players self-pace)
 var _journey_auto_advance_storyboard_secs: int = 20  # per-line storyboard countdown when enabled
 var _journey_auto_advance_fork_secs: int = 45  # fork-decision countdown when enabled
@@ -2645,6 +2646,7 @@ func _load_graph(journey: Dictionary) -> void:
 	_journey_characters = (journey.get("characters", []) as Array).duplicate(true)
 	_journey_map_fog = bool(parsed.get("map_fog", false))
 	_journey_map_fog_reveal = int(parsed.get("map_fog_reveal", 1))
+	_journey_mystery_preview = bool(parsed.get("mystery_preview", false))
 	_journey_auto_advance_enabled = bool(parsed.get("auto_advance_enabled", false))
 	_journey_auto_advance_storyboard_secs = int(parsed.get("auto_advance_storyboard_secs", 20))
 	_journey_auto_advance_fork_secs = int(parsed.get("auto_advance_fork_secs", 45))
@@ -4881,6 +4883,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"MapBackdrops": _save_map_backdrops(abs_media_dir, copied_images),
 		"MapFog": _journey_map_fog,
 		"MapFogReveal": _journey_map_fog_reveal,
+		"MysteryPreview": _journey_mystery_preview,
 		"AutoAdvanceEnabled": _journey_auto_advance_enabled,
 		"AutoAdvanceStoryboardSecs": _journey_auto_advance_storyboard_secs,
 		"AutoAdvanceForkSecs": _journey_auto_advance_fork_secs,

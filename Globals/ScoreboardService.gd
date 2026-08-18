@@ -43,28 +43,50 @@ func _path_for(journey_folder_name: String) -> String:
 	return SCOREBOARD_DIR + "/" + JourneyData.sanitize_folder_name(journey_folder_name) + ".json"
 
 
-# The journey's runs, ranked by score (highest first). Empty array when there's
-# no scoreboard yet, the file is missing/malformed, or the version is unsupported.
-func read_runs(journey_folder_name: String) -> Array:
+# The whole per-journey record ({version, journey_folder, runs, discovered}). {} when missing/malformed
+# or an unsupported version. The single reader so runs and the discovered set share one file safely.
+func _read_file(journey_folder_name: String) -> Dictionary:
 	if journey_folder_name.is_empty():
-		return []
+		return {}
 	var path: String = _path_for(journey_folder_name)
 	if not FileAccess.file_exists(path):
-		return []
+		return {}
 	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
 	if f == null:
-		return []
+		return {}
 	var text: String = f.get_as_text()
 	f.close()
 	var parser: JSON = JSON.new()
 	if parser.parse(text) != OK or not (parser.data is Dictionary):
 		printerr("ScoreboardService: malformed scoreboard at %s" % path)
-		return []
+		return {}
 	var data: Dictionary = parser.data
 	if int(data.get("version", 0)) != SCHEMA_VERSION:
 		printerr("ScoreboardService: unsupported version in %s" % path)
-		return []
-	var runs: Array = data.get("runs", [])
+		return {}
+	return data
+
+
+# Stamps version + folder and writes the whole record. Creates the dir if needed.
+func _write_file(journey_folder_name: String, data: Dictionary) -> void:
+	var dir_abs: String = ProjectSettings.globalize_path(SCOREBOARD_DIR)
+	if not DirAccess.dir_exists_absolute(dir_abs):
+		DirAccess.make_dir_recursive_absolute(dir_abs)
+	data["version"] = SCHEMA_VERSION
+	data["journey_folder"] = journey_folder_name
+	var path: String = _path_for(journey_folder_name)
+	var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		printerr("ScoreboardService: cannot open %s for write" % path)
+		return
+	f.store_string(JSON.stringify(data, "\t"))
+	f.close()
+
+
+# The journey's runs, ranked by score (highest first). Empty array when there's
+# no scoreboard yet, the file is missing/malformed, or the version is unsupported.
+func read_runs(journey_folder_name: String) -> Array:
+	var runs: Array = _read_file(journey_folder_name).get("runs", [])
 	runs.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
 			return int(a.get("score", 0)) > int(b.get("score", 0))
@@ -80,11 +102,8 @@ func read_runs(journey_folder_name: String) -> Array:
 func add_run(journey_folder_name: String, entry: Dictionary) -> int:
 	if journey_folder_name.is_empty():
 		return 0
-	var dir_abs: String = ProjectSettings.globalize_path(SCOREBOARD_DIR)
-	if not DirAccess.dir_exists_absolute(dir_abs):
-		DirAccess.make_dir_recursive_absolute(dir_abs)
-
-	var runs: Array = read_runs(journey_folder_name)
+	var data: Dictionary = _read_file(journey_folder_name)  # keep the discovered set alongside
+	var runs: Array = data.get("runs", [])
 	var record: Dictionary = entry.duplicate()
 	record["date"] = Time.get_datetime_string_from_system()
 	runs.append(record)
@@ -103,19 +122,40 @@ func add_run(journey_folder_name: String, entry: Dictionary) -> int:
 	if rank > MAX_RUNS:
 		rank = 0
 
-	var out: Dictionary = {
-		"version": SCHEMA_VERSION,
-		"journey_folder": journey_folder_name,
-		"runs": runs,
-	}
-	var path: String = _path_for(journey_folder_name)
-	var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		printerr("ScoreboardService: cannot open %s for write" % path)
-		return 0
-	f.store_string(JSON.stringify(out, "\t"))
-	f.close()
+	data["runs"] = runs
+	_write_file(journey_folder_name, data)
 	return rank
+
+
+# The persistent set of node ids the player has EVER reached in this journey (across all playthroughs) —
+# drives the previewer's mystery-reveal. Distinct from the per-run fog set, which resets each run.
+func read_discovered(journey_folder_name: String) -> Array:
+	return _read_file(journey_folder_name).get("discovered", [])
+
+
+# Unions `node_ids` into the journey's persistent discovered set, preserving the run history. No-op for an
+# empty folder / id list or when nothing is new; returns true when the set grew (a node seen for the
+# first time), so a caller can refresh a preview.
+func merge_discovered(journey_folder_name: String, node_ids: Array) -> bool:
+	if journey_folder_name.is_empty() or node_ids.is_empty():
+		return false
+	var data: Dictionary = _read_file(journey_folder_name)
+	var discovered: Array = data.get("discovered", [])
+	var seen: Dictionary = {}
+	for d: Variant in discovered:
+		seen[str(d)] = true
+	var added: bool = false
+	for n: Variant in node_ids:
+		var nid: String = str(n)
+		if nid != "" and not seen.has(nid):
+			seen[nid] = true
+			discovered.append(nid)
+			added = true
+	if not added:
+		return false
+	data["discovered"] = discovered
+	_write_file(journey_folder_name, data)
+	return true
 
 
 # Wipes the journey's run history. Idempotent. Called when the player clears it

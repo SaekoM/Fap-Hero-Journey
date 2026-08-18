@@ -233,6 +233,8 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		"map_fog": bool(data.get("MapFog", false)),
 		# Fog reveal depth: ghost levels shown ahead of the visited trail (< 0 = whole structure ghosted).
 		"map_fog_reveal": int(data.get("MapFogReveal", 1)),
+		# Mystery preview: blur the previewer's totals + flow until the player discovers nodes.
+		"mystery_preview": bool(data.get("MysteryPreview", false)),
 		# Auto-advance countdown on storyboards / interactive forks (journey opt-in; absent → off).
 		# Separate durations; the fork field falls back to the earlier single AutoAdvanceSecs key.
 		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
@@ -584,6 +586,8 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		"map_backdrops": _parse_map_backdrops(data.get("MapBackdrops", []), path),
 		"map_fog": bool(data.get("MapFog", false)),
 		"map_fog_reveal": int(data.get("MapFogReveal", 1)),
+		# Mystery preview: blur the previewer's totals + flow until the player discovers nodes.
+		"mystery_preview": bool(data.get("MysteryPreview", false)),
 		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
 		"auto_advance_storyboard_secs": int(data.get("AutoAdvanceStoryboardSecs", 20)),
 		"auto_advance_fork_secs":
@@ -726,7 +730,7 @@ static func _graph_catalogue_sequence(graph: Dictionary) -> Dictionary:
 	for id: String in leftover:
 		if not visited.has(id):
 			visited[id] = true
-			_append_node(nodes[id], lists, extra)
+			_append_node(id, nodes[id], lists, extra)
 			extra += 1
 	return lists
 
@@ -775,6 +779,7 @@ static func _walk_level(
 				)
 			(lists["forks"] as Array).append(
 				{
+					"id": id,
 					"title": (n.get("data", {}) as Dictionary).get("title", ""),
 					"paths": paths,
 					"after_order": pos - 1
@@ -782,7 +787,7 @@ static func _walk_level(
 			)
 			id = merge
 		else:
-			_append_node(n, lists, pos)
+			_append_node(id, n, lists, pos)
 			if ntype == "round" or ntype == "storyboard":
 				pos += 1
 			id = str((out[0] as Dictionary).get("to", "")) if not out.is_empty() else ""
@@ -792,7 +797,7 @@ static func _walk_level(
 # Appends a round / shop / storyboard node to a level's lists. `pos` is this numbered item's index:
 # rounds/storyboards use it as their `order`; a shop (a between-item marker) anchors to `pos - 1` so
 # it renders just after the preceding numbered item without consuming a number.
-static func _append_node(n: Dictionary, lists: Dictionary, pos: int) -> void:
+static func _append_node(node_id: String, n: Dictionary, lists: Dictionary, pos: int) -> void:
 	var d: Dictionary = n.get("data", {})
 	match str(n.get("type", "")):
 		"round":
@@ -808,6 +813,7 @@ static func _append_node(n: Dictionary, lists: Dictionary, pos: int) -> void:
 				(lists["rounds"] as Array)
 				. append(
 					{
+						"id": node_id,
 						"name": d.get("name", ""),
 						"round_type": d.get("round_type", "normal"),
 						"coins": int(d.get("coins", 0)),
@@ -818,10 +824,17 @@ static func _append_node(n: Dictionary, lists: Dictionary, pos: int) -> void:
 				)
 			)
 		"shop":
-			(lists["shops"] as Array).append({"title": d.get("title", ""), "after_order": pos - 1})
+			(lists["shops"] as Array).append(
+				{"id": node_id, "title": d.get("title", ""), "after_order": pos - 1}
+			)
 		"storyboard":
 			(lists["storyboards"] as Array).append(
-				{"lines": d.get("lines", []), "coins": int(d.get("coins", 0)), "order": pos}
+				{
+					"id": node_id,
+					"lines": d.get("lines", []),
+					"coins": int(d.get("coins", 0)),
+					"order": pos
+				}
 			)
 
 

@@ -354,6 +354,23 @@ func show_journey_info_panel() -> void:
 		func(on: bool) -> void: _owner._journey_show_fork_counts = on
 	)
 
+	# Mystery preview: blur the journey-select preview's totals + round flow until the player has
+	# DISCOVERED nodes (persistent across playthroughs), keeping length/structure a surprise.
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_side_field_label("JOURNEY PREVIEW"))
+	var mystery_toggle: CheckButton = CheckButton.new()
+	mystery_toggle.text = "MYSTERY PREVIEW  (BLUR UNTIL DISCOVERED)"
+	mystery_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"On the journey-select screen, blur the totals (rounds · duration · actions) and the round-by-round flow. Each un-blurs once the player has ever reached that node, so length and structure stay a surprise until explored."
+		)
+	)
+	mystery_toggle.add_theme_font_size_override("font_size", 12)
+	mystery_toggle.button_pressed = _owner._journey_mystery_preview
+	side_vbox.add_child(mystery_toggle)
+	mystery_toggle.toggled.connect(func(on: bool) -> void: _owner._journey_mystery_preview = on)
+
 	# Auto-advance: a countdown on storyboards (per line) and interactive forks so a player can't
 	# park there to "rest". The seconds spin greys out until it's enabled.
 	side_vbox.add_child(_side_section_separator())

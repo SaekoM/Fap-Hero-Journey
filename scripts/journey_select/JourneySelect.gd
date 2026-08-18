@@ -116,6 +116,12 @@ var _sort_field: String = "name"
 var _sort_asc: bool = true
 var _current_journey: Dictionary = {}
 
+# Mystery-preview state for the open modal: whether the journey opted in, and the persistent set of node
+# ids the player has ever discovered (node_id -> true). Undiscovered rows / the totals are blurred.
+var _preview_mystery: bool = false
+var _preview_discovered: Dictionary = {}
+var _blur_material: ShaderMaterial = null
+
 # Set true for one call when the user chose "Open Anyway" past the newer-version warning, so
 # the re-invoked play/resume/edit handler skips the gate instead of looping the dialog.
 var _bypass_version_gate: bool = false
@@ -264,7 +270,8 @@ func _apply_layout() -> void:
 	_modal_panel.anchor_bottom = 0.5
 	_modal_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_modal_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-	_modal_panel.custom_minimum_size = Vector2(MODAL_MIN_WIDTH, MODAL_MIN_HEIGHT)
+	_apply_modal_size()
+	get_viewport().size_changed.connect(_apply_modal_size)  # keep filling the window as it resizes
 	# Keep the floating scoreboard glued to the modal panel's actual rect. The
 	# panel re-lays-out (and re-centres) for a frame or two after the modal opens
 	# with fresh content, so positioning it once off a single-frame size read was
@@ -274,8 +281,7 @@ func _apply_layout() -> void:
 
 	_modal_layout.add_theme_constant_override("separation", 20)
 
-	_cover_img.custom_minimum_size = Vector2(MODAL_COVER_W, 0)
-	_cover_img.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_cover_img.size_flags_vertical = Control.SIZE_EXPAND_FILL  # width is set proportionally in _apply_modal_size
 
 	_details_col.add_theme_constant_override("separation", 10)
 	_details_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1478,6 +1484,25 @@ func _close_modal() -> void:
 # ---------------------------------------------------------------------------
 
 
+# Sizes the detail modal to fill most of the window (capped), floored at its old minimum — so larger
+# journeys scroll far less. Reserves room on the RIGHT for the high-score panel and shifts the modal left
+# so the modal + scoreboard sit centred as a group (the scoreboard is glued to the modal's right edge).
+# Recomputed on window resize.
+func _apply_modal_size() -> void:
+	var vp: Vector2 = get_viewport_rect().size
+	var reserve: float = SCOREBOARD_PANEL_W + SCOREBOARD_PANEL_GAP
+	var w: int = maxi(MODAL_MIN_WIDTH, mini(1600, int(vp.x * 0.92) - int(reserve)))
+	var h: int = maxi(MODAL_MIN_HEIGHT, mini(1040, int(vp.y * 0.92)))
+	_modal_panel.custom_minimum_size = Vector2(w, h)
+	# The cover grows with the modal (a share of its width), floored at the old size and capped so the
+	# details column still has room.
+	_cover_img.custom_minimum_size = Vector2(clampi(int(w * 0.34), MODAL_COVER_W, 560), 0)
+	# Move the modal's centre-anchor left by half the reserved width so the pair is balanced on screen.
+	var shift: float = 0.5 - (reserve * 0.5) / maxf(1.0, vp.x)
+	_modal_panel.anchor_left = shift
+	_modal_panel.anchor_right = shift
+
+
 func _populate_modal(journey: Dictionary) -> void:
 	_modal_title.text = journey.get("title", "Unknown")
 	_modal_author.text = "by " + (journey.get("author", "Unknown") as String)
@@ -1725,6 +1750,17 @@ func _update_node_view(journey: Dictionary) -> void:
 	var total_secs: int = (journey.get("total_length_ms", 0) as int) / 1000
 	_stat_length.text = "~" + _format_duration(total_secs)  # expected runtime — an estimate
 
+	# Mystery preview: load the persistent discovered set and blur the totals until every round is seen.
+	_preview_mystery = bool(journey.get("mystery_preview", false))
+	_preview_discovered = {}
+	if _preview_mystery:
+		for nid: Variant in ScoreboardService.read_discovered(str(journey.get("folder_name", ""))):
+			_preview_discovered[str(nid)] = true
+	_set_node_blurred(
+		_stat_length.get_parent() as Control,
+		_preview_mystery and not _all_rounds_discovered(journey)
+	)
+
 	for child in _round_list.get_children():
 		child.queue_free()
 
@@ -1764,6 +1800,71 @@ func _update_node_view(journey: Dictionary) -> void:
 		journey.get("forks", []),
 		0
 	)
+
+
+# ── Mystery preview: per-node reveal + frosted blur ──────────────────────────
+
+
+# True when the journey hides node `id` in the current preview (mystery on, player hasn't reached it yet).
+func _node_hidden(id: String) -> bool:
+	return _preview_mystery and id != "" and not _preview_discovered.has(id)
+
+
+# The totals aggregate the rounds, so they stay hidden only until EVERY round node has been discovered.
+func _all_rounds_discovered(journey: Dictionary) -> bool:
+	for nid: String in journey.get("nodes", {}):
+		var n: Dictionary = journey["nodes"][nid]
+		if str(n.get("type", "")) == "round" and not _preview_discovered.has(nid):
+			return false
+	return true
+
+
+func _blur_mat() -> ShaderMaterial:
+	if _blur_material == null:
+		_blur_material = ShaderMaterial.new()
+		_blur_material.shader = preload("res://scenes/journey_select/mystery_blur.gdshader")
+	return _blur_material
+
+
+# Frosted-blur overlay: wraps `content` in a MarginContainer (which sizes to it) and lays an opaque blur
+# ColorRect on top, so the content keeps its layout but reads as hidden. Returns the wrapper.
+func _blur_wrap(content: Control) -> Control:
+	var wrap: MarginContainer = MarginContainer.new()
+	wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	wrap.add_child(content)
+	var blur: ColorRect = ColorRect.new()
+	blur.material = _blur_mat()
+	blur.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wrap.add_child(blur)
+	return wrap
+
+
+# A freshly-built row, blurred if its node is still hidden (rows are rebuilt each refresh, so no unwrap).
+func _maybe_blur(ctrl: Control, id: String) -> Control:
+	return _blur_wrap(ctrl) if _node_hidden(id) else ctrl
+
+
+# Blurs (or restores) a PERSISTENT node — the stats row — by reparenting it through a blur wrap, tracked
+# with a meta flag so it's idempotent across modal refreshes / version swaps.
+func _set_node_blurred(node: Control, blurred: bool) -> void:
+	var parent: Node = node.get_parent()
+	var wrapped: bool = parent is MarginContainer and parent.has_meta("_mystery_blur")
+	if blurred == wrapped:
+		return
+	if blurred:
+		var at: int = node.get_index()
+		parent.remove_child(node)
+		var wrap: Control = _blur_wrap(node)
+		wrap.set_meta("_mystery_blur", true)
+		parent.add_child(wrap)
+		parent.move_child(wrap, at)
+	else:
+		var host: Node = parent.get_parent()
+		var at: int = parent.get_index()
+		parent.remove_child(node)
+		host.add_child(node)
+		host.move_child(node, at)
+		parent.queue_free()
 
 
 # Recomputes the node view for the current VERSION selection: the composed base⊕rendition when a
@@ -2255,7 +2356,7 @@ func _add_seq_to_list(
 				shop_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 				shop_lbl.add_theme_font_size_override("font_size", 11)
 				shop_row.add_child(shop_lbl)
-				list.add_child(_indent_wrap(shop_row, indent))
+				list.add_child(_maybe_blur(_indent_wrap(shop_row, indent), str(shop.get("id", ""))))
 			"storyboard":
 				var storyboard_data: Dictionary = item["data"]
 				var sb_row: HBoxContainer = HBoxContainer.new()
@@ -2279,7 +2380,9 @@ func _add_seq_to_list(
 					sb_coins_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 					sb_coins_lbl.add_theme_font_size_override("font_size", 12)
 					sb_row.add_child(sb_coins_lbl)
-				list.add_child(_indent_wrap(sb_row, indent))
+				list.add_child(
+					_maybe_blur(_indent_wrap(sb_row, indent), str(storyboard_data.get("id", "")))
+				)
 			"round":
 				var round_data: Dictionary = item["data"]
 				var order: int = round_data.get("order", 0)
@@ -2325,7 +2428,9 @@ func _add_seq_to_list(
 				coins_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 				coins_lbl.add_theme_font_size_override("font_size", 12)
 				row.add_child(coins_lbl)
-				list.add_child(_indent_wrap(row, indent))
+				list.add_child(
+					_maybe_blur(_indent_wrap(row, indent), str(round_data.get("id", "")))
+				)
 
 
 # Renders a fork header + each path (with path header + recursed items).
@@ -2344,7 +2449,8 @@ func _add_fork_to_list(list: VBoxContainer, fork: Dictionary, indent: int) -> vo
 	fork_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 	fork_lbl.add_theme_font_size_override("font_size", 11)
 	fork_row.add_child(fork_lbl)
-	list.add_child(_indent_wrap(fork_row, indent))
+	var fork_id: String = str(fork.get("id", ""))
+	list.add_child(_maybe_blur(_indent_wrap(fork_row, indent), fork_id))
 
 	# Each path
 	for pi: int in paths.size():
@@ -2360,7 +2466,7 @@ func _add_fork_to_list(list: VBoxContainer, fork: Dictionary, indent: int) -> vo
 		path_lbl.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
 		path_lbl.add_theme_font_size_override("font_size", 11)
 		path_row.add_child(path_lbl)
-		list.add_child(_indent_wrap(path_row, indent + 1))
+		list.add_child(_maybe_blur(_indent_wrap(path_row, indent + 1), fork_id))
 
 		# Path contents (recurse)
 		_add_seq_to_list(
