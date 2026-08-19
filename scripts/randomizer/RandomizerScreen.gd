@@ -11,6 +11,16 @@ const VIDEO_EXTS: Array[String] = [
 	"mp4", "mkv", "mov", "avi", "webm", "m4v", "wmv", "flv", "ts", "mpg", "mpeg"
 ]
 
+# RangeSlider is hard-wired to [0,100]; the round-length range is mapped onto that
+# track logarithmically (contract §8.2) so the 60-180s default sits mid-track instead
+# of bunched in the left quarter.
+const PART_RANGE_MIN_S: float = 15.0
+const PART_RANGE_MAX_S: float = 600.0
+
+# How many rounds must be baked before Play starts the session. The encode runs faster
+# than playback, so RandomizerBaker builds a lead during play instead of losing one.
+const START_BUFFER_ROUNDS: int = 2
+
 # Reused for the per-card "attach a funscript" affordance (drop + browse).
 const DropZoneScript := preload("res://scripts/journey_builder/DropZone.gd")
 
@@ -30,6 +40,11 @@ var _cancel_requested: bool = false
 var _pending_run: Dictionary = {}
 var _preview_overlay: Control = null
 
+# id → (pseudo-)entry of the most recently generated run, parallel to _pending_run.
+# Needed because part pseudo-entries aren't in RandomizerLibrary — only the video
+# they were cut from is.
+var _pending_entries: Dictionary = {}
+
 # Settings controls (read at generate time).
 var _preset_opt: OptionButton
 var _mode_opt: OptionButton
@@ -41,12 +56,20 @@ var _boss_check: CheckButton
 var _intensity_check: CheckButton
 var _shop_spin: SpinBox
 var _seed_field: LineEdit
+var _cut_parts_check: CheckButton
+var _part_range: RangeSlider
+var _part_range_lbl: Label
 
 
 func _ready() -> void:
 	anchor_right = 1.0
 	anchor_bottom = 1.0
 	_build_ui()
+	# Back-fill "parts" on entries imported before the cutting feature existed. Runs
+	# here and not at app start so only opening the randomizer pays for the funscript
+	# analysis (contract §6.4), and before the library_changed hookup so the migration's
+	# save doesn't fire a refresh on top of the explicit one below.
+	RandomizerLibrary.ensure_parts_migrated()
 	RandomizerLibrary.library_changed.connect(_refresh_library)
 	# OS file drag-and-drop (videos or whole folders) — same signal DropZone uses.
 	get_viewport().files_dropped.connect(_on_files_dropped)
@@ -222,6 +245,28 @@ func _build_settings_column() -> Control:
 	_time_spin = _make_spin(1, 240, 20, 1)
 	col.add_child(_labeled("Target minutes", _time_spin))
 
+	# Round length (in-parts cutting): a checkbox to enable it plus the log-mapped
+	# range slider that picks the target window. Off = today's whole-clip behavior.
+	_cut_parts_check = CheckButton.new()
+	_cut_parts_check.text = "Cut into parts"
+	_cut_parts_check.button_pressed = true  # feature is opt-out for new users (§8.1)
+	col.add_child(_cut_parts_check)
+
+	_part_range = RangeSlider.new()
+	_part_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_part_range.range_changed.connect(_on_part_range_changed)
+	_part_range_lbl = Label.new()
+	UITheme.style_label(_part_range_lbl, UITheme.DARK_TEXT, 12)
+	# Via the helper rather than a hand-written literal: it is the one place that reads
+	# the seconds back out of the slider, so the initial label can't disagree with what
+	# _read_settings will report.
+	_set_part_range(60, 180)
+	var part_range_box := VBoxContainer.new()
+	part_range_box.add_theme_constant_override("separation", 3)
+	part_range_box.add_child(_part_range)
+	part_range_box.add_child(_part_range_lbl)
+	col.add_child(_labeled("Round length", part_range_box))
+
 	# Effect chance slider.
 	_effect_slider = HSlider.new()
 	_effect_slider.min_value = 0
@@ -337,6 +382,11 @@ func _apply_settings(s: Dictionary) -> void:
 	_boss_check.button_pressed = bool(s.get("boss_finale", false))
 	_intensity_check.button_pressed = bool(s.get("intensity_order", false))
 	_shop_spin.value = int(s.get("shop_every", 0))
+	# Fallback false: a preset saved before this feature existed describes the old
+	# whole-clip behavior and must reproduce it exactly (unlike the UI's initial
+	# state, which defaults to true — see _build_settings_column).
+	_cut_parts_check.button_pressed = bool(s.get("cut_parts", false))
+	_set_part_range(int(s.get("part_min_s", 60)), int(s.get("part_max_s", 180)))
 	_sync_mode_rows()
 
 
@@ -366,6 +416,41 @@ func _sync_mode_rows() -> void:
 	var by_time: bool = _mode_opt.selected == 1
 	_count_spin.get_parent().visible = not by_time
 	_time_spin.get_parent().visible = by_time
+
+
+# ── Round-length range (RangeSlider ↔ seconds, log-mapped per contract §8.2) ────
+
+
+# Slider [0,100] → seconds (logarithmic — a linear map would bunch the 60-180s
+# default in the track's left quarter and make it unusable).
+func _slider_to_secs(v: float) -> int:
+	return roundi(
+		PART_RANGE_MIN_S * pow(PART_RANGE_MAX_S / PART_RANGE_MIN_S, clampf(v, 0.0, 100.0) / 100.0)
+	)
+
+
+# Seconds → slider [0,100]. log() in GDScript is natural log; the base cancels out.
+func _secs_to_slider(s: float) -> float:
+	var x: float = clampf(s, PART_RANGE_MIN_S, PART_RANGE_MAX_S)
+	return clampf(
+		100.0 * log(x / PART_RANGE_MIN_S) / log(PART_RANGE_MAX_S / PART_RANGE_MIN_S), 0.0, 100.0
+	)
+
+
+# Moves the handles without emitting range_changed, then updates the seconds label
+# (the slider's own labels only ever show 0-100). The label is read back OUT of the
+# slider instead of echoing the request: set_range_values clamps to hi >= lo + 1, so a
+# narrow request lands somewhere else — and _read_settings reports the slider, not the
+# request. Same source for both, no drift.
+func _set_part_range(lo_s: int, hi_s: int) -> void:
+	_part_range.set_range_values(_secs_to_slider(float(lo_s)), _secs_to_slider(float(hi_s)))
+	_part_range_lbl.text = (
+		"%d s – %d s" % [_slider_to_secs(_part_range.lo), _slider_to_secs(_part_range.hi)]
+	)
+
+
+func _on_part_range_changed(lo: float, hi: float) -> void:
+	_part_range_lbl.text = "%d s – %d s" % [_slider_to_secs(lo), _slider_to_secs(hi)]
 
 
 # ── Library list ─────────────────────────────────────────────────────────────
@@ -421,6 +506,24 @@ func _make_row(entry: Dictionary) -> Control:
 	meta_lbl.text = "%d:%02d  •  %s" % [secs / 60, secs % 60, fs_note]
 	UITheme.style_label(meta_lbl, UITheme.DARK_TEXT if has_fs else UITheme.AMBER, 11)
 	name_box.add_child(meta_lbl)
+
+	# Parts line: shows the stored beats (from import-time analysis), not the
+	# tiling that only exists once Generate runs with a live rng — the card can't
+	# know that in advance.
+	var parts_lbl := Label.new()
+	var beats: Array = entry.get("parts", [])
+	if not beats.is_empty():
+		var total_ms: int = 0
+		for b: Dictionary in beats:
+			total_ms += int(b.get("out_ms", 0)) - int(b.get("in_ms", 0))
+		var avg_s: int = roundi(float(total_ms) / float(beats.size()) / 1000.0)
+		parts_lbl.text = "%d parts · ø %d s" % [beats.size(), avg_s]
+	elif has_fs:
+		parts_lbl.text = "whole clip (no parts found)"
+	else:
+		parts_lbl.text = "whole clip"
+	UITheme.style_label(parts_lbl, UITheme.DARK_TEXT, 11)
+	name_box.add_child(parts_lbl)
 	row.add_child(name_box)
 
 	# No funscript yet → let the user attach one (drop the file here, or browse via
@@ -621,7 +724,33 @@ func _generate_and_preview(force_random: bool) -> void:
 	var settings: Dictionary = _read_settings()
 	if force_random:
 		settings["seed"] = 0
-	var res: Dictionary = RandomizerGenerator.generate(RandomizerLibrary.get_all(), settings)
+	# Resolve the seed here, not in the generator: the expansion (part cutting) and
+	# the generator (round selection) each get their own RandomNumberGenerator, and
+	# both must see the identical seed for a run to be reproducible. Formula copied
+	# 1:1 from RandomizerGenerator.generate so an explicit seed is unaffected and an
+	# empty one draws from the same distribution.
+	var seed_val: int = int(settings["seed"])
+	if seed_val == 0:
+		seed_val = int(Time.get_unix_time_from_system()) ^ (randi() | 1)
+	settings["seed"] = seed_val
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	# The pending index belongs to the run, not to the preview overlay: this is the ONLY
+	# place it is replaced. Clearing it in _close_preview would empty it before it is
+	# ever read, because Play/Keep close the overlay before baking (see _close_preview).
+	_pending_entries = {}
+	var lib: Array = RandomizerLibrary.get_all()
+	var entries: Array = RandomizerParts.expand(lib, settings, rng)
+	# Cutting is on but nothing survived it. The generator can only answer "no_matches"
+	# here — its inputs were already dropped before it saw them — which reads like a tag
+	# filter problem. Name the real cause instead, and don't bother generating.
+	if entries.is_empty() and not lib.is_empty():
+		_close_preview()
+		_status.text = 'No clip produced any parts — turn off "Cut into parts" or re-import.'
+		return
+	for e: Dictionary in entries:
+		_pending_entries[str(e["id"])] = e
+	var res: Dictionary = RandomizerGenerator.generate(entries, settings)
 	if not bool(res["ok"]):
 		_close_preview()
 		_status.text = _reason_text(str(res["reason"]))
@@ -638,7 +767,7 @@ func _play_pending() -> void:
 	var res: Dictionary = _pending_run
 	_close_preview()
 	_set_busy(true)
-	var mat: Dictionary = await _prepare_and_materialize(res)
+	var mat: Dictionary = await _prepare_and_materialize(res, true)
 	if mat.is_empty():
 		return  # helper set the status + cleared busy
 
@@ -650,6 +779,9 @@ func _play_pending() -> void:
 
 	GameState.StartJourney(play)
 	UISound.start_journey()
+	# The rest of the run keeps baking during the session. Hand it off BEFORE the scene
+	# change: this screen does not survive it, the autoload does.
+	RandomizerBaker.begin(res, _pending_entries, mat["folder"])
 	Transition.change_scene("res://scenes/game_loop/GameLoop.tscn")
 
 
@@ -679,18 +811,32 @@ func _keep_pending() -> void:
 # Transcodes the run's used clips (deferred; cached) and materializes the temp
 # journey. Returns the materialize dict on success, or {} on failure/cancel (status
 # + busy already handled). Shared by Play and Keep.
-func _prepare_and_materialize(res: Dictionary) -> Dictionary:
-	if not await _prepare_used_media(res["used_ids"]):
+# `partial` = the Play path: only the parts of the first START_BUFFER_ROUNDS rounds are
+# visibly baked, the run folder is materialized partially, and RandomizerBaker takes over
+# the rest. Keep stays full-bake (default false) — nobody is waiting to play there.
+func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Dictionary:
+	var all_ids: Array = res["used_ids"] as Array
+	var ids: Array = all_ids
+	if partial:
+		ids = all_ids.slice(0, mini(START_BUFFER_ROUNDS, all_ids.size()))
+	if not await _prepare_used_media(ids):
 		return {}  # _prepare_used_media set the status + cleared busy
 	RandomizerRun.clear_all()  # wipe prior temp runs
-	var mat: Dictionary = RandomizerRun.materialize(
-		res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
-	)
+	var mat: Dictionary = {}
+	if partial:
+		mat = RandomizerRun.materialize_partial(
+			res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
+		)
+	else:
+		mat = RandomizerRun.materialize(
+			res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
+		)
 	if not bool(mat["ok"]):
 		_set_busy(false)
 		_status.text = "Could not prepare the run (%s)." % str(mat["reason"])
 		return {}
-	RandomizerLibrary.mark_used(res["used_ids"])
+	# ALWAYS the full list: freshness applies to the whole run, not just its start buffer.
+	RandomizerLibrary.mark_used(all_ids)
 	return mat
 
 
@@ -785,6 +931,10 @@ func _show_preview(res: Dictionary) -> void:
 		gv.fit_to_view()
 
 
+# Tears down the overlay and the run it showed. Deliberately does NOT touch
+# _pending_entries: Play and Keep close the overlay before they bake, and
+# _prepare_used_media still has to resolve this run's part ids at that point. The index
+# is replaced in _generate_and_preview and nowhere else.
 func _close_preview() -> void:
 	_pending_run = {}
 	if _preview_overlay != null:
@@ -813,18 +963,40 @@ func _prepare_used_media(used_ids: Array) -> bool:
 	_cancel_requested = false
 	_cancel_btn.visible = true
 	var failures: Array = []
-	for uid: Variant in used_ids:
+	var total: int = used_ids.size()
+	for idx: int in total:
+		var uid: Variant = used_ids[idx]
 		if _cancel_requested:
 			return _abort_prepare("Cancelled.")
-		var entry: Dictionary = RandomizerLibrary.get_entry(str(uid))
+		# Part pseudo-entries only exist in this run's index — get_entry() only knows
+		# whole-clip videos — so the pending index is checked first; the library lookup
+		# is both the fallback and the unchanged whole-clip path. has() rather than
+		# get(sid, fallback): the default argument is evaluated eagerly, so every part
+		# would pay for a linear scan plus a deep duplicate that is then thrown away.
+		var sid: String = str(uid)
+		var entry: Dictionary = {}
+		if _pending_entries.has(sid):
+			entry = _pending_entries[sid]
+		else:
+			entry = RandomizerLibrary.get_entry(sid)
 		if entry.is_empty():
+			# An id that resolves in neither place means run and index fell out of sync.
+			# Report it — swallowing it silently is what turned that desync into a vague
+			# missing_pooled_file much further down the pipeline.
+			failures.append("%s (unknown_id)" % sid)
 			continue
 		var nm: String = str(entry.get("name", ""))
+		var is_part: bool = not (entry.get("segments", []) as Array).is_empty()
 		_status.text = "Preparing %s…" % nm
 		var pr: Dictionary = await RandomizerLibrary.prepare_entry_media(
 			entry,
 			func(frac: float, _cur: float, _tot: float, _spd: String) -> void:
-				_status.text = "Transcoding %s… %d%%" % [nm, int(frac * 100.0)],
+				if is_part:
+					_status.text = (
+						"Baking part %d/%d — %s… %d%%" % [idx + 1, total, nm, int(frac * 100.0)]
+					)
+				else:
+					_status.text = "Transcoding %s… %d%%" % [nm, int(frac * 100.0)],
 			func() -> bool: return _cancel_requested
 		)
 		if _cancel_requested:
@@ -871,6 +1043,9 @@ func _read_settings() -> Dictionary:
 		"boss_finale": _boss_check.button_pressed,
 		"intensity_order": _intensity_check.button_pressed,
 		"shop_every": int(_shop_spin.value),
+		"cut_parts": _cut_parts_check.button_pressed,
+		"part_min_s": _slider_to_secs(_part_range.lo),
+		"part_max_s": _slider_to_secs(_part_range.hi),
 	}
 
 

@@ -462,6 +462,12 @@ func _maybe_add_save_run_button() -> void:
 		return
 	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(folder)):
 		return
+	# Still baking (or never finished): the sweep discards this run on the next app
+	# start anyway, so don't offer a button whose keep() would just refuse it.
+	if FileAccess.file_exists(
+		ProjectSettings.globalize_path(folder + "/" + RandomizerRun.UNFINISHED_MARKER)
+	):
+		return
 	var save_btn := Button.new()
 	save_btn.text = "★ SAVE THIS RUN"
 	save_btn.tooltip_text = "Add this randomized run to your journey library to replay later"

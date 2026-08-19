@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.7.7
+
+A randomizer release built around long videos: one clip now yields **many different rounds**, and the wait
+before **Play** collapses from minutes to about one.
+
+### 🎬 One long video, many rounds
+- The randomizer used to treat every clip as exactly one round, so a folder of 20-minute videos gave you a
+  handful of enormous rounds and the same session every time. It now **cuts a long video into round-sized
+  parts**, and each part becomes its own round.
+- The cuts come from the **funscript, not a stopwatch**: scripters already pause at scene changes and mark
+  passages by changing tempo, so a part is a self-contained passage instead of an arbitrary window. No part
+  ever starts mid-stroke, and dead stretches are left out entirely.
+- New **"Cut into parts"** toggle with a **Round length** range (15 s to 10 minutes, default 60–180 s).
+  Harder passages tend to come out shorter.
+- **Every Generate draws different cuts**, so the same folder gives you a different session each time — and
+  the same seed still reproduces a run exactly.
+- Clip changes now **fade video and audio** instead of hard-cutting.
+- Videos **without a funscript** work exactly as before, and **presets saved earlier** keep their old
+  whole-clip behaviour.
+
+### ⚡ Play starts while the rest is still baking
+- Encoding a full run took 5–10 minutes with nothing to do but wait. **Play now starts as soon as the first
+  two rounds are ready** — typically 1–3 minutes — and the remaining parts keep baking in playback order
+  while you play.
+- The encoder is **faster than playback**, so it builds a lead during the session instead of losing one. If
+  playback does catch up, the round **waits visibly and starts the moment its part is ready** rather than
+  failing.
+- All encoding now runs through **one queue with two priorities**, so background baking never competes with
+  something you are waiting for.
+- A part that cannot be baked is **skipped quietly** after one retry; the session is one round shorter.
+- Note: a session left **mid-bake** cannot be resumed — quitting before a run has finished baking discards
+  that run and its save on the next start. **Keep** is unaffected: it still bakes everything up front.
+
+### 🩹 Fixes
+- Importing a **long funscript no longer freezes the app** — the tempo scan grew quadratically with the
+  number of actions, so a large script could stall the import for minutes.
+
 ## v0.7.6
 
 A hotfix that smooths the round → shop → round flow and clears up a handful of visual bugs.

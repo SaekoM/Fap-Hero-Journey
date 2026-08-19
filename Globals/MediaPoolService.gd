@@ -26,6 +26,116 @@ const PROGRESS_FILE: String = "user://transcode_progress.txt"
 # cancel callback only needs to flip a bool — transcode_video does the kill.
 var _pid: int = -1
 
+# Flipped the moment shutdown kills the encode, and never cleared. A polling loop can still
+# get one more tick in that same frame; with _pid already back to -1 it leaves the loop through
+# the NORMAL exit and would publish the truncated .part as a finished file. Nothing may be
+# published once this is true.
+var _shutting_down: bool = false
+
+# Serialises EVERY encode entry point. Because only one ever runs at a time, _pid,
+# PROGRESS_FILE and SEGMENT_BAKE_DIR stay single-use BY CONSTRUCTION — no per-call
+# contexts, no PID ownership checks, no scoped scratch dirs.
+var _gate: EncodeGate = EncodeGate.new()
+
+# Cap for background encodes: without it libx264 grabs every core while EIRTeam.FFmpeg
+# decodes 1080p for the running session beside it. Deliberately not a user setting.
+const BACKGROUND_ENCODE_THREADS: int = 2
+
+# Monotonic: +1 for every job aborted because a higher-priority ticket was waiting (at
+# most once per ticket). Background callers snapshot it before a job and compare after —
+# a rise means "pre-empted", not "failed".
+var _preempt_count: int = 0
+var _preempted_ticket: int = 0
+
+# ── Encode gate ──────────────────────────────────────────────────────────────
+
+
+func preempt_count() -> int:
+	return _preempt_count
+
+
+# Wraps the caller's should_cancel with the gate condition, so the existing
+# OS.kill(_pid) path of every polling loop applies unchanged — including the cleanup
+# already hanging off it. Counts pre-emption at most ONCE per ticket.
+func _effective_cancel(should_cancel: Callable, ticket: int) -> Callable:
+	return func() -> bool:
+		if should_cancel.is_valid() and should_cancel.call():
+			return true
+		if not _gate.should_yield(ticket):
+			return false
+		if _preempted_ticket != ticket:
+			_preempted_ticket = ticket
+			_preempt_count += 1
+		return true
+
+
+# Scratch name ffmpeg encodes to before publication, e.g. clip.mkv → clip.mkv.part.mkv.
+#
+# The target extension is REPEATED on the end on purpose: ffmpeg picks its muxer from the
+# output extension, and a bare "<out>.part" aborts with "Unable to choose an output
+# format" — every encode would fail. Repeating it keeps today's muxer choice EXACTLY
+# (bake_edl's output is not always .mp4: RandomizerLibrary keeps the source container
+# when the clip needs no re-encode, so a part-cut .mkv still muxes as matroska).
+# Appended after the full target name rather than infixed, so a scratch name can never
+# collide with some other target's final name.
+func _part_path(out_abs: String) -> String:
+	var ext: String = out_abs.get_extension()
+	if ext == "":
+		return out_abs + ".part"
+	return out_abs + ".part." + ext
+
+
+# Publishes a finished encode: the .part scratch → <out_abs>. Same pattern as
+# RandomizerLibrary._pool_script with its .tmp file — the rename is the ONLY publishing
+# step, so a crash mid-encode can never leave a truncated file at the final name that a
+# later file_exists() guard would wave through as "already pooled".
+func _publish_part(out_abs: String) -> bool:
+	# First, before any file test: after a shutdown kill the .part is truncated by definition,
+	# and a loop that ticks once more in that frame would otherwise publish it (see _shutting_down).
+	if _shutting_down:
+		return false
+	var part_abs: String = _part_path(out_abs)
+	if not FileAccess.file_exists(part_abs):
+		return false
+	if FileAccess.file_exists(out_abs):
+		DirAccess.remove_absolute(out_abs)  # keeps ffmpeg's old "-y" overwrite semantics
+	if DirAccess.rename_absolute(part_abs, out_abs) != OK:
+		return false
+	return FileAccess.file_exists(out_abs)
+
+
+# Drops a leftover .part scratch for `output`. Called by the gate wrapper while it still
+# HOLDS its ticket — after the release a pre-empting foreground job may already own the
+# name. One short retry, because a just-killed ffmpeg can still hold the handle on
+# Windows (same reasoning as RandomizerLibrary._remove_if_exists).
+func _discard_part(output: String) -> void:
+	var part_abs: String = _part_path(ProjectSettings.globalize_path(output))
+	if not FileAccess.file_exists(part_abs):
+		return
+	if DirAccess.remove_absolute(part_abs) == OK:
+		return
+	# A scene-tree timer, not OS.delay_msec: this retry runs on practically every pre-emption, and
+	# blocking the main thread 200 ms there is an audible hitch in the session playing beside the
+	# encode. Still under our own ticket, so the extra suspension hands the name to nobody.
+	await get_tree().create_timer(0.2).timeout
+	if DirAccess.remove_absolute(part_abs) != OK:
+		push_warning("MediaPoolService: could not delete partial encode %s" % part_abs)
+
+
+# OS.create_process spawns a DETACHED process, so a background ffmpeg would otherwise
+# outlive the app and keep writing. With .part+rename that is harmless (an orphan
+# publishes nothing), but clean only with this. NOTIFICATION_WM_CLOSE_REQUEST covers the
+# window close / Alt+F4, NOTIFICATION_EXIT_TREE the get_tree().quit() route.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_EXIT_TREE:
+		# Set BEFORE the kill, not after: the polling loop can be resumed in this very frame, and
+		# from _pid = -1 alone it cannot tell a finished encode from a killed one (see _publish_part).
+		_shutting_down = true
+		if _pid > 0 and OS.is_process_running(_pid):
+			OS.kill(_pid)
+		_pid = -1
+
+
 # ── Binary resolution ────────────────────────────────────────────────────────
 
 
@@ -66,9 +176,25 @@ func _extract_binary(src_res: String, dst_abs: String) -> void:
 		OS.execute("chmod", ["+x", dst_abs], [], true)
 
 
+var _avail_key: String = ""  # resolved ffprobe path _avail_ok belongs to
+var _avail_ok: bool = false
+
+
+# Memoised per RESOLVED binary path. The call used to cost a process spawn per part
+# (RandomizerLibrary._pool_video probes it in both branches) — on the background path an
+# audible hitch in the running session. Keying on the resolved path is what invalidates
+# the memo: the ffmpeg folder in the options is the only input that redirects
+# resolve_ffmpeg_binary, so changing it changes this key by itself.
+#
+# Accepted gap: ffmpeg installed later into the SAME folder stays unnoticed until the
+# app restarts. The price for having no coupling to Options at all.
 func is_available() -> bool:
-	var out: Array = []
-	return OS.execute(resolve_binary("ffprobe"), ["-version"], out, true, false) == 0
+	var bin: String = resolve_binary("ffprobe")
+	if bin != _avail_key:
+		var out: Array = []
+		_avail_ok = OS.execute(bin, ["-version"], out, true, false) == 0
+		_avail_key = bin
+	return _avail_ok
 
 
 # ── Pooled-file reuse (incremental save) ─────────────────────────────────────
@@ -333,8 +459,38 @@ func bake_animation(
 	max_w: int,
 	max_h: int,
 	on_progress: Callable = Callable(),
-	should_cancel: Callable = Callable()
+	should_cancel: Callable = Callable(),
+	priority: int = EncodeGate.Priority.FOREGROUND
 ) -> Dictionary:
+	var ticket: int = _gate.acquire(priority)
+	while not _gate.granted(ticket):
+		await _gate.turn_granted
+	# Contract §2.7: at least one suspension between grant and release, so release never runs
+	# synchronously out of the predecessor's turn_granted emission (nested emission, and the
+	# waiter that resumes from it is not awaiting yet). The bodies cannot supply it — every one
+	# of them has paths that return without ever awaiting (process start fails, cancel on the
+	# very first poll), so the guarantee has to sit here, in the wrapper.
+	await get_tree().process_frame
+	var res: Dictionary = await _bake_animation_gated(
+		input, output, max_w, max_h, on_progress, _effective_cancel(should_cancel, ticket), priority
+	)
+	await _discard_part(output)  # no-op after a successful rename
+	_gate.release(ticket)
+	return res
+
+
+# The bake itself. Holds no ticket of its own and never touches _gate — every return
+# path here is covered by the single release in the wrapper above.
+func _bake_animation_gated(
+	input: String,
+	output: String,
+	max_w: int,
+	max_h: int,
+	on_progress: Callable,
+	should_cancel: Callable,
+	priority: int
+) -> Dictionary:
+	var out_abs: String = ProjectSettings.globalize_path(output)
 	var progress_abs: String = ProjectSettings.globalize_path(PROGRESS_FILE)
 	var pf: FileAccess = FileAccess.open(progress_abs, FileAccess.WRITE)
 	if pf:
@@ -355,6 +511,8 @@ func bake_animation(
 	args.append_array(["-i", ProjectSettings.globalize_path(input)])
 	if truncated:
 		args.append_array(["-t", "%.3f" % ANIM_MAX_SECS])  # after -i: limits the OUTPUT length
+	if priority == EncodeGate.Priority.BACKGROUND:
+		args.append_array(["-threads", str(BACKGROUND_ENCODE_THREADS)])
 	(
 		args
 		. append_array(
@@ -376,13 +534,17 @@ func bake_animation(
 				"+faststart",
 				"-progress",
 				progress_abs,
-				ProjectSettings.globalize_path(output),
+				_part_path(out_abs),
 			]
 		)
 	)
 
 	_pid = OS.create_process(resolve_binary("ffmpeg"), args)
 	if _pid <= 0:
+		# The binary the memo says works is gone (uninstalled, drive unplugged) or unspawnable.
+		# Drop the memo so the next is_available() probes for real — otherwise the caller keeps
+		# reporting "bake failed" for what is really "ffmpeg unavailable", for the whole session.
+		_avail_key = ""
 		return {"ok": false, "truncated": false}
 
 	while OS.is_process_running(_pid):
@@ -394,8 +556,15 @@ func bake_animation(
 		await get_tree().create_timer(0.4).timeout
 
 	_poll_progress(progress_abs, out_secs, on_progress)  # flush "progress=end"
+	# ffmpeg can end ITSELF with an error (disk full, broken source) after already writing frames.
+	# The loop above exits normally in that case too, so without this check _publish_part would
+	# rename a partial file into place as a finished bake. Only self-terminated processes reach
+	# here — every kill path returns above — so a non-zero code always means a real ffmpeg error.
+	var finished_pid: int = _pid
 	_pid = -1
-	var ok: bool = FileAccess.file_exists(ProjectSettings.globalize_path(output))
+	if OS.get_process_exit_code(finished_pid) != 0:
+		return {"ok": false, "truncated": false}
+	var ok: bool = _publish_part(out_abs)
 	return {"ok": ok, "truncated": truncated and ok}
 
 
@@ -438,8 +607,42 @@ func transcode_video(
 	trim_in_ms: int = 0,
 	trim_out_ms: int = 0,
 	on_progress: Callable = Callable(),
-	should_cancel: Callable = Callable()
+	should_cancel: Callable = Callable(),
+	priority: int = EncodeGate.Priority.FOREGROUND
 ) -> bool:
+	var ticket: int = _gate.acquire(priority)
+	while not _gate.granted(ticket):
+		await _gate.turn_granted
+	# Contract §2.7: guarantees a suspension between grant and release (see bake_animation).
+	await get_tree().process_frame
+	var ok: bool = await _transcode_video_gated(
+		input,
+		output,
+		duration,
+		trim_in_ms,
+		trim_out_ms,
+		on_progress,
+		_effective_cancel(should_cancel, ticket),
+		priority
+	)
+	await _discard_part(output)  # no-op after a successful rename
+	_gate.release(ticket)
+	return ok
+
+
+# The encode itself. Holds no ticket of its own and never touches _gate — every return
+# path here is covered by the single release in the wrapper above.
+func _transcode_video_gated(
+	input: String,
+	output: String,
+	duration: float,
+	trim_in_ms: int,
+	trim_out_ms: int,
+	on_progress: Callable,
+	should_cancel: Callable,
+	priority: int
+) -> bool:
+	var out_abs: String = ProjectSettings.globalize_path(output)
 	var progress_abs: String = ProjectSettings.globalize_path(PROGRESS_FILE)
 	# Truncate any prior progress file so old data doesn't mislead the parser.
 	var pf: FileAccess = FileAccess.open(progress_abs, FileAccess.WRITE)
@@ -458,6 +661,8 @@ func transcode_video(
 		var trim_len: float = duration
 		if trim_len > 0.0:
 			args.append_array(["-t", "%.3f" % trim_len])
+	if priority == EncodeGate.Priority.BACKGROUND:
+		args.append_array(["-threads", str(BACKGROUND_ENCODE_THREADS)])
 	(
 		args
 		. append_array(
@@ -476,13 +681,14 @@ func transcode_video(
 				"192k",
 				"-progress",
 				progress_abs,
-				ProjectSettings.globalize_path(output),
+				_part_path(out_abs),
 			]
 		)
 	)
 
 	_pid = OS.create_process(resolve_binary("ffmpeg"), args)
 	if _pid <= 0:
+		_avail_key = ""  # spawn failed: re-probe availability (see _bake_animation_gated)
 		return false
 
 	while OS.is_process_running(_pid):
@@ -495,8 +701,12 @@ func transcode_video(
 
 	# Final poll to flush "progress=end".
 	_poll_progress(progress_abs, duration, on_progress)
+	# A self-terminated ffmpeg error must not publish its partial file (see _bake_animation_gated).
+	var finished_pid: int = _pid
 	_pid = -1
-	return FileAccess.file_exists(output)
+	if OS.get_process_exit_code(finished_pid) != 0:
+		return false
+	return _publish_part(out_abs)
 
 
 # ── Segment baking (trim / looping / cuts / rearrangement) ───────────────────
@@ -518,13 +728,28 @@ func bake_edl(
 	output: String,
 	segments: Array,
 	on_progress: Callable = Callable(),
-	should_cancel: Callable = Callable()
+	should_cancel: Callable = Callable(),
+	priority: int = EncodeGate.Priority.FOREGROUND
 ) -> bool:
+	# Both validation returns stay OUTSIDE the gate: they precede every process start, so
+	# taking a ticket for them would pre-empt a running background job for a call that
+	# encodes nothing at all.
 	if segments.is_empty():
 		return false
 
+	# Open ends (out_ms <= 0) are the ONLY thing src_end_ms is needed for, and part windows
+	# are closed by construction — so the blocking probe is skipped for them. Without this
+	# the running session stalls at every part start, twenty times a session.
+	var needs_probe: bool = false
+	for seg: Dictionary in segments:
+		if int(seg.get("out_ms", 0)) <= 0:
+			needs_probe = true
+			break
 	# Resolve open ends against the real duration (a pure caller can't probe).
-	var src_end_ms: int = roundi(probe_duration_seconds(input) * 1000.0)
+	var src_end_ms: int = 0
+	if needs_probe:
+		src_end_ms = roundi(probe_duration_seconds(input) * 1000.0)
+
 	var playback: Array = []  # closed windows, in playback order
 	for seg: Dictionary in segments:
 		var start_ms: int = maxi(0, int(seg.get("in_ms", 0)))
@@ -535,6 +760,33 @@ func bake_edl(
 			playback.append({"start_ms": start_ms, "end_ms": end_ms})
 	if playback.is_empty():
 		return false
+
+	var ticket: int = _gate.acquire(priority)
+	while not _gate.granted(ticket):
+		await _gate.turn_granted
+	# Contract §2.7: guarantees a suspension between grant and release (see bake_animation). Needed
+	# here too: if the very first _encode_segment fails at process start, the body returns unawaited.
+	await get_tree().process_frame
+	var ok: bool = await _bake_edl_gated(
+		input, output, playback, on_progress, _effective_cancel(should_cancel, ticket), priority
+	)
+	await _discard_part(output)  # no-op after a successful rename
+	_gate.release(ticket)
+	return ok
+
+
+# The bake itself: one ticket covers ALL segment encodes plus the concat. Holds no ticket
+# of its own and never touches _gate — every return path here is covered by the single
+# release in the wrapper above.
+func _bake_edl_gated(
+	input: String,
+	output: String,
+	playback: Array,
+	on_progress: Callable,
+	should_cancel: Callable,
+	priority: int
+) -> bool:
+	var out_abs: String = ProjectSettings.globalize_path(output)
 
 	# Distinct windows, keyed by span — repeats collapse to one encode.
 	var distinct: Dictionary = {}  # key → {start_ms, end_ms, name}
@@ -569,7 +821,13 @@ func bake_edl(
 		var wrapped: Callable = func(f: float, _c: float, _t: float, spd: String) -> void:
 			_forward_segment_progress(on_progress, base, f, seg_dur, total_dur, spd)
 		var ok: bool = await _encode_segment(
-			input, seg_out, float(int(win["start_ms"])) / 1000.0, seg_dur, wrapped, should_cancel
+			input,
+			seg_out,
+			float(int(win["start_ms"])) / 1000.0,
+			seg_dur,
+			wrapped,
+			should_cancel,
+			priority
 		)
 		if not ok:
 			_clear_segment_bake_dir()
@@ -602,10 +860,11 @@ func bake_edl(
 		list_abs,
 		"-c",
 		"copy",
-		ProjectSettings.globalize_path(output),
+		_part_path(out_abs),
 	]
 	_pid = OS.create_process(resolve_binary("ffmpeg"), cat_args)
 	if _pid <= 0:
+		_avail_key = ""  # spawn failed: re-probe availability (see _bake_animation_gated)
 		_clear_segment_bake_dir()
 		return false
 	while OS.is_process_running(_pid):
@@ -615,9 +874,14 @@ func bake_edl(
 			_clear_segment_bake_dir()
 			return false
 		await get_tree().create_timer(0.2).timeout
+	# A self-terminated ffmpeg error must not publish its partial file (see _bake_animation_gated).
+	var finished_pid: int = _pid
 	_pid = -1
+	if OS.get_process_exit_code(finished_pid) != 0:
+		_clear_segment_bake_dir()
+		return false
 
-	var ok_final: bool = FileAccess.file_exists(ProjectSettings.globalize_path(output))
+	var ok_final: bool = _publish_part(out_abs)
 	_clear_segment_bake_dir()
 	return ok_final
 
@@ -643,13 +907,17 @@ func _forward_segment_progress(
 
 # Re-encodes one [start_s, start_s+dur_s] window of `input` to `output` with the shared segment
 # settings (so every segment concats cleanly). Async + cancel + progress, like transcode_video.
+#
+# NOT gated: it always runs under bake_edl's ticket, so it must never take one of its own.
+# `priority` is here purely for the -threads decision.
 func _encode_segment(
 	input: String,
 	output: String,
 	start_s: float,
 	dur_s: float,
 	on_progress: Callable,
-	should_cancel: Callable
+	should_cancel: Callable,
+	priority: int = EncodeGate.Priority.FOREGROUND
 ) -> bool:
 	var progress_abs: String = ProjectSettings.globalize_path(PROGRESS_FILE)
 	var pf: FileAccess = FileAccess.open(progress_abs, FileAccess.WRITE)
@@ -661,6 +929,8 @@ func _encode_segment(
 	if start_s > 0.0:
 		args.append_array(["-ss", "%.3f" % start_s])
 	args.append_array(["-i", ProjectSettings.globalize_path(input)])
+	if priority == EncodeGate.Priority.BACKGROUND:
+		args.append_array(["-threads", str(BACKGROUND_ENCODE_THREADS)])
 	(
 		args
 		. append_array(
@@ -687,6 +957,7 @@ func _encode_segment(
 	)
 	_pid = OS.create_process(resolve_binary("ffmpeg"), args)
 	if _pid <= 0:
+		_avail_key = ""  # spawn failed: re-probe availability (see _bake_animation_gated)
 		return false
 	while OS.is_process_running(_pid):
 		if should_cancel.is_valid() and should_cancel.call():
@@ -696,7 +967,12 @@ func _encode_segment(
 		_poll_progress(progress_abs, dur_s, on_progress)
 		await get_tree().create_timer(0.4).timeout
 	_poll_progress(progress_abs, dur_s, on_progress)
+	# A self-terminated ffmpeg error must not yield a usable segment (see _bake_animation_gated):
+	# a partial segN.mp4 passes the file_exists check below and would be concat'd into the clip.
+	var finished_pid: int = _pid
 	_pid = -1
+	if OS.get_process_exit_code(finished_pid) != 0:
+		return false
 	return FileAccess.file_exists(ProjectSettings.globalize_path(output))
 
 
