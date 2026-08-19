@@ -29,6 +29,7 @@ Desktop.ini
 /builds/
 /dist/
 /exports/
+/reports/
 HANDOFF.md
 export_presets.cfg
 *.md
