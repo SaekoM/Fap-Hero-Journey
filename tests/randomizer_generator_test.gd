@@ -91,6 +91,67 @@ func test_count_capped_by_library_and_no_repeat() -> void:
 		seen[rel] = true
 
 
+# unique_sources: with cutting on, several parts share one video file. Off, a run may draw more
+# than one; on, it caps at one clip per video.
+func test_unique_sources_limits_to_one_per_video() -> void:
+	var lib: Array = []  # 2 videos × 3 parts each, parts sharing their video's file
+	for v: int in 2:
+		for p: int in 3:
+			var e: Dictionary = _entry("v%d#p%d" % [v, p], 60000, 3)
+			e["video_src"] = "res://clips/video_%d.mp4" % v
+			e["source_id"] = "v%d" % v
+			lib.append(e)
+
+	# Off: 6 entries drawn without replacement → the same video repeats.
+	var loose: Dictionary = RandomizerGenerator.generate(
+		lib, {"seed": 5, "round_count": 6, "unique_sources": false}
+	)
+	assert_int((loose["used_ids"] as Array).size()).is_equal(6)
+
+	# On: one clip per video → caps at the 2 distinct videos.
+	var strict: Dictionary = RandomizerGenerator.generate(
+		lib, {"seed": 5, "round_count": 6, "unique_sources": true}
+	)
+	assert_int((strict["used_ids"] as Array).size()).is_equal(2)
+
+
+# The same video imported from two folders is two entries with DIFFERENT fingerprints (the
+# fingerprint keys on the path), so a fingerprint-based cap would miss them. The filename key still
+# treats them as one video.
+func test_unique_sources_dedups_same_filename_across_paths() -> void:
+	var a: Dictionary = _entry("fp_a", 60000, 3)
+	a["video_src"] = "res://folderA/movie.mp4"
+	var b: Dictionary = _entry("fp_b", 60000, 3)
+	b["video_src"] = "res://folderB/movie.mp4"  # same file name, different path → different id
+	var res: Dictionary = RandomizerGenerator.generate(
+		[a, b], {"seed": 1, "round_count": 4, "unique_sources": true}
+	)
+	assert_int((res["used_ids"] as Array).size()).is_equal(1)
+
+
+# include_vib_only gates vibrator-only clips (a vibration script, no stroke) in or out of a run.
+func test_include_vib_only_filters_vibrator_clips() -> void:
+	var lib: Array = []
+	for i: int in 3:
+		lib.append(_entry("stroke%d" % i, 60000, 3))
+	var vib: Dictionary = _entry("vib0", 60000, 3)
+	vib["vib_only"] = true
+	lib.append(vib)
+
+	# Off: the vibrator-only clip never appears — only the 3 stroke clips.
+	var without: Dictionary = RandomizerGenerator.generate(
+		lib, {"seed": 2, "round_count": 4, "include_vib_only": false}
+	)
+	assert_bool((without["used_ids"] as Array).has("vib0")).is_false()
+	assert_int((without["used_ids"] as Array).size()).is_equal(3)
+
+	# On (default): eligible, so all 4 can be drawn.
+	var with_vib: Dictionary = RandomizerGenerator.generate(
+		lib, {"seed": 2, "round_count": 4, "include_vib_only": true}
+	)
+	assert_int((with_vib["used_ids"] as Array).size()).is_equal(4)
+
+
 func test_same_seed_is_deterministic() -> void:
 	var a: Dictionary = RandomizerGenerator.generate(_library(8), {"seed": 42, "round_count": 5})
 	var b: Dictionary = RandomizerGenerator.generate(_library(8), {"seed": 42, "round_count": 5})

@@ -8,8 +8,9 @@ extends PanelContainer
 # ---------------------------------------------------------------------------
 
 signal file_dropped(path: String)
-# Emitted instead of file_dropped when `multi` is true — carries EVERY accepted file in one drop, so a
-# caller can route a batch (e.g. axis/vibe scripts by filename suffix). The browse button stays single-file.
+# Emitted instead of file_dropped when `multi` is true — carries EVERY accepted file in one drop (or
+# multi-selection in the browse dialog), so a caller can route a batch (e.g. axis/vibe scripts by
+# filename suffix).
 signal files_dropped(paths: PackedStringArray)
 
 # When true, a drop emits `files_dropped` with all accepted files rather than `file_dropped` with the first.
@@ -136,17 +137,29 @@ func clear() -> void:
 func _on_browse_pressed() -> void:
 	var dialog: FileDialog = FileDialog.new()
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	# In multi mode the picker allows selecting a whole bundle at once (Ctrl/Shift-click); the caller
+	# routes them by filename suffix.
+	dialog.file_mode = (
+		FileDialog.FILE_MODE_OPEN_FILES if multi else FileDialog.FILE_MODE_OPEN_FILE
+	)
 	dialog.filters = picker_filters
 	dialog.title = picker_title
 	SettingsService.remember_browse_dir(dialog)  # reopen where the last picker left off
 	get_tree().root.add_child(dialog)
 	dialog.popup_centered(Vector2i(900, 600))
-	dialog.file_selected.connect(
-		func(path: String) -> void:
-			set_file(path)
-			dialog.queue_free()
-	)
+	if multi:
+		dialog.files_selected.connect(
+			func(paths: PackedStringArray) -> void:
+				if not paths.is_empty():
+					files_dropped.emit(paths)
+				dialog.queue_free()
+		)
+	else:
+		dialog.file_selected.connect(
+			func(path: String) -> void:
+				set_file(path)
+				dialog.queue_free()
+		)
 	dialog.canceled.connect(func() -> void: dialog.queue_free())
 
 

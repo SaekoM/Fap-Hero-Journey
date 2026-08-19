@@ -21,6 +21,13 @@ extends RefCounted
 ## dead passages stay as holes between them, which is why any length arithmetic
 ## downstream must use the beat span and never the video duration.
 
+# The "activity" a beat is scored on. STROKE = travel speed (a stroke script's position moving);
+# LEVEL = time-weighted average level (a vibration script's buzz). Every pass — pauses, tempo/level
+# changes, dead-drop, intensity bucket — is identical; only the metric _Prep accumulates differs,
+# so a vibration track is cut and rated by the same code, its steady-buzz sections reading as active
+# rather than "dead" the way travel speed would score them.
+enum Metric { STROKE, LEVEL }
+
 # A gap longer than this is a hard boundary. Shorter ones are part of the rhythm.
 const GAP_THRESHOLD_MS: int = 1500
 
@@ -80,7 +87,7 @@ class _Prep:
 	# delta[i] — the tempo score of a cut at action i using the unclamped windows.
 	var delta: PackedFloat64Array
 
-	func _init(acts: Array, win_ms: int) -> void:
+	func _init(acts: Array, win_ms: int, metric: int = Metric.STROKE) -> void:
 		var n: int = acts.size()
 		at.resize(n)
 		travel.resize(n)
@@ -88,6 +95,10 @@ class _Prep:
 		win_hi.resize(n)
 		delta.resize(n)
 
+		# `travel` is the cumulative activity whose window difference speed()/score() divide by time.
+		# STROKE: |Δpos| summed (travel distance). LEVEL: the previous level held over each interval,
+		# scaled by VIB_LEVEL_SCALE/1000 so speed() returns VIB_LEVEL_SCALE × the time-weighted average
+		# level — the same units the stroke path feeds bucket(), so nothing downstream needs to know.
 		var prev: float = 0.0
 		var sum: float = 0.0
 		for i in n:
@@ -95,7 +106,11 @@ class _Prep:
 			at[i] = int(a.get("at", 0))
 			var pos: float = float(a.get("pos", 0))
 			if i > 0:
-				sum += absf(pos - prev)
+				if metric == Metric.LEVEL:
+					var dt: int = at[i] - at[i - 1]
+					sum += prev * float(dt) * (FunscriptIntensity.VIB_LEVEL_SCALE / 1000.0)
+				else:
+					sum += absf(pos - prev)
 			travel[i] = sum
 			prev = pos
 
@@ -142,9 +157,10 @@ class _Prep:
 		return absf(right - left) / maxf(1.0, maxf(left, right))
 
 
-# Segments a raw funscript action list [{at:ms, pos:0-100}, …] into beats.
-# Returns [] for anything unusable (empty, one action, all too short, all too slow).
-static func segment(actions: Array, cfg: Dictionary = {}) -> Array:
+# Segments a raw funscript action list [{at:ms, pos:0-100}, …] into beats. `metric` picks how a beat
+# is scored: STROKE (a stroke script's travel speed) or LEVEL (a vibration script's average level).
+# Returns [] for anything unusable (empty, one action, all too short, all too slow/quiet).
+static func segment(actions: Array, cfg: Dictionary = {}, metric: int = Metric.STROKE) -> Array:
 	var c: Dictionary = DEFAULT_CFG.duplicate(true)
 	c.merge(cfg, true)
 	# Coerced explicitly: cfg may come from JSON, where every number is a float.
@@ -158,7 +174,7 @@ static func segment(actions: Array, cfg: Dictionary = {}) -> Array:
 	var acts: Array = _normalized(actions)
 	if acts.size() < 2:
 		return []
-	var prep := _Prep.new(acts, win_ms)
+	var prep := _Prep.new(acts, win_ms, metric)
 
 	# Blocks are index ranges [x, y] into the action list, inclusive on both ends.
 	# Until the final filter they always tile the whole list, which is what makes

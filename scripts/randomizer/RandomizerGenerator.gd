@@ -35,6 +35,11 @@ const DEFAULT_SETTINGS: Dictionary = {
 	"effect_pct": 0.0,
 	"boss_finale": false,
 	"shop_every": 0,
+	# On: a run never plays two clips cut from the same source video (one part per video).
+	"unique_sources": false,
+	# Off: vibrator-only clips (a vibration script, no stroke) are excluded — a stroker device would
+	# feel them as dead rounds. On (default) lets them into runs alongside stroke clips.
+	"include_vib_only": true,
 	"coins_per_round": 10,
 	"freshness_halflife_hours": 0.0,
 	"now_unix": 0,
@@ -82,6 +87,8 @@ static func generate(entries: Array, settings: Dictionary = {}) -> Dictionary:
 	# Weighted-random permutation of the whole filtered pool (no-repeat by
 	# construction). Both length modes draw the front of this ordering.
 	var ordered: Array = _weighted_order(pool, cfg, now, rng)
+	if bool(cfg["unique_sources"]):
+		ordered = _one_per_source(ordered)
 	var chosen: Array = _take_by_length(ordered, cfg)
 	if cfg["intensity_order"]:
 		# Build-up: play mild → intense. Stable sort keeps the weighted order as the
@@ -184,8 +191,11 @@ static func generate(entries: Array, settings: Dictionary = {}) -> Dictionary:
 static func _filter(entries: Array, cfg: Dictionary) -> Array:
 	var inc: Array = cfg["tags_include"]
 	var exc: Array = cfg["tags_exclude"]
+	var include_vib_only: bool = bool(cfg["include_vib_only"])
 	var out: Array = []
 	for e: Dictionary in entries:
+		if not include_vib_only and bool(e.get("vib_only", false)):
+			continue
 		var tags: Array = e.get("tags", [])
 		if not inc.is_empty() and not _shares_tag(tags, inc):
 			continue
@@ -230,6 +240,35 @@ static func _weighted_order(
 		order.append(items[pick]["entry"])
 		items.remove_at(pick)
 	return order
+
+
+# Keeps only the FIRST clip from each source video, preserving the weighted order — so a run
+# never plays two clips from the same video. The winner of the weighted draw is already at the
+# front, so this respects weight/freshness.
+static func _one_per_source(ordered: Array) -> Array:
+	var seen: Dictionary = {}
+	var out: Array = []
+	for e: Dictionary in ordered:
+		var key: String = _source_key(e)
+		if seen.has(key):
+			continue
+		seen[key] = true
+		out.append(e)
+	return out
+
+
+# Identity for "the same video". The video FILE NAME, deliberately NOT the media fingerprint:
+# JourneyData.media_fingerprint keys on the absolute PATH, so the same video imported from two
+# folders (easy to do in a big folder import) becomes two entries with two different ids/source_ids
+# and would slip past a fingerprint-based cap. The filename catches that. All parts of one video
+# share its video_src, so cutting is handled by the same key. Falls back to source_id/id when a
+# source path is missing. Trade-off: two genuinely different videos that share a filename count as
+# one here — acceptable for a "one clip per video" convenience.
+static func _source_key(e: Dictionary) -> String:
+	var src: String = str(e.get("video_src", ""))
+	if src != "":
+		return src.get_file().to_lower()
+	return str(e.get("source_id", e.get("id", "")))
 
 
 # 1.0 for a never-used clip; drops toward FRESHNESS_FLOOR the more recently it was

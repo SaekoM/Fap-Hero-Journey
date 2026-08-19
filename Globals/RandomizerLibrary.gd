@@ -146,6 +146,9 @@ static func _coerce_entry(e: Dictionary) -> Dictionary:
 		"tags": (e.get("tags", []) as Array).duplicate(),
 		"weight": float(e.get("weight", 1.0)),
 		"intensity": clampi(int(e.get("intensity", 3)), 1, 5),
+		# No main stroke funscript, but a vibration script IS present: a "vibrator only" clip. Its
+		# stats/intensity/parts are read from the vibration track, not the (absent) stroke script.
+		"vib_only": bool(e.get("vib_only", false)),
 		"last_used": int(e.get("last_used", 0)),
 		"added_at": int(e.get("added_at", 0)),
 		# Beats from FunscriptSegmenter, computed once on import and persisted; the
@@ -326,15 +329,25 @@ func add_clip(
 	var vext: String = "mp4" if needs_transcode else video_src.get_extension()
 	var video_rel: String = JourneyData.pooled_media_rel(vfp, vext, video_src)
 
-	var stats: Dictionary = _read_script_stats(funscript_src)
-	# Auto-rate intensity from the funscript's motion; the passed value is the
-	# fallback for a clip imported without a script.
+	# Vibrator-only: no main stroke funscript, but a vibration script is attached. Its stats,
+	# intensity and beats come from the vibration track (rated by average level, segmented on level)
+	# instead of the absent stroke script.
+	var vib_only: bool = funscript_src == "" and not _first_vib_src(vib_srcs).is_empty()
+	var script_for_analysis: String = _first_vib_src(vib_srcs) if vib_only else funscript_src
+
+	var stats: Dictionary = _read_script_stats(script_for_analysis)
+	# Auto-rate intensity from the script's motion (stroke speed) or vibration level; the passed
+	# value is the fallback for a clip imported without any script at all.
 	var rated: int = intensity
 	if (
-		funscript_src != ""
-		and FileAccess.file_exists(ProjectSettings.globalize_path(funscript_src))
+		script_for_analysis != ""
+		and FileAccess.file_exists(ProjectSettings.globalize_path(script_for_analysis))
 	):
-		rated = FunscriptIntensity.from_path(funscript_src)
+		rated = (
+			FunscriptIntensity.vib_from_path(script_for_analysis)
+			if vib_only
+			else FunscriptIntensity.from_path(script_for_analysis)
+		)
 
 	var now: int = int(Time.get_unix_time_from_system())
 	var entry: Dictionary = _coerce_entry(
@@ -356,10 +369,17 @@ func add_clip(
 			"tags": tags,
 			"weight": weight,
 			"intensity": rated,
+			"vib_only": vib_only,
 			"added_at": now,
 			# Analysis happens exactly here, at import — the round-length slider is a
-			# generate-time knob and never re-triggers it.
-			"parts": _segment_parts(funscript_src),
+			# generate-time knob and never re-triggers it. A vibrator-only clip segments its
+			# vibration track by LEVEL; everything else segments the stroke script by speed.
+			"parts":
+			(
+				_segment_parts(script_for_analysis, FunscriptSegmenter.Metric.LEVEL)
+				if vib_only
+				else _segment_parts(funscript_src)
+			),
 		}
 	)
 
@@ -383,6 +403,111 @@ func add_clip(
 # one — the card's drop zone / browse. Reads stats + predicts the pooled rel; the
 # file itself is pooled later by prepare_entry_media. Emits library_changed so the
 # card refreshes from a drop zone into a normal script row.
+# Attaches a whole script BUNDLE to an existing clip: a main stroke funscript and/or axis + vibration
+# channels, merged onto whatever the entry already has (each new channel fills/replaces its own slot).
+# Re-rates and re-segments from the main script (stroke) or, when there's still no main, the vibration
+# track — so a vibration-only clip that gains a main becomes a stroke clip. No-op on an unknown id or an
+# empty bundle. (estim/e-stim scripts aren't carried — the randomizer library has no estim channel.)
+func set_scripts(id: String, main_src: String, axis_srcs: Dictionary, vib_srcs: Dictionary) -> void:
+	var i: int = _index_of(id)
+	if i < 0:
+		return
+	var merged: Dictionary = _entries[i].duplicate(true)
+	if main_src != "":
+		merged["funscript_src"] = main_src
+	var axis_all: Dictionary = (merged.get("axis_src", {}) as Dictionary).duplicate(true)
+	axis_all.merge(axis_srcs, true)
+	merged["axis_src"] = axis_all
+	var vib_all: Dictionary = (merged.get("vib_src", {}) as Dictionary).duplicate(true)
+	vib_all.merge(vib_srcs, true)
+	merged["vib_src"] = vib_all
+	_refresh_entry_scripts(i, merged)
+
+
+# Sets ONE channel's source and rebuilds. `kind` is "main" / "axis" / "vib"; `channel` is the axis
+# code or vib channel (ignored for main). No-op on an unknown id or a missing file. Lets a clip gain
+# a vibration or axis script even when a stroke script is already attached.
+func set_channel_script(id: String, kind: String, channel: String, path: String) -> void:
+	var i: int = _index_of(id)
+	if i < 0 or path == "" or not FileAccess.file_exists(ProjectSettings.globalize_path(path)):
+		return
+	var merged: Dictionary = _entries[i].duplicate(true)
+	match kind:
+		"main":
+			merged["funscript_src"] = path
+		"axis":
+			var a: Dictionary = (merged.get("axis_src", {}) as Dictionary).duplicate(true)
+			a[channel] = path
+			merged["axis_src"] = a
+		"vib":
+			var v: Dictionary = (merged.get("vib_src", {}) as Dictionary).duplicate(true)
+			v[channel] = path
+			merged["vib_src"] = v
+		_:
+			return
+	_refresh_entry_scripts(i, merged)
+
+
+# Removes ONE channel and rebuilds (a stroke clip whose main is cleared re-derives from its vibration
+# track, if any). No-op on an unknown id.
+func clear_channel_script(id: String, kind: String, channel: String) -> void:
+	var i: int = _index_of(id)
+	if i < 0:
+		return
+	var merged: Dictionary = _entries[i].duplicate(true)
+	match kind:
+		"main":
+			merged["funscript_src"] = ""
+		"axis":
+			var a: Dictionary = (merged.get("axis_src", {}) as Dictionary).duplicate(true)
+			a.erase(channel)
+			merged["axis_src"] = a
+		"vib":
+			var v: Dictionary = (merged.get("vib_src", {}) as Dictionary).duplicate(true)
+			v.erase(channel)
+			merged["vib_src"] = v
+		_:
+			return
+	_refresh_entry_scripts(i, merged)
+
+
+# Recomputes every DERIVED field from `merged`'s current *_src channels — the pooled rels, the
+# vibrator-only flag, and the stats/intensity/beats (from the main stroke script, or the vibration
+# track when there is no main) — then coerces, persists, and signals. Shared by every script edit.
+func _refresh_entry_scripts(i: int, merged: Dictionary) -> void:
+	var main: String = str(merged.get("funscript_src", ""))
+	var axis_all: Dictionary = merged.get("axis_src", {})
+	var vib_all: Dictionary = merged.get("vib_src", {})
+	var vib_only: bool = main == "" and not _first_vib_src(vib_all).is_empty()
+	var script_for_analysis: String = _first_vib_src(vib_all) if vib_only else main
+
+	merged["vib_only"] = vib_only
+	merged["funscript_rel"] = _predict_script_rel(main)
+	merged["axis_rel"] = _predict_channel_rels(axis_all)
+	merged["vib_rel"] = _predict_channel_rels(vib_all)
+
+	var stats: Dictionary = _read_script_stats(script_for_analysis)
+	merged["action_count"] = int(stats["count"])
+	merged["length_ms"] = int(stats["length_ms"])
+	if (
+		script_for_analysis != ""
+		and FileAccess.file_exists(ProjectSettings.globalize_path(script_for_analysis))
+	):
+		merged["intensity"] = (
+			FunscriptIntensity.vib_from_path(script_for_analysis)
+			if vib_only
+			else FunscriptIntensity.from_path(script_for_analysis)
+		)
+	merged["parts"] = (
+		_segment_parts(script_for_analysis, FunscriptSegmenter.Metric.LEVEL)
+		if vib_only
+		else _segment_parts(main)
+	)
+	_entries[i] = _coerce_entry(merged)
+	save_registry()
+	library_changed.emit()
+
+
 func set_funscript(id: String, funscript_src: String) -> void:
 	var i: int = _index_of(id)
 	if i < 0 or funscript_src == "":
@@ -397,6 +522,8 @@ func set_funscript(id: String, funscript_src: String) -> void:
 	merged["length_ms"] = int(stats["length_ms"])
 	# The clip had no meaningful intensity before — rate it from the new script.
 	merged["intensity"] = FunscriptIntensity.from_path(funscript_src)
+	# It now has a stroke script, so it is no longer vibrator-only — rate/segment as stroke.
+	merged["vib_only"] = false
 	# A new script means new beats; part_used survives via the duplicate() above.
 	merged["parts"] = _segment_parts(funscript_src)
 	_entries[i] = _coerce_entry(merged)
@@ -594,7 +721,7 @@ func _pool_script(src: String, dst_rel: String, segments: Array) -> bool:
 # which wants {at, pos} dicts — the Vector2 form would be a second format truth.
 # Segmentation parameters are deliberately not user-facing: the analysis hangs off the
 # import alone, so the same clip always yields the same beats.
-func _segment_parts(funscript_src: String) -> Array:
+func _segment_parts(funscript_src: String, metric: int = FunscriptSegmenter.Metric.STROKE) -> Array:
 	if (
 		funscript_src == ""
 		or not FileAccess.file_exists(ProjectSettings.globalize_path(funscript_src))
@@ -608,7 +735,17 @@ func _segment_parts(funscript_src: String) -> Array:
 	f.close()
 	if not ok:
 		return []
-	return FunscriptSegmenter.segment((parser.data as Dictionary).get("actions", []))
+	return FunscriptSegmenter.segment((parser.data as Dictionary).get("actions", []), {}, metric)
+
+
+# The path of the first non-empty vibration source (channel order is arbitrary but stable within a
+# run). "" when there is none — the signal that a clip is NOT vibrator-only.
+func _first_vib_src(vib_srcs: Dictionary) -> String:
+	for key: Variant in vib_srcs:
+		var src: String = str(vib_srcs[key])
+		if src != "":
+			return src
+	return ""
 
 
 # Predicted pooled rel for a script source ("" for empty/missing) — deterministic

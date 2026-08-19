@@ -64,6 +64,12 @@ var _part_range: RangeSlider
 var _part_range_lbl: Label
 var _coupling_slider: HSlider
 var _coupling_lbl: Label
+var _unique_sources_check: CheckButton
+var _include_vib_only_check: CheckButton
+
+# Ids of library rows whose script-details panel is expanded. Persisted across the library refreshes
+# that follow every script edit, so editing a clip's channels doesn't collapse its panel each time.
+var _expanded_ids: Dictionary = {}
 
 
 func _ready() -> void:
@@ -301,6 +307,25 @@ func _build_settings_column() -> Control:
 	coupling_box.add_child(_coupling_lbl)
 	col.add_child(_labeled("Intensity → length", coupling_box))
 
+	# One clip per video: with cutting on, a long video is split into several parts and more than
+	# one could be drawn into a run — this caps it at a single part per source video.
+	_unique_sources_check = CheckButton.new()
+	_unique_sources_check.text = "One clip per video"
+	_unique_sources_check.tooltip_text = UITheme.wrap_tip(
+		"Never play two clips cut from the same source video in one run."
+	)
+	col.add_child(_unique_sources_check)
+
+	# Vibrator-only clips (a vibration script, no stroke). On by default; turn off on a stroker-only
+	# device where they'd feel like dead rounds.
+	_include_vib_only_check = CheckButton.new()
+	_include_vib_only_check.text = "Include vibrator-only clips"
+	_include_vib_only_check.button_pressed = true
+	_include_vib_only_check.tooltip_text = UITheme.wrap_tip(
+		"Include clips that have only a vibration script (no stroke funscript) in runs."
+	)
+	col.add_child(_include_vib_only_check)
+
 	# Effect chance slider.
 	_effect_slider = HSlider.new()
 	_effect_slider.min_value = 0
@@ -424,6 +449,8 @@ func _apply_settings(s: Dictionary) -> void:
 	# Fallback +0.5 matches RandomizerParts.DEFAULT_CFG: a preset saved before this control existed
 	# reproduces the softened default, not full strength.
 	_coupling_slider.value = float(s.get("intensity_length_coupling", 0.5)) * 100.0
+	_unique_sources_check.button_pressed = bool(s.get("unique_sources", false))
+	_include_vib_only_check.button_pressed = bool(s.get("include_vib_only", true))
 	_sync_mode_rows()
 
 
@@ -540,9 +567,42 @@ func _make_row(entry: Dictionary) -> Control:
 	style.content_margin_bottom = 8
 	panel.add_theme_stylebox_override("panel", style)
 
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 6)
+	panel.add_child(outer)
+
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
-	panel.add_child(row)
+	outer.add_child(row)
+
+	# Caret → reveal a panel to view AND edit the scripts attached to this video (per-channel drop +
+	# clear). Content is built on demand and the expanded/collapsed state survives a library refresh,
+	# so editing a channel doesn't fold the panel back up each time.
+	var details := MarginContainer.new()
+	details.add_theme_constant_override("margin_left", 26)
+	var expanded: bool = _expanded_ids.has(id)
+	details.visible = expanded
+	if expanded:
+		details.add_child(_build_script_details(entry))
+	var caret := Button.new()
+	caret.text = "▾" if expanded else "▸"
+	caret.focus_mode = Control.FOCUS_NONE
+	caret.custom_minimum_size = Vector2(26, 0)
+	caret.tooltip_text = UITheme.wrap_tip("View / edit the scripts attached to this clip")
+	UITheme.style_button_subtle(caret, UITheme.PURPLE_MID, 6, 2, 14)
+	caret.pressed.connect(
+		func() -> void:
+			if details.get_child_count() == 0:
+				details.add_child(_build_script_details(entry))
+			var now_visible: bool = not details.visible
+			details.visible = now_visible
+			caret.text = "▾" if now_visible else "▸"
+			if now_visible:
+				_expanded_ids[id] = true
+			else:
+				_expanded_ids.erase(id)
+	)
+	row.add_child(caret)
 
 	var name_box := VBoxContainer.new()
 	name_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -552,13 +612,22 @@ func _make_row(entry: Dictionary) -> Control:
 	name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name_box.add_child(name_lbl)
 	var has_fs: bool = str(entry.get("funscript_src", "")) != ""
+	var vib_only: bool = bool(entry.get("vib_only", false))
 	var meta_lbl := Label.new()
 	var secs: int = int(entry.get("duration_ms", 0)) / 1000
-	var fs_note: String = "⚠ needs funscript"
+	var fs_note: String
+	var note_color: Color
 	if has_fs:
 		fs_note = "%d acts" % int(entry.get("action_count", 0))
+		note_color = UITheme.DARK_TEXT
+	elif vib_only:
+		fs_note = "♪ vibrator only · %d acts" % int(entry.get("action_count", 0))
+		note_color = UITheme.CYAN
+	else:
+		fs_note = "⚠ needs funscript"
+		note_color = UITheme.AMBER
 	meta_lbl.text = "%d:%02d  •  %s" % [secs / 60, secs % 60, fs_note]
-	UITheme.style_label(meta_lbl, UITheme.DARK_TEXT if has_fs else UITheme.AMBER, 11)
+	UITheme.style_label(meta_lbl, note_color, 11)
 	name_box.add_child(meta_lbl)
 
 	# Parts line: shows the stored beats (from import-time analysis), not the
@@ -580,18 +649,8 @@ func _make_row(entry: Dictionary) -> Control:
 	name_box.add_child(parts_lbl)
 	row.add_child(name_box)
 
-	# No funscript yet → let the user attach one (drop the file here, or browse via
-	# the "..." button). Reuses the builder's DropZone.
-	if not has_fs:
-		var dz := DropZoneScript.new()
-		dz.accepted_extensions = JourneyData.FUNSCRIPT_EXTENSIONS
-		dz.picker_title = "Select Funscript"
-		dz.picker_filters = ["*.funscript ; Funscripts"]
-		dz.custom_minimum_size = Vector2(160, 0)
-		dz.file_dropped.connect(
-			func(path: String) -> void: RandomizerLibrary.set_funscript(id, path)
-		)
-		row.add_child(_labeled("add funscript", dz))
+	# Scripts are attached / cleared inside the caret-expanded details panel now (per channel), so a
+	# clip that already has a stroke script can still gain vibration or axis scripts.
 
 	# Tags.
 	var tags_field := LineEdit.new()
@@ -620,7 +679,103 @@ func _make_row(entry: Dictionary) -> Control:
 	var del := UITheme.make_icon_btn("✕", false, UITheme.DANGER)
 	del.pressed.connect(func() -> void: RandomizerLibrary.remove_entry(id))
 	row.add_child(del)
+
+	outer.add_child(details)
 	return panel
+
+
+# The caret-expanded script editor: one drop-zone-and-clear row per channel — the main stroke, then
+# each attached axis and vibration channel — plus an "add" row that routes NEW files to their channel
+# by filename suffix. A per-channel zone here means a clip that already has a stroke script can still
+# gain vibration/axis scripts (which the old top-row zone couldn't do).
+func _build_script_details(entry: Dictionary) -> Control:
+	var id: String = str(entry["id"])
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	# Main stroke: always shown so it can be attached, replaced, or cleared.
+	box.add_child(_channel_row(id, "main", "", str(entry.get("funscript_src", ""))))
+	var axis: Dictionary = entry.get("axis_src", {})
+	for code: Variant in axis:
+		box.add_child(_channel_row(id, "axis", str(code), str(axis[code])))
+	var vib: Dictionary = entry.get("vib_src", {})
+	for ch: Variant in vib:
+		box.add_child(_channel_row(id, "vib", str(ch), str(vib[ch])))
+
+	# Add-more: a multi zone that routes NEW files to their channels by filename suffix — the way to
+	# add channels the clip doesn't have yet (e.g. a vibration script onto a stroke-only clip).
+	var add_line := HBoxContainer.new()
+	add_line.add_theme_constant_override("separation", 8)
+	var add_tag := Label.new()
+	add_tag.text = "+ ADD"
+	add_tag.custom_minimum_size = Vector2(90, 0)
+	UITheme.style_label(add_tag, UITheme.PURPLE_BRIGHT, 11, true)
+	add_line.add_child(add_tag)
+	var add_dz := DropZoneScript.new()
+	add_dz.accepted_extensions = JourneyData.FUNSCRIPT_EXTENSIONS
+	add_dz.multi = true
+	add_dz.picker_title = "Select funscripts (routed by filename suffix)"
+	add_dz.picker_filters = ["*.funscript ; Funscripts"]
+	add_dz.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_dz.custom_minimum_size = Vector2(200, 0)
+	add_dz.files_dropped.connect(func(paths: PackedStringArray) -> void: _attach_scripts(id, paths))
+	add_line.add_child(add_dz)
+	box.add_child(add_line)
+	return box
+
+
+# One channel's editor row: a tag, a single-file drop zone showing the current script (drop replaces
+# this exact channel), and a clear button (disabled when empty).
+func _channel_row(id: String, kind: String, channel: String, current_path: String) -> Control:
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 8)
+
+	var tag := Label.new()
+	tag.text = _channel_tag(kind, channel)
+	tag.custom_minimum_size = Vector2(90, 0)
+	UITheme.style_label(tag, UITheme.CYAN, 11, true)
+	line.add_child(tag)
+
+	var dz := DropZoneScript.new()
+	dz.accepted_extensions = JourneyData.FUNSCRIPT_EXTENSIONS
+	dz.picker_title = "Select a funscript for %s" % _channel_tag(kind, channel)
+	dz.picker_filters = ["*.funscript ; Funscripts"]
+	dz.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dz.custom_minimum_size = Vector2(200, 0)
+	if current_path != "":
+		dz.set_file(current_path, false)  # show the attached file without re-triggering
+	dz.file_dropped.connect(
+		func(path: String) -> void: RandomizerLibrary.set_channel_script(id, kind, channel, path)
+	)
+	line.add_child(dz)
+
+	var clear := UITheme.make_icon_btn("✕", false, UITheme.DANGER)
+	clear.disabled = current_path == ""
+	clear.tooltip_text = UITheme.wrap_tip("Remove this script")
+	clear.pressed.connect(func() -> void: RandomizerLibrary.clear_channel_script(id, kind, channel))
+	line.add_child(clear)
+	return line
+
+
+# The label for a channel row: "STROKE" for the main script, "AXIS <code>" / "VIB <channel>" otherwise.
+func _channel_tag(kind: String, channel: String) -> String:
+	match kind:
+		"axis":
+			return "AXIS %s" % channel
+		"vib":
+			return "VIB %s" % channel
+		_:
+			return "STROKE"
+
+
+# Routes a dropped/multi-selected batch of funscripts to a clip's channels by filename suffix (main /
+# axis / vibration), then attaches the whole bundle in one call — so a user completes a clip's scripts
+# by selecting them all at once instead of a file at a time.
+func _attach_scripts(id: String, paths: PackedStringArray) -> void:
+	var routed: Dictionary = ImportScanner.classify_script_paths(paths)
+	RandomizerLibrary.set_scripts(
+		id, str(routed["funscript"]), routed["axis"] as Dictionary, routed["vib"] as Dictionary
+	)
 
 
 func _parse_tags(text: String) -> Array:
@@ -721,11 +876,23 @@ func _import_paths(paths: PackedStringArray) -> void:
 		return
 
 	_set_busy(true)
+	_cancel_requested = false
+	# A modal with a progress bar: each add_clip probes the file (an ffprobe subprocess) and
+	# segments its funscript, which blocks the frame. Yielding a frame between clips lets the bar
+	# repaint and the Cancel button respond, so a big folder no longer freezes the whole app.
+	var modal: Dictionary = _show_import_modal(rounds.size())
 	var added: int = 0
 	var failed: int = 0
-	for r: Dictionary in rounds:
+	var cancelled: bool = false
+	for i: int in rounds.size():
+		var r: Dictionary = rounds[i]
 		var nm: String = str(r.get("name", ""))
-		_status.text = "Adding %s…" % nm
+		_update_import_modal(modal, i, rounds.size(), nm)
+		# Paint the "processing clip i" state BEFORE the blocking work, and give Cancel a chance.
+		await get_tree().process_frame
+		if _cancel_requested:
+			cancelled = true
+			break
 		# Import is fast now — probe only; transcoding is deferred to Generate.
 		var add_res: Dictionary = await RandomizerLibrary.add_clip(
 			str(r.get("video_path", "")),
@@ -743,6 +910,8 @@ func _import_paths(paths: PackedStringArray) -> void:
 			failed += 1
 			push_warning("RandomizerScreen: add failed (%s): %s" % [nm, add_res["reason"]])
 
+	_update_import_modal(modal, rounds.size(), rounds.size(), "")
+	_close_import_modal(modal)
 	_set_busy(false)
 	var msg: String = "Added %d clip%s" % [added, "" if added == 1 else "s"]
 	if failed > 0:
@@ -750,7 +919,102 @@ func _import_paths(paths: PackedStringArray) -> void:
 	var skipped: int = int(res["skipped_no_video"])
 	if skipped > 0:
 		msg += ", %d skipped (no video)" % skipped
+	if cancelled:
+		msg += " (cancelled)"
 	_status.text = msg + "."
+
+
+# Full-screen import-progress modal: a framed card with a bar, an N/total count, the current clip
+# name, and a Cancel button (sets _cancel_requested, checked at the loop head). Returns the node
+# refs the loop refreshes each clip.
+func _show_import_modal(total: int) -> Dictionary:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(overlay)
+
+	var backdrop := ColorRect.new()
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.color = Color(0.0, 0.0, 0.0, 0.82)
+	overlay.add_child(backdrop)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	var ps := StyleBoxFlat.new()
+	ps.bg_color = UITheme.PANEL_BG_DEEP
+	ps.border_color = UITheme.PURPLE_MID
+	ps.set_border_width_all(1)
+	ps.set_corner_radius_all(6)
+	ps.set_content_margin_all(26)
+	panel.add_theme_stylebox_override("panel", ps)
+	center.add_child(panel)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 12)
+	vbox.custom_minimum_size = Vector2(420, 0)
+	panel.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "IMPORTING CLIPS"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 20, true)
+	vbox.add_child(title)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0
+	bar.max_value = maxi(1, total)
+	bar.value = 0
+	bar.show_percentage = false
+	bar.custom_minimum_size = Vector2(420, 16)
+	var bar_bg := StyleBoxFlat.new()
+	bar_bg.bg_color = UITheme.CARD_BG_DIM
+	bar_bg.border_color = UITheme.PURPLE_DARK
+	bar_bg.set_border_width_all(1)
+	bar_bg.set_corner_radius_all(4)
+	var bar_fill := StyleBoxFlat.new()
+	bar_fill.bg_color = UITheme.PURPLE_BRIGHT
+	bar_fill.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("background", bar_bg)
+	bar.add_theme_stylebox_override("fill", bar_fill)
+	vbox.add_child(bar)
+
+	var count := Label.new()
+	count.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(count, UITheme.WHITE_SOFT, 14, false)
+	vbox.add_child(count)
+
+	var name_lbl := Label.new()
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	name_lbl.custom_minimum_size = Vector2(420, 0)
+	UITheme.style_label(name_lbl, UITheme.DARK_TEXT, 12, false)
+	vbox.add_child(name_lbl)
+
+	var cancel := Button.new()
+	cancel.text = "✕ CANCEL"
+	UITheme.style_button(cancel, UITheme.MAGENTA)
+	cancel.pressed.connect(func() -> void: _cancel_requested = true)
+	var brow := HBoxContainer.new()
+	brow.alignment = BoxContainer.ALIGNMENT_CENTER
+	brow.add_child(cancel)
+	vbox.add_child(brow)
+
+	return {"overlay": overlay, "bar": bar, "count": count, "name": name_lbl}
+
+
+func _update_import_modal(refs: Dictionary, done: int, total: int, nm: String) -> void:
+	(refs["bar"] as ProgressBar).value = done
+	(refs["count"] as Label).text = "%d / %d" % [done, total]
+	(refs["name"] as Label).text = nm
+
+
+func _close_import_modal(refs: Dictionary) -> void:
+	var overlay: Variant = refs.get("overlay")
+	if is_instance_valid(overlay):
+		(overlay as Control).queue_free()
 
 
 func _video_filters() -> PackedStringArray:
@@ -1128,6 +1392,8 @@ func _read_settings() -> Dictionary:
 		"part_min_s": _slider_to_secs(_part_range.lo),
 		"part_max_s": _slider_to_secs(_part_range.hi),
 		"intensity_length_coupling": _coupling_slider.value / 100.0,
+		"unique_sources": _unique_sources_check.button_pressed,
+		"include_vib_only": _include_vib_only_check.button_pressed,
 	}
 
 

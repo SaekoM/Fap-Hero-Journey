@@ -16,6 +16,12 @@ const SPEED_THRESHOLDS: Array[float] = [100.0, 250.0, 400.0, 550.0]
 # Returned when a script can't be read/parsed — a neutral middle rating.
 const UNKNOWN_INTENSITY: int = 3
 
+# Vibration scripts carry a LEVEL (0–100), not a stroke position, so their "activity" is the
+# average level held over time, not travel speed. Scaling the average level by this maps 0–100 onto
+# the same 0–550 range SPEED_THRESHOLDS expect, so one bucket()/segmenter/tiling path serves both:
+# level 100 → 550 (rating 5), 50 → 275 (rating 3), 0 → 0 (rating 1).
+const VIB_LEVEL_SCALE: float = 5.5
+
 
 # Average speed (positions/sec) of an actions array [{at:ms, pos:0-100}, …].
 static func average_speed(actions: Array) -> float:
@@ -53,14 +59,59 @@ static func from_actions(actions: Array) -> int:
 # Reads a funscript file and rates it. Returns UNKNOWN_INTENSITY when the path is
 # empty/unreadable/unparseable so a caller gets a sane default.
 static func from_path(path: String) -> int:
-	if path == "" or not FileAccess.file_exists(ProjectSettings.globalize_path(path)):
+	var actions: Array = _read_actions(path)
+	if actions.is_empty():
 		return UNKNOWN_INTENSITY
+	return from_actions(actions)
+
+
+# Time-weighted average LEVEL (0–100) of a VIBRATION actions array: each action's level holds until
+# the next. The vibration analogue of average_speed — a steady strong buzz reads as intense even
+# though its position barely moves, which travel-based speed would miss.
+static func average_level(actions: Array) -> float:
+	if actions.size() < 2:
+		return 0.0
+	var area: float = 0.0
+	for i in range(1, actions.size()):
+		var held: float = float((actions[i - 1] as Dictionary).get("pos", 0))
+		var dt: int = (
+			int((actions[i] as Dictionary).get("at", 0))
+			- int((actions[i - 1] as Dictionary).get("at", 0))
+		)
+		area += held * float(dt)
+	var span_ms: float = float(
+		int((actions[-1] as Dictionary).get("at", 0)) - int((actions[0] as Dictionary).get("at", 0))
+	)
+	if span_ms <= 0.0:
+		return 0.0
+	return area / span_ms
+
+
+# 1–5 rating for a VIBRATION actions array, via the average level scaled onto the speed buckets.
+static func vib_from_actions(actions: Array) -> int:
+	if actions.size() < 2:
+		return 1
+	return bucket(average_level(actions) * VIB_LEVEL_SCALE)
+
+
+# vib_from_actions for a file on disk. UNKNOWN_INTENSITY on an unreadable/empty script.
+static func vib_from_path(path: String) -> int:
+	var actions: Array = _read_actions(path)
+	if actions.is_empty():
+		return UNKNOWN_INTENSITY
+	return vib_from_actions(actions)
+
+
+# Shared JSON read: the funscript's actions array, or [] on any read/parse failure.
+static func _read_actions(path: String) -> Array:
+	if path == "" or not FileAccess.file_exists(ProjectSettings.globalize_path(path)):
+		return []
 	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
 	if f == null:
-		return UNKNOWN_INTENSITY
+		return []
 	var parser := JSON.new()
 	var ok: bool = parser.parse(f.get_as_text()) == OK and parser.data is Dictionary
 	f.close()
 	if not ok:
-		return UNKNOWN_INTENSITY
-	return from_actions((parser.data as Dictionary).get("actions", []))
+		return []
+	return (parser.data as Dictionary).get("actions", [])

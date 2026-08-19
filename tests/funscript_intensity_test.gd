@@ -52,3 +52,20 @@ func test_unknown_path_returns_neutral() -> void:
 	assert_int(FunscriptIntensity.from_path("user://does_not_exist.funscript")).is_equal(
 		FunscriptIntensity.UNKNOWN_INTENSITY
 	)
+
+
+# ── Vibration rating: by average LEVEL, not travel speed ──────────────────────
+
+
+func test_vib_average_level_is_time_weighted() -> void:
+	# Level 40 held for 1 s, then 80 held for 3 s → (40·1000 + 80·3000) / 4000 = 70.
+	var vib: Array = [{"at": 0, "pos": 40}, {"at": 1000, "pos": 80}, {"at": 4000, "pos": 80}]
+	assert_float(FunscriptIntensity.average_level(vib)).is_equal_approx(70.0, 0.01)
+
+
+func test_vib_steady_buzz_rates_intense_not_dead() -> void:
+	# A steady strong buzz barely moves position: stroke speed reads it as gentlest (1). By LEVEL
+	# it's intense (90 × 5.5 = 495 → bucket 4) — the whole reason vibration needs its own metric.
+	var buzz: Array = [{"at": 0, "pos": 90}, {"at": 5000, "pos": 90}]
+	assert_int(FunscriptIntensity.from_actions(buzz)).is_equal(1)
+	assert_int(FunscriptIntensity.vib_from_actions(buzz)).is_equal(4)

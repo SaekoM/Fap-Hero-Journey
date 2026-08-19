@@ -337,3 +337,29 @@ func test_metrics_come_from_funscript_intensity() -> void:
 		assert_int(int(b["action_count"])).is_equal(slice.size())
 	assert_float(float(beats[0]["speed"])).is_equal_approx(200.0, 0.001)
 	assert_float(float(beats[1]["speed"])).is_equal_approx(400.0, 0.001)
+
+
+# ── Vibration (LEVEL) mode ────────────────────────────────────────────────────
+
+
+# `count` actions from `start_ms`, `period_ms` apart, all holding vibration `level`.
+func _buzz(start_ms: int, count: int, period_ms: int, level: int) -> Array:
+	var out: Array = []
+	for i in count:
+		out.append({"at": start_ms + i * period_ms, "pos": level})
+	return out
+
+
+# A steady buzz never moves position: stroke mode reads travel ~0, calls it dead and drops it.
+# LEVEL mode scores it by average level, so it survives as a beat and rates by strength.
+func test_vibration_mode_keeps_steady_buzz_that_stroke_mode_drops() -> void:
+	var buzz: Array = _buzz(0, 41, 500, 70)  # level 70 for 20 s, points 500 ms apart
+
+	assert_array(FunscriptSegmenter.segment(buzz)).is_empty()  # stroke: no travel → dropped
+
+	var beats: Array = FunscriptSegmenter.segment(buzz, {}, FunscriptSegmenter.Metric.LEVEL)
+	assert_int(beats.size()).is_equal(1)
+	assert_int(int((beats[0] as Dictionary)["in_ms"])).is_equal(0)
+	assert_int(int((beats[0] as Dictionary)["out_ms"])).is_equal(20000)
+	# 70 × VIB_LEVEL_SCALE(5.5) = 385 → bucket 3.
+	assert_int(int((beats[0] as Dictionary)["intensity"])).is_equal(3)

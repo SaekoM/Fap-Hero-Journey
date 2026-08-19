@@ -67,14 +67,22 @@ static func expand(entries: Array, cfg: Dictionary, rng: RandomNumberGenerator) 
 
 	var out: Array = []
 	for entry: Dictionary in entries:
-		# "No usable script" (never analysed) and "analysed, nothing survived" both
-		# end in parts == []; only this predicate separates them. The former stays a
-		# whole clip like today, the latter contributes no candidates at all.
-		if str(entry.get("funscript_src", "")) == "" or int(entry.get("action_count", 0)) < 2:
+		var vib_only: bool = bool(entry.get("vib_only", false))
+		# "No usable script" (never analysed) stays a whole clip like today. A vibrator-only clip
+		# HAS a script (its vibration track) and its action_count/parts come from that, so it takes
+		# the cutting path below just like a stroke clip.
+		if (
+			not vib_only
+			and (str(entry.get("funscript_src", "")) == "" or int(entry.get("action_count", 0)) < 2)
+		):
 			out.append(entry)
 			continue
 		var beats: Array = entry.get("parts", [])
 		if beats.is_empty():
+			# Analysed, nothing survived. A stroke clip contributes no candidates (dropped); a
+			# vibrator-only clip stays a whole clip rather than vanish — the user added it on purpose.
+			if vib_only:
+				out.append(entry)
 			continue
 		var tiles: Array = _tile(beats, min_ms, max_ms, c, rng)
 		for k: int in tiles.size():
@@ -221,6 +229,8 @@ static func _make_pseudo_entry(video: Dictionary, part: Dictionary, k: int, n: i
 		"source_id": video_id,
 		"part_index": k,
 		"part_count": n,
+		# Carried onto every part so the generator's include/exclude filter can act on a cut clip.
+		"vib_only": bool(video.get("vib_only", false)),
 	}
 
 

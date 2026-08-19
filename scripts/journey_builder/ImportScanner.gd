@@ -279,6 +279,33 @@ static func find_sibling_scripts(dir: String, base: String) -> Dictionary:
 	return result
 
 
+# Classifies an EXPLICIT list of funscript paths into {funscript, axis, vib, estim} using the SAME
+# suffix routing as find_sibling_scripts — for attaching a whole script bundle to one clip in a single
+# multi-selection. First match wins per slot; non-funscript paths are ignored. Unlike the sibling scan
+# it does NOT require matching base names: the caller has already chosen the files that belong together.
+static func classify_script_paths(paths: PackedStringArray) -> Dictionary:
+	var result: Dictionary = {"funscript": "", "axis": {}, "vib": {}, "estim": {}}
+	for full: String in paths:
+		if full.get_extension().to_lower() not in JourneyData.FUNSCRIPT_EXTENSIONS:
+			continue
+		var vib_ch: String = detect_vib_channel(full)
+		var estim_ax: String = detect_estim_axis(full)
+		if vib_ch != "":
+			if not result["vib"].has(vib_ch):
+				result["vib"][vib_ch] = full
+		elif estim_ax != "":
+			if not result["estim"].has(estim_ax):
+				result["estim"][estim_ax] = full
+		else:
+			var axis: String = detect_funscript_axis(full)
+			if axis == "L0":
+				if result["funscript"] == "":
+					result["funscript"] = full
+			elif not result["axis"].has(axis):
+				result["axis"][axis] = full
+	return result
+
+
 # Finds a video next to a funscript/round by base name. Returns its path, or "" if none exists.
 static func find_sibling_video(dir: String, base: String) -> String:
 	for ext: String in JourneyData.VIDEO_EXTENSIONS:

@@ -226,3 +226,33 @@ func test_expand_dropped_paths_walks_dirs_and_filters() -> void:
 	assert_int(out.size()).is_equal(2)
 	assert_bool(out.has("%s/a.mp4" % _tmp)).is_true()
 	assert_bool(out.has("%s/notes.txt" % _tmp)).is_false()
+
+
+func test_classify_script_paths_routes_a_bundle() -> void:
+	var routed: Dictionary = (
+		ImportScanner
+		. classify_script_paths(
+			PackedStringArray(
+				[
+					"/x/scene.funscript",  # main → L0
+					"/x/scene.twist.funscript",  # axis R0
+					"/x/scene_l1.funscript",  # axis L1
+					"/x/scene.vib1.funscript",  # vibration vib1
+					"/x/notes.txt",  # ignored (not a funscript)
+				]
+			)
+		)
+	)
+	assert_str(str(routed["funscript"])).is_equal("/x/scene.funscript")
+	assert_str(str((routed["axis"] as Dictionary)["R0"])).is_equal("/x/scene.twist.funscript")
+	assert_str(str((routed["axis"] as Dictionary)["L1"])).is_equal("/x/scene_l1.funscript")
+	assert_str(str((routed["vib"] as Dictionary)["vib1"])).is_equal("/x/scene.vib1.funscript")
+
+
+func test_classify_script_paths_vibration_only() -> void:
+	# No main-stroke (L0) script → funscript slot stays empty; the vib channel is still routed.
+	var routed: Dictionary = ImportScanner.classify_script_paths(
+		PackedStringArray(["/x/clip.vib1.funscript"])
+	)
+	assert_str(str(routed["funscript"])).is_equal("")
+	assert_str(str((routed["vib"] as Dictionary)["vib1"])).is_equal("/x/clip.vib1.funscript")
