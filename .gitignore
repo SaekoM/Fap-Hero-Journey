@@ -30,6 +30,7 @@ Desktop.ini
 /dist/
 /exports/
 /reports/
+addons/gdUnit4/GdUnitRunner.cfg
 HANDOFF.md
 export_presets.cfg
 *.md

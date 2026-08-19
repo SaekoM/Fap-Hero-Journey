@@ -104,8 +104,8 @@ func test_override_trim_window_round_trips() -> void:
 func test_apply_override_trim() -> void:
 	var actions := [Vector2(0, 0), Vector2(1000, 100), Vector2(2000, 0), Vector2(3000, 100)]
 	var cut: Array = JourneyData.apply_override_trim(actions, {"in_ms": 1000, "out_ms": 2000})
-	assert_int((cut[0] as Vector2).x).is_equal(0)  # rebased to 0
-	assert_int((cut[cut.size() - 1] as Vector2).x).is_equal(1000)  # 2000 − 1000 in-point
+	assert_int(int((cut[0] as Vector2).x)).is_equal(0)  # rebased to 0 (Vector2.x is float — cast for assert_int)
+	assert_int(int((cut[cut.size() - 1] as Vector2).x)).is_equal(1000)  # 2000 − 1000 in-point
 	# No window, or a window covering the whole clip → the original array, untouched.
 	assert_int(JourneyData.apply_override_trim(actions, {}).size()).is_equal(4)
 	(
