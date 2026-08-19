@@ -374,7 +374,13 @@ func _build_round_timer() -> void:
 		return
 	_timer_lbl = Label.new()
 	_timer_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	_timer_lbl.add_theme_font_size_override("font_size", 16)
+	# Font size + shrink-center match the scene's stat labels (see _apply_theme): 13, not 16, so the
+	# timer is the same size as the coins/points, and shrink-center so every stat box shares the row's
+	# vertical midpoint with the buttons instead of the emoji glyph inflating its height.
+	_timer_lbl.add_theme_font_size_override("font_size", 13)
+	_timer_lbl.uppercase = true
+	_timer_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_timer_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_hud_layout.add_child(_timer_lbl)
 	_hud_layout.move_child(_timer_lbl, _score_lbl.get_index() + 1)
 	_update_round_timer()
@@ -987,13 +993,7 @@ func _wait_for_baked_round(index: int) -> int:
 	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
 	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
 	layer.add_child(backdrop)
-	var center: CenterContainer = CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(center)
-	var lbl: Label = Label.new()
-	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 16, false)
-	center.add_child(lbl)
+	var card: Dictionary = _build_bake_card(layer)
 
 	# Polled rather than wired to round_ready/progress_changed: no connect/disconnect pair on an
 	# autoload signal that would have to survive a scene change mid-wait — this coroutine simply
@@ -1002,7 +1002,7 @@ func _wait_for_baked_round(index: int) -> int:
 		is_inside_tree()
 		and RandomizerBaker.round_state(index) == RandomizerBaker.RoundState.PENDING
 	):
-		lbl.text = _bake_wait_text()
+		_update_bake_card(card)
 		await get_tree().process_frame
 
 	_bake_waiting = false
@@ -1028,13 +1028,99 @@ func _wait_for_baked_round(index: int) -> int:
 	return RandomizerBaker.round_state(index)
 
 
-# The wait line. Deliberately plain: in the normal case it is never seen.
-func _bake_wait_text() -> String:
+# The wait card: a framed panel with the round counter, the clip name, a live encode bar and an
+# ETA. In the normal case it is never seen, but when the player overtakes the baker it turns the
+# dead black frame into something that tells them how long the wait is. Returns the labels/bar the
+# poll loop refreshes each frame. Deliberately NO beat-reactive motion — just a plain progress read.
+func _build_bake_card(parent: Node) -> Dictionary:
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(center)
+
+	var panel: PanelContainer = PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
+	panel_style.bg_color = UITheme.PANEL_BG_DEEP
+	panel_style.border_color = UITheme.PURPLE_MID
+	panel_style.set_border_width_all(1)
+	panel_style.set_corner_radius_all(6)
+	panel_style.set_content_margin_all(26)
+	panel.add_theme_stylebox_override("panel", panel_style)
+	center.add_child(panel)
+
+	var vbox: VBoxContainer = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 12)
+	vbox.custom_minimum_size = Vector2(380, 0)
+	panel.add_child(vbox)
+
+	var title: Label = Label.new()
+	title.text = "PREPARING NEXT ROUND"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 20, true)
+	vbox.add_child(title)
+
+	var round_lbl: Label = Label.new()
+	round_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(round_lbl, UITheme.WHITE_SOFT, 15, false)
+	vbox.add_child(round_lbl)
+
+	var name_lbl: Label = Label.new()
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	name_lbl.custom_minimum_size = Vector2(380, 0)
+	UITheme.style_label(name_lbl, UITheme.DARK_TEXT, 13, false)
+	vbox.add_child(name_lbl)
+
+	var bar: ProgressBar = ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 100.0
+	bar.show_percentage = false
+	bar.custom_minimum_size = Vector2(380, 14)
+	var bar_bg: StyleBoxFlat = StyleBoxFlat.new()
+	bar_bg.bg_color = UITheme.CARD_BG_DIM
+	bar_bg.border_color = UITheme.PURPLE_DARK
+	bar_bg.set_border_width_all(1)
+	bar_bg.set_corner_radius_all(4)
+	var bar_fill: StyleBoxFlat = StyleBoxFlat.new()
+	bar_fill.bg_color = UITheme.PURPLE_BRIGHT
+	bar_fill.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("background", bar_bg)
+	bar.add_theme_stylebox_override("fill", bar_fill)
+	vbox.add_child(bar)
+
+	var eta_lbl: Label = Label.new()
+	eta_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(eta_lbl, UITheme.CYAN, 14, false)
+	vbox.add_child(eta_lbl)
+
+	return {"round": round_lbl, "name": name_lbl, "bar": bar, "eta": eta_lbl}
+
+
+# One frame's refresh of the wait card from RandomizerBaker.progress().
+func _update_bake_card(refs: Dictionary) -> void:
 	var p: Dictionary = RandomizerBaker.progress()
 	var total: int = int(p.get("total", 0))
-	if total <= 0:
-		return "Preparing next round…"
-	return "Preparing next round… %d/%d" % [int(p.get("done", 0)), total]
+	var done: int = int(p.get("done", 0))
+	(refs["round"] as Label).text = (
+		("Round %d of %d" % [done, total]) if total > 0 else "Almost there…"
+	)
+	(refs["name"] as Label).text = str(p.get("name", ""))
+	var frac: float = clampf(float(p.get("clip_frac", 0.0)), 0.0, 1.0)
+	(refs["bar"] as ProgressBar).value = frac * 100.0
+	(refs["eta"] as Label).text = _bake_eta_text(float(p.get("eta_s", 0.0)), frac)
+
+
+# ETA line. Before ffmpeg reports its first out_time the figure is unreliable, so say so rather
+# than show a wild number; once it is moving, round up to whole seconds and tack on the percentage.
+func _bake_eta_text(eta_s: float, frac: float) -> String:
+	if eta_s <= 0.0 or frac <= 0.0:
+		return "Estimating time remaining…"
+	var secs: int = int(ceil(eta_s))
+	var pct: int = int(round(frac * 100.0))
+	if secs >= 60:
+		return "~%dm %02ds remaining · %d%%" % [secs / 60, secs % 60, pct]
+	return "~%ds remaining · %d%%" % [secs, pct]
 
 
 # Skips a round whose media could not be baked: on to the next node, without comment. Same shape
@@ -3067,22 +3153,34 @@ func _show_pop(title: String, detail: String, tail: String, accent: Color) -> vo
 	s.set_content_margin_all(10)
 	pop.add_theme_stylebox_override("panel", s)
 
-	var row: HBoxContainer = HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	pop.add_child(row)
-	var title_lbl: Label = Label.new()
-	title_lbl.text = title.to_upper()
-	UITheme.style_label(title_lbl, UITheme.WHITE_SOFT, 13, true)
-	row.add_child(title_lbl)
-	var detail_lbl: Label = Label.new()
-	detail_lbl.text = detail
-	UITheme.style_label(detail_lbl, accent, 13, true)
-	row.add_child(detail_lbl)
+	# One RichTextLabel, not a row of separate Labels. The title carries a symbol glyph (✦/♦) that
+	# resolves through a taller fallback font, so as sibling Labels the title and the item name
+	# centred on different baselines and looked misaligned. A single line shares one baseline;
+	# BBCode colours the spans. "[" in a dynamic string is escaped so an item name can't be read
+	# as markup.
+	var text_lbl: RichTextLabel = RichTextLabel.new()
+	text_lbl.bbcode_enabled = true
+	text_lbl.fit_content = true
+	text_lbl.scroll_active = false
+	text_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	text_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	text_lbl.add_theme_font_size_override("normal_font_size", 13)
+	var bb: String = (
+		"[color=#%s]%s[/color]  [color=#%s]%s[/color]"
+		% [
+			UITheme.WHITE_SOFT.to_html(false),
+			title.to_upper().replace("[", "[lb]"),
+			accent.to_html(false),
+			detail.to_upper().replace("[", "[lb]"),
+		]
+	)
 	if tail != "":
-		var tail_lbl: Label = Label.new()
-		tail_lbl.text = tail
-		UITheme.style_label(tail_lbl, UITheme.DARK_TEXT, 13, true)
-		row.add_child(tail_lbl)
+		bb += (
+			"  [color=#%s]%s[/color]"
+			% [UITheme.DARK_TEXT.to_html(false), tail.to_upper().replace("[", "[lb]")]
+		)
+	text_lbl.text = bb
+	pop.add_child(text_lbl)
 
 	_ensure_pop_layer().add_child(pop)
 	await get_tree().process_frame  # let it size before we place it

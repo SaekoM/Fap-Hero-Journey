@@ -516,6 +516,10 @@ func _apply_theme() -> void:
 	coin_style.content_margin_top = 6
 	coin_style.content_margin_bottom = 6
 	_coin_badge.add_theme_stylebox_override("panel", coin_style)
+	# Shrink-center like the MAP button (_add_map_button) instead of filling the header row: the
+	# row is as tall as the 30 px Title, so a FILL badge stretched to that height and read as
+	# bigger than the button beside it. Their content heights already match to within a pixel.
+	_coin_badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_coin_lbl.add_theme_color_override("font_color", UITheme.AMBER)
 	_coin_lbl.add_theme_font_size_override("font_size", 18)
 

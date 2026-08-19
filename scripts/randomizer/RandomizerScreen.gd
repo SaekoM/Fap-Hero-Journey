@@ -17,8 +17,11 @@ const VIDEO_EXTS: Array[String] = [
 const PART_RANGE_MIN_S: float = 15.0
 const PART_RANGE_MAX_S: float = 600.0
 
-# How many rounds must be baked before Play starts the session. The encode runs faster
-# than playback, so RandomizerBaker builds a lead during play instead of losing one.
+# FLOOR for the start buffer (see _buffer_round_count): Play now pre-bakes rounds by playtime,
+# not by a fixed count, but never fewer than this — a single very long first round should still
+# leave a clip of slack behind it. The encode usually runs faster than playback, so
+# RandomizerBaker builds a lead during play; the time target keeps that lead from being too thin
+# on runs of short high-intensity rounds, which was catching the player up to the encoder.
 const START_BUFFER_ROUNDS: int = 2
 
 # Reused for the per-card "attach a funscript" affordance (drop + browse).
@@ -59,6 +62,8 @@ var _seed_field: LineEdit
 var _cut_parts_check: CheckButton
 var _part_range: RangeSlider
 var _part_range_lbl: Label
+var _coupling_slider: HSlider
+var _coupling_lbl: Label
 
 
 func _ready() -> void:
@@ -265,7 +270,36 @@ func _build_settings_column() -> Control:
 	part_range_box.add_theme_constant_override("separation", 3)
 	part_range_box.add_child(_part_range)
 	part_range_box.add_child(_part_range_lbl)
-	col.add_child(_labeled("Round length", part_range_box))
+	# The handles are a target, not a hard cut: rounds are stitched from whole script beats and
+	# the intense ones aim shorter, so actual length varies. Say so, so "15 s" that lands at 45 s
+	# reads as expected behaviour rather than a bug.
+	var part_range_hint := Label.new()
+	part_range_hint.text = "Rounds are built from whole script beats and aim shorter when intense, so length varies."
+	part_range_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(part_range_hint, UITheme.DARK_TEXT, 11)
+	part_range_box.add_child(part_range_hint)
+	col.add_child(_labeled("Target round length", part_range_box))
+
+	# How hard intensity pulls a round's target length (RandomizerParts.target_length_ms). Signed:
+	# right = intense rounds aim shorter (the classic feel), centre = length ignores intensity,
+	# left = intense rounds aim longer (endurance). Stored as a fraction in [-1, 1].
+	_coupling_slider = HSlider.new()
+	_coupling_slider.min_value = -100
+	_coupling_slider.max_value = 100
+	_coupling_slider.step = 5
+	_coupling_slider.value = 50  # softened default (+0.5): hard → shorter, but not to the floor
+	_coupling_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_coupling_lbl = Label.new()
+	UITheme.style_label(_coupling_lbl, UITheme.DARK_TEXT, 12)
+	_coupling_slider.value_changed.connect(
+		func(v: float) -> void: _coupling_lbl.text = _coupling_text(v)
+	)
+	_coupling_lbl.text = _coupling_text(_coupling_slider.value)
+	var coupling_box := VBoxContainer.new()
+	coupling_box.add_theme_constant_override("separation", 3)
+	coupling_box.add_child(_coupling_slider)
+	coupling_box.add_child(_coupling_lbl)
+	col.add_child(_labeled("Intensity → length", coupling_box))
 
 	# Effect chance slider.
 	_effect_slider = HSlider.new()
@@ -387,6 +421,9 @@ func _apply_settings(s: Dictionary) -> void:
 	# state, which defaults to true — see _build_settings_column).
 	_cut_parts_check.button_pressed = bool(s.get("cut_parts", false))
 	_set_part_range(int(s.get("part_min_s", 60)), int(s.get("part_max_s", 180)))
+	# Fallback +0.5 matches RandomizerParts.DEFAULT_CFG: a preset saved before this control existed
+	# reproduces the softened default, not full strength.
+	_coupling_slider.value = float(s.get("intensity_length_coupling", 0.5)) * 100.0
 	_sync_mode_rows()
 
 
@@ -444,13 +481,30 @@ func _secs_to_slider(s: float) -> float:
 # request. Same source for both, no drift.
 func _set_part_range(lo_s: int, hi_s: int) -> void:
 	_part_range.set_range_values(_secs_to_slider(float(lo_s)), _secs_to_slider(float(hi_s)))
-	_part_range_lbl.text = (
-		"%d s – %d s" % [_slider_to_secs(_part_range.lo), _slider_to_secs(_part_range.hi)]
+	_part_range_lbl.text = _part_range_text(
+		_slider_to_secs(_part_range.lo), _slider_to_secs(_part_range.hi)
 	)
 
 
 func _on_part_range_changed(lo: float, hi: float) -> void:
-	_part_range_lbl.text = "%d s – %d s" % [_slider_to_secs(lo), _slider_to_secs(hi)]
+	_part_range_lbl.text = _part_range_text(_slider_to_secs(lo), _slider_to_secs(hi))
+
+
+# The value line under the slider. "Aim" rather than a bare range on purpose: the handles are a
+# TARGET the generator biases each round toward, not a guaranteed clip length (see the hint below
+# the slider and _buffer_round_count / RandomizerParts._tile).
+func _part_range_text(lo_secs: int, hi_secs: int) -> String:
+	return "Aim: %d–%d s per round" % [lo_secs, hi_secs]
+
+
+# The value line under the intensity→length slider. Names the DIRECTION in words so the signed
+# handle reads at a glance; magnitude is the pull strength as a percentage.
+func _coupling_text(v: float) -> String:
+	if v > 0:
+		return "Hard rounds aim shorter · %d%%" % int(v)
+	if v < 0:
+		return "Hard rounds aim longer · %d%%" % int(absf(v))
+	return "Length ignores intensity"
 
 
 # ── Library list ─────────────────────────────────────────────────────────────
@@ -811,14 +865,14 @@ func _keep_pending() -> void:
 # Transcodes the run's used clips (deferred; cached) and materializes the temp
 # journey. Returns the materialize dict on success, or {} on failure/cancel (status
 # + busy already handled). Shared by Play and Keep.
-# `partial` = the Play path: only the parts of the first START_BUFFER_ROUNDS rounds are
-# visibly baked, the run folder is materialized partially, and RandomizerBaker takes over
-# the rest. Keep stays full-bake (default false) — nobody is waiting to play there.
+# `partial` = the Play path: only the parts of the start-buffer rounds (see _buffer_round_count)
+# are visibly baked, the run folder is materialized partially, and RandomizerBaker takes over the
+# rest. Keep stays full-bake (default false) — nobody is waiting to play there.
 func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Dictionary:
 	var all_ids: Array = res["used_ids"] as Array
 	var ids: Array = all_ids
 	if partial:
-		ids = all_ids.slice(0, mini(START_BUFFER_ROUNDS, all_ids.size()))
+		ids = all_ids.slice(0, _buffer_round_count(all_ids))
 	if not await _prepare_used_media(ids):
 		return {}  # _prepare_used_media set the status + cleared busy
 	RandomizerRun.clear_all()  # wipe prior temp runs
@@ -838,6 +892,33 @@ func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Diction
 	# ALWAYS the full list: freshness applies to the whole run, not just its start buffer.
 	RandomizerLibrary.mark_used(all_ids)
 	return mat
+
+
+# How many whole rounds Play pre-bakes before it launches the session. A TIME target, not a
+# fixed count: walk the rounds in play order accumulating their playtime until it covers the
+# lead RandomizerBaker asks for (deepened automatically on a machine that encodes slower than it
+# plays), so short high-intensity rounds buffer more clips and long ones fewer. Floored at
+# START_BUFFER_ROUNDS and, of course, capped at the run length.
+func _buffer_round_count(all_ids: Array) -> int:
+	var run_ms: int = 0
+	for id: Variant in all_ids:
+		run_ms += _round_ms(id)
+	var lead_ms: int = RandomizerBaker.suggested_lead_ms(RandomizerBaker.BASE_LEAD_MS, run_ms)
+	var acc: int = 0
+	var n: int = 0
+	for id: Variant in all_ids:
+		n += 1
+		acc += _round_ms(id)
+		if acc >= lead_ms:
+			break
+	return clampi(n, mini(START_BUFFER_ROUNDS, all_ids.size()), all_ids.size())
+
+
+# A used-id's playtime, read off the pending part/entry the run was generated from. Parts carry
+# their own cut length; whole-clip entries carry the video's — both correct for a single round.
+func _round_ms(id: Variant) -> int:
+	var e: Dictionary = _pending_entries.get(str(id), {})
+	return int(e.get("duration_ms", e.get("length_ms", 0)))
 
 
 # ── Preview overlay ──────────────────────────────────────────────────────────
@@ -1046,6 +1127,7 @@ func _read_settings() -> Dictionary:
 		"cut_parts": _cut_parts_check.button_pressed,
 		"part_min_s": _slider_to_secs(_part_range.lo),
 		"part_max_s": _slider_to_secs(_part_range.hi),
+		"intensity_length_coupling": _coupling_slider.value / 100.0,
 	}
 
 

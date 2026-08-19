@@ -88,7 +88,10 @@ func _whole_clip(id: String) -> Dictionary:
 
 
 func _cfg(extra: Dictionary = {}) -> Dictionary:
-	var c: Dictionary = {"cut_parts": true}
+	# Full-strength coupling by default so the tiling tests reason about target lengths at the
+	# classic hard→short mapping; the softened product default (0.5) is covered on its own in
+	# test_target_length_ms_coupling. `extra` still wins.
+	var c: Dictionary = {"cut_parts": true, "intensity_length_coupling": 1.0}
 	c.merge(extra, true)
 	return c
 
@@ -408,6 +411,33 @@ func test_target_length_ms_biases_and_clamps() -> void:
 	for i: int in 200:
 		var t: int = RandomizerParts.target_length_ms(1 + i % 5, MIN_MS, MAX_MS, 0.5, rng)
 		assert_int(t).is_between(MIN_MS, MAX_MS)
+
+
+# `coupling` scales the intensity→length pull around the range's mid-point (jitter off so the
+# bare curve shows). MID_MS is the midpoint the neutral setting collapses to.
+func test_target_length_ms_coupling() -> void:
+	var mid: int = (MIN_MS + MAX_MS) / 2  # 120000
+	# 0 → intensity ignored: every bucket lands on the mid of the range.
+	for intensity: int in [1, 3, 5]:
+		var flat: int = RandomizerParts.target_length_ms(
+			intensity, MIN_MS, MAX_MS, 0.0, _rng(1), 0.0
+		)
+		assert_int(flat).is_equal(mid)
+	# −1 → inverted: the endpoints swap, so a hard round aims LONG and a calm one short.
+	assert_int(RandomizerParts.target_length_ms(5, MIN_MS, MAX_MS, 0.0, _rng(1), -1.0)).is_equal(
+		MAX_MS
+	)
+	assert_int(RandomizerParts.target_length_ms(1, MIN_MS, MAX_MS, 0.0, _rng(1), -1.0)).is_equal(
+		MIN_MS
+	)
+	# +0.5 → softened default: hard is shorter than mid but off the floor; calm longer, off the
+	# ceiling. i5 → mid − ¼ span = 90000, i1 → mid + ¼ span = 150000.
+	assert_int(RandomizerParts.target_length_ms(5, MIN_MS, MAX_MS, 0.0, _rng(1), 0.5)).is_equal(
+		90000
+	)
+	assert_int(RandomizerParts.target_length_ms(1, MIN_MS, MAX_MS, 0.0, _rng(1), 0.5)).is_equal(
+		150000
+	)
 
 
 # Exactly one draw per emitted part, and none at all for pass-through entries —

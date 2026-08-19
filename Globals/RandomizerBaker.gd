@@ -26,8 +26,26 @@ signal round_failed(index: int)
 signal progress_changed(done: int, total: int, name: String)
 
 # In exactly this window the GameLoop opens its first video and seeks, and that must
-# not race a starting x264 (§5).
-const START_DELAY_S: float = 5.0
+# not race a starting x264 (§5). Trimmed from the original 5s: the start buffer is now a
+# TIME target (BASE_LEAD_MS), so the first UNBAKED round is minutes of playback away and
+# the background encoder has no reason to start in a hurry — this only has to outlast the
+# first video's open+seek, not cover the buffer. Raise it again if round one ever stutters.
+const START_DELAY_S: float = 3.0
+
+# Base look-ahead for the start buffer. Play pre-bakes WHOLE rounds until their combined
+# playtime reaches this — a time target, not a fixed count — so a run of short high-intensity
+# rounds buffers more clips and one of long rounds fewer. RandomizerScreen reads it through
+# suggested_lead_ms(), which deepens it on a machine measured to encode slower than realtime.
+const BASE_LEAD_MS: int = 240000  # 4 min of playable lead
+
+# suggested_lead_ms() never asks Play to pre-bake more than this fraction of the whole run:
+# buffering the entire thing IS the (deliberately deferred) pre-transcode feature, and a short
+# run must still start promptly rather than encode end to end first.
+const MAX_LEAD_FRACTION: float = 0.6
+
+# Encode speed (× realtime) assumed before any clip of this session has reported one. 1.0 =
+# "encodes exactly as fast as it plays"; the first background clip's ffmpeg figure replaces it.
+const ASSUMED_ENCODE_SPEED_X: float = 1.0
 
 # Insurance against spinning hot on a preemption retry in a case nobody thought of —
 # cheaper than diagnosing such a case.
@@ -68,6 +86,21 @@ var _done: int = 0
 var _total: int = 0
 var _current_name: String = ""
 
+# Live progress of the clip being baked RIGHT NOW, for the GameLoop wait screen. _clip_frac is
+# ffmpeg's out_time against the clip duration (0..1); _clip_dur_s the clip's playtime; _clip_speed_x
+# its encode speed as a realtime multiple (2.5 = encoding 2.5 s of video per wall second). All
+# three are primed from the entry + session average when a round's bake starts, then overwritten
+# by real ffmpeg figures as they arrive.
+var _clip_frac: float = 0.0
+var _clip_dur_s: float = 0.0
+var _clip_speed_x: float = ASSUMED_ENCODE_SPEED_X
+
+# Session-learned encode speed (× realtime): a running mean over every clip baked since app
+# start. Survives scene changes (autoload) but not a restart, so a fresh session assumes
+# ASSUMED_ENCODE_SPEED_X until its first clip reports in. Sizes the NEXT run's start buffer.
+var _session_speed_x: float = ASSUMED_ENCODE_SPEED_X
+var _session_speed_n: int = 0
+
 # Test seams (§1.8). An invalid Callable means "use the real path".
 var _prepare_fn: Callable = Callable()
 var _preempt_count_fn: Callable = Callable()
@@ -95,6 +128,9 @@ func begin(run: Dictionary, entries: Dictionary, folder: String) -> void:
 	_done = 0
 	_total = 0
 	_current_name = ""
+	_clip_frac = 0.0
+	_clip_dur_s = 0.0
+	_clip_speed_x = _session_speed_x
 	_used_ids = (run.get("used_ids", []) as Array).duplicate()
 	_entries = entries
 	_folder = folder
@@ -165,6 +201,8 @@ func session_ended() -> void:
 	_done = 0
 	_total = 0
 	_current_name = ""
+	_clip_frac = 0.0
+	_clip_dur_s = 0.0
 
 
 ## True between begin() and session_ended(), even when nothing is encoding any more.
@@ -172,9 +210,41 @@ func active() -> bool:
 	return _run_active
 
 
-## {done, total, name} for the GameLoop's wait line.
+## {done, total, name, clip_frac, eta_s} for the GameLoop's wait screen. clip_frac is the
+## current clip's encode fraction (0..1); eta_s is the estimated wall seconds until it finishes.
 func progress() -> Dictionary:
-	return {"done": _done, "total": _total, "name": _current_name}
+	return {
+		"done": _done,
+		"total": _total,
+		"name": _current_name,
+		"clip_frac": _clip_frac,
+		"eta_s": _clip_eta_s(),
+	}
+
+
+# Wall seconds until the clip being baked finishes: its un-encoded remainder (in playtime)
+# divided by the live encode speed. Uses the session average before ffmpeg reports the first
+# figure, and returns 0 when nothing is baking so the UI can show "estimating…".
+func _clip_eta_s() -> float:
+	if not _run_active or _clip_dur_s <= 0.0:
+		return 0.0
+	return _clip_dur_s * (1.0 - _clip_frac) / maxf(0.05, _clip_speed_x)
+
+
+## Start-buffer look-ahead (ms) the Play path should pre-bake, given a base target and the
+## whole run's playtime. Inflated when the session has learned this machine encodes SLOWER than
+## it plays: at speed_x the baker loses (1 − speed_x) playable seconds per wall second, so the
+## buffer must be deep enough to outlast the run. Clamped so a fast machine still gets the base
+## and a slow one never tries to pre-bake more than MAX_LEAD_FRACTION of the run.
+func suggested_lead_ms(base_ms: int, run_length_ms: int = 0) -> int:
+	var lead: float = float(base_ms)
+	if _session_speed_x < 1.0:
+		# The slower the encode, the deeper the buffer: 1/speed_x doubles it at 0.5×, triples at
+		# 0.33×. Capped so one pathological measurement can't run the buffer away with the run.
+		lead *= clampf(1.0 / maxf(0.2, _session_speed_x), 1.0, 4.0)
+	if run_length_ms > 0:
+		lead = minf(lead, float(run_length_ms) * MAX_LEAD_FRACTION)
+	return int(lead)
 
 
 ## Round n → its content rels, in play order. Walks the single forward chain from Start —
@@ -257,6 +327,11 @@ func _bake_loop(my_gen: int) -> void:
 			_mark_failed(i)  # an id that resolves nowhere: one lost round, not a lost run
 			continue
 		_publish_progress(i + 1, _total, str(entry.get("name", "")))
+		# Prime the wait-screen figures from what we already know, so the ETA is sensible before
+		# ffmpeg's first out_time line: 0% done, the entry's own playtime, last known encode speed.
+		_clip_frac = 0.0
+		_clip_dur_s = float(int(entry.get("duration_ms", entry.get("length_ms", 0)))) / 1000.0
+		_clip_speed_x = _session_speed_x
 
 		var attempts: int = 0  # only REAL failures are counted here
 		var ok: bool = false
@@ -287,6 +362,9 @@ func _bake_loop(my_gen: int) -> void:
 		if not ok:
 			_mark_failed(i)
 			continue
+		# A clip that finished baking is the one honest speed sample there is: fold it into the
+		# session average that sizes the NEXT run's start buffer.
+		_record_encode_speed(_clip_speed_x)
 
 		var linked: bool = true
 		for rel: String in round_entry["rels"] as PackedStringArray:
@@ -345,14 +423,46 @@ func _wait(secs: float, my_gen: int) -> bool:
 	return true
 
 
-# on_progress is empty on the background path: the wait line shows only n/m, so a percent
-# callback every 0.4 s would be signal noise without a receiver.
+# The real path feeds _on_clip_progress so the GameLoop wait screen can show a live bar + ETA
+# and the session can learn its encode speed. The test path stays empty: the suite drives
+# _prepare_fn directly and has no ffmpeg to report.
 func _prepare(entry: Dictionary, cancel: Callable) -> Dictionary:
 	if _prepare_fn.is_valid():
 		return await _prepare_fn.call(entry, Callable(), cancel, EncodeGate.Priority.BACKGROUND)
 	return await RandomizerLibrary.prepare_entry_media(
-		entry, Callable(), cancel, EncodeGate.Priority.BACKGROUND
+		entry, _on_clip_progress, cancel, EncodeGate.Priority.BACKGROUND
 	)
+
+
+# ffmpeg progress for the clip being baked. Signature is MediaPoolService._poll_progress's:
+# (frac 0..1, current_s, duration_s, speed like "2.53x"). Only stashes the latest live figures
+# for the wait screen; the session average is folded once per clip, at completion (see _bake_loop).
+func _on_clip_progress(frac: float, _current_s: float, duration_s: float, speed: String) -> void:
+	_clip_frac = clampf(frac, 0.0, 1.0)
+	if duration_s > 0.0:
+		_clip_dur_s = duration_s
+	var x: float = _parse_speed_x(speed)
+	if x > 0.0:
+		_clip_speed_x = x
+
+
+# "speed=2.53x" → 2.53. ffmpeg writes "N/A" before the first frame and drops the field entirely
+# on some builds; an unparseable value returns 0 so the caller keeps the previous figure.
+static func _parse_speed_x(speed: String) -> float:
+	var s: String = speed.strip_edges().trim_suffix("x")
+	if s == "" or not s.is_valid_float():
+		return 0.0
+	return float(s)
+
+
+# Folds one finished clip's encode speed into the running session mean. The first sample lands
+# with n going 0→1, so it replaces the ASSUMED_ENCODE_SPEED_X seed exactly rather than averaging
+# with it. A session rarely bakes more than a few dozen clips, so a plain mean is fine.
+func _record_encode_speed(x: float) -> void:
+	if x <= 0.0:
+		return
+	_session_speed_n += 1
+	_session_speed_x += (x - _session_speed_x) / float(_session_speed_n)
 
 
 # ── Internals ────────────────────────────────────────────────────────────────

@@ -6306,6 +6306,7 @@ func _collect_presave_issues_graph() -> Array:
 		var n: Dictionary = nodes[id]
 		var data: Dictionary = n.get("data", {})
 		var ordinal: int = int(ordinals.get(id, 0))
+		var before: int = issues.size()
 		match str(n.get("type", "")):
 			"round":
 				_save_check_round(data, "Round %d" % ordinal, issues)
@@ -6317,6 +6318,10 @@ func _collect_presave_issues_graph() -> Array:
 				_save_check_loop(id, data, "Loop %d" % ordinal, issues)
 			"loop_start":
 				_save_check_loop_start(id, "Loop %d" % ordinal, issues)
+		# Stamp the source node onto everything this node's checks just produced, so its error
+		# row in the modal can navigate straight to it on the canvas.
+		for k: int in range(before, issues.size()):
+			(issues[k] as Dictionary)["node_id"] = id
 
 	# Structural graph validation (L4): block on graphs the runtime can't cleanly play — a missing
 	# start, an edge to a deleted node, a cycle (the DAG walk would loop forever), or an unreachable
@@ -6325,6 +6330,11 @@ func _collect_presave_issues_graph() -> Array:
 	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model, _journey_finish_node):
 		var m: Dictionary = _structural_issue_to_presave(gi)
 		if not m.is_empty():
+			# validate_graph carries the offending node's id (empty for no_start) — thread it
+			# through so the row is clickable, same as the per-node checks above.
+			var nid: String = str(gi.get("id", ""))
+			if nid != "":
+				m["node_id"] = nid
 			issues.append(m)
 	return issues
 
@@ -6973,8 +6983,18 @@ func _show_save_error_modal(title: String, headline: String, errors: Array) -> v
 	list.add_theme_constant_override("separation", 10)
 	scroll.add_child(list)
 
+	# Clicking a node-specific error closes the modal and locates that node on the canvas —
+	# the same affordance the audit report offers. Meta issues carry no node_id and stay static.
+	var jump := func(node_id: String) -> void:
+		if node_id == "" or not (_graph_model.get("nodes", {}) as Dictionary).has(node_id):
+			return
+		modal.queue_free()
+		if _graph:
+			_graph.select_graph_node(node_id)
+			_graph.center_on(node_id)
+
 	for err: Dictionary in errors:
-		list.add_child(_make_save_error_row(err))
+		list.add_child(_make_save_error_row(err, jump))
 
 	var btn_row: HBoxContainer = HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -7004,7 +7024,7 @@ func _show_save_error_modal(title: String, headline: String, errors: Array) -> v
 
 # Builds one row for a single SaveError dict. The item label is the most
 # prominent line; cause+detail explain what; hint suggests a fix.
-func _make_save_error_row(err: Dictionary) -> Control:
+func _make_save_error_row(err: Dictionary, jump: Callable = Callable()) -> Control:
 	var row: PanelContainer = PanelContainer.new()
 	var rs: StyleBoxFlat = StyleBoxFlat.new()
 	rs.bg_color = UITheme.CARD_BG
@@ -7042,6 +7062,34 @@ func _make_save_error_row(err: Dictionary) -> Control:
 		hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		UITheme.style_label(hint_lbl, UITheme.SEPARATOR, 11, false)
 		col.add_child(hint_lbl)
+
+	# A node-specific error becomes a clickable row that locates its node on the canvas (mirrors
+	# _audit_finding_row). Journey-meta issues — name, cover, custom items — carry no node_id and
+	# stay static. col is IGNORE so the click falls through to the PanelContainer, whose gui_input
+	# fires; the child Labels ignore mouse by default.
+	var node_id: String = str(err.get("node_id", ""))
+	if (
+		node_id != ""
+		and jump.is_valid()
+		and (_graph_model.get("nodes", {}) as Dictionary).has(node_id)
+	):
+		var locate_lbl: Label = Label.new()
+		locate_lbl.text = "↪  Click to locate this node"
+		UITheme.style_label(locate_lbl, UITheme.CYAN, 11, false)
+		col.add_child(locate_lbl)
+		col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.mouse_filter = Control.MOUSE_FILTER_STOP
+		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		row.tooltip_text = UITheme.wrap_tip("Click to locate this node on the canvas")
+		row.gui_input.connect(
+			func(ev: InputEvent) -> void:
+				if (
+					ev is InputEventMouseButton
+					and ev.button_index == MOUSE_BUTTON_LEFT
+					and ev.pressed
+				):
+					jump.call(node_id)
+		)
 
 	return row
 

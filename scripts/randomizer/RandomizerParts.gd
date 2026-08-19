@@ -33,6 +33,8 @@ const PART_ID_SEP: String = "#"
 #   jitter_pct:float           spread as a fraction of (max-min)
 #   intensity_tolerance:int    coherence brake: a bigger step ends the part
 #   max_merge_gap_ms:int       never merge across a hole wider than this
+#   intensity_length_coupling:float  how hard intensity pulls the target length (see
+#                              target_length_ms): +1 hard→short, 0 no effect, −1 hard→long
 const DEFAULT_CFG: Dictionary = {
 	"cut_parts": false,
 	"part_min_s": 60,
@@ -40,6 +42,9 @@ const DEFAULT_CFG: Dictionary = {
 	"jitter_pct": 0.15,
 	"intensity_tolerance": 1,
 	"max_merge_gap_ms": 5000,
+	# Softened default: hard rounds aim shorter, but only halfway to the low handle, so a run
+	# of intense clips is punchy without pinning every hard round to the minimum length.
+	"intensity_length_coupling": 0.5,
 }
 
 
@@ -93,12 +98,15 @@ static func _tile(
 	var jitter_pct: float = float(c["jitter_pct"])
 	var tolerance: int = int(c["intensity_tolerance"])
 	var max_gap: int = int(c["max_merge_gap_ms"])
+	var coupling: float = float(c["intensity_length_coupling"])
 
 	var parts: Array = []
 	var i: int = 0
 	while i < beats.size():
 		var first: Dictionary = beats[i]
-		var target: int = target_length_ms(int(first["intensity"]), min_ms, max_ms, jitter_pct, rng)
+		var target: int = target_length_ms(
+			int(first["intensity"]), min_ms, max_ms, jitter_pct, rng, coupling
+		)
 		var in_ms: int = int(first["in_ms"])
 		var out_ms: int = int(first["out_ms"])
 		var acts: int = int(first["action_count"])
@@ -144,16 +152,29 @@ static func _tile(
 	return parts
 
 
-# Rolled round length, biased by the intensity of the beat the tile starts on:
-# intensity 5 sits at the bottom of the slider range, intensity 1 at the top, so
-# hard passages become short rounds. Jitter is a fraction of the SPAN (±18s at the
-# 60–180s default) — visibly irregular without drowning the bias. Exactly one
-# randf(), which is what keeps the rng bookkeeping in _tile trivial.
+# Rolled round length, biased by the intensity of the beat the tile starts on. `coupling`
+# controls how hard that bias pulls, measured from the MIDDLE of the slider range toward its
+# edges:
+#   +1  today's mapping — intensity 5 at the bottom (short), intensity 1 at the top (long)
+#    0  intensity ignored — every round centres on the mid of the range
+#   −1  inverted — hard passages become the LONG rounds (endurance)
+# Jitter is a fraction of the SPAN (±18s at the 60–180s default) — visibly irregular without
+# drowning the bias. Exactly one randf(), which is what keeps the rng bookkeeping in _tile
+# trivial. `coupling` defaults to full strength so the pure endpoints stay easy to test; the
+# feature's softened default lives in DEFAULT_CFG and is threaded through by _tile.
 static func target_length_ms(
-	intensity: int, min_ms: int, max_ms: int, jitter_pct: float, rng: RandomNumberGenerator
+	intensity: int,
+	min_ms: int,
+	max_ms: int,
+	jitter_pct: float,
+	rng: RandomNumberGenerator,
+	coupling: float = 1.0
 ) -> int:
 	var t: float = clampf((float(intensity) - 1.0) / 4.0, 0.0, 1.0)
-	var center: float = lerpf(float(max_ms), float(min_ms), t)
+	# Scale the pull around the neutral mid-point, then clamp so a strong coupling can't send the
+	# centre past an edge before jitter is even applied.
+	var t_eff: float = clampf(0.5 + (t - 0.5) * coupling, 0.0, 1.0)
+	var center: float = lerpf(float(max_ms), float(min_ms), t_eff)
 	var jitter: float = (rng.randf() * 2.0 - 1.0) * jitter_pct * float(max_ms - min_ms)
 	return int(round(clampf(center + jitter, float(min_ms), float(max_ms))))
 
