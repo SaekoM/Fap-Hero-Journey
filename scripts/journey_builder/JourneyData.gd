@@ -716,6 +716,16 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 				out.erase("pool_entries")
 				out.erase("show_encounter")
 				out.erase("no_repeat")
+			# Boss timeline (the authored encounter). Normalized through its own model so the saved
+			# shape is canonical, and dropped entirely when it would do nothing — an empty block on
+			# every round in every journey is pure noise on disk. Its media paths are rewritten to
+			# pooled rels later, by _save_round_node_media, like the rest of the round's media.
+			if out.has("timeline"):
+				var timeline: Dictionary = RoundTimeline.normalize(out["timeline"] as Dictionary)
+				if RoundTimeline.is_empty(timeline):
+					out.erase("timeline")
+				else:
+					out["timeline"] = timeline
 		"shop":
 			out["title"] = str(data.get("title", ""))
 			out["mode"] = str(data.get("mode", "pool"))

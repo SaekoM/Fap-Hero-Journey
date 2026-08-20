@@ -628,6 +628,58 @@ public partial class InventoryService : Node
         EmitSignal(SignalName.ActiveEffectsChanged);
     }
 
+    // Key stamped onto boss effects installed by AddBossEffectsFrom, so the same set can be lifted
+    // again later. Underscore-prefixed like the other internal bookkeeping keys (_ref).
+    private const string SourceIdKey = "_source_id";
+
+    // Installs boss effects tagged with `sourceId`, so they can be removed as a group later without
+    // disturbing anything else. This is what lets a BOSS TIMELINE apply an effect for a bounded WINDOW:
+    // AddBossEffectsFrom when the window opens, RemoveBossEffectsFrom when it closes. Plain
+    // AddBossEffects stays the whole-round path and is untouched.
+    //
+    // Each entry is DUPLICATED before tagging: the caller's dictionary is authored data that may be
+    // reused (a preset dropped on the timeline twice), and stamping the original would leak this
+    // bookkeeping back into it.
+    public void AddBossEffectsFrom(string sourceId, Array effects)
+    {
+        bool added = false;
+        foreach (var fx in effects)
+        {
+            if (fx.VariantType != Variant.Type.Dictionary)
+                continue;
+            var copy = fx.AsGodotDictionary().Duplicate(true);
+            copy[SourceIdKey] = sourceId;
+            _bossEffects.Add(copy);
+            added = true;
+        }
+
+        if (added)
+            EmitSignal(SignalName.ActiveEffectsChanged);
+    }
+
+    // Removes every boss effect installed under `sourceId`. Untagged effects — the whole-round set from
+    // AddBossEffects — are never touched, so closing a timeline window cannot strip the round's own
+    // forced modifiers. A no-op when that source has nothing installed (a window closing twice, or one
+    // whose effects were already cleared at round end).
+    public void RemoveBossEffectsFrom(string sourceId)
+    {
+        bool removed = false;
+        for (int i = _bossEffects.Count - 1; i >= 0; i--)
+        {
+            if (
+                _bossEffects[i].ContainsKey(SourceIdKey)
+                && _bossEffects[i][SourceIdKey].AsString() == sourceId
+            )
+            {
+                _bossEffects.RemoveAt(i);
+                removed = true;
+            }
+        }
+
+        if (removed)
+            EmitSignal(SignalName.ActiveEffectsChanged);
+    }
+
     // Immediately removes every active effect of the given kind. Used by GameLoop
     // to consume coin_jackpot effects right after they pay out, so a single
     // jackpot only ever doubles one round's reward.

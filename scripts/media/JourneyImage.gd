@@ -19,6 +19,17 @@ extends Control
 # Extension the builder bakes animations to. The path itself is the signal — no schema flag.
 const ANIMATED_EXT: String = "mp4"
 
+## Emitted when a NON-looping animation reaches its end. Nothing to listen for on the looping default.
+signal animation_finished
+
+## Set BEFORE show_path(). Both default to the historical behaviour, so existing callers (boss intro,
+## storyboard background, fork art) are unaffected:
+##   loop  — off for a one-shot, e.g. a boss attack animation that plays once and clears.
+##   muted — on for anything whose sound belongs elsewhere; a boss cue's audio lives on the timeline's
+##           audio track, where it can duck the round, so the cue itself must stay silent.
+var loop: bool = true
+var muted: bool = false
+
 var _rect: TextureRect = null
 var _player: VideoStreamPlayer = null
 
@@ -83,7 +94,11 @@ func _show_animated(path: String, expand_mode: int, stretch_mode: int) -> bool:
 
 	_player = VideoStreamPlayer.new()
 	_player.stream = stream as VideoStream
-	_player.loop = true
+	_player.loop = loop
+	if muted:
+		_player.volume_db = -80.0
+	if not loop:
+		_player.finished.connect(func() -> void: animation_finished.emit())
 	_player.expand = true
 	_player.visible = false  # decodes anyway; the TextureRect below does the drawing
 	_player.mouse_filter = Control.MOUSE_FILTER_IGNORE

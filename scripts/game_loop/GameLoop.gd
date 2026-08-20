@@ -406,7 +406,10 @@ func _process(delta: float) -> void:
 	if _video.is_playing():
 		var len: float = _video.get_stream_length()
 		if len > 0.0:
-			_progress.value = _video.stream_position / len
+			var fraction: float = _video.stream_position / len
+			# As a boss HP bar the same number reads backwards: progress through the round IS damage
+			# dealt, so the bar DRAINS instead of filling.
+			_progress.value = (1.0 - fraction) if _hp_bar_active else fraction
 		# Re-fit every frame: cheap, and keeps the video covering the screen even
 		# if the viewport or UI scale changes mid-playback.
 		_fit_video_cover()
@@ -416,6 +419,9 @@ func _process(delta: float) -> void:
 			# Keep funscript in sync with the video clock (Handy tops up its HSP buffer too).
 			FunscriptPlayer.SyncTo(_video.stream_position)
 			_handy_feed()
+		# After the device work, so an attack fired this frame starts against the round's settled
+		# state. Runs during a takeover too — the timeline keeps advancing underneath one.
+		_tick_round_timeline()
 	_apply_pause_penalty(delta)
 	_update_chip_countdowns()
 	_update_clip_end_fade()
@@ -912,6 +918,9 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	# the forced modifier is already active on the first dispatched stroke. Each
 	# enter_*_mode populates _reveal_effects for the pre-round card.
 	_reveal_effects = []
+	# The authored encounter, if this round has one. Adopted before the video loads; the scheduler
+	# builds itself once the stream length is known (see _tick_round_timeline).
+	_load_round_timeline(round)
 	if _is_boss_round:
 		_enter_boss_mode(round)
 	elif _is_effect_round:
@@ -2456,6 +2465,7 @@ func _on_round_ended(skipped: bool = false) -> void:
 	_round_ended_guard = true
 	_remove_warmup_skip_button()
 	_remove_finish_button()  # FINISH is a during-round affordance; it doesn't carry into overlays
+	_finish_round_timeline()  # drop anything the authored encounter still holds
 	_handy_stop()  # the device would otherwise keep playing into the transition
 	# Extract the name here in GDScript where Dictionary access is reliable,
 	# then pass it explicitly so C# never needs to look up the key itself.
@@ -3491,10 +3501,22 @@ func _on_override_activated(item_id: String) -> void:
 	var bundle: OverrideBundle = _load_override_bundle(item)
 	if bundle == null or bundle.is_empty():
 		return
+	_begin_override(
+		bundle, bool(item.get("immune_to_effects", false)), str(item.get("name", "")), "item"
+	)
+
+
+# Seizes the device with `bundle` on its own clock. The takeover is source-agnostic by design — an
+# inventory item and a boss-timeline ATTACK differ only in what they pass here — so both triggers share
+# this one path and any future one gets it for free. A second call REPLACES the running takeover (the
+# device paths keep their round stash).
+func _begin_override(
+	bundle: OverrideBundle, immune: bool, display_name: String, source: String
+) -> void:
 	_override_bundle = bundle
-	_override_immune = bool(item.get("immune_to_effects", false))
-	_override_item_name = str(item.get("name", ""))
-	_override_session.begin(bundle, _override_immune, "item")
+	_override_immune = immune
+	_override_item_name = display_name  # names the HUD override chip while it runs
+	_override_session.begin(bundle, _override_immune, source)
 	FunscriptPlayer.BeginOverride(bundle.main, bundle.axes, bundle.vibes, _override_immune)
 	if _handy_ready:
 		HandyService.start_override(bundle.main, _override_immune, _override_ms)
@@ -3558,6 +3580,324 @@ func _cancel_override() -> void:
 	if _override_session.is_active():
 		_override_session.cut()
 		_end_override()
+
+
+# ---------------------------------------------------------------------------
+# Boss timeline — the authored encounter (BOSS_ROUND_DESIGN)
+#
+# A round may carry an authored `timeline`: events placed on the video's clock. The rules for WHAT
+# fires when live in RoundTimelineScheduler (pure, unit-tested); this section only applies what it
+# decides. A round without one behaves exactly as it always has — the whole subsystem stays asleep.
+# ---------------------------------------------------------------------------
+
+# The round's authored timeline ({} = none, which is the normal case).
+var _timeline_data: Dictionary = {}
+
+# Built lazily on the first frame the video's length is known — end-anchored events cannot resolve
+# without it. Null while there is nothing to drive.
+var _timeline_scheduler: RoundTimelineScheduler = null
+
+# Presentation for the encounter, created on demand and torn down with the round.
+var _cue_layer: BossCueLayer = null
+var _audio_cues: BossAudioCues = null
+
+
+# The cue layer sits between the video and the HUD: over the picture, under the bar, so a portrait or a
+# full-screen flash never buries the round's own readouts.
+func _ensure_cue_layer() -> BossCueLayer:
+	if is_instance_valid(_cue_layer):
+		return _cue_layer
+	_cue_layer = BossCueLayer.new()
+	add_child(_cue_layer)
+	move_child(_cue_layer, _hud.get_index())
+	return _cue_layer
+
+
+func _ensure_audio_cues() -> BossAudioCues:
+	if is_instance_valid(_audio_cues):
+		return _audio_cues
+	_audio_cues = BossAudioCues.new()
+	add_child(_audio_cues)
+	# The node never writes the video's volume itself — the GameLoop owns that property (clip fades,
+	# pause muffle, the override handover all move it), so a second writer would fight them. It asks,
+	# and this applies the request on top of whatever the round is already doing.
+	_audio_cues.duck_changed.connect(_on_cue_duck_changed)
+	return _audio_cues
+
+
+# A narration cue asked the rest of the mix to step back (or released it). Applied as an offset from
+# the round's normal level rather than an absolute, so a fade or a muffle already in progress survives.
+func _on_cue_duck_changed(factor: float) -> void:
+	_cue_duck_db = BossAudioCues.duck_db(factor)
+	if _video.is_playing() and not _video.paused:
+		_video.volume_db = _cue_duck_db
+
+
+# Current ducking offset in dB (0 = no duck). Kept so the level can be re-applied after anything else
+# rewrites the video's volume.
+var _cue_duck_db: float = 0.0
+
+# ── Encounter framing (BOSS_ROUND_DESIGN §3.5) ───────────────────────────────
+#
+# Three cheap dressings that carry most of the "this is a FIGHT" feeling without any reactive state:
+# the round's progress bar re-skinned as a draining HP bar, a phase banner, and a per-phase tint on the
+# boss frame. The HP bar is PURELY COSMETIC — it shows the same number the progress bar always showed,
+# just inverted and dressed, because round progress already IS damage dealt.
+
+# How long a phase banner stays up before fading.
+const PHASE_BANNER_HOLD_SECS: float = 1.6
+
+# True while this round is drawing its progress bar as a boss health bar.
+var _hp_bar_active: bool = false
+
+# The name chip beside the HP bar; freed with the round.
+var _hp_bar_label: Label = null
+
+
+# Switches the round's progress bar into HP-bar dress: red fill, draining, with the boss's name beside
+# it. Called once the timeline is known to be real.
+func _enable_hp_bar() -> void:
+	if _hp_bar_active:
+		return
+	_hp_bar_active = true
+
+	var bg: StyleBoxFlat = StyleBoxFlat.new()
+	bg.bg_color = Color(0.10, 0.0, 0.02, 0.85)
+	bg.border_color = Color(UITheme.DANGER.r, UITheme.DANGER.g, UITheme.DANGER.b, 0.6)
+	bg.set_border_width_all(1)
+	bg.set_corner_radius_all(4)
+	var fill: StyleBoxFlat = StyleBoxFlat.new()
+	fill.bg_color = UITheme.DANGER
+	fill.set_corner_radius_all(4)
+	_progress.add_theme_stylebox_override("background", bg)
+	_progress.add_theme_stylebox_override("fill", fill)
+
+	var boss_name: String = str(GameState.CurrentRound().get("name", "")).strip_edges()
+	if boss_name == "":
+		return
+	_hp_bar_label = Label.new()
+	_hp_bar_label.text = boss_name
+	_hp_bar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UITheme.style_label(_hp_bar_label, UITheme.DANGER, 12, true)
+	# Anchored exactly like the bar (10%–90%, pinned to the bottom) and lifted just above it, so it
+	# tracks the bar at any resolution instead of being pinned to a position captured once. Inside the
+	# HUD, so it fades with the rest of it.
+	_hp_bar_label.anchor_left = _progress.anchor_left
+	_hp_bar_label.anchor_right = _progress.anchor_right
+	_hp_bar_label.anchor_top = 1.0
+	_hp_bar_label.anchor_bottom = 1.0
+	_hp_bar_label.offset_top = -26
+	_hp_bar_label.offset_bottom = -9
+	_hud.add_child(_hp_bar_label)
+
+
+# Restores the ordinary progress bar. A round that never enabled the HP bar costs nothing here.
+func _disable_hp_bar() -> void:
+	if not _hp_bar_active:
+		return
+	_hp_bar_active = false
+	_style_progress()  # back to the canonical purple styling
+	if is_instance_valid(_hp_bar_label):
+		_hp_bar_label.queue_free()
+	_hp_bar_label = null
+
+
+# Announces a phase and, when the author gave it one, shifts the boss frame's colour. The banner reuses
+# the cue layer so it fades and tears down like any other cue — one presentation path, not two.
+func _enter_timeline_phase(phase: Dictionary) -> void:
+	if phase.is_empty():
+		return
+	var label: String = str(phase.get("name", "")).strip_edges()
+	if bool(phase.get("banner", false)) and label != "":
+		(
+			_ensure_cue_layer()
+			. show_cue(
+				{
+					"id": "phase_banner_" + str(phase.get("id", "")),
+					"text": label,
+					"transition": RoundTimeline.TRANSITION_FLASH,
+					"out_ms": 350,
+					"text_hold_ms": int(PHASE_BANNER_HOLD_SECS * 1000.0),
+				},
+				"",
+				true
+			)
+		)
+	# The tint rides the existing boss frame rather than adding a second overlay, so the vignette's
+	# own climax pulse (_update_boss_frame) keeps working underneath it.
+	if phase.has("tint") and _boss_frame != null:
+		var tint: Color = RoundTimeline.phase_tint(phase, UITheme.DANGER)
+		var style: StyleBox = _boss_frame.get_theme_stylebox("panel")
+		if style is StyleBoxFlat:
+			(style as StyleBoxFlat).border_color = tint
+
+
+# Called as a round begins: adopt its timeline, if any. The scheduler itself waits for the video.
+func _load_round_timeline(round: Dictionary) -> void:
+	_timeline_scheduler = null
+	# Type-checked rather than trusted: the graph loader normalizes a timeline on the way in, but a
+	# hand-written journey.json can put anything under the key, and a wrong type here would crash the
+	# round rather than degrade to "no encounter".
+	var raw: Variant = round.get("timeline", {})
+	_timeline_data = raw if raw is Dictionary else {}
+
+
+# Per-frame while the round plays. Deliberately runs even while an override owns the device: windows
+# and phases keep advancing underneath a takeover, and a later attack is allowed to replace an earlier.
+func _tick_round_timeline() -> void:
+	if _timeline_data.is_empty():
+		return
+	if _timeline_scheduler == null:
+		var length_s: float = _video.get_stream_length()
+		if length_s <= 0.0:
+			return  # duration not known yet — resolving end-anchored events would be a guess
+		_timeline_scheduler = RoundTimelineScheduler.new(_timeline_data, int(length_s * 1000.0))
+		# The encounter's music starts with the round, not on an event, and loops underneath it.
+		var bgm: Dictionary = _timeline_data.get("bgm", {})
+		if str(bgm.get("clip", "")) != "":
+			_ensure_audio_cues().play_bgm(bgm)
+		if _timeline_scheduler.is_idle():
+			# Nothing survived resolution (e.g. only unresolvable anchors). Drop the whole subsystem
+			# rather than tick it every frame for the rest of the round.
+			_timeline_data = {}
+			_timeline_scheduler = null
+			return
+		if bool(_timeline_data.get("hp_bar", true)):
+			_enable_hp_bar()
+	_apply_timeline_decisions(_timeline_scheduler.tick(int(_video.stream_position * 1000.0)))
+
+
+# Applies one tick's decisions. Order matters: tear windows down before building new ones up, so an
+# effect ending and another starting on the same frame settle in the right order.
+func _apply_timeline_decisions(decisions: Dictionary) -> void:
+	for event: Dictionary in decisions["stop"] as Array:
+		_end_timeline_window(event)
+	for event: Dictionary in decisions["start"] as Array:
+		_begin_timeline_window(event)
+	for event: Dictionary in decisions["fire"] as Array:
+		_fire_timeline_event(event)
+	if bool(decisions["phase_changed"]):
+		_enter_timeline_phase(decisions["phase"] as Dictionary)
+
+
+# A one-shot event came due.
+func _fire_timeline_event(event: Dictionary) -> void:
+	match str(event.get("track", "")):
+		RoundTimeline.TRACK_ATTACK:
+			_begin_timeline_attack(event)
+		RoundTimeline.TRACK_CAST:
+			_ensure_cue_layer().show_cue(event, _cue_image_path(event), true)
+		RoundTimeline.TRACK_AUDIO:
+			_ensure_audio_cues().play_cue(event)
+
+
+# The art a cast cue should draw: a character's portrait when it names one (falling back to that
+# character's default expression), otherwise its own loose image. Resolved here rather than in the cue
+# layer so the journey's cast roster stays the GameLoop's business and the renderer stays dumb.
+func _cue_image_path(cue: Dictionary) -> String:
+	var character_id: String = str(cue.get("character_id", ""))
+	if character_id == "":
+		return str(cue.get("image", ""))
+	for raw: Variant in GameState.Journey.get("characters", []):
+		if not (raw is Dictionary):
+			continue
+		var character: Dictionary = raw
+		if str(character.get("id", "")) != character_id:
+			continue
+		var portrait: String = JourneyData.character_portrait_path(
+			character, str(cue.get("portrait", ""))
+		)
+		return portrait if portrait != "" else str(cue.get("image", ""))
+	# The cue names a character the journey no longer has: fall back to its own image rather than
+	# drawing nothing, so a renamed roster degrades instead of blanking the encounter.
+	return str(cue.get("image", ""))
+
+
+# A boss ATTACK: the same device takeover an override item performs, triggered by the timeline instead
+# of the inventory. The event carries an override request in the item's own shape (scripts + trim), so
+# the existing loader reads it as-is.
+func _begin_timeline_attack(event: Dictionary) -> void:
+	var bundle: OverrideBundle = _load_override_bundle(event)
+	if bundle == null or bundle.is_empty():
+		return
+	_begin_override(
+		bundle,
+		bool(event.get("immune_to_effects", false)),
+		str(event.get("name", "")),
+		"boss_attack"
+	)
+
+
+# A windowed EFFECT opened: apply its bundle for as long as the window lasts. Everything goes into the
+# effect registry tagged with the event's id (so it surfaces as a HUD chip and drives the stroke exactly
+# like a boss modifier, and so closing the window lifts precisely these and nothing else); sensory kinds
+# ALSO join this round's sensory set for their visual, mirroring what _enter_boss_mode does for a
+# whole-round sensory effect.
+func _begin_timeline_window(event: Dictionary) -> void:
+	# A cast cue can also be windowed — a portrait that stays up for a stretch rather than flashing.
+	# It holds until _end_timeline_window drops it, so it takes no hold time of its own.
+	if str(event.get("track", "")) == RoundTimeline.TRACK_CAST:
+		_ensure_cue_layer().show_cue(event, _cue_image_path(event), false)
+		return
+	var effects: Array = event.get("effects", [])
+	if effects.is_empty():
+		return
+	var source_id: String = str(event.get("id", ""))
+	var installed: Array = []
+	for raw: Variant in effects:
+		if not (raw is Dictionary):
+			continue
+		var roll: Dictionary = raw
+		installed.append(_make_boss_effect(roll))
+		var kind: String = str(roll.get("kind", ""))
+		# "blackout" is excluded for the same reason _reconcile_sensory excludes it: it is driven by the
+		# effect itself, not by the sensory layer.
+		if kind != "blackout" and JourneyData.is_sensory_kind(kind):
+			(
+				_round_sensory
+				. append(
+					{
+						"roll": JourneyData.sensory_entry_by_kind(kind),
+						"intensity": float(roll.get("intensity", 1.0)),
+						"_source_id": source_id,
+					}
+				)
+			)
+	if not installed.is_empty():
+		InventoryService.AddBossEffectsFrom(source_id, installed)
+	_reconcile_sensory()
+
+
+# The window closed: lift exactly what it installed. The round's own forced effects are untagged, so
+# they are never disturbed; SensoryFX fades out whatever left the set on the next reconcile.
+func _end_timeline_window(event: Dictionary) -> void:
+	var source_id: String = str(event.get("id", ""))
+	if str(event.get("track", "")) == RoundTimeline.TRACK_CAST:
+		if is_instance_valid(_cue_layer):
+			_cue_layer.clear(source_id)
+		return
+	InventoryService.RemoveBossEffectsFrom(source_id)
+	var kept: Array = []
+	for entry: Dictionary in _round_sensory:
+		if str(entry.get("_source_id", "")) != source_id:
+			kept.append(entry)
+	_round_sensory = kept
+	_reconcile_sensory()
+
+
+# The round is over: drop anything the timeline still holds. The attack itself is cut by
+# _cancel_override on the round boundary (the "cut at round end" rule).
+func _finish_round_timeline() -> void:
+	if _timeline_scheduler != null:
+		_apply_timeline_decisions(_timeline_scheduler.finish())
+	_timeline_scheduler = null
+	_timeline_data = {}
+	if is_instance_valid(_cue_layer):
+		_cue_layer.clear_all()
+	if is_instance_valid(_audio_cues):
+		_audio_cues.stop_all()  # also releases any duck, handing the mix back at full volume
+	_cue_duck_db = 0.0
+	_disable_hp_bar()
 
 
 # ---------------------------------------------------------------------------

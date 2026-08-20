@@ -5085,6 +5085,14 @@ func _save_round_node_media(
 		boss_rel = str(gif["rel"]) if gif["handled"] else _pool_small_file(boss_src, abs_dir)
 	saved_data["boss_image"] = boss_rel
 
+	# Boss timeline (the authored encounter): its attack funscripts, cast art and audio cues are the
+	# author's own files, so they pool into content/ like every other round asset and the saved
+	# timeline carries rels — which is what lets an encounter travel in the .fhj.
+	if saved_data.has("timeline"):
+		saved_data["timeline"] = await _pool_timeline_media(
+			saved_data["timeline"] as Dictionary, abs_dir, modal
+		)
+
 	# Video → content pool. Legacy fallback: a pre-VideoPath round carries its video
 	# only on disk; a re-save must never drop it (the swap deletes the old folder).
 	var vid_src: String = str(data_in.get("video_path", ""))
@@ -5837,6 +5845,28 @@ func _pool_small_file(
 		else:
 			_write_edl_funscript(src, abs_dir + "/" + pool["rel"], segments)
 	return pool["rel"]
+
+
+# Pools a boss timeline's media into content/ and returns the timeline with its paths rewritten to
+# pooled rels. Each file is pooled the way its family expects: attack scripts as funscripts, audio
+# verbatim, and cue art through the GIF/animation bake — a cue image may be an ANIMATION (the Tier-1
+# attack-animation layer), and Godot can't decode GIF, so it can never ship verbatim. The enumeration
+# and the rewrite both live in RoundTimeline, so this only has to know how to pool a file.
+func _pool_timeline_media(timeline: Dictionary, abs_dir: String, modal: Control) -> Dictionary:
+	var mapping: Dictionary = {}
+	for entry: Dictionary in RoundTimeline.media_entries(timeline):
+		var src: String = str(entry["path"])
+		var kind: String = str(entry["kind"])
+		if kind == RoundTimeline.MEDIA_FUNSCRIPT:
+			mapping[src] = _pool_small_file(src, abs_dir, "funscript")
+		elif kind == RoundTimeline.MEDIA_IMAGE:
+			var gif: Dictionary = await _store_gif_source(
+				src, abs_dir, JourneyData.ANIM_CAP_STORYBOARD, false, modal
+			)
+			mapping[src] = str(gif["rel"]) if gif["handled"] else _pool_small_file(src, abs_dir)
+		else:
+			mapping[src] = _pool_small_file(src, abs_dir)
+	return RoundTimeline.remap_media(timeline, mapping)
 
 
 # Pools an override item's funscript bundle into content/ (hash-deduped, funscript-family), rewriting the
