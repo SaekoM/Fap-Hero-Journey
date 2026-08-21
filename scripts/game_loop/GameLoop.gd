@@ -219,6 +219,10 @@ var _warmup_skip_btn: Button = null  # free ⏭ skip on an author-marked warmup 
 var _finish_btn: Button = null  # hold-to-confirm FINISH ("I came") button, shown during rounds when enabled
 var _finish_hold_tween: Tween = null  # fills while FINISH is held; fires _finish_journey at completion
 var _finishing: bool = false  # set once FINISH is confirmed, so a late button_up can't re-trigger
+# True only while the authored defeat moment is holding. Deliberately NOT `_finishing`, which latches for
+# the rest of the run: gating the round-end path on that flag would also block every aftercare round from
+# ever ending. This one covers exactly the await and no more.
+var _defeat_playing: bool = false
 # Exit-to-menu is hold-to-confirm (Esc key held, or the MENU button held) so a stray press can't dump a
 # run. A centered overlay fills while held; release cancels, completion leaves to the menu.
 const EXIT_HOLD_SECS: float = 1.0
@@ -407,9 +411,11 @@ func _process(delta: float) -> void:
 		var len: float = _video.get_stream_length()
 		if len > 0.0:
 			var fraction: float = _video.stream_position / len
-			# As a boss HP bar the same number reads backwards: progress through the round IS damage
-			# dealt, so the bar DRAINS instead of filling.
-			_progress.value = (1.0 - fraction) if _hp_bar_active else fraction
+			_progress.value = fraction
+			# The same number read backwards: progress through the round IS damage dealt, so the boss's
+			# health DRAINS as it advances.
+			if _hp_bar_active and is_instance_valid(_boss_hud):
+				_boss_hud.set_round_progress(fraction)
 		# Re-fit every frame: cheap, and keeps the video covering the screen even
 		# if the viewport or UI scale changes mid-playback.
 		_fit_video_cover()
@@ -421,7 +427,7 @@ func _process(delta: float) -> void:
 			_handy_feed()
 		# After the device work, so an attack fired this frame starts against the round's settled
 		# state. Runs during a takeover too — the timeline keeps advancing underneath one.
-		_tick_round_timeline()
+		_tick_round_timeline(delta)
 	_apply_pause_penalty(delta)
 	_update_chip_countdowns()
 	_update_clip_end_fade()
@@ -800,7 +806,10 @@ func _start_round_after_gates(round: Dictionary) -> void:
 		_pending_encounter_card = false
 		enc_root = await _show_encounter_card()
 		_apply_round_label(round)  # reveal the real (possibly BOSS) label now the card is done
-	if _is_boss_round:
+	# The intro card is a per-round toggle (BOSS_ROUND_DESIGN §7.1). Default ON, so every boss authored
+	# before the switch existed still telegraphs exactly as it did; an author who opens cold into their
+	# own authored telegraph turns it off.
+	if _is_boss_round and bool(round.get("show_intro_card", true)):
 		# A rolled boss: fade the encounter card out, THEN telegraph with the boss intro card.
 		if enc_root != null:
 			await _fade_and_free_overlay(enc_root)
@@ -1427,7 +1436,9 @@ func _enter_boss_mode(round: Dictionary) -> void:
 		_inventory_panel.close()
 	_inv_btn.disabled = true
 
-	if _boss_frame != null:
+	# The vignette is the other half of the chrome toggle: an author building their own atmosphere out of
+	# cast and FX events wants a clean canvas, not a red border over it.
+	if _boss_frame != null and bool(round.get("show_boss_frame", true)):
 		_boss_frame.visible = true
 		_boss_frame.modulate.a = 0.5
 
@@ -1937,6 +1948,9 @@ func _finish_journey() -> void:
 	_finishing = true
 	_cancel_finish_hold()
 	_remove_finish_button()
+	# Played while the round is still on screen behind it, before anything is torn down.
+	await _play_defeat_event()
+	_finish_round_timeline()  # this path never reaches _on_round_ended, so the encounter is dropped here
 	_video.stop()
 	_end_timer.stop()
 	FunscriptPlayer.Stop()
@@ -2460,7 +2474,11 @@ func _start_no_video_fallback() -> void:
 
 
 func _on_round_ended(skipped: bool = false) -> void:
-	if _round_ended_guard:
+	# The defeat moment AWAITS its hold while the round plays on behind it, so a FINISH pressed near the
+	# end of a clip would see the video's own `finished` land mid-hold — and this function would clear
+	# the cue layer and stop the audio out from under the ending the author wrote. The FINISH path owns
+	# its own teardown (see _finish_journey), so while it is holding the natural end must stand down.
+	if _round_ended_guard or _defeat_playing:
 		return
 	_round_ended_guard = true
 	_remove_warmup_skip_button()
@@ -3644,62 +3662,52 @@ var _cue_duck_db: float = 0.0
 # boss frame. The HP bar is PURELY COSMETIC — it shows the same number the progress bar always showed,
 # just inverted and dressed, because round progress already IS damage dealt.
 
-# How long a phase banner stays up before fading.
-const PHASE_BANNER_HOLD_SECS: float = 1.6
 
-# True while this round is drawing its progress bar as a boss health bar.
+# Where each phase falls along the round, as a 0..1 fraction — what the health bar's division marks are
+# drawn from. Resolved through the timeline so an END-anchored phase lands where it will actually play.
+func _phase_fractions(full_ms: int) -> Array:
+	if full_ms <= 0 or not bool(_timeline_data.get("phase_ticks", true)):
+		return []
+	var out: Array = []
+	for phase: Dictionary in RoundTimeline.resolved_phases(_timeline_data, full_ms):
+		out.append(float(phase["resolved_at_ms"]) / float(full_ms))
+	return out
+
+
+# The boss HUD: a named, draining health bar under the HUD bar, with the phase line beneath it. Built
+# only for a timeline round that asks for it, and freed with the round.
 var _hp_bar_active: bool = false
+# The encounter's name / health / phase chrome. Lives in BossHud so the timeline editor's preview can
+# show the author the SAME chrome their cues have to sit around, rather than a lookalike.
+var _boss_hud: BossHud = null
 
-# The name chip beside the HP bar; freed with the round.
-var _hp_bar_label: Label = null
 
-
-# Switches the round's progress bar into HP-bar dress: red fill, draining, with the boss's name beside
-# it. Called once the timeline is known to be real.
-func _enable_hp_bar() -> void:
+# Builds the boss HUD and hides the ordinary progress bar — the health bar IS the round's progress,
+# shown backwards, so having both would be the same number twice.
+func _enable_hp_bar(boss_name: String, phase_marks: Array = []) -> void:
 	if _hp_bar_active:
 		return
 	_hp_bar_active = true
+	_progress.visible = false
 
-	var bg: StyleBoxFlat = StyleBoxFlat.new()
-	bg.bg_color = Color(0.10, 0.0, 0.02, 0.85)
-	bg.border_color = Color(UITheme.DANGER.r, UITheme.DANGER.g, UITheme.DANGER.b, 0.6)
-	bg.set_border_width_all(1)
-	bg.set_corner_radius_all(4)
-	var fill: StyleBoxFlat = StyleBoxFlat.new()
-	fill.bg_color = UITheme.DANGER
-	fill.set_corner_radius_all(4)
-	_progress.add_theme_stylebox_override("background", bg)
-	_progress.add_theme_stylebox_override("fill", fill)
-
-	var boss_name: String = str(GameState.CurrentRound().get("name", "")).strip_edges()
-	if boss_name == "":
-		return
-	_hp_bar_label = Label.new()
-	_hp_bar_label.text = boss_name
-	_hp_bar_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	UITheme.style_label(_hp_bar_label, UITheme.DANGER, 12, true)
-	# Anchored exactly like the bar (10%–90%, pinned to the bottom) and lifted just above it, so it
-	# tracks the bar at any resolution instead of being pinned to a position captured once. Inside the
-	# HUD, so it fades with the rest of it.
-	_hp_bar_label.anchor_left = _progress.anchor_left
-	_hp_bar_label.anchor_right = _progress.anchor_right
-	_hp_bar_label.anchor_top = 1.0
-	_hp_bar_label.anchor_bottom = 1.0
-	_hp_bar_label.offset_top = -26
-	_hp_bar_label.offset_bottom = -9
-	_hud.add_child(_hp_bar_label)
+	_boss_hud = BossHud.new()
+	# Parented to the ROOT, not the HUD: the HUD fades itself out on idle, and a boss's health has to
+	# stay readable for the whole encounter. Added last, so it draws over everything below the
+	# transition layer.
+	add_child(_boss_hud)
+	_boss_hud.setup(boss_name, phase_marks)
 
 
-# Restores the ordinary progress bar. A round that never enabled the HP bar costs nothing here.
+# Drops the boss HUD and gives the ordinary progress bar back.
 func _disable_hp_bar() -> void:
 	if not _hp_bar_active:
 		return
 	_hp_bar_active = false
-	_style_progress()  # back to the canonical purple styling
-	if is_instance_valid(_hp_bar_label):
-		_hp_bar_label.queue_free()
-	_hp_bar_label = null
+	_progress.visible = true
+	if is_instance_valid(_boss_hud):
+		_boss_hud.kill_phase_tween()
+		_boss_hud.queue_free()
+	_boss_hud = null
 
 
 # Announces a phase and, when the author gave it one, shifts the boss frame's colour. The banner reuses
@@ -3708,21 +3716,8 @@ func _enter_timeline_phase(phase: Dictionary) -> void:
 	if phase.is_empty():
 		return
 	var label: String = str(phase.get("name", "")).strip_edges()
-	if bool(phase.get("banner", false)) and label != "":
-		(
-			_ensure_cue_layer()
-			. show_cue(
-				{
-					"id": "phase_banner_" + str(phase.get("id", "")),
-					"text": label,
-					"transition": RoundTimeline.TRANSITION_FLASH,
-					"out_ms": 350,
-					"text_hold_ms": int(PHASE_BANNER_HOLD_SECS * 1000.0),
-				},
-				"",
-				true
-			)
-		)
+	if bool(phase.get("banner", false)) and label != "" and is_instance_valid(_boss_hud):
+		_boss_hud.show_phase(label)
 	# The tint rides the existing boss frame rather than adding a second overlay, so the vignette's
 	# own climax pulse (_update_boss_frame) keeps working underneath it.
 	if phase.has("tint") and _boss_frame != null:
@@ -3735,6 +3730,13 @@ func _enter_timeline_phase(phase: Dictionary) -> void:
 # Called as a round begins: adopt its timeline, if any. The scheduler itself waits for the video.
 func _load_round_timeline(round: Dictionary) -> void:
 	_timeline_scheduler = null
+	# BOSS rounds only. The encounter is authored from the boss panel, so a round switched back to
+	# normal/effect should stop playing one — but its timeline is deliberately LEFT ON THE DATA rather
+	# than erased, so switching back to boss restores the author's work instead of silently destroying
+	# it. (When the editor is surfaced for other round types — §10 — this gate is what widens.)
+	if not _is_boss_round:
+		_timeline_data = {}
+		return
 	# Type-checked rather than trusted: the graph loader normalizes a timeline on the way in, but a
 	# hand-written journey.json can put anything under the key, and a wrong type here would crash the
 	# round rather than degrade to "no encounter".
@@ -3744,9 +3746,14 @@ func _load_round_timeline(round: Dictionary) -> void:
 
 # Per-frame while the round plays. Deliberately runs even while an override owns the device: windows
 # and phases keep advancing underneath a takeover, and a later attack is allowed to replace an earlier.
-func _tick_round_timeline() -> void:
-	if _timeline_data.is_empty():
+func _tick_round_timeline(delta: float) -> void:
+	# Stops dispatching while the defeat moment holds. The timeline would otherwise keep firing through
+	# it, and an attack landing there would seize a device that is already on its way out — the very
+	# thing the defeat track is restricted to cast and audio to avoid.
+	if _timeline_data.is_empty() or _defeat_playing:
 		return
+	# Ramps advance even while nothing else changes, and freeze with the round like everything else.
+	_tick_window_fades(delta)
 	if _timeline_scheduler == null:
 		var length_s: float = _video.get_stream_length()
 		if length_s <= 0.0:
@@ -3763,7 +3770,10 @@ func _tick_round_timeline() -> void:
 			_timeline_scheduler = null
 			return
 		if bool(_timeline_data.get("hp_bar", true)):
-			_enable_hp_bar()
+			var boss_name: String = str(_timeline_data.get("boss_name", "")).strip_edges()
+			if boss_name == "":
+				boss_name = str(GameState.CurrentRound().get("name", ""))
+			_enable_hp_bar(boss_name, _phase_fractions(int(length_s * 1000.0)))
 	_apply_timeline_decisions(_timeline_scheduler.tick(int(_video.stream_position * 1000.0)))
 
 
@@ -3858,13 +3868,18 @@ func _begin_timeline_window(event: Dictionary) -> void:
 				. append(
 					{
 						"roll": JourneyData.sensory_entry_by_kind(kind),
+						# `intensity` is what the engine reads and is scaled by the window's ease
+						# factor each frame; `_base_intensity` is the authored value it ramps toward.
 						"intensity": float(roll.get("intensity", 1.0)),
+						"_base_intensity": float(roll.get("intensity", 1.0)),
 						"_source_id": source_id,
 					}
 				)
 			)
 	if not installed.is_empty():
 		InventoryService.AddBossEffectsFrom(source_id, installed)
+	_window_fades.begin(source_id, event)
+	_apply_window_factor(source_id, _window_fades.factor(source_id))
 	_reconcile_sensory()
 
 
@@ -3876,13 +3891,77 @@ func _end_timeline_window(event: Dictionary) -> void:
 		if is_instance_valid(_cue_layer):
 			_cue_layer.clear(source_id)
 		return
+	# The registry side goes immediately: a stroke or score modifier has no meaningful "half applied"
+	# state, so easing it would just make the window's end fuzzy. Only the VISUAL eases out.
 	InventoryService.RemoveBossEffectsFrom(source_id)
+	if _window_fades.end(source_id, event):
+		return  # the ramp drops the sensory entries when it reaches zero
+	_drop_window_sensory(source_id)
+
+
+# ── Effect-window easing ─────────────────────────────────────────────────────
+#
+# The ramp itself lives in EffectWindowFades, shared with the encounter editor's preview stage — the
+# fade an author tunes is then the fade they preview AND the fade that plays, because there is only one
+# implementation. Everything below is just applying its factor to this round's sensory entries.
+var _window_fades: EffectWindowFades = EffectWindowFades.new()
+
+
+# Advances every ramp and re-applies what moved. Called from the timeline tick, so fades freeze with the
+# round exactly as the rest of the encounter does.
+func _tick_window_fades(delta: float) -> void:
+	if not _window_fades.is_active():
+		return
+	var result: Dictionary = _window_fades.tick(delta)
+	for id: String in result["changed"] as Array:
+		_apply_window_factor(id, _window_fades.factor(id))
+	for id: String in result["finished"] as Array:
+		_drop_window_sensory(id)
+
+
+# Scales one window's sensory entries to `factor` of their authored intensity and pushes the result.
+func _apply_window_factor(source_id: String, factor: float) -> void:
+	var touched: bool = false
+	for entry: Dictionary in _round_sensory:
+		if str(entry.get("_source_id", "")) == source_id:
+			entry["intensity"] = float(entry.get("_base_intensity", 1.0)) * factor
+			touched = true
+	if touched:
+		_reconcile_sensory()
+
+
+# Removes a window's sensory entries for good — the end of an ease-out, or a window with no ease at all.
+func _drop_window_sensory(source_id: String) -> void:
 	var kept: Array = []
 	for entry: Dictionary in _round_sensory:
 		if str(entry.get("_source_id", "")) != source_id:
 			kept.append(entry)
 	_round_sensory = kept
 	_reconcile_sensory()
+
+
+# The encounter's authored DEFEAT moment: the player yielded mid-boss, so its `on: "defeat"` events play
+# in place of the victory outro (BOSS_ROUND_DESIGN §3.3). Cast and audio only — an attack or an effect
+# window would seize a device and a screen that are already on their way out.
+func _play_defeat_event() -> void:
+	if _timeline_scheduler == null:
+		return
+	var events: Array = _timeline_scheduler.defeat_events()
+	if events.is_empty():
+		return
+	_defeat_playing = true
+	for event: Dictionary in events:
+		match str(event.get("track", "")):
+			RoundTimeline.TRACK_CAST:
+				_ensure_cue_layer().show_cue(event, _cue_image_path(event), true)
+			RoundTimeline.TRACK_AUDIO:
+				_ensure_audio_cues().play_cue(event)
+	var hold_ms: int = int(
+		_timeline_data.get("defeat_hold_ms", RoundTimeline.DEFAULT_DEFEAT_HOLD_MS)
+	)
+	if hold_ms > 0:
+		await get_tree().create_timer(hold_ms / 1000.0).timeout
+	_defeat_playing = false
 
 
 # The round is over: drop anything the timeline still holds. The attack itself is cut by
@@ -3897,6 +3976,9 @@ func _finish_round_timeline() -> void:
 	if is_instance_valid(_audio_cues):
 		_audio_cues.stop_all()  # also releases any duck, handing the mix back at full volume
 	_cue_duck_db = 0.0
+	# Ramps are abandoned rather than played out — the round is over, and _round_sensory is rebuilt by
+	# whatever comes next.
+	_window_fades.clear()
 	_disable_hp_bar()
 
 

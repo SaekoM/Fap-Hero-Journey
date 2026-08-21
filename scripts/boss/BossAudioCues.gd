@@ -48,13 +48,23 @@ func play_cue(cue: Dictionary) -> void:
 	player.stream = stream
 	player.volume_db = linear_to_db(maxf(0.0001, float(cue.get("volume", 1.0))))
 
+	# A trimmed cue plays only its slice: start at the in-point, and stop at the out-point rather than
+	# running to the end of the file. Resizing the block on the timeline is what sets this, so what the
+	# author drew is what the round plays.
+	var trim: Dictionary = cue.get("trim", {})
+	var from_sec: float = float(int(trim.get("in_ms", 0))) / 1000.0
+	var out_ms: int = int(trim.get("out_ms", 0))
+	if out_ms > int(trim.get("in_ms", 0)):
+		_stop_at(player, (out_ms - int(trim.get("in_ms", 0))) / 1000.0)
+
 	var duck: float = clampf(float(cue.get("duck_pct", 0.0)), 0.0, 1.0)
 	if duck > 0.0:
 		_push_duck(duck)
 		# Released when the clip ends — including when a recycled player is cut short, since finished
 		# fires on stop() too. ONE_SHOT so a recycled player never carries a stale handler.
 		player.finished.connect(func() -> void: _pop_duck(duck), CONNECT_ONE_SHOT)
-	player.play()
+	player.play(from_sec)
+	_apply_fades(player, cue)
 
 
 ## Starts the encounter's looping music. `{clip, volume}`, resolved. Replaces anything already playing.
@@ -69,6 +79,53 @@ func play_bgm(bgm: Dictionary) -> void:
 	_bgm.volume_db = linear_to_db(maxf(0.0001, float(bgm.get("volume", 1.0))))
 	add_child(_bgm)
 	_bgm.play()
+
+
+# Eases a cue's volume in and out rather than letting it snap. The target level is the cue's own volume,
+# so a fade never overshoots it; the out-fade is scheduled against the slice's length.
+func _apply_fades(player: AudioStreamPlayer, cue: Dictionary) -> void:
+	var target_db: float = player.volume_db
+	var fade_in: int = int(cue.get("fade_in_ms", 0))
+	if fade_in > 0:
+		player.volume_db = SILENCE_DB
+		var tween: Tween = create_tween()
+		tween.tween_property(player, "volume_db", target_db, fade_in / 1000.0)
+	var fade_out: int = int(cue.get("fade_out_ms", 0))
+	if fade_out <= 0:
+		return
+	var length_ms: int = _cue_length_ms(cue, player)
+	if length_ms <= fade_out:
+		return  # too short to fade out of without swallowing the cue
+	var delay: float = (length_ms - fade_out) / 1000.0
+	var out_tween: Tween = create_tween()
+	out_tween.tween_interval(delay)
+	out_tween.tween_property(player, "volume_db", SILENCE_DB, fade_out / 1000.0)
+
+
+# How long this cue will actually sound for: its trimmed slice when it has one, else the whole stream.
+static func _cue_length_ms(cue: Dictionary, player: AudioStreamPlayer) -> int:
+	var trim: Dictionary = cue.get("trim", {})
+	var in_ms: int = int(trim.get("in_ms", 0))
+	var out_ms: int = int(trim.get("out_ms", 0))
+	if out_ms > in_ms:
+		return out_ms - in_ms
+	return int(player.stream.get_length() * 1000.0) - in_ms
+
+
+# Stops `player` after `seconds` of playing — how a trimmed cue honours its out-point. A timer rather
+# than polling: cues are short and there are at most MAX_VOICES of them, so a per-frame check would cost
+# more than it saved. The timer is a child of this node, so it dies with the editor or the round.
+func _stop_at(player: AudioStreamPlayer, seconds: float) -> void:
+	if seconds <= 0.0:
+		return
+	var timer: SceneTreeTimer = get_tree().create_timer(seconds)
+	timer.timeout.connect(
+		func() -> void:
+			# Guarded: the voice may have been recycled onto a different cue by now, and stopping THAT
+			# one would cut a clip that is legitimately playing.
+			if is_instance_valid(player) and player.playing:
+				player.stop()
+	)
 
 
 func stop_bgm() -> void:

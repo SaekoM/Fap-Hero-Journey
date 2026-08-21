@@ -58,7 +58,9 @@ func test_normalize_fills_defaults_and_drops_unknown_tracks() -> void:
 	assert_str(str(cue["anchor"])).is_equal("start")
 	assert_str(str(cue["on"])).is_equal("always")
 	assert_str(str(cue["blend"])).is_equal("normal")
-	assert_bool(bool(cue["loop"])).is_false()  # an attack hit plays once, not on a loop
+	# Looping is NOT stored: BossCueLayer derives it from the cue's kind, so a one-shot plays once and a
+	# windowed cue repeats for as long as its window is open.
+	assert_bool(cue.has("loop")).is_false()
 
 
 func test_normalize_coerces_json_floats_and_bad_enums() -> void:
@@ -178,15 +180,40 @@ func test_attack_normalizes_as_an_override_request() -> void:
 	assert_int(int((a["trim"] as Dictionary)["in_ms"])).is_equal(500)
 
 
-func test_cast_text_timings_appear_only_with_text() -> void:
+func test_cast_text_styling_appears_only_with_text() -> void:
 	var silent: Dictionary = _by_id(_timeline([_cast("c1", 0)]), "c1")
-	assert_bool(silent.has("text_hold_ms")).is_false()  # no subtitle → no subtitle timing
+	assert_bool(silent.has("text_size")).is_false()  # no subtitle → nothing to style
 
 	var spoken: Dictionary = _by_id(
 		_timeline([{"id": "c2", "track": "cast", "image": "/a.png", "text": "You are mine."}]), "c2"
 	)
 	assert_str(str(spoken["text"])).is_equal("You are mine.")
-	assert_int(int(spoken["text_hold_ms"])).is_equal(RoundTimeline.DEFAULT_TEXT_HOLD_MS)
+	assert_int(int(spoken["text_size"])).is_equal(RoundTimeline.DEFAULT_TEXT_SIZE)
+	assert_float(float(spoken["text_y"])).is_equal(RoundTimeline.DEFAULT_TEXT_Y)
+	# Colour is stored only when the author picks one, so an untouched line follows the theme.
+	assert_bool(spoken.has("text_color")).is_false()
+
+
+func test_cast_text_size_is_clamped_and_colour_round_trips() -> void:
+	var styled: Dictionary = _by_id(
+		_timeline(
+			[
+				{
+					"id": "c3",
+					"track": "cast",
+					"text": "Loud.",
+					"text_size": 9000,
+					"text_y": 4.2,
+					"text_color": {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0},
+				}
+			]
+		),
+		"c3"
+	)
+	assert_int(int(styled["text_size"])).is_equal(RoundTimeline.MAX_TEXT_SIZE)
+	# An out-of-range position is clamped rather than anchoring the line off the canvas entirely.
+	assert_float(float(styled["text_y"])).is_equal(1.0)
+	assert_object(RoundTimeline.cue_text_color(styled, Color.WHITE)).is_equal(Color(1, 0, 0, 1))
 
 
 func test_narration_ducks_by_default_and_sfx_does_not() -> void:

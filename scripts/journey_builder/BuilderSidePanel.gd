@@ -5695,6 +5695,117 @@ func _make_warmup_toggle(arr: Array, idx: int) -> Control:
 
 # ── Boss round expander ──────────────────────────────────────────────────────
 
+# Probed video durations, keyed by source path. ffprobe is a subprocess, and the side panel rebuilds on
+# every selection — without this the encounter button would shell out each time.
+var _clock_probe_cache: Dictionary = {}
+
+
+# The round's length in ms — the clock the encounter's events are placed against. Tried in the order
+# that matches what actually plays: the VIDEO first (the runtime scheduler measures against
+# `_video.get_stream_length()`), then the saved `length_ms`, then the funscript's own span.
+#
+# `length_ms` alone is not enough: the save WRITES it, so an unsaved round has none, and gating on it
+# left the button greyed out for every round the author had not saved yet.
+func _round_clock_ms(data: Dictionary) -> int:
+	var video: String = str(data.get("video_path", ""))
+	if video != "":
+		if _clock_probe_cache.has(video):
+			return int(_clock_probe_cache[video])
+		var seconds: float = MediaPoolService.probe_duration_seconds(video)
+		var ms: int = int(round(seconds * 1000.0))
+		_clock_probe_cache[video] = ms
+		if ms > 0:
+			return ms
+	var saved: int = int(data.get("length_ms", 0))
+	if saved > 0:
+		return saved
+	return int(
+		JourneyData.read_funscript_stats(str(data.get("funscript_path", ""))).get("length_ms", 0)
+	)
+
+
+# Opens the encounter editor for this round, and reports what it already holds so the author can see at
+# a glance whether one is authored. The round's VIDEO LENGTH is the clock the editor places events
+# against; without one, end-anchored events could not be resolved, so the button says so rather than
+# opening an editor that would quietly mis-place them.
+# One boss-chrome switch. Absent means ON, matching the runtime's own default, so an existing journey
+# keeps its chrome without needing a re-save to write the key.
+func _make_chrome_toggle(arr: Array, idx: int, key: String, label: String, tip: String) -> Control:
+	var toggle: CheckButton = CheckButton.new()
+	toggle.text = label
+	toggle.tooltip_text = UITheme.wrap_tip(tip)
+	toggle.button_pressed = bool(arr[idx].get(key, true))
+	toggle.toggled.connect(func(pressed: bool) -> void: arr[idx][key] = pressed)
+	return toggle
+
+
+# The round's authored encounter, type-checked. Read fresh every time it is needed.
+func _round_timeline(data: Dictionary) -> Dictionary:
+	var raw: Variant = data.get("timeline", {})
+	return raw if raw is Dictionary else {}
+
+
+func _make_encounter_button(arr: Array, idx: int) -> Control:
+	var button: Button = Button.new()
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var count: int = (_round_timeline(arr[idx]).get("events", []) as Array).size()
+	button.text = "◆ EDIT ENCOUNTER  (%d)" % count if count > 0 else "◆ BUILD ENCOUNTER"
+	UITheme.style_button(button, UITheme.DANGER)
+
+	var length_ms: int = _round_clock_ms(arr[idx])
+	if length_ms <= 0:
+		button.disabled = true
+		button.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"Add this round's video (or its funscript) first — the encounter is placed against the round's length."
+			)
+		)
+		return button
+
+	button.pressed.connect(
+		func() -> void:
+			# A Node, so the tree owns it: open() parents it to the builder and closing frees it along
+			# with its modal, preview stage and any running device test.
+			var editor: BossTimelineEditor = BossTimelineEditor.new()
+			editor.saved.connect(
+				func(edited: Dictionary) -> void:
+					# Dropped entirely when it would do nothing, matching what the save does, so an
+					# emptied encounter leaves no dead block behind on the round.
+					if RoundTimeline.is_empty(edited):
+						arr[idx].erase("timeline")
+					else:
+						arr[idx]["timeline"] = edited
+					# Relabel BEFORE refreshing: _refresh_graph can rebuild this panel, which frees the
+					# very button being captured here — writing to it afterwards is a use-after-free.
+					# Guarded as well, since a rebuild can also be triggered from elsewhere while the
+					# encounter modal is open.
+					if is_instance_valid(button):
+						button.text = (
+							"◆ EDIT ENCOUNTER  (%d)" % (edited.get("events", []) as Array).size()
+						)
+					_owner._refresh_graph()
+			)
+			# The video and funscript drive the preview stage and the timeline's sync reference.
+			(
+				editor
+				. open(
+					_owner,
+					# Re-read at CLICK time, not when the button was built: saving an encounter replaces the
+					# round's timeline dict, and a value captured at build time would reopen the old one —
+					# which looked exactly like the edits had been lost.
+					_round_timeline(arr[idx]),
+					length_ms,
+					str(arr[idx].get("video_path", "")),
+					str(arr[idx].get("funscript_path", "")),
+					_owner._journey_characters,
+					_owner._journey_items,
+					_owner._journey_allow_finish
+				)
+			)
+	)
+	return button
+
 
 # A "BOSS ROUND" toggle that, when on, marks the round as a boss and reveals its
 # config: an optional intro image, an optional tagline, and a list of forced
@@ -5753,6 +5864,36 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	UITheme.style_line_edit(tagline)
 	tagline.text_changed.connect(func(val: String) -> void: arr[idx]["boss_tagline"] = val)
 	boss_panel.add_child(tagline)
+
+	# The authored ENCOUNTER — attacks, cast cues, audio and windowed effects placed on this round's
+	# video clock (BOSS_ROUND_DESIGN). Optional: a boss with no timeline plays exactly as it always has,
+	# driven by the forced modifiers below.
+	boss_panel.add_child(_side_field_label("ENCOUNTER TIMELINE  (OPTIONAL)"))
+	boss_panel.add_child(_make_encounter_button(arr, idx))
+
+	# Boss CHROME. Both default ON, so a boss authored before these existed is untouched; an author who
+	# builds their own opener and atmosphere out of the encounter turns them off for a clean canvas.
+	(
+		boss_panel
+		. add_child(
+			_make_chrome_toggle(
+				arr,
+				idx,
+				"show_intro_card",
+				"SHOW INTRO CARD",
+				"The '⚔ BOSS ROUND' telegraph card, with its BEGIN gate. Off opens straight into the round."
+			)
+		)
+	)
+	boss_panel.add_child(
+		_make_chrome_toggle(
+			arr,
+			idx,
+			"show_boss_frame",
+			"SHOW BOSS VIGNETTE",
+			"The red border held over the video for the whole round."
+		)
+	)
 
 	# Forced modifiers list.
 	boss_panel.add_child(_side_field_label("FORCED MODIFIERS"))

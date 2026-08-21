@@ -40,13 +40,33 @@ const ON_MODES: Array[String] = [ON_ALWAYS, ON_DEFEAT]
 # into usable flash / energy VFX — the decoder has no alpha channel (BOSS_ROUND_DESIGN §5.1).
 const BLEND_NORMAL: String = "normal"
 const BLEND_ADD: String = "add"
+# Retired from authoring: CanvasItemMaterial has no screen mode, so it was only ever approximated with
+# ADD and the two rendered identically. Kept as a constant purely to migrate cues authored while the
+# option existed — see normalize_event.
 const BLEND_SCREEN: String = "screen"
-const BLENDS: Array[String] = [BLEND_NORMAL, BLEND_ADD, BLEND_SCREEN]
+const BLENDS: Array[String] = [BLEND_NORMAL, BLEND_ADD]
 
 const TRANSITION_FADE: String = "fade"
 const TRANSITION_FLASH: String = "flash"
+const TRANSITION_POP: String = "pop"
+const TRANSITION_RISE: String = "rise"
+const TRANSITION_SLIDE_LEFT: String = "slide_left"
+const TRANSITION_SLIDE_RIGHT: String = "slide_right"
+const TRANSITION_SLIDE_TOP: String = "slide_top"
+const TRANSITION_SLIDE_BOTTOM: String = "slide_bottom"
+# Superseded by the four directional values. Kept only to migrate cues authored while slide picked its
+# own direction — see normalize_event. Never offered for authoring.
 const TRANSITION_SLIDE: String = "slide"
-const TRANSITIONS: Array[String] = [TRANSITION_FADE, TRANSITION_FLASH, TRANSITION_SLIDE]
+const TRANSITIONS: Array[String] = [
+	TRANSITION_FADE,
+	TRANSITION_FLASH,
+	TRANSITION_POP,
+	TRANSITION_RISE,
+	TRANSITION_SLIDE_LEFT,
+	TRANSITION_SLIDE_RIGHT,
+	TRANSITION_SLIDE_TOP,
+	TRANSITION_SLIDE_BOTTOM,
+]
 
 const ANCHOR_CENTER: String = "center"
 const CAST_ANCHORS: Array[String] = ["center", "left", "right", "top", "bottom", "custom"]
@@ -63,10 +83,29 @@ const NO_TIME: int = -1
 const DEFAULT_CUE_FADE_MS: int = 250
 const DEFAULT_TEXT_HOLD_MS: int = 2500
 
+# Subtitle type size, in CANVAS pixels (BossCueLayer scales the canvas, so this is the size it will
+# appear at on a 1080p screen). Bounded so a line cannot be made unreadably small or large enough to
+# cover the picture it is describing.
+# Where a subtitle sits vertically, as a fraction of the canvas: 0 is the top edge, 1 the bottom. A free
+# position rather than a set of presets, matching how cast art is placed — the author can tuck a line
+# under a portrait, lift it clear of the health bar, or centre it, without the layer guessing which of
+# those they meant. The default reproduces the band subtitles have always sat in.
+const DEFAULT_TEXT_Y: float = 0.89
+
+const DEFAULT_TEXT_SIZE: int = 22
+const MIN_TEXT_SIZE: int = 10
+const MAX_TEXT_SIZE: int = 72
+
 # A narration cue ducks the round audio by default (an unducked line is buried under the video); an sfx
 # does not, because a stab is meant to sit on top of the mix.
 const DEFAULT_NARRATION_DUCK_PCT: float = 0.6
 const DEFAULT_DUCK_FADE_MS: int = 200
+
+# How long a one-shot cue carrying a LINE stays up. Longer than a wordless cue's hold because the floor
+# is reading speed, not the beat — a fixed value rather than a field, since a line wanting its own timing
+# is its own cue (see _fill_cast).
+# Default hold for the defeat event (see the timeline-level `defeat_hold_ms`).
+const DEFAULT_DEFEAT_HOLD_MS: int = 1600
 
 # ── Validation issue codes ───────────────────────────────────────────────────
 
@@ -83,7 +122,15 @@ const ISSUE_OUT_OF_RANGE: String = "out_of_range"
 
 ## The canonical empty timeline — what a round without an authored encounter carries.
 static func empty() -> Dictionary:
-	return {"events": [], "phases": [], "bgm": {}, "hp_bar": true}
+	return {
+		"events": [],
+		"phases": [],
+		"bgm": {},
+		"hp_bar": true,
+		"phase_ticks": true,
+		"boss_name": "",
+		"defeat_hold_ms": DEFAULT_DEFEAT_HOLD_MS,
+	}
 
 
 ## True when this timeline would change nothing at play time, so callers can skip the whole subsystem
@@ -132,6 +179,14 @@ static func normalize(raw: Dictionary) -> Dictionary:
 			"volume": clampf(float(bgm.get("volume", 1.0)), 0.0, 1.0),
 		}
 	out["hp_bar"] = bool(raw.get("hp_bar", true))
+	# Division marks on the health bar, one per phase — a wordless "there is another stage to this".
+	out["phase_ticks"] = bool(raw.get("phase_ticks", true))
+	# What the health bar is labelled. Blank falls back to the round's own name, which is what the bar
+	# used before it could be named — a round called "Sloppy BJ" is a filename, not a boss.
+	out["boss_name"] = str(raw.get("boss_name", ""))
+	# How long the give-in event is held before the round tears down. Long enough to read a line, short
+	# enough that a player who has decided to stop is not made to wait.
+	out["defeat_hold_ms"] = maxi(0, int(raw.get("defeat_hold_ms", DEFAULT_DEFEAT_HOLD_MS)))
 	return out
 
 
@@ -176,6 +231,7 @@ static func normalize_event(raw: Dictionary) -> Dictionary:
 			_fill_attack(out, raw)
 		TRACK_EFFECT:
 			out["effects"] = _copy_dict_array(raw.get("effects", []))
+			_carry_fades(out, raw)
 		TRACK_CAST:
 			_fill_cast(out, raw)
 		TRACK_AUDIO:
@@ -191,12 +247,7 @@ static func _fill_attack(out: Dictionary, raw: Dictionary) -> void:
 	out["immune_to_effects"] = bool(raw.get("immune_to_effects", false))
 	out["scripts"] = _normalize_scripts(raw.get("scripts", {}))
 	out["effects"] = _copy_dict_array(raw.get("effects", []))
-	var trim: Dictionary = raw.get("trim", {})
-	if not trim.is_empty():
-		out["trim"] = {
-			"in_ms": maxi(0, int(trim.get("in_ms", 0))),
-			"out_ms": maxi(0, int(trim.get("out_ms", 0))),
-		}
+	_carry_trim(out, raw)
 
 
 static func _fill_cast(out: Dictionary, raw: Dictionary) -> void:
@@ -208,24 +259,38 @@ static func _fill_cast(out: Dictionary, raw: Dictionary) -> void:
 	)
 	out["offset"] = _to_offset(raw.get("offset", null))
 	out["scale"] = maxf(0.01, float(raw.get("scale", 1.0)))
-	out["transition"] = _one_of(
-		str(raw.get("transition", TRANSITION_FADE)), TRANSITIONS, TRANSITION_FADE
-	)
+	# Bare `slide` becomes slide_left, which is the direction it always travelled, so a cue authored
+	# before directions existed keeps the entrance it was given.
+	var raw_transition: String = str(raw.get("transition", TRANSITION_FADE))
+	if raw_transition == TRANSITION_SLIDE:
+		raw_transition = TRANSITION_SLIDE_LEFT
+	out["transition"] = _one_of(raw_transition, TRANSITIONS, TRANSITION_FADE)
 	out["in_ms"] = maxi(0, int(raw.get("in_ms", DEFAULT_CUE_FADE_MS)))
 	out["out_ms"] = maxi(0, int(raw.get("out_ms", DEFAULT_CUE_FADE_MS)))
 	# Tier-1 animation layer: an animated source plays through the existing hidden decoder, with a blend
-	# mode standing in for the alpha the 4:2:0 decoder cannot give us, and `loop` off so an attack hit
-	# plays once instead of repeating under the round.
-	out["blend"] = _one_of(str(raw.get("blend", BLEND_NORMAL)), BLENDS, BLEND_NORMAL)
-	out["loop"] = bool(raw.get("loop", false))
-	# Dialogue: a subtitle riding the same cue, timed independently of the image so a line can outlast
-	# (or outlive) the portrait that speaks it.
+	# mode standing in for the alpha the 4:2:0 decoder cannot give us. Whether it repeats is NOT stored —
+	# BossCueLayer derives it from the cue's kind, since a windowed cue loops for as long as its window
+	# is open and a one-shot plays exactly once, and no third answer is meaningful.
+	# `screen` folds into `add` rather than being dropped: the two always rendered the same, so mapping
+	# preserves exactly what the author saw, where falling back to NORMAL would silently stop black
+	# dropping out of a cue that was composited on purpose.
+	var raw_blend: String = str(raw.get("blend", BLEND_NORMAL))
+	if raw_blend == BLEND_SCREEN:
+		raw_blend = BLEND_ADD
+	out["blend"] = _one_of(raw_blend, BLENDS, BLEND_NORMAL)
+	# Dialogue: a subtitle riding the same cue, sharing its fades and its lifetime. A line that needs its
+	# own schedule is authored as its own text-only cue rather than as a parallel set of timings here.
 	var text: String = str(raw.get("text", ""))
 	if text != "":
 		out["text"] = text
-		out["text_in_ms"] = maxi(0, int(raw.get("text_in_ms", DEFAULT_CUE_FADE_MS)))
-		out["text_hold_ms"] = maxi(0, int(raw.get("text_hold_ms", DEFAULT_TEXT_HOLD_MS)))
-		out["text_out_ms"] = maxi(0, int(raw.get("text_out_ms", DEFAULT_CUE_FADE_MS)))
+		out["text_y"] = clampf(float(raw.get("text_y", DEFAULT_TEXT_Y)), 0.0, 1.0)
+		out["text_size"] = clampi(
+			int(raw.get("text_size", DEFAULT_TEXT_SIZE)), MIN_TEXT_SIZE, MAX_TEXT_SIZE
+		)
+		# Only stored when the author actually picked one, so an untouched cue keeps following the
+		# theme's subtitle colour instead of being pinned to whatever white happened to be current.
+		if raw.has("text_color"):
+			out["text_color"] = _to_tint(raw["text_color"])
 
 
 static func _fill_audio(out: Dictionary, raw: Dictionary) -> void:
@@ -237,6 +302,27 @@ static func _fill_audio(out: Dictionary, raw: Dictionary) -> void:
 	var default_duck: float = DEFAULT_NARRATION_DUCK_PCT if kind == AUDIO_NARRATION else 0.0
 	out["duck_pct"] = clampf(float(raw.get("duck_pct", default_duck)), 0.0, 1.0)
 	out["duck_fade_ms"] = maxi(0, int(raw.get("duck_fade_ms", DEFAULT_DUCK_FADE_MS)))
+	# An audio cue can be sliced like an attack: resizing its block on the timeline cuts the clip rather
+	# than merely changing how long the block looks, so what plays matches what is drawn.
+	_carry_trim(out, raw)
+
+
+# Ease-in / ease-out for an effect window or an audio cue, in ms. Zero (the default) is a hard cut,
+# which is what these did before authors could set them.
+static func _carry_fades(out: Dictionary, raw: Dictionary) -> void:
+	out["fade_in_ms"] = maxi(0, int(raw.get("fade_in_ms", 0)))
+	out["fade_out_ms"] = maxi(0, int(raw.get("fade_out_ms", 0)))
+
+
+# The {in_ms, out_ms} slice window an attack or audio cue plays, when it has one. Absent means "the
+# whole thing" — which is different from a zero-length window, so it must not be defaulted into being.
+static func _carry_trim(out: Dictionary, raw: Dictionary) -> void:
+	var trim: Dictionary = raw.get("trim", {})
+	if trim is Dictionary and not (trim as Dictionary).is_empty():
+		out["trim"] = {
+			"in_ms": maxi(0, int(trim.get("in_ms", 0))),
+			"out_ms": maxi(0, int(trim.get("out_ms", 0))),
+		}
 
 
 ## One raw phase → canonical, or {} when it carries no id/name to identify it by.
@@ -554,6 +640,19 @@ static func _to_tint(raw: Variant) -> Dictionary:
 static func offset_vector(cue: Dictionary) -> Vector2:
 	var o: Dictionary = cue.get("offset", {})
 	return Vector2(float(o.get("x", 0.0)), float(o.get("y", 0.0)))
+
+
+## The subtitle's authored colour, or `fallback` when the cue never set one.
+static func cue_text_color(cue: Dictionary, fallback: Color) -> Color:
+	if not cue.has("text_color"):
+		return fallback
+	var t: Dictionary = cue["text_color"]
+	return Color(
+		float(t.get("r", 1.0)),
+		float(t.get("g", 1.0)),
+		float(t.get("b", 1.0)),
+		float(t.get("a", 1.0))
+	)
 
 
 ## {r,g,b,a} → Color, for the framing layer. Returns `fallback` when the phase carries no tint.

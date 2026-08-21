@@ -26,21 +26,57 @@ const MAX_ANIMATED_CUES: int = 3
 # Fallback hold for a one-shot cue that gives no timings at all, so it cannot linger forever.
 const DEFAULT_HOLD_MS: int = 1200
 
-# How far a "slide" transition travels, as a fraction of the viewport width.
+# How much bigger a POP cue starts before settling. Overshoot is on the way IN only — it lands on 1.0
+# and stays, so nothing wobbles under the round.
+const POP_OVERSHOOT: float = 1.15
+
+# How far a "rise" drifts upward, as a fraction of the canvas height. Deliberately much shorter than a
+# slide: rise is the gentle option for dialogue, where a slide's travel reads as too much movement.
+const RISE_FRACTION: float = 0.035
+
+# How far a "slide" transition travels, as a fraction of the CANVAS width — cues are positioned in
+# canvas space, so measuring this against the window instead would make the same slide cover a
+# different share of the picture at every resolution.
 const SLIDE_FRACTION: float = 0.08
 
-# Subtitles sit this far above the bottom edge, clear of the HUD bar.
-const SUBTITLE_BOTTOM_MARGIN: int = 96
-const SUBTITLE_FONT_SIZE: int = 22
+# Cast art is placed against a fixed 1920x1080 REFERENCE CANVAS, letterboxed into whatever rect this
+# layer happens to occupy. This is what makes the encounter editor's preview trustworthy: the layer
+# fills the whole screen in a round but only a panel in the editor's stage, and a placement expressed
+# in the parent's own pixels therefore meant two different things in the two places — an author who
+# nudged a cue to the right edge of the preview found it somewhere else, and differently sized, in the
+# real round. Mapping both through one canvas makes the preview exact. The round's own parent is
+# already this size, so existing authored cues keep the position they were tuned to.
+const REFERENCE_CANVAS: Vector2 = Vector2(1920.0, 1080.0)
 
-# id → {root: Control, animated: bool, tween: Tween}. Insertion order doubles as the age order the
+# Height of the box a line is laid out in, in canvas pixels — it scales with the canvas because the type
+# inside it does. Only the box: a longer line simply overflows it rather than being clipped.
+const SUBTITLE_BAND_HEIGHT: int = 72
+
+# id → {root, image, subtitle: Control, animated: bool, tween: Tween}. Insertion order doubles as the
 # animated-cue cap retires from.
 var _cues: Dictionary = {}
 
+# The reference canvas as an actual node: letterboxed inside this layer, clipping whatever overhangs it.
+# Cues are parented here rather than to the layer so that art an author deliberately ran off the edge is
+# cut at the SCREEN edge in the preview too, instead of spilling into the editor's letterbox margin and
+# showing them a portrait the player will never see.
+var _canvas: Control = null
+
 
 func _ready() -> void:
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	# ...AND offsets: set_anchors_preset alone only moves the anchors, re-deriving the offsets so the
+	# control KEEPS its current rect — which for a freshly created node is 0x0, so it would never draw.
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	_canvas = Control.new()
+	_canvas.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_canvas.clip_contents = true
+	add_child(_canvas)
+	_fit_canvas()
+	# The editor's stage changes size as the modal lays out and as the inspector opens, so placements
+	# resolved against a stale rect have to be recomputed rather than baked in once.
+	resized.connect(_fit_canvas)
 
 
 ## Shows one cast cue. `image_path` is already resolved (a character's portrait or a loose file) and may
@@ -51,18 +87,25 @@ func show_cue(cue: Dictionary, image_path: String, one_shot: bool) -> void:
 	clear(id)
 
 	var root: Control = Control.new()
-	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.modulate.a = 0.0
-	add_child(root)
+	_canvas.add_child(root)
 
+	# Only a real animation counts toward the decoder cap, so a static portrait must not trip it just by
+	# having loaded.
+	var image: Control = null
 	var animated: bool = false
 	if image_path != "":
-		animated = _add_image(root, cue, image_path, one_shot)
+		image = _add_image(root, cue, image_path, one_shot)
+		animated = (
+			image != null and image_path.get_extension().to_lower() == JourneyImage.ANIMATED_EXT
+		)
+	var subtitle: Control = null
 	if str(cue.get("text", "")) != "":
-		_add_subtitle(root, cue)
+		subtitle = _add_subtitle(root, cue)
 
-	_cues[id] = {"root": root, "animated": animated}
+	_cues[id] = {"root": root, "animated": animated, "subtitle": subtitle, "image": image}
 	if animated:
 		_enforce_animated_cap(id)
 	_play_in(id, cue, one_shot)
@@ -101,10 +144,10 @@ func clear_all() -> void:
 # ── Building a cue ───────────────────────────────────────────────────────────
 
 
-# Adds the cue's art. Returns whether it turned out to be an ANIMATION, which is what the decoder cap
-# counts. A one-shot animation plays once and takes the whole cue down with it when it ends, so an
+# Adds the cue's art, returning the node so a later resize can re-place it — or null if the art would
+# not load. A one-shot animation plays once and takes the whole cue down with it when it ends, so an
 # attack hit clears itself even if the author gave no hold time.
-func _add_image(root: Control, cue: Dictionary, path: String, one_shot: bool) -> bool:
+func _add_image(root: Control, cue: Dictionary, path: String, one_shot: bool) -> Control:
 	var image: JourneyImage = JourneyImage.new()
 	image.loop = not one_shot
 	image.muted = true  # a cue's sound belongs on the audio track, where it can duck the round
@@ -114,32 +157,54 @@ func _add_image(root: Control, cue: Dictionary, path: String, one_shot: bool) ->
 		path, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	):
 		image.queue_free()
-		return false
+		return null
 
-	var animated: bool = path.get_extension().to_lower() == JourneyImage.ANIMATED_EXT
-	if animated:
+	if path.get_extension().to_lower() == JourneyImage.ANIMATED_EXT:
 		_apply_blend(image, str(cue.get("blend", RoundTimeline.BLEND_NORMAL)))
 		if one_shot:
 			var id: String = str(cue.get("id", ""))
 			image.animation_finished.connect(func() -> void: clear(id))
-	return animated
+	return image
 
 
-# Positions and scales the art from the cue's anchor + offset + scale. Anchors are expressed as
-# fractions of the viewport so a cue lands in the same relative spot at any resolution.
+# Positions and scales the art from the cue's anchor + offset + scale, all resolved on the reference
+# canvas and then mapped into this layer's actual rect. Anchors and offsets are therefore worth the
+# same thing at any size, which is the whole point — see REFERENCE_CANVAS.
 func _place(image: Control, cue: Dictionary) -> void:
+	# Fixed anchors: the rect is computed here, so letting the anchor system stretch it as well would
+	# apply the parent's proportions a second time and undo the mapping.
+	image.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	_apply_placement(image, cue)
+
+
+# Places one cue on the canvas. Pure canvas pixels — the canvas node carries the scale.
+func _apply_placement(image: Control, cue: Dictionary) -> void:
 	var frac: Vector2 = _anchor_fraction(str(cue.get("anchor_pos", RoundTimeline.ANCHOR_CENTER)))
 	var scale_factor: float = maxf(0.01, float(cue.get("scale", 1.0)))
-	image.set_anchors_preset(Control.PRESET_FULL_RECT)
-	image.anchor_left = frac.x - 0.5 * scale_factor
-	image.anchor_right = frac.x + 0.5 * scale_factor
-	image.anchor_top = frac.y - 0.5 * scale_factor
-	image.anchor_bottom = frac.y + 0.5 * scale_factor
-	var offset: Vector2 = RoundTimeline.offset_vector(cue)
-	image.offset_left = offset.x
-	image.offset_right = offset.x
-	image.offset_top = offset.y
-	image.offset_bottom = offset.y
+	var box: Vector2 = REFERENCE_CANVAS * scale_factor
+
+	# Deliberately NOT clamped to the canvas. Running a cue off the edge is a composition tool, not a
+	# mistake — pushing a full-body portrait down past the bottom to crop the legs, or off to one side so
+	# only a shoulder shows, is exactly how an author frames one. The preview resolves through this same
+	# canvas, so whatever they see hanging off the edge is what the round will show.
+	var centre: Vector2 = frac * REFERENCE_CANVAS + RoundTimeline.offset_vector(cue)
+
+	image.size = box
+	image.position = centre - box * 0.5
+
+
+# Letterboxes the canvas inside the layer, preserving its aspect, and re-places what is showing. A layer
+# that has not been laid out yet reports zero, so the canvas sits at 1:1 until a real `resized` arrives.
+func _fit_canvas() -> void:
+	_canvas.size = REFERENCE_CANVAS
+	var fit: float = 1.0
+	if size.x > 0.0 and size.y > 0.0:
+		fit = minf(size.x / REFERENCE_CANVAS.x, size.y / REFERENCE_CANVAS.y)
+	# Scaling the CANVAS rather than each cue is what makes the preview honest about type as well as
+	# art: a 22 px subtitle shrinks with everything else instead of rendering at full size on a
+	# quarter-size stage, which would have made the editor's text look far larger than the round's.
+	_canvas.scale = Vector2(fit, fit)
+	_canvas.position = (size - REFERENCE_CANVAS * fit) * 0.5
 
 
 static func _anchor_fraction(anchor: String) -> Vector2:
@@ -173,7 +238,7 @@ func _apply_blend(image: JourneyImage, blend: String) -> void:
 			(child as CanvasItem).use_parent_material = true
 
 
-func _add_subtitle(root: Control, cue: Dictionary) -> void:
+func _add_subtitle(root: Control, cue: Dictionary) -> Control:
 	var label: Label = Label.new()
 	label.text = str(cue["text"])
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -183,16 +248,32 @@ func _add_subtitle(root: Control, cue: Dictionary) -> void:
 	# Anchored across the bottom, above the HUD bar — a subtitle, not a speech bubble (§5).
 	label.anchor_left = 0.15
 	label.anchor_right = 0.85
-	label.anchor_top = 1.0
-	label.anchor_bottom = 1.0
-	label.offset_top = -SUBTITLE_BOTTOM_MARGIN
-	label.offset_bottom = -SUBTITLE_BOTTOM_MARGIN * 0.35
-	UITheme.style_label(label, UITheme.WHITE_SOFT, SUBTITLE_FONT_SIZE, false)
+	_place_subtitle(label, float(cue.get("text_y", RoundTimeline.DEFAULT_TEXT_Y)))
+	UITheme.style_label(
+		label,
+		RoundTimeline.cue_text_color(cue, UITheme.WHITE_SOFT),
+		int(cue.get("text_size", RoundTimeline.DEFAULT_TEXT_SIZE)),
+		false
+	)
 	# An outline instead of a panel: video is unpredictable behind text, and a box would fight the
 	# art the cue is there to show.
 	label.add_theme_color_override("font_outline_color", UITheme.BG)
 	label.add_theme_constant_override("outline_size", 6)
 	root.add_child(label)
+	return label
+
+
+# Pins the line's vertical middle at `y`, a 0..1 fraction of the canvas — 0 the top edge, 1 the bottom.
+# Fractional anchors resolve against whatever the canvas is sized to, so this needs no scale
+# compensation and no re-placing when the layer resizes. The screen-space clearances this replaces
+# existed only to hold a line a fixed distance off the bottom edge, clear of the HUD bar; with a free
+# position that is the author's call, and the editor previews the bar so the call can be made on sight.
+func _place_subtitle(label: Control, y: float) -> void:
+	var band: float = float(SUBTITLE_BAND_HEIGHT)
+	label.anchor_top = clampf(y, 0.0, 1.0)
+	label.anchor_bottom = label.anchor_top
+	label.offset_top = -band * 0.5
+	label.offset_bottom = band * 0.5
 
 
 # ── Timing ───────────────────────────────────────────────────────────────────
@@ -205,45 +286,107 @@ func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 		return
 	var entry: Dictionary = _cues[id]
 	var root: Control = entry["root"]
+	var image: Control = _live(entry, "image")
+	var subtitle: Control = _live(entry, "subtitle")
 	var transition: String = str(cue.get("transition", RoundTimeline.TRANSITION_FADE))
-	var in_ms: int = 0 if transition == RoundTimeline.TRANSITION_FLASH else int(cue.get("in_ms", 0))
+	var flash: bool = transition == RoundTimeline.TRANSITION_FLASH
+	var in_ms: int = 0 if flash else int(cue.get("in_ms", 0))
 	# Remembered for clear(), which has only the id to go on by then.
 	entry["out_ms"] = int(cue.get("out_ms", 0))
+
+	# The cue fades as ONE — art and line together. A line that wants its own schedule is simply its own
+	# text-only cue, which already carries a full set of fades; giving every cue a second parallel set of
+	# subtitle timings bought that same result for a good deal more UI.
+	if in_ms <= 0:
+		root.modulate.a = 1.0
+
+	# Motion belongs to the art; a subtitle sliding across the screen with its portrait reads as the
+	# caption coming loose. Only a cue with no art at all moves its line instead — and then it is the
+	var mover: Control = image if image != null else subtitle
+	var travel: Vector2 = _entry_travel(transition)
+	var popping: bool = transition == RoundTimeline.TRANSITION_POP and mover != null
+	var sliding: bool = travel != Vector2.ZERO and mover != null
+	# A one-shot ANIMATION ends itself when its clip finishes (see _add_image), so only a still or a
+	# subtitle-only line needs a timed exit.
+	var timed_exit: bool = one_shot and not bool(entry.get("animated", false))
+	# A flash with no movement and no timed exit has nothing to animate, and a Tween created with no
+	# Tweeners errors on its first step — so the tween is built lazily, only once something needs it.
+	if in_ms <= 0 and not sliding and not popping and not timed_exit:
+		return
 
 	var tween: Tween = create_tween()
 	entry["tween"] = tween
 	tween.set_parallel(true)
-	if in_ms <= 0:
-		root.modulate.a = 1.0
-	else:
+	if in_ms > 0:
 		tween.tween_property(root, "modulate:a", 1.0, in_ms / 1000.0)
-	if transition == RoundTimeline.TRANSITION_SLIDE:
-		var travel: float = get_viewport_rect().size.x * SLIDE_FRACTION
-		root.position.x = -travel
+	if sliding:
+		var placed: Vector2 = mover.position
+		mover.position = placed + travel
 		(
 			tween
-			. tween_property(root, "position:x", 0.0, maxf(0.12, in_ms / 1000.0))
+			. tween_property(mover, "position", placed, maxf(0.12, in_ms / 1000.0))
 			. set_ease(Tween.EASE_OUT)
 			. set_trans(Tween.TRANS_CUBIC)
 		)
-
-	if not one_shot:
+	if popping:
+		# Scaled about the art's OWN centre, not the cue root's: the root spans the whole canvas, so
+		# scaling that would swing an edge-anchored portrait in from the middle of the screen instead of
+		# letting it punch up where it was placed.
+		_centre_pivot(mover)
+		mover.scale = Vector2(POP_OVERSHOOT, POP_OVERSHOOT)
+		(
+			tween
+			. tween_property(mover, "scale", Vector2.ONE, maxf(0.14, in_ms / 1000.0))
+			. set_ease(Tween.EASE_OUT)
+			. set_trans(Tween.TRANS_BACK)
+		)
+	if not timed_exit:
 		return  # a window owns its lifetime; clear() ends it
-	# A one-shot ANIMATION ends itself when the clip finishes (see _add_image), so only give it a
-	# timed exit when it cannot: a still, or a subtitle-only line.
-	if bool(entry.get("animated", false)):
-		return
 	var hold_ms: int = _hold_for(cue)
 	tween.set_parallel(false)
 	tween.tween_interval(maxf(0.0, (in_ms + hold_ms) / 1000.0))
 	tween.tween_callback(func() -> void: clear(id))
 
 
+# Where a cue starts, relative to where it belongs, for the entrances that travel. Zero for the ones
+# that do not, which is also how _play_in decides whether there is any movement to tween.
+static func _entry_travel(transition: String) -> Vector2:
+	var slide_x: float = REFERENCE_CANVAS.x * SLIDE_FRACTION
+	var slide_y: float = REFERENCE_CANVAS.y * SLIDE_FRACTION
+	match transition:
+		RoundTimeline.TRANSITION_SLIDE_LEFT:
+			return Vector2(-slide_x, 0.0)
+		RoundTimeline.TRANSITION_SLIDE_RIGHT:
+			return Vector2(slide_x, 0.0)
+		RoundTimeline.TRANSITION_SLIDE_TOP:
+			return Vector2(0.0, -slide_y)
+		RoundTimeline.TRANSITION_SLIDE_BOTTOM:
+			return Vector2(0.0, slide_y)
+		RoundTimeline.TRANSITION_RISE:
+			return Vector2(0.0, REFERENCE_CANVAS.y * RISE_FRACTION)
+	return Vector2.ZERO
+
+
+# One of a cue's parts, or null if it has none of that kind (or it has already been freed).
+static func _live(entry: Dictionary, key: String) -> Control:
+	var node: Variant = entry.get(key)
+	return node if node is Control and is_instance_valid(node) else null
+
+
+# Puts a node's scaling origin at its own middle. A subtitle is sized by anchors, so on the frame it is
+# created its size is still zero and the pivot would land in the corner — it is corrected once the
+# layout has actually run, which is well inside a pop's duration.
+static func _centre_pivot(node: Control) -> void:
+	node.pivot_offset = node.size * 0.5
+	if node.size == Vector2.ZERO:
+		node.resized.connect(func() -> void: node.pivot_offset = node.size * 0.5, CONNECT_ONE_SHOT)
+
+
 # How long a one-shot stays up. A subtitle sets the pace when there is one — a line the player cannot
-# finish reading is worse than art lingering a beat too long.
+# finish reading is worse than art lingering a moment too long.
 static func _hold_for(cue: Dictionary) -> int:
 	if str(cue.get("text", "")) != "":
-		return int(cue.get("text_hold_ms", DEFAULT_HOLD_MS))
+		return RoundTimeline.DEFAULT_TEXT_HOLD_MS
 	var duration: int = int(cue.get("duration_ms", 0))
 	return duration if duration > 0 else DEFAULT_HOLD_MS
 

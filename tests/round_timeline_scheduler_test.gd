@@ -222,7 +222,7 @@ func test_defeat_events_are_held_back_from_the_normal_pass() -> void:
 		{"id": "defeat", "track": "audio", "at_ms": 0, "on": "defeat", "clip": "/lose.ogg"},
 	]
 	var s: RoundTimelineScheduler = _sched(events, 60000)
-	# Playing all the way through never fires the defeat beat...
+	# Playing all the way through never fires the defeat event...
 	assert_array(s.tick(0)["fire"]).is_empty()
 	s.seek(54000)  # skip ahead to the outro the announced way
 	assert_array(_ids(s.tick(55000)["fire"])).is_equal(["victory"])

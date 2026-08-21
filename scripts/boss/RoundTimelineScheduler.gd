@@ -6,12 +6,16 @@ extends RefCounted
 ## seeks, loop replays, phases) are the fiddly part, and keeping them free of engine calls means they
 ## are unit-tested headlessly instead of debugged in a live boss round.
 ##
-## Two kinds of event, two rules:
-##   • ONE-SHOT (duration_ms == 0) — fires once, on a forward crossing of its time. A fired-set keeps
-##     it from re-firing while the round plays on.
-##   • WINDOWED (duration_ms > 0) — active exactly while `at <= pos < at + duration`, RECONCILED every
-##     tick rather than toggled by events. Reconciliation is idempotent, which is what makes pause,
-##     seek and replay fall out for free instead of each needing their own special case.
+## Two kinds of event, two rules — and which one an event is depends on its TRACK, not on whether it
+## happens to have a duration:
+##   • ONE-SHOT — fires once, on a forward crossing of its time. A fired-set keeps it from re-firing
+##     while the round plays on. Attacks and audio cues are always one-shots: their duration describes
+##     how long the MEDIA runs (and which slice of it plays), not a window to be held open. An attack
+##     whose length made it "windowed" would never fire at all.
+##   • WINDOWED — active exactly while `at <= pos < at + duration`, RECONCILED every tick rather than
+##     toggled by events. Reconciliation is idempotent, which is what makes pause, seek and replay fall
+##     out for free instead of each needing their own special case. Effects are always windows; a cast
+##     cue is one only when given a duration, otherwise it is a flash.
 ##
 ## Positions come from the round's video, so PAUSE needs no handling at all: the position stops moving
 ## and every rule above is a no-op. Seeks and loop replays do need handling — see seek() and reset().
@@ -75,7 +79,7 @@ func tick(pos_ms: int) -> Dictionary:
 
 	var out: Dictionary = _blank()
 	for e: Dictionary in _events:
-		if int(e.get("duration_ms", 0)) > 0:
+		if _is_windowed(e):
 			continue
 		var at: int = int(e["resolved_at_ms"])
 		# Half-open on the left so an event exactly at the previous position never fires twice, and
@@ -96,7 +100,7 @@ func seek(pos_ms: int) -> Dictionary:
 	_pos_ms = pos_ms
 	var out: Dictionary = _blank()
 	for e: Dictionary in _events:
-		if int(e.get("duration_ms", 0)) > 0:
+		if _is_windowed(e):
 			continue
 		var id: String = str(e["id"])
 		if int(e["resolved_at_ms"]) <= pos_ms:
@@ -135,7 +139,7 @@ func finish() -> Dictionary:
 # ── Queries ──────────────────────────────────────────────────────────────────
 
 
-## The authored `on: "defeat"` events, in order — one authored beat for the bail-out path, in place of
+## The authored `on: "defeat"` events, in order — one authored event for the bail-out path, in place of
 ## the victory outro.
 func defeat_events() -> Array:
 	return _defeat.duplicate()
@@ -172,9 +176,9 @@ func is_idle() -> bool:
 # backwards into the middle of a window, or a replay.
 func _reconcile_windows(pos_ms: int, out: Dictionary) -> void:
 	for e: Dictionary in _events:
-		var duration: int = int(e.get("duration_ms", 0))
-		if duration <= 0:
+		if not _is_windowed(e):
 			continue
+		var duration: int = int(e.get("duration_ms", 0))
 		var id: String = str(e["id"])
 		var at: int = int(e["resolved_at_ms"])
 		var should_be_on: bool = at <= pos_ms and pos_ms < at + duration
@@ -201,6 +205,17 @@ func _update_phase(pos_ms: int, out: Dictionary) -> void:
 		_phase_id = found_id
 		out["phase_changed"] = true
 		out["phase"] = found
+
+
+# Whether an event is held OPEN for a stretch (reconciled) or fires at an instant. Keyed off the track
+# so a media event's own length can never be mistaken for a window — see the class comment.
+static func _is_windowed(event: Dictionary) -> bool:
+	match str(event.get("track", "")):
+		RoundTimeline.TRACK_EFFECT:
+			return true
+		RoundTimeline.TRACK_CAST:
+			return int(event.get("duration_ms", 0)) > 0
+	return false  # attacks and audio always fire
 
 
 static func _blank() -> Dictionary:

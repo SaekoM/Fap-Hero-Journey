@@ -43,6 +43,7 @@ const CAUSE_SRC_UNREADABLE: String = "src_unreadable"
 const CAUSE_DST_UNWRITABLE: String = "dst_unwritable"
 const CAUSE_TRANSCODE_FAILED: String = "transcode_failed"
 const CAUSE_TRIM_INVALID: String = "trim_invalid"
+const CAUSE_ENCOUNTER_INVALID: String = "encounter_invalid"
 const CAUSE_UNKNOWN_COPY_ERROR: String = "unknown_copy_error"
 # Graph-editor structural causes (L4 validation).
 const CAUSE_NO_START: String = "no_start"
@@ -2155,6 +2156,12 @@ func _input(event: InputEvent) -> void:
 	# Only fresh key-down events; ignore key-up and auto-repeat (echo). The echo guard also stops a
 	# held Delete from chain-deleting nodes.
 	if not k.pressed or k.echo:
+		return
+	# A modal owns the keyboard while it is up. _input runs BEFORE the modal's own
+	# _unhandled_key_input, so without this the canvas would act on Ctrl+C / Delete / Ctrl+Z aimed at
+	# the encounter editor — copying graph nodes while the author thought they were copying events.
+	# Same shield the OS-file-drop handler uses.
+	if _modal_shield_open():
 		return
 
 	if k.ctrl_pressed:
@@ -4376,6 +4383,7 @@ func _collect_rendition_presave_issues() -> Array:
 		match str(n.get("type", "")):
 			"round":
 				_save_check_round(data, "Round %d" % ordinal, issues)
+				_save_check_encounter(data, "Round %d" % ordinal, issues)
 			"storyboard":
 				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
@@ -6430,6 +6438,39 @@ func _graph_issue_label(node_id: String) -> String:
 		"loop_end":
 			return "A Loop End"
 	return "A node"
+
+
+# Boss ENCOUNTER validation, run through the timeline's own validate() — the same call that drives the
+# encounter editor's warnings, so what the editor flags is exactly what blocks the save rather than two
+# rules drifting apart.
+#
+# The round's LENGTH is passed when known. An unsaved round has none, and validate() then skips the
+# checks that need it (overlapping attacks, events past the end) while still catching the content
+# problems — an attack with no funscript, an empty cue, an effect window applying nothing. Guessing a
+# length would produce confident, wrong complaints.
+func _save_check_encounter(data: Dictionary, ctx: String, issues: Array) -> void:
+	# Only a BOSS round plays its encounter (GameLoop._load_round_timeline), so a timeline left behind on
+	# a round switched back to normal/effect is dormant data — it must not block the save.
+	if str(data.get("round_type", "normal")) != "boss":
+		return
+	var raw: Variant = data.get("timeline", {})
+	if not (raw is Dictionary) or (raw as Dictionary).is_empty():
+		return
+	for issue: Dictionary in RoundTimeline.validate(
+		raw as Dictionary, int(data.get("length_ms", 0))
+	):
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_ENCOUNTER_INVALID,
+					"item": "%s — encounter" % ctx,
+					"detail": str(issue.get("message", "")),
+					"hint":
+					"Open the round's BUILD ENCOUNTER editor; the block is highlighted there.",
+				}
+			)
+		)
 
 
 # Graph fork authoring checks (3c-ii): a fork's choices are its out-edges. Mirrors the tree's
