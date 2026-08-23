@@ -122,7 +122,14 @@ func tick(pos_ms: int, state: Dictionary = {}) -> Dictionary:
 # Whether this event happens at all: its segment must have picked its branch, and its own condition must
 # hold. Both are decided HERE, the first moment the event matters, and then remembered.
 func _plays(event: Dictionary, state: Dictionary) -> bool:
-	return _branch_allows(event, state) and _gate_allows(event, state)
+	if not _branch_allows(event, state):
+		return false
+	# A REGION carries its rule for the ROUND to act on, not for this to filter by. Every other event is
+	# simply left out when its condition fails; a region whose rule fails still has to be REPORTED,
+	# because the response is to jump the playhead over it rather than to quietly not fire it.
+	if str(event.get("track", "")) == RoundTimeline.TRACK_REGION:
+		return true
+	return _gate_allows(event, state)
 
 
 # Commits the event's segment to a branch if it has not already, then reports whether this event is on
@@ -283,7 +290,7 @@ func _update_phase(state: Dictionary, out: Dictionary) -> void:
 # so a media event's own length can never be mistaken for a window — see the class comment.
 static func _is_windowed(event: Dictionary) -> bool:
 	match str(event.get("track", "")):
-		RoundTimeline.TRACK_EFFECT, RoundTimeline.TRACK_STANCE:
+		RoundTimeline.TRACK_EFFECT, RoundTimeline.TRACK_STANCE, RoundTimeline.TRACK_REGION:
 			return true
 		RoundTimeline.TRACK_CAST:
 			return int(event.get("duration_ms", 0)) > 0

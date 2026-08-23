@@ -1,7 +1,8 @@
 class_name BossTimeline
 extends Control
 ## The boss encounter's authoring surface: the round's clock drawn as LANES of event blocks — attacks,
-## effects, cast cues and audio — with a phase band above them (BOSS_ROUND_DESIGN §6). Blocks are
+## effects, cast cues and audio (BOSS_ROUND_DESIGN §6). Phases are NOT here: they begin at a health
+## point rather than a time, so they live with the health bar's other settings. Blocks are
 ## dragged to move, their right edge dragged to resize, and clicked to select; CTRL+wheel zooms around
 ## the cursor and middle-drag pans, exactly like the override editor's timeline.
 ##
@@ -29,14 +30,11 @@ signal event_head_dragged(id: String, at_ms: int)
 signal playhead_scrubbed(ms: int)
 signal view_changed(start_ms: int, span_ms: int)
 ## Something was dragged out of the Boss Kit and dropped on the track. `kind` is what the kit item was
-## ("track" / "phase") and `value` names it; `at_ms` is where it landed on the round's clock.
+## ("track") and `value` names it; `at_ms` is where it landed on the round's clock.
 signal kit_dropped(kind: String, value: String, at_ms: int)
 ## The track was right-clicked at `at_ms`. The widget offers no menu of its own — it reports WHERE, and
 ## the editor decides what can be done there.
 signal context_menu_requested(at_ms: int, at_global: Vector2)
-
-## A phase marker was dragged along the health strip. `hp_at` is the health it now takes over at, 0..1.
-signal phase_moved(id: String, hp_at: float)
 
 const PAD: float = 8.0
 const MIN_VIEW_MS: int = 500
@@ -65,10 +63,6 @@ const REFERENCE_H: float = 96.0
 
 const LANE_H: float = 30.0
 const LANE_GAP: float = 4.0
-const PHASE_BAND_H: float = 16.0
-# The health strip's own ground, matching the HUD bar's backing so it reads as the bar laid flat rather
-# than as one more lane of the time track it sits above.
-const STRIP_BACKING: Color = Color(0.10, 0.0, 0.02, 1.0)
 const RULER_H: float = 14.0
 const LABEL_W: float = 58.0  # gutter holding each lane's name
 
@@ -95,6 +89,7 @@ const DORMANT_TEXT_ALPHA: float = 0.45
 
 # Lane order, top to bottom. Attacks lead because they are the encounter's spine.
 const LANES: Array[String] = [
+	RoundTimeline.TRACK_REGION,
 	RoundTimeline.TRACK_ATTACK,
 	RoundTimeline.TRACK_STANCE,
 	RoundTimeline.TRACK_EFFECT,
@@ -109,7 +104,6 @@ var _overlays: Array = []
 # Ids that failed validation — drawn with a ⚠ so the problem is on the block, not in a footnote.
 var _issues: Dictionary = {}
 var _events: Array = []  # normalized events, in the editor's own order
-var _phases: Array = []
 var _full_ms: int = 1
 var _selected_id: String = ""
 var _dormant_tags: Array = []
@@ -148,7 +142,6 @@ func _init() -> void:
 ## length — the clock everything is placed against, and what END-anchored events resolve through.
 func setup(timeline: Dictionary, full_ms: int) -> void:
 	_events = (timeline.get("events", []) as Array).duplicate(true)
-	_phases = (timeline.get("phases", []) as Array).duplicate(true)
 	_segments = (timeline.get("segments", []) as Array).duplicate(true)
 	_full_ms = maxi(1, full_ms)
 	_rebuild_layout()
@@ -183,9 +176,8 @@ func set_dormant_tags(tags: Array) -> void:
 	queue_redraw()
 
 
-func set_events(events: Array, phases: Array, segments: Array = []) -> void:
+func set_events(events: Array, segments: Array = []) -> void:
 	_events = events.duplicate(true)
-	_phases = phases.duplicate(true)
 	_segments = segments.duplicate(true)
 	_rebuild_layout()
 	queue_redraw()
@@ -218,14 +210,7 @@ func set_view_start(start_ms: int) -> void:
 
 
 func _preferred_height() -> float:
-	return (
-		REFERENCE_H
-		+ PHASE_BAND_H
-		+ LANES.size() * (LANE_H + LANE_GAP)
-		+ _strips_h
-		+ RULER_H
-		+ 2.0 * PAD
-	)
+	return REFERENCE_H + LANES.size() * (LANE_H + LANE_GAP) + _strips_h + RULER_H + 2.0 * PAD
 
 
 # The gutter has to hold a condition once segments exist; before that the narrow lane names are plenty.
@@ -235,7 +220,7 @@ func _gutter_w() -> float:
 
 # Where the backbone lanes end and the segment strips begin.
 func _strips_top() -> float:
-	return PAD + REFERENCE_H + PHASE_BAND_H + LANES.size() * (LANE_H + LANE_GAP)
+	return PAD + REFERENCE_H + LANES.size() * (LANE_H + LANE_GAP)
 
 
 # Recomputes every segment's header and branch-row positions, and the span each strip brackets. Derived
@@ -331,22 +316,6 @@ func _ms_to_x(ms: int) -> float:
 	return _track_x0() + (float(ms - _view_start) / float(_view_span)) * _span_px()
 
 
-# The health strip spans the whole track width regardless of zoom: 1.0 at the left, 0.0 at the right,
-# the same direction the bar drains.
-func _hp_to_x(hp_at: float) -> float:
-	return _track_x0() + (1.0 - clampf(hp_at, 0.0, 1.0)) * _span_px()
-
-
-func _x_to_hp(x: float) -> float:
-	return clampf(1.0 - (x - _track_x0()) / _span_px(), 0.0, 1.0)
-
-
-# Phases in play order with their health points resolved. Not cached: the list is a handful of entries
-# and it has to follow an edit immediately, which is the whole reason the widget redraws.
-func _resolved_phases() -> Array:
-	return RoundTimeline.resolved_phases({"phases": _phases}, _full_ms)
-
-
 func _x_to_ms(x: float) -> int:
 	return clampi(
 		_view_start + roundi((x - _track_x0()) / _span_px() * float(_view_span)), 0, _full_ms
@@ -375,7 +344,7 @@ func _lane_y(track: String) -> float:
 	var index: int = LANES.find(track)
 	if index < 0:
 		index = 0
-	return PAD + REFERENCE_H + PHASE_BAND_H + index * (LANE_H + LANE_GAP)
+	return PAD + REFERENCE_H + index * (LANE_H + LANE_GAP)
 
 
 # The on-screen rect of one event block.
@@ -446,17 +415,6 @@ func _gui_input(event: InputEvent) -> void:
 # Decides what a press means: grabbing a block's right edge resizes it, its body moves it, and empty
 # track scrubs the playhead.
 func _begin_drag(pos: Vector2) -> void:
-	# The health strip sits above the lanes and owns its own drags, so a marker can be slid along it
-	# without fighting the events underneath.
-	if pos.y >= PAD + REFERENCE_H and pos.y < PAD + REFERENCE_H + PHASE_BAND_H:
-		var phase: Dictionary = _phase_at_point(pos)
-		if not phase.is_empty():
-			var phase_id: String = str(phase["id"])
-			set_selected(phase_id)
-			event_selected.emit(phase_id)
-			_drag = "phase"
-			_drag_id = phase_id
-			return
 	var hit: Dictionary = _event_at_point(pos)
 	if hit.is_empty():
 		# Empty track scrubs and nothing else — dropping the selection here would cost it every time the
@@ -510,10 +468,6 @@ func _apply_drag(pos: Vector2) -> void:
 			if not event.is_empty():
 				var duration: int = _x_to_ms(pos.x) - _event_at_ms(event)
 				event_resized.emit(_drag_id, maxi(MIN_DURATION_MS, duration))
-		"phase":
-			var phase: Dictionary = _find_phase(_drag_id)
-			if not phase.is_empty():
-				phase_moved.emit(_drag_id, _x_to_hp(pos.x))
 		"resize_left":
 			var event: Dictionary = _find(_drag_id)
 			if not event.is_empty():
@@ -552,23 +506,6 @@ func _event_at_point(pos: Vector2) -> Dictionary:
 	return found
 
 
-# The phase whose stretch of the strip contains `pos` — the last one starting at or before it, so the
-# click lands on the stretch the author sees rather than only on its 1px start line.
-func _phase_at_point(pos: Vector2) -> Dictionary:
-	var found: Dictionary = {}
-	for phase: Dictionary in _resolved_phases():
-		if _hp_to_x(float(phase["resolved_hp_at"])) <= pos.x:
-			found = _find_phase(str(phase["id"]))
-	return found
-
-
-func _find_phase(id: String) -> Dictionary:
-	for phase: Dictionary in _phases:
-		if str(phase.get("id", "")) == id:
-			return phase
-	return {}
-
-
 func _find(id: String) -> Dictionary:
 	for event: Dictionary in _events:
 		if str(event.get("id", "")) == id:
@@ -585,7 +522,6 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), UITheme.CARD_BG_DIM)
 	_draw_grid()
 	_draw_reference()
-	_draw_phase_band()
 	_draw_lanes()
 	_draw_strips()
 	for event: Dictionary in _events:
@@ -594,50 +530,6 @@ func _draw() -> void:
 	_draw_win_point()
 	_draw_playhead()
 	_draw_ruler()
-
-
-# The health bar laid flat: full health at the left, empty at the right, cut into the stages the author
-# wrote. It is NOT the clock — it does not zoom or scroll with the tracks below it, because health is a
-# different axis, and drawing phases on the time track was what made the bar and the banners disagree.
-# Its own dark backing says so at a glance.
-func _draw_phase_band() -> void:
-	var y: float = PAD + REFERENCE_H
-	draw_rect(Rect2(_track_x0(), y, _span_px(), PHASE_BAND_H), STRIP_BACKING)
-	draw_string(
-		ThemeDB.fallback_font,
-		Vector2(PAD, y + PHASE_BAND_H - 4.0),
-		"HEALTH",
-		HORIZONTAL_ALIGNMENT_LEFT,
-		LABEL_W - 4.0,
-		10,
-		UITheme.DARK_TEXT
-	)
-	var phases: Array = _resolved_phases()
-	for i: int in phases.size():
-		var phase: Dictionary = phases[i]
-		var x0: float = _hp_to_x(float(phase["resolved_hp_at"]))
-		# Each stage runs until the next one takes over; the last runs to an empty bar.
-		var x1: float = _track_x0() + _span_px()
-		if i + 1 < phases.size():
-			x1 = _hp_to_x(float((phases[i + 1] as Dictionary)["resolved_hp_at"]))
-		var tint: Color = RoundTimeline.phase_tint(phase, UITheme.PURPLE_MID)
-		if str(phase.get("id", "")) == _selected_id:
-			tint = UITheme.PURPLE_BRIGHT
-		draw_rect(
-			Rect2(x0, y, maxf(2.0, x1 - x0), PHASE_BAND_H), Color(tint.r, tint.g, tint.b, 0.22)
-		)
-		draw_line(Vector2(x0, y), Vector2(x0, y + PHASE_BAND_H), tint, 2.0)
-		var label: String = str(phase.get("name", ""))
-		if label != "":
-			draw_string(
-				ThemeDB.fallback_font,
-				Vector2(x0 + 4.0, y + PHASE_BAND_H - 4.0),
-				label,
-				HORIZONTAL_ALIGNMENT_LEFT,
-				maxf(0.0, x1 - x0 - 8.0),
-				10,
-				tint
-			)
 
 
 # Vertical time gridlines with stamps along the bottom, so an event can be placed to a readable time
@@ -927,6 +819,8 @@ static func track_color(track: String) -> Color:
 	match track:
 		RoundTimeline.TRACK_ATTACK:
 			return UITheme.DANGER
+		RoundTimeline.TRACK_REGION:
+			return UITheme.WHITE_SOFT
 		RoundTimeline.TRACK_STANCE:
 			return UITheme.TOXIC_GREEN
 		RoundTimeline.TRACK_EFFECT:

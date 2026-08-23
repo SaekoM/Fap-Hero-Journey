@@ -24,7 +24,14 @@ const TRACK_EFFECT: String = "effect"  # an effect bundle applied over a window
 const TRACK_CAST: String = "cast"  # a timed image / portrait / subtitle pop-up
 const TRACK_AUDIO: String = "audio"  # a one-shot sfx or narration cue
 const TRACK_STANCE: String = "stance"  # how the boss takes damage over a window
-const TRACKS: Array[String] = [TRACK_ATTACK, TRACK_EFFECT, TRACK_STANCE, TRACK_CAST, TRACK_AUDIO]
+# A stretch of the CLIP that only plays when its rule holds. Unlike every other track it does not add
+# anything to the round — it takes something away, by jumping the playhead over itself when the rule
+# fails. That makes a scene conditional: no climax until the boss is beaten, no foreplay after the first
+# attempt.
+const TRACK_REGION: String = "region"
+const TRACKS: Array[String] = [
+	TRACK_ATTACK, TRACK_EFFECT, TRACK_STANCE, TRACK_REGION, TRACK_CAST, TRACK_AUDIO
+]
 
 # ── Stances ──────────────────────────────────────────────────────────────────
 #
@@ -354,6 +361,7 @@ const ISSUE_SEGMENT_THIN: String = "segment_thin"
 const ISSUE_SEGMENT_DEAD_TAG: String = "segment_dead_tag"
 const ISSUE_SEGMENT_TAG_CLASH: String = "segment_tag_clash"
 const ISSUE_STANCE_OVERLAP: String = "stance_overlap"
+const ISSUE_REGION_NO_RULE: String = "region_no_rule"
 
 # ── Construction / normalization ─────────────────────────────────────────────
 
@@ -441,6 +449,10 @@ static func normalize(raw: Dictionary) -> Dictionary:
 			"volume": clampf(float(bgm.get("volume", 1.0)), 0.0, 1.0),
 		}
 	out["hp_bar"] = bool(raw.get("hp_bar", true))
+	# Her colour. Absent means "the default red" — different from a stored red, because a theme change
+	# should still move an encounter that never chose.
+	if raw.has("bar_color") and raw["bar_color"] != null:
+		out["bar_color"] = _to_tint(raw["bar_color"])
 	out["hp_bar_y"] = clampf(float(raw.get("hp_bar_y", DEFAULT_HP_BAR_Y)), 0.0, 1.0)
 	# Whether the health bar is SPLIT into one stage per phase — a wordless "there is another stage to
 	# this". The key keeps its original name so existing journeys still read; what changed is the drawing
@@ -537,6 +549,8 @@ static func normalize_event(raw: Dictionary) -> Dictionary:
 			_carry_fades(out, raw)
 		TRACK_STANCE:
 			out["stance"] = event_stance(raw)
+		TRACK_REGION:
+			pass  # a region needs only its span and its condition, and every event already carries both
 		TRACK_CAST:
 			_fill_cast(out, raw)
 		TRACK_AUDIO:
@@ -779,6 +793,22 @@ static func outcome_flags(timeline: Dictionary) -> Array:
 	return out
 
 
+## The encounter's own bar colour, or `fallback` when it never picked one.
+##
+## This is the BASE of three layers, not the whole story: a stance overrides it while one is in force,
+## and a phase tint overrides it for that stage. It is what the bar returns to when neither applies.
+static func bar_color(timeline: Dictionary, fallback: Color) -> Color:
+	if not timeline.has("bar_color"):
+		return fallback
+	var t: Dictionary = timeline["bar_color"]
+	return Color(
+		float(t.get("r", 1.0)),
+		float(t.get("g", 1.0)),
+		float(t.get("b", 1.0)),
+		float(t.get("a", 1.0))
+	)
+
+
 ## The health point a phase takes over at, 0..1. An authored phase carries it directly; one written
 ## before phases followed health is converted from where it sits on the clock, which loses nothing: a
 ## bar driven by time is exactly the round's progress read backwards.
@@ -832,6 +862,21 @@ static func validate(timeline: Dictionary, video_duration_ms: int = 0) -> Array:
 					issues.append(
 						_issue(
 							ISSUE_ATTACK_NO_SCRIPT, id, "This attack has no main funscript to play."
+						)
+					)
+			TRACK_REGION:
+				# Without a rule a region always plays, which is what the clip does anyway. Worth saying:
+				# an author who meant to gate a scene and left the rule blank has authored nothing, and
+				# nothing about the block on the lane admits it.
+				if condition_clauses(e.get("condition", {})).is_empty():
+					issues.append(
+						_issue(
+							ISSUE_REGION_NO_RULE,
+							id,
+							(
+								"This region has no rule, so it always plays — the same as not "
+								+ "marking it at all."
+							)
 						)
 					)
 			TRACK_CAST:

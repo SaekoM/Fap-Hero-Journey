@@ -334,6 +334,11 @@ func _state_at(at_ms: int) -> Dictionary:
 	return state
 
 
+# Mirrors GameLoop._boss_bar_color, so the preview cannot disagree with the round about her colour.
+func _bar_color() -> Color:
+	return RoundTimeline.bar_color(_timeline, UITheme.DANGER)
+
+
 # Fills the bar from a position. Called on every REBUILD as well as every playing frame, because paused
 # is the normal state in an editor: without the rebuild call, moving the simulated score changed a number
 # the author could not see until they pressed play.
@@ -472,7 +477,7 @@ func _apply(decisions: Dictionary) -> void:
 		var phase: Dictionary = decisions.get("phase", {})
 		if bool(phase.get("banner", false)):
 			_hud.show_phase(str(phase.get("name", "")).strip_edges())
-		_hud.set_base_tint(RoundTimeline.phase_tint(phase, UITheme.DANGER))
+		_hud.set_base_tint(RoundTimeline.phase_tint(phase, _bar_color()))
 	for event: Dictionary in decisions["fire"] as Array:
 		match str(event.get("track", "")):
 			RoundTimeline.TRACK_CAST:
@@ -553,7 +558,8 @@ func _rebuild_hud() -> void:
 	_hud.setup(
 		str(_timeline.get("boss_name", "")),
 		marks,
-		float(_timeline.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y))
+		float(_timeline.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y)),
+		_bar_color()
 	)
 	# The preview always shows the FIRST pass: an author is looking at the fight as a player meets it,
 	# and the pips exist so they can see the shape of a multi-attempt boss without playing three of them.

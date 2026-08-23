@@ -263,6 +263,11 @@ var _boss_won: bool = false
 # can be hit. Kept here rather than asked of the scheduler each tick, because a window that is easing
 # out is still open as far as its effects are concerned and only the caller knows that.
 var _boss_stance_windows: Dictionary = {}
+# Which gated stretches of the clip have been answered this pass, and where the playhead owes a jump to.
+# A verdict is kept so a seek back into a region does not ask again — the answer belongs to the arrival,
+# not to the position.
+var _region_verdicts: Dictionary = {}
+var _pending_region_jump: int = RoundTimeline.NO_TIME
 var _pause_regen_accum: float = 0.0  # sub-second carry, so a slow frame never loses a tick of healing
 var _boss_stance_shown: String = ""  # what the bar was last told, so the per-frame push stays free
 
@@ -3825,6 +3830,13 @@ var _hp_bar_active: bool = false
 var _boss_hud: BossHud = null
 
 
+# The encounter's own bar colour, or the default red. A phase without a tint returns HERE rather than to
+# the theme's red, so an author who coloured the whole boss green does not get a red stage back the
+# moment a phase declines to say anything about colour.
+func _boss_bar_color() -> Color:
+	return RoundTimeline.bar_color(_timeline_data, UITheme.DANGER)
+
+
 # Builds the boss HUD and hides the ordinary progress bar — the health bar IS the round's progress,
 # shown backwards, so having both would be the same number twice.
 func _enable_hp_bar(boss_name: String, phase_marks: Array = [], y: float = -1.0) -> void:
@@ -3842,7 +3854,7 @@ func _enable_hp_bar(boss_name: String, phase_marks: Array = [], y: float = -1.0)
 	var at: float = (
 		y if y >= 0.0 else float(_timeline_data.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y))
 	)
-	_boss_hud.setup(boss_name, phase_marks, at)
+	_boss_hud.setup(boss_name, phase_marks, at, _boss_bar_color())
 	_boss_hud.set_attempts(_boss_attempt, maxi(1, int(_timeline_data.get("max_attempts", 1))))
 
 
@@ -3870,7 +3882,7 @@ func _enter_timeline_phase(phase: Dictionary) -> void:
 	# is already watching. A phase with no tint resets to the default rather than inheriting the last
 	# one — otherwise a single tinted phase would recolour the whole rest of the round.
 	if _hp_bar_active and is_instance_valid(_boss_hud):
-		_boss_hud.set_base_tint(RoundTimeline.phase_tint(phase, UITheme.DANGER))
+		_boss_hud.set_base_tint(RoundTimeline.phase_tint(phase, _boss_bar_color()))
 	# The tint rides the existing boss frame rather than adding a second overlay, so the vignette's
 	# own climax pulse (_update_boss_frame) keeps working underneath it.
 	if phase.has("tint") and _boss_frame != null:
@@ -4010,15 +4022,36 @@ func _jump_after_win() -> void:
 	)
 	if target == RoundTimeline.NO_TIME:
 		return
+	_jump_playhead_to(target)
+
+
+# Moves the round's playhead FORWARD, taking the device and the scheduler with it. Shared by the win
+# jump and by a region whose rule failed, because both are the same move for different reasons.
+#
+# Forward only. A backward jump would re-fire a stretch the encounter has already played and re-anchor
+# the device against a clip it has passed — which is why the fight loop replays whole ROUNDS (§13.2).
+func _jump_playhead_to(target: int) -> void:
+	if _video == null or _video.stream == null:
+		return
 	var now: int = int(_video.stream_position * 1000.0)
 	if target <= now:
 		return
-	_video.stream_position = target / 1000.0
-	HandyService.seek(target)
+	# The VIDEO moves LAST, and that order is load-bearing.
+	#
+	# Landing on the end of a clip makes `finished` fire SYNCHRONOUSLY, which runs _on_round_ended to
+	# completion right here — teardown, replay decision, transition and the next round's load, all inside
+	# this assignment. Anything after it would then be operating on a round that no longer exists: the
+	# scheduler seek below ran against the REPLAYED round's scheduler and drove the fresh attempt
+	# straight to the old round's end position, so a boss with attempts left appeared to skip its second
+	# pass entirely and advance.
+	#
+	# Telling the scheduler and the device first means the re-entrant end has nothing left to corrupt.
 	if _timeline_scheduler != null:
 		# seek(), not tick(): everything skipped over counts as already past rather than firing in one
 		# burst on the far side of the jump.
 		_apply_timeline_decisions(_timeline_scheduler.seek(target, _round_player_state()))
+	HandyService.seek(target)
+	_video.stream_position = target / 1000.0
 
 
 # Clears the fight down to a standing start. Safe to call before the round's timeline is known, which is
@@ -4031,6 +4064,9 @@ func _reset_boss_fight() -> void:
 	_boss_attempt = 1
 	# Windows do not survive a pass: the round reloads and re-opens whatever its timeline says.
 	_boss_stance_windows.clear()
+	# Nor do region verdicts: a replay asks again, against whatever the player has done by then.
+	_region_verdicts.clear()
+	_pending_region_jump = RoundTimeline.NO_TIME
 	_boss_stance_shown = ""  # a fresh bar has been told nothing, so the next push must land
 
 
@@ -4278,6 +4314,12 @@ func _tick_round_timeline(delta: float) -> void:
 	_apply_timeline_decisions(
 		_timeline_scheduler.tick(int(_video.stream_position * 1000.0), _round_player_state())
 	)
+	# After the decisions, never during them: _gate_region only records where to land, because seeking
+	# from inside _apply_timeline_decisions would re-enter the scheduler mid-tick.
+	if _pending_region_jump != RoundTimeline.NO_TIME:
+		var target: int = _pending_region_jump
+		_pending_region_jump = RoundTimeline.NO_TIME
+		_jump_playhead_to(target)
 
 
 # Applies one tick's decisions. Order matters: tear windows down before building new ones up, so an
@@ -4356,6 +4398,9 @@ func _begin_timeline_window(event: Dictionary) -> void:
 		_boss_stance_windows[str(event.get("id", ""))] = event
 		_push_boss_stance()
 		return  # a stance carries nothing else: no effects, no sensory, no ramp
+	if str(event.get("track", "")) == RoundTimeline.TRACK_REGION:
+		_gate_region(event)
+		return
 	var effects: Array = event.get("effects", [])
 	if effects.is_empty():
 		return
@@ -4388,6 +4433,32 @@ func _begin_timeline_window(event: Dictionary) -> void:
 	_window_fades.begin(source_id, event)
 	_apply_window_factor(source_id, _window_fades.factor(source_id))
 	_reconcile_sensory()
+
+
+# The playhead reached a gated stretch of the clip. If its rule holds the region simply plays; if not,
+# the round jumps over it.
+#
+# Decided ON ARRIVAL and then remembered, exactly as an event's own condition is (see the scheduler's
+# `_gated`). A region re-tested while it played could eject the player halfway through a scene the
+# moment regeneration nudged the boss's health back over a threshold — and a video that stops midway for
+# no visible reason is a worse outcome than either answer.
+#
+# The jump is DEFERRED to the end of the frame: this runs inside _apply_timeline_decisions, and seeking
+# from in there would re-enter the scheduler while it is still handing out this tick's decisions.
+func _gate_region(region: Dictionary) -> void:
+	var id: String = str(region.get("id", ""))
+	if _region_verdicts.has(id):
+		return  # already answered this round; a re-entry is a seek, not a second arrival
+	var plays: bool = RoundTimeline.evaluate_condition(
+		region.get("condition", []), _round_player_state()
+	)
+	_region_verdicts[id] = plays
+	if plays:
+		return
+	var at: int = RoundTimeline.resolve_at_ms(region, int(_video.get_stream_length() * 1000.0))
+	if at == RoundTimeline.NO_TIME:
+		return
+	_pending_region_jump = maxi(_pending_region_jump, at + int(region.get("duration_ms", 0)))
 
 
 # The window closed: lift exactly what it installed. The round's own forced effects are untagged, so

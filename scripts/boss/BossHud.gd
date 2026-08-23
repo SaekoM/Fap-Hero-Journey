@@ -93,7 +93,13 @@ var _stance_label: Label = null
 
 ## Builds the HUD and pins it centred at `y` down whatever it was added to. `phase_marks` are
 ## round-progress fractions (0..1); an empty array simply leaves the bar undivided.
-func setup(boss_name: String, phase_marks: Array = [], y: float = DEFAULT_Y) -> void:
+func setup(
+	boss_name: String, phase_marks: Array = [], y: float = DEFAULT_Y, tint: Color = UITheme.DANGER
+) -> void:
+	# Her colour, applied to everything that is HERS: the fill, the brackets, the glow and her name. Only
+	# the STANCES stay fixed — those are a shared vocabulary a player learns once and reads on every
+	# boss, so letting an encounter recolour GUARDING would cost more than it bought.
+	_fill_base = tint
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_theme_constant_override("separation", 2)
 	var half: float = WIDTH_FRACTION * 0.5
@@ -105,7 +111,7 @@ func setup(boss_name: String, phase_marks: Array = [], y: float = DEFAULT_Y) -> 
 	title.text = boss_name
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	UITheme.style_label(title, UITheme.DANGER, 15, true)
+	UITheme.style_label(title, tint, 15, true)
 	title.add_theme_color_override("font_outline_color", UITheme.BG)
 	title.add_theme_constant_override("outline_size", 5)
 	add_child(title)
@@ -134,7 +140,7 @@ func setup(boss_name: String, phase_marks: Array = [], y: float = DEFAULT_Y) -> 
 	var blank: StyleBoxEmpty = StyleBoxEmpty.new()  # the trough belongs to the ghost, not to both
 	_bar.add_theme_stylebox_override("background", blank)
 	var fill: StyleBoxFlat = StyleBoxFlat.new()
-	fill.bg_color = UITheme.DANGER
+	fill.bg_color = tint
 	fill.set_corner_radius_all(2)
 	_fill_style = fill
 	_bar.add_theme_stylebox_override("fill", fill)

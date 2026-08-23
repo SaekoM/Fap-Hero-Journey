@@ -37,6 +37,9 @@ const INSPECTOR_WIDTH: int = 520
 const BRANCH_INDENT: int = 18
 const BRANCH_TAG_WIDTH: int = 120
 
+# Width of a phase's threshold field. It holds "100%" and nothing longer.
+const PHASE_AT_WIDTH: int = 78
+
 # How the left column's height is divided between the picture and the lanes, and the floor below which
 # the lanes stop giving ground however tall the preview would like to be.
 const STAGE_STRETCH: float = 1.5
@@ -185,6 +188,12 @@ func open(
 	# would fight the transport shortcut and re-trigger whatever was last clicked. Text fields and spin
 	# boxes are unaffected, so typing still works.
 	_disable_button_focus(_modal)
+	# ...and neither does whatever opened this. The BUILDER'S own ＋ EDIT ENCOUNTER button kept focus
+	# through the click that got us here, sitting behind the modal — and _unhandled_key_input only sees
+	# keys no focused control consumed, so SPACE went to that button and re-opened the encounter instead
+	# of starting the preview. Releasing focus is the general fix: it covers any control that opens a
+	# modal, not just this one.
+	get_viewport().gui_release_focus()
 	_opened_json = JSON.stringify(_timeline)
 	_load_preview_media()
 	_refresh()
@@ -360,7 +369,7 @@ func _build_kit_row() -> Control:
 	phase_button.tooltip_text = (
 		UITheme
 		. wrap_tip(
-			"A new stage of the fight, placed on the HEALTH STRIP above the tracks. Drag it there to say how far down the bar she changes."
+			"A new stage of the fight, set on the health bar rather than the clock. It begins when the boss drops to the health you give it."
 		)
 	)
 	phase_button.pressed.connect(func() -> void: _add_phase())
@@ -403,7 +412,6 @@ func _build_timeline_row(column: VBoxContainer) -> void:
 	_timeline_view.playhead_scrubbed.connect(_on_playhead_scrubbed)
 	_timeline_view.view_changed.connect(_on_view_changed)
 	_timeline_view.kit_dropped.connect(_on_kit_dropped)
-	_timeline_view.phase_moved.connect(_on_phase_moved)
 	_timeline_view.context_menu_requested.connect(_on_timeline_context_menu)
 	# The wheel used to zoom, which authors found by accident. Scrolling took it over, so the gesture
 	# that replaced it has to be stated — CTRL+wheel is not something anyone discovers.
@@ -798,7 +806,7 @@ func _refresh() -> void:
 		_view_ready = true
 		_timeline_view.setup(_timeline, _full_ms)
 	_timeline_view.set_value_labels(_value_labels())
-	_timeline_view.set_events(_timed_events(), _timeline["phases"], _segments())
+	_timeline_view.set_events(_timed_events(), _segments())
 	# The preview runs the REAL scheduler, so it has to be rebuilt whenever the timeline changes.
 	_rebuild_preview()
 	_refresh_scrollbar()
@@ -973,7 +981,11 @@ func _add_event(track: String, at_ms: int = -1) -> void:
 	}
 	# An effect and a stance are both meaningless as instants, so they arrive as windows; the rest
 	# default to one-shots.
-	if track == RoundTimeline.TRACK_EFFECT or track == RoundTimeline.TRACK_STANCE:
+	if (
+		track == RoundTimeline.TRACK_EFFECT
+		or track == RoundTimeline.TRACK_STANCE
+		or track == RoundTimeline.TRACK_REGION
+	):
 		event["duration_ms"] = NEW_WINDOW_MS
 	# GUARDED rather than NORMAL: a stance window that changes nothing is a block an author placed for no
 	# reason, and guarding is the commonest thing they came here to do.
@@ -1152,16 +1164,6 @@ func _run_context_action(id: int, at_ms: int) -> void:
 			_refresh()
 
 
-# A phase marker was dragged along the health strip, setting the health it takes over at.
-func _on_phase_moved(id: String, hp_at: float) -> void:
-	_snapshot("move:" + id)
-	for phase: Dictionary in _timeline["phases"] as Array:
-		if str(phase.get("id", "")) == id:
-			phase[RoundTimeline.PHASE_HP_KEY] = clampf(hp_at, 0.0, 1.0)
-			_refresh()
-			return
-
-
 func _on_playhead_scrubbed(ms: int) -> void:
 	_playhead_ms = ms
 	_seek_preview(ms)
@@ -1190,14 +1192,10 @@ func _rebuild_inspector() -> void:
 		child.queue_free()
 	var event: Dictionary = _find(_selected_id)
 	if event.is_empty():
-		# A phase marker is selectable too, and edits the same way — name, time, banner, delete.
-		var phase: Dictionary = _find_phase(_selected_id)
-		if not phase.is_empty():
-			_build_phase_inspector(phase)
-			return
 		# Nothing selected → the ENCOUNTER'S own settings. They belong somewhere, and this is the panel
 		# that is otherwise empty exactly when the author is thinking about the encounter as a whole.
 		_build_encounter_inspector()
+		_disable_button_focus(_inspector)
 		return
 	_add_issue_panel(_selected_id)
 
@@ -1252,16 +1250,25 @@ func _rebuild_inspector() -> void:
 			)
 			_add_fade_fields(event, "fade_in_ms", "fade_out_ms", "Audio ease in / out (ms)")
 			_add_alts_list(event)
+		RoundTimeline.TRACK_REGION:
+			_add_region_note()
 		RoundTimeline.TRACK_STANCE:
 			_add_stance_field(event)
 		RoundTimeline.TRACK_EFFECT:
 			_add_effects_picker(event)
 			_add_fade_fields(event, "fade_in_ms", "fade_out_ms", "Effect ease in / out (ms)")
+	# Every rebuild, not just the first. The inspector is torn down and rebuilt on every edit, so buttons
+	# made after open() were never covered by the pass in open() — and a focused Button eats SPACE, which
+	# is the transport shortcut. Clicking ＋ SEGMENT and then pressing SPACE re-added a segment instead
+	# of starting the preview.
+	_disable_button_focus(_inspector)
 
 
 # Start time + duration + which end the start is measured from. Editing any of them re-normalizes, so
 # the numbers here and the block on the timeline can never disagree.
 # Encounter-level settings: what the health bar is called and whether it shows at all.
+
+
 func _build_encounter_inspector() -> void:
 	var title: Label = Label.new()
 	title.text = "ENCOUNTER"
@@ -1334,8 +1341,30 @@ func _build_health_section() -> void:
 	)
 	_inspector.add_child(hp)
 
-	# Only worth showing while there is a bar to move.
+	# Only worth showing while there is a bar to colour or move.
 	if bool(_timeline.get("hp_bar", true)):
+		var bar_tint: ColorPickerButton = ColorPickerButton.new()
+		bar_tint.custom_minimum_size = Vector2(SWATCH_SIZE, SWATCH_SIZE)
+		bar_tint.edit_alpha = false
+		bar_tint.color = RoundTimeline.bar_color(_timeline, UITheme.DANGER)
+		bar_tint.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				(
+					"The boss's colour: the bar, its brackets, its glow and the name above it. A phase can "
+					+ "still override "
+					+ "it for that stage. STANCES keep their own colours — a player learns those once and "
+					+ "reads them on every boss, so an encounter does not get to redefine GUARDING."
+				)
+			)
+		)
+		bar_tint.color_changed.connect(
+			func(value: Color) -> void:
+				_snapshot("field:bar_color")
+				_timeline["bar_color"] = {"r": value.r, "g": value.g, "b": value.b, "a": value.a}
+				_rebuild_preview()
+		)
+		_inspector.add_child(_labeled("Bar colour", bar_tint))
 		# Percent, like the phase thresholds beside it. A raw 0.02 is the only placement in the editor
 		# expressed as a fraction, and it reads as a tuning constant rather than a position.
 		var bar_y: SpinBox = SpinBox.new()
@@ -1379,13 +1408,14 @@ func _build_health_section() -> void:
 			_rebuild_preview()
 	)
 	_inspector.add_child(ticks)
+	_build_phases_list()
 
 	var hp_row: HBoxContainer = HBoxContainer.new()
 	hp_row.add_theme_constant_override("separation", 8)
 
 	var source: OptionButton = OptionButton.new()
 	source.add_item("TIME — round progress")
-	source.add_item("SCORE — what they earn")
+	source.add_item("SCORE — what the player earns")
 	source.selected = (1 if _health_follows_score() else 0)
 	source.tooltip_text = (
 		UITheme
@@ -1485,7 +1515,7 @@ func _build_outcomes_section() -> void:
 
 	_build_outcome_block(
 		RoundTimeline.ON_WON,
-		"IF THEY WIN",
+		"IF THE PLAYER WINS",
 		(
 			"Played the moment the health bar empties. The round then plays out as aftermath — it does "
 			+ "not cut short."
@@ -1494,7 +1524,7 @@ func _build_outcomes_section() -> void:
 	)
 	_build_outcome_block(
 		RoundTimeline.ON_GAVE_IN,
-		"IF SHE WINS",
+		"IF THE BOSS WINS",
 		(
 			"Played when the player presses FINISH mid-round, and when the last attempt ends with the "
 			+ "boss still standing. Both are the same defeat as far as this ending is concerned."
@@ -1559,6 +1589,138 @@ func _segment_issues_for(segment_id: String) -> Array:
 		):
 			out.append(issue)
 	return out
+
+
+# The phases, as a list beside the bar's other settings.
+#
+# They used to be a strip in the TIMELINE, which was the wrong axis: a phase begins at a HEALTH point,
+# and the strip could not zoom or scroll with the lanes it sat above because it did not share their
+# clock. Worse, against a TIME-based bar health IS inverted time, so the strip appeared to line up with
+# the clock and silently stopped meaning that the moment an author switched to SCORE.
+#
+# A threshold is also a number rather than a place — "she changes at 60%" needs no video to decide — so
+# dragging was buying less than the confusion cost.
+func _build_phases_list() -> void:
+	var header: HBoxContainer = HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	var title: Label = Label.new()
+	title.text = "PHASES"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 11, true)
+	header.add_child(title)
+
+	var add: Button = Button.new()
+	add.text = "＋ PHASE"
+	UITheme.style_button_subtle(add, UITheme.PURPLE_MID, 10, 4, 10)
+	add.pressed.connect(func() -> void: _add_phase())
+	header.add_child(add)
+	_inspector.add_child(header)
+
+	var phases: Array = _timeline["phases"]
+	if phases.is_empty():
+		_inspector.add_child(
+			_make_quiet_note(
+				"No phases — the bar is one stage from full to empty. Add one to split the fight.",
+				9
+			)
+		)
+		return
+	for phase: Dictionary in RoundTimeline.resolved_phases(_timeline, _full_ms):
+		_inspector.add_child(_make_phase_row(_find_phase(str(phase.get("id", "")))))
+
+
+# One phase: the health it takes over at, its name, whether it announces itself, and its colour. Listed
+# in play order (full health first), which resolved_phases already sorts them into.
+func _make_phase_row(phase: Dictionary) -> Control:
+	var box: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = Color(UITheme.PURPLE_BRIGHT, 0.06)
+	style.set_corner_radius_all(4)
+	style.set_content_margin_all(6)
+	style.content_margin_left = BRANCH_INDENT
+	style.border_width_left = 2
+	style.border_color = Color(UITheme.PURPLE_BRIGHT, 0.55)
+	box.add_theme_stylebox_override("panel", style)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+
+	var at: SpinBox = SpinBox.new()
+	at.min_value = 0
+	at.max_value = 100
+	at.step = 1
+	at.suffix = "%"
+	at.value = 100.0 * RoundTimeline.phase_hp_at(phase, _full_ms)
+	at.custom_minimum_size.x = PHASE_AT_WIDTH
+	at.tooltip_text = UITheme.wrap_tip(
+		"The boss enters this stage the moment the bar drops to here. 100% is the opening stage."
+	)
+	UITheme.style_spin_box(at)
+	at.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:phase_hp")
+			phase[RoundTimeline.PHASE_HP_KEY] = clampf(value / 100.0, 0.0, 1.0)
+			_refresh()
+	)
+	row.add_child(at)
+
+	var name_field: LineEdit = LineEdit.new()
+	name_field.text = str(phase.get("name", ""))
+	name_field.placeholder_text = "Stage name — e.g. Enraged"
+	name_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_line_edit(name_field)
+	name_field.text_changed.connect(
+		func(value: String) -> void:
+			phase["name"] = value
+			_refresh_derived()
+	)
+	row.add_child(name_field)
+
+	var tint: ColorPickerButton = ColorPickerButton.new()
+	tint.custom_minimum_size = Vector2(SWATCH_SIZE, SWATCH_SIZE)
+	tint.edit_alpha = false
+	tint.color = RoundTimeline.phase_tint(phase, RoundTimeline.bar_color(_timeline, UITheme.DANGER))
+	tint.tooltip_text = UITheme.wrap_tip(
+		"The bar's colour during this stage, so a fight that changes character shows it."
+	)
+	tint.color_changed.connect(
+		func(value: Color) -> void:
+			_snapshot("field:phase_tint")
+			phase["tint"] = {"r": value.r, "g": value.g, "b": value.b, "a": value.a}
+			_refresh_derived()
+	)
+	row.add_child(tint)
+
+	var remove: Button = Button.new()
+	remove.text = "✕"
+	UITheme.style_button_subtle(remove, UITheme.DANGER, 8, 4, 11)
+	remove.pressed.connect(
+		func() -> void:
+			_snapshot("delete-phase")
+			var kept: Array = []
+			for other: Dictionary in _timeline["phases"] as Array:
+				if str(other.get("id", "")) != str(phase.get("id", "")):
+					kept.append(other)
+			_timeline["phases"] = kept
+			_refresh()
+	)
+	row.add_child(remove)
+
+	var column: VBoxContainer = VBoxContainer.new()
+	column.add_theme_constant_override("separation", 4)
+	column.add_child(row)
+
+	var banner: CheckButton = CheckButton.new()
+	banner.text = "ANNOUNCE WITH A BANNER"
+	banner.button_pressed = bool(phase.get("banner", false))
+	banner.toggled.connect(
+		func(pressed: bool) -> void:
+			phase["banner"] = pressed
+			_refresh_derived()
+	)
+	column.add_child(banner)
+	box.add_child(column)
+	return box
 
 
 # Whether the bar is counting the player down rather than the clock. Winning, replays, damage windows and
@@ -1651,7 +1813,7 @@ func _build_outcome_block(
 			. wrap_tip(
 				(
 					"Raises this run flag when the round ends this way, so a later fork or round can ask "
-					+ "how the fight went. Advancing past the boss no longer means they beat it."
+					+ "how the fight went. Advancing past the boss no longer means the player beat it."
 				)
 			)
 		)
@@ -2276,81 +2438,6 @@ func _find_phase(id: String) -> Dictionary:
 	return {}
 
 
-# The phase marker editor: rename, set the health it takes over at, toggle its banner, delete.
-func _build_phase_inspector(phase: Dictionary) -> void:
-	var header: HBoxContainer = HBoxContainer.new()
-	header.add_theme_constant_override("separation", 10)
-	var title: Label = Label.new()
-	title.text = "PHASE"
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 14, true)
-	header.add_child(title)
-	var delete: Button = Button.new()
-	delete.text = "✕ DELETE"
-	UITheme.style_button_subtle(delete, UITheme.DANGER, 10, 6, 11)
-	delete.pressed.connect(_delete_selected)
-	header.add_child(delete)
-	_inspector.add_child(header)
-
-	var name_field: LineEdit = LineEdit.new()
-	name_field.text = str(phase.get("name", ""))
-	UITheme.style_line_edit(name_field)
-	name_field.text_changed.connect(func(value: String) -> void: phase["name"] = value)
-	_inspector.add_child(_labeled("Name", name_field))
-
-	var hp_spin: SpinBox = SpinBox.new()
-	hp_spin.min_value = 0
-	hp_spin.max_value = 100
-	hp_spin.step = 1
-	hp_spin.suffix = "%"
-	hp_spin.value = 100.0 * RoundTimeline.phase_hp_at(phase, _full_ms)
-	hp_spin.tooltip_text = (
-		UITheme
-		. wrap_tip(
-			(
-				"She enters this stage the moment the bar drops to here. 100% is the opening stage. "
-				+ "Phases follow the BAR, not the clock — so a division on it always means what it says."
-			)
-		)
-	)
-	UITheme.style_spin_box(hp_spin)
-	hp_spin.value_changed.connect(
-		func(value: float) -> void:
-			phase[RoundTimeline.PHASE_HP_KEY] = clampf(value / 100.0, 0.0, 1.0)
-			_refresh()
-	)
-	_inspector.add_child(_labeled("Starts at health", hp_spin))
-
-	# Against the clock the bar is round progress read backwards, so a health point is still a time — but
-	# an author pointing the bar at SCORE is the case this was built for, and it is worth saying so.
-	if not _health_follows_score():
-		var note: Label = Label.new()
-		note.text = "Health follows the CLOCK, so this is %s into the round." % _hp_as_time(phase)
-		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		UITheme.style_label(note, UITheme.DARK_TEXT, 9)
-		_inspector.add_child(note)
-
-	var banner: CheckButton = CheckButton.new()
-	banner.text = "SHOW BANNER"
-	banner.button_pressed = bool(phase.get("banner", false))
-	banner.toggled.connect(
-		func(pressed: bool) -> void:
-			phase["banner"] = pressed
-			_refresh()
-	)
-	_inspector.add_child(banner)
-
-
-# Where a health point lands on the clock, for the note above — only meaningful while the bar is being
-# driven by time, which is exactly when it is shown.
-func _hp_as_time(phase: Dictionary) -> String:
-	var full_ms: int = _full_ms
-	if full_ms <= 0:
-		return "an unknown point"
-	var at_ms: int = int((1.0 - RoundTimeline.phase_hp_at(phase, full_ms)) * float(full_ms))
-	return "%d:%02d" % [at_ms / 60000, (at_ms / 1000) % 60]
-
-
 func _add_time_fields(event: Dictionary) -> void:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
@@ -2819,10 +2906,13 @@ func _add_win_jump_fields() -> void:
 	enabled.button_pressed = (
 		int(_timeline.get("win_jump_ms", RoundTimeline.NO_TIME)) != RoundTimeline.NO_TIME
 	)
-	enabled.tooltip_text = UITheme.wrap_tip(
-		(
-			"Jumps the clip forward the moment she goes down, so a win reaches the ending sooner. "
-			+ "Forward only — a backward jump would replay events the encounter has already fired."
+	enabled.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Jumps the clip forward the moment the boss goes down, so a win reaches the ending sooner. "
+				+ "Forward only — a backward jump would replay events the encounter has already fired."
+			)
 		)
 	)
 	enabled.toggled.connect(
@@ -2899,13 +2989,16 @@ func _add_regen_fields() -> void:
 	pause.max_value = 100000
 	pause.step = 1  # a step above 1 would make "1 per second" unreachable — see damage_target
 	pause.value = float(_timeline.get("pause_regen_per_sec", 0))
-	pause.tooltip_text = (UITheme.wrap_tip(
-		(
-			"Health she wins back for every second the game is PAUSED. Zero is off. Pausing is the "
-			+ "only slowdown a player can actually perform — the score comes from the script, not "
-			+ "from them — so this is what makes stepping away from a fight cost something."
+	pause.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Health the boss wins back for every second the game is PAUSED. Zero is off. Pausing is the "
+				+ "only slowdown a player can actually perform — the score comes from the script, not "
+				+ "from them — so this is what makes stepping away from a fight cost something."
+			)
 		)
-	))
+	)
 	UITheme.style_spin_box(pause)
 	pause.value_changed.connect(
 		func(value: float) -> void:
@@ -2925,9 +3018,9 @@ func _add_regen_fields() -> void:
 		UITheme
 		. wrap_tip(
 			(
-				"How much of the bar she recovers before each replay. Zero is off, and the fight is pure "
+				"How much of the bar the boss recovers before each replay. Zero is off, and the fight is pure "
 				+ "attrition. Anything above it turns a replay into an escalation rather than a grind — "
-				+ "at 100% every attempt starts her at full."
+				+ "at 100% every attempt starts the boss at full."
 			)
 		)
 	)
@@ -3020,6 +3113,26 @@ func _full_pass_score() -> int:
 	)
 
 
+# A region has no fields of its own — its span is the block and its rule is the condition rows every
+# event already gets. All it needs is to say what it does, because a block that REMOVES video is unlike
+# everything else on these lanes.
+func _add_region_note() -> void:
+	(
+		_inspector
+		. add_child(
+			_make_quiet_note(
+				(
+					"This stretch of the clip plays only when the rule below holds. When it does not, the "
+					+ "round jumps straight over it — the video, its funscript and every cue inside are "
+					+ "skipped, so the score they would have earned is not earned either. "
+					+ "Asked once, when the playhead reaches it. A region that starts playing finishes."
+				),
+				10
+			)
+		)
+	)
+
+
 # How the boss takes damage while this window is open, as a NAME rather than a number — the bar shows
 # one word, so the thing an author picks should be that word.
 func _add_stance_field(event: Dictionary) -> void:
@@ -3033,9 +3146,10 @@ func _add_stance_field(event: Dictionary) -> void:
 		. wrap_tip(
 			(
 				"How much damage lands while this window is open, and the word the health bar shows. "
-				+ "RECOVERING runs the bar backwards — she heals. ATTACKING is for a move written into the "
+				+ "RECOVERING runs the bar backwards — the boss heals. ATTACKING is for a move written into the "
 				+ "ROUND's own funscript rather than placed on the attack track: nothing can detect one, so "
-				+ "mark it here: she takes no damage through it and override items cannot cut in, exactly "
+				+ "mark it here: the boss takes no damage through it and override items cannot cut in, "
+				+ "exactly "
 				+ "as on the attack track. An attack there needs none, being both already. Only ONE "
 				+ "stance can be in force, so these must not overlap."
 			)
@@ -3580,7 +3694,7 @@ func _refresh_derived() -> void:
 	# derived from those picks, so deriving them beforehand would draw the previous roll.
 	_rebuild_preview()
 	_timeline_view.set_value_labels(_value_labels())
-	_timeline_view.set_events(_timed_events(), _timeline["phases"], _segments())
+	_timeline_view.set_events(_timed_events(), _segments())
 	_refresh_issues()
 
 

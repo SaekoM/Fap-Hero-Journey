@@ -1803,3 +1803,64 @@ func test_an_unplaceable_win_jump_reports_no_time() -> void:
 	# Further from the end than the round is long: the caller skips rather than seeking somewhere odd.
 	var t: Dictionary = _timeline([_cast("c1", 0)], {"win_jump_ms": 90000})
 	assert_int(RoundTimeline.win_jump_at_ms(t, 60000)).is_equal(RoundTimeline.NO_TIME)
+
+
+func test_the_bar_takes_the_encounters_colour() -> void:
+	var t: Dictionary = RoundTimeline.normalize(
+		{"bar_color": {"r": 0.2, "g": 0.9, "b": 0.4, "a": 1.0}}
+	)
+	var picked: Color = RoundTimeline.bar_color(t, UITheme.DANGER)
+	assert_float(picked.g).is_equal_approx(0.9, 0.001)
+
+
+func test_an_encounter_that_never_chose_a_colour_follows_the_theme() -> void:
+	# Absent is NOT the same as a stored red: a theme change should still move an encounter that never
+	# picked, which is why the key is only written when an author actually chooses one.
+	var t: Dictionary = RoundTimeline.normalize({})
+	assert_bool(t.has("bar_color")).is_false()
+	assert_bool(RoundTimeline.bar_color(t, UITheme.SUCCESS) == UITheme.SUCCESS).is_true()
+
+
+func test_a_phase_tint_still_overrides_the_encounters_colour() -> void:
+	# The layering the bar reads: stance, then phase, then the encounter's own colour.
+	var phase: Dictionary = RoundTimeline.normalize_phase(
+		{"id": "p1", "hp_at": 0.5, "tint": {"r": 0.0, "g": 0.0, "b": 1.0, "a": 1.0}}
+	)
+	var base: Color = Color(0.2, 0.9, 0.4, 1.0)
+	assert_float(RoundTimeline.phase_tint(phase, base).b).is_equal_approx(1.0, 0.001)
+	# ...and a phase carrying no tint falls back to the encounter's colour, not to red.
+	var plain: Dictionary = RoundTimeline.normalize_phase({"id": "p2", "hp_at": 0.3})
+	assert_bool(RoundTimeline.phase_tint(plain, base) == base).is_true()
+
+
+func test_a_region_keeps_its_span_and_its_rule() -> void:
+	# A region has no fields of its own: the span and the condition every event already carries ARE the
+	# region. Worth pinning, because that is exactly the kind of "it needs nothing" that gets normalized
+	# away by someone tidying the track match later.
+	var t: Dictionary = _timeline(
+		[
+			{
+				"id": "r1",
+				"track": "region",
+				"at_ms": 4000,
+				"duration_ms": 9000,
+				"condition": [{"signal": "boss_hp", "op": "lte", "value": 0.0}],
+			}
+		]
+	)
+	var region: Dictionary = _by_id(t, "r1")
+	assert_int(int(region["at_ms"])).is_equal(4000)
+	assert_int(int(region["duration_ms"])).is_equal(9000)
+	assert_bool(RoundTimeline.condition_clauses(region.get("condition", [])).is_empty()).is_false()
+
+
+func test_a_region_without_a_rule_is_reported() -> void:
+	# It always plays, which is what the clip does anyway — so an author who meant to gate a scene and
+	# left the rule blank has authored nothing, and the block on the lane does not admit it.
+	var t: Dictionary = _timeline(
+		[{"id": "r1", "track": "region", "at_ms": 0, "duration_ms": 5000}]
+	)
+	var codes: Array = []
+	for issue: Dictionary in RoundTimeline.validate(t, 60000):
+		codes.append(str(issue["code"]))
+	assert_bool(codes.has(RoundTimeline.ISSUE_REGION_NO_RULE)).is_true()

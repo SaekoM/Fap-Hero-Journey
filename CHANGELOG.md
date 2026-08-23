@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.8.1
+
+A fast follower for v0.8.0, from the first real encounters built with it: conditional video regions, a
+colour of the boss's own, and the phase editor moved somewhere it makes sense.
+
+### ◆ Regions — video that only plays when it should
+
+A new **REGION** lane marks a stretch of the round's clip that **plays only when its rule holds**. When
+the rule fails, the round jumps straight over it.
+
+That makes a scene conditional. No climax until the boss is beaten. No foreplay after the first attempt.
+The two examples are literally *boss health = 0* and *attempt = 1* — regions read the same player state
+every other rule in an encounter does: score, pace, items used, boss health, attempt number.
+
+Regions sit at the top of the lanes, because they decide whether the rest of them get to happen.
+
+Three things worth knowing before you author one:
+
+- **The rule is asked once, when the playhead arrives**, and then held. A region that starts playing
+  finishes. Re-testing mid-scene could yank the video away the moment regeneration nudged the boss's
+  health back over a threshold, and a clip that stops halfway for no visible reason is worse than either
+  answer.
+- **Skipping a region skips its funscript too**, so the score it would have earned is not earned. Regions
+  are a balance lever, not only a presentation one — "no foreplay after attempt 1" also means less damage
+  available on attempt 2.
+- **Forward only.** A region is skipped past, never looped back to.
+
+Gating the last scene on a win pairs with the existing **skip ahead on win**: win, jump to the ending, and
+the ending plays *because* you won.
+
+### ◆ A boss of your own colour
+
+The health bar, its corner brackets, its glow and the boss's name now take a colour you pick per
+encounter, instead of always being red.
+
+A **phase can still override it** for its own stage, and **stances keep their fixed colours** — those are
+a vocabulary a player learns once and reads on every boss, so an encounter does not get to redefine what
+GUARDING looks like.
+
+An encounter that never picks a colour still follows the theme rather than being pinned to whatever red
+was current when it was made.
+
+### ◆ Phases moved to the health bar
+
+Phases were edited on a strip inside the **timeline**, which was the wrong place: a phase begins at a
+**health** point, not a time, so the strip could not zoom or scroll with the lanes it sat above.
+
+Worse, against a TIME-based bar health *is* inverted time — so the strip appeared to line up with the
+clock, and silently stopped meaning that the moment an encounter switched to SCORE.
+
+They now live with the health bar's other settings, as a list: threshold, name, colour, banner. The
+preview's bar still shows the divisions, so the result is still visible where it matters.
+
+Dragging went with the move, deliberately. A threshold is a number — "the boss changes at 60%" needs no
+video to decide — unlike event timing, where dragging against the picture is how you find the frame.
+
+### 🩹 Fixes
+
+- **The boss is no longer assumed to be female.** Every label, tooltip and heading in the encounter editor
+  now says **the player** and **the boss**. The two endings read IF THE PLAYER WINS and IF THE BOSS WINS.
+- **A boss with attempts left no longer skips its replay** when a region or a win jump lands on the end of
+  the clip. Ending a round that way ran the whole round-end *inside* the seek, and the rest of the jump
+  then applied itself to the round that had just been loaded — burning every remaining attempt in a single
+  frame, which looked exactly like advancing to the next node.
+- **SPACE starts the preview instead of re-opening the encounter.** The builder's EDIT ENCOUNTER button
+  kept keyboard focus behind the modal and was activating itself. The same bug applied to every button in
+  the encounter's own inspector after the first edit — clicking ＋ SEGMENT and pressing SPACE added
+  another segment rather than playing.
+
 ## v0.8.0
 
 The **boss encounter** release. A boss round used to be a normal round with forced modifiers and an intro
@@ -18,7 +87,7 @@ does every journey made until now.
 
 An encounter is built from five kinds of thing, each on its own lane:
 
-- **Attacks** — the boss takes the device. Her funscript plays instead of the round's for as long as the
+- **Attacks** — the boss takes the device. The boss's funscript plays instead of the round's for as long as the
   attack lasts, then hands it back. This is the move itself, not a picture of one.
 - **Cast** — a character portrait or a piece of art appears over the video, with an optional line of
   dialogue underneath. Used for telegraphs, taunts, and the moments either side of a fight.
@@ -39,7 +108,7 @@ Every encounter can show a named health bar. What drains it is the author's choi
 With a score bar the author sets a **score to defeat**, and emptying the bar wins. The builder tells them
 exactly what a full pass of the round is worth, so the target is a decision rather than a guess.
 
-**Phases** divide the bar into stages. A phase begins when her health drops to a point the author chose —
+**Phases** divide the bar into stages. A phase begins when the boss's health drops to a point the author chose —
 "below 60%" — rather than at a time on the clock, so the divisions on the bar always mean what they show.
 A phase can announce itself with a banner and recolour the bar.
 
@@ -50,17 +119,18 @@ A stance window changes how much damage lands, and the bar says which one is in 
 | Stance | Effect |
 | --- | --- |
 | **NORMAL** | ordinary damage |
-| **GUARDING** | half damage — she is covering up |
+| **GUARDING** | half damage — the boss is covering up |
 | **IMMUNE** | nothing lands at all |
 | **VULNERABLE** | double damage — an opening |
-| **RECOVERING** | the bar runs *backwards*; she is healing |
-| **ATTACKING** | nothing lands, because she is the one doing something |
+| **RECOVERING** | the bar runs *backwards*; the boss is healing |
+| **ATTACKING** | nothing lands, because the boss is the one doing something |
 
 The bar takes the stance's colour, glows in it, and names it in a word underneath. This is the part that
 makes a boss round something you play rather than sit through: hold back through a guard, go hard through
 an opening, and read the bar for which is which.
 
-**Her own attacks make her untouchable.** While an attack runs, the script driving the device is hers — so
+**A boss's own attacks make it untouchable.** While an attack runs, the script driving the device is the
+boss's — so
 it deals no damage, and no override item can cut in. An author who writes the boss's moves into the
 round's own funscript instead of using the attack lane can mark those stretches ATTACKING by hand and get
 the same behaviour.
@@ -72,15 +142,17 @@ the start, **carrying the damage you already did**. The bar shows which attempt 
 
 Two endings can be authored, each a set of cast and audio cues that plays as the round bows out:
 
-- **If they win** — the moment she goes down. The round then plays out as aftermath rather than cutting
+- **If the player wins** — the moment the boss goes down. The round then plays out as aftermath rather
+  than cutting
   short, and can optionally skip ahead to a point the author marked on the timeline.
-- **If she wins** — played when the attempts run out, and also when the player presses FINISH mid-round.
+- **If the boss wins** — played when the attempts run out, and also when the player presses FINISH
+  mid-round.
   Both are the same defeat.
 
 Either ending can raise a **flag**, so a later fork can ask how the fight went — advancing past a boss no
 longer means you beat it.
 
-She can also **recover**: across an authored window, while the game is **paused**, or a share of the bar
+A boss can also **recover**: across an authored window, while the game is **paused**, or a share of the bar
 returned **between attempts**.
 
 #### Encounters that don't repeat themselves
@@ -91,15 +163,15 @@ Three tools, each for a different kind of repetition:
   original counts as a candidate, so two alternatives means three possible lines. An alternative can bring
   its own art, its own framing, and its own expression of the same character.
 - **Segments** — a whole *move* varies together. A segment names two or more branches and exactly one
-  plays. Tag her telegraph, her attack and her impact sound with the same branch and all three swap as a
+  plays. Tag the telegraph, the attack and the impact sound with the same branch and all three swap as a
   unit, which is what stops a fight assembling combinations nobody wrote. Two attacks on different
   branches may start at the same moment and run for completely different lengths.
 - **Conditions** — a branch, or any single cue, can be gated on what the player has actually done: their
-  score, their pace, how many items they have used and which, how much health she has left, and which
+  score, their pace, how many items they have used and which, how much health the boss has left, and which
   attempt this is. Rules are read in the order they are written, and whatever carries no rule is what the
   dice choose between.
 
-Conditions are checked at the moment the cue comes up, so "score above 500" means *by the time she got
+Conditions are checked at the moment the cue comes up, so "score above 500" means *by the time the cue got
 there* — not a guess made when the round began.
 
 #### Items during a boss
@@ -108,7 +180,7 @@ Boss rounds locked items out entirely. An encounter can now **allow them**, whic
 answer to a fight rather than something you carry past it. A boss round without an authored encounter
 keeps the old lockout, so nothing already made changes.
 
-While she is attacking, override items are refused rather than spent — the card says so and stays in your
+While the boss is attacking, override items are refused rather than spent — the card says so and stays in
 inventory.
 
 ### ◆ Override items
@@ -124,7 +196,7 @@ slice of that script, and optional effects that apply while it runs.
 ### ◆ Items that fight back
 
 - A new **score effect** adds points the instant an item is used. In a boss round with a score health bar
-  that *is* damage — and it runs through her stance, so a thrown punch lands, glances off a guard, or is
+  that *is* damage — and it runs through the boss's stance, so a thrown punch lands, glances off a guard, or is
   swallowed whole by an attack. Outside a boss round it is simply points.
 - Items can carry their **own sound**, played instead of the standard click, at a volume you set. A
   gunshot on a bullet, a thud on a punch.
@@ -169,8 +241,8 @@ The encounter editor and the builder panels grew a lot this release. A pass over
 - **Crackling audio in videos.** The project mixed at 44.1 kHz while video audio is almost always 48 kHz,
   so every clip was resampled continuously during playback — then resampled again by the sound device on
   the way out. The mix rate now matches the content and the resampling is gone.
-- **Boss attacks no longer damage the boss.** The script playing during an attack is hers, so the score it
-  dealt was being counted against her.
+- **Boss attacks no longer damage the boss.** The script playing during an attack is the boss's, so the score it
+  dealt was being counted against the boss.
 - **Audio ease in/out on encounter cues** is saved. The controls existed and the runtime honoured them;
   the value was discarded in between.
 - In the cut editor the **OUT marker is red** — it used to share amber with the playhead.

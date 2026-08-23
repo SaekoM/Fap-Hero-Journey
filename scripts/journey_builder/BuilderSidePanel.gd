@@ -1104,7 +1104,8 @@ func _effect_kind_desc(kind: String) -> String:
 		"score_add":
 			return (
 				"Adds score the instant it is used. In a boss round with a SCORE health bar that is "
-				+ "damage — scaled by her stance, so it glances off a guard and does nothing through "
+				+ "damage — scaled by the boss's stance, so it glances off a guard and does nothing "
+				+ "through "
 				+ "an attack. Elsewhere it is simply points."
 			)
 		"coin_jackpot":
@@ -4873,7 +4874,7 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	col.add_child(_side_field_label("NAME  (FOR YOUR MAP — PLAYERS NEVER SEE IT)"))
 	var name_edit: LineEdit = LineEdit.new()
 	name_edit.text = str(sb_data.get("name", ""))
-	name_edit.placeholder_text = "e.g. Intro, She finds out, Bad end"
+	name_edit.placeholder_text = "e.g. Intro, The reveal, Bad end"
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(
 		func(v: String) -> void:
