@@ -486,6 +486,17 @@ static func effect_param_specs(kind: String) -> Array:
 					"step": 5
 				}
 			]
+		"score_add":
+			return [
+				{
+					"key": "amount",
+					"label": "Score added",
+					"ctl": "coins",
+					"min": 0,
+					"max": 1000000,
+					"step": 10
+				}
+			]
 		"interest":
 			return [
 				{
@@ -956,6 +967,12 @@ static func coerce_journey_item(item: Dictionary) -> Dictionary:
 		out["Image"] = str(item.get("image", ""))
 	if category == "key":
 		return out
+	# The use sound rides EVERY usable category, so it is written before the per-category branches
+	# below return. Only when set: an item without one keeps the standard click, and writing a blank
+	# would put a dead key in every saved journey.
+	if str(item.get("sound", "")) != "":
+		out["Sound"] = str(item.get("sound", ""))
+		out["SoundVolume"] = clampf(float(item.get("sound_volume", 1.0)), 0.0, 1.0)
 	if category == "override":
 		# An override carries a funscript BUNDLE (main + axes + vibes); the save has already rewritten the
 		# paths to pooled content/ rels. DurationMs is the derived clip length (0 when unknown — the runtime
@@ -1017,6 +1034,9 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 	if category == "key":
 		item["kind"] = "key"
 		return item
+	if str(raw.get("Sound", "")) != "":
+		item["sound"] = str(raw.get("Sound", ""))
+		item["sound_volume"] = clampf(float(raw.get("SoundVolume", 1.0)), 0.0, 1.0)
 	if category == "override":
 		# No `kind` — activation is category-driven (InventoryService branches on category=="override"),
 		# so it stays manually usable (unlike a key). Scripts resolve to absolute in the scanner.

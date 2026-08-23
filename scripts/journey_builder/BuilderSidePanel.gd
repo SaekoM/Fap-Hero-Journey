@@ -692,6 +692,7 @@ const _ITEM_EFFECT_KINDS: Array = [
 	"block",
 	"blackout",
 	"score_multiplier",
+	"score_add",
 	"coin_jackpot",
 	"coin_penalty",
 	"toll",
@@ -893,6 +894,96 @@ func _rebuild_custom_items_list() -> void:
 		_custom_items_list.add_child(_make_custom_item_row(i))
 
 
+# An audition button for an audio drop zone: press to hear the clip at the volume set beside it, press
+# again to stop. Every audio field in the builder had a drop zone and no way to hear what landed in it,
+# so a level was something an author set by eye and found out about in a round.
+#
+# Reads through CALLABLES rather than being handed values, because both the path and the volume change
+# after this is built — dropping a different file or nudging the level has to affect the next press.
+#
+# The player is parented to the caller's container, so it is freed with the panel and nothing is left
+# playing over a screen that has gone.
+func _make_audio_test_button(host: Node, read_path: Callable, read_volume: Callable) -> Button:
+	var player: AudioStreamPlayer = AudioStreamPlayer.new()
+	host.add_child(player)
+
+	var button: Button = Button.new()
+	button.text = "▶ TEST"
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button_subtle(button, UITheme.TOXIC_GREEN, 10, 6, 11)
+	button.pressed.connect(
+		func() -> void:
+			if player.playing:
+				player.stop()
+				button.text = "▶ TEST"
+				return
+			var path: String = str(read_path.call()).strip_edges()
+			if path == "":
+				_owner._show_status("Drop an audio file first.", true)
+				return
+			var stream: AudioStream = JourneyAudio.load_from_file(path)
+			if stream == null:
+				_owner._show_status("Could not read that audio file.", true)
+				return
+			player.stream = stream
+			player.volume_db = linear_to_db(maxf(0.0001, float(read_volume.call())))
+			player.play()
+			button.text = "■ STOP"
+	)
+	# A clip that runs out on its own puts the label back without anyone pressing anything.
+	player.finished.connect(func() -> void: button.text = "▶ TEST")
+	return button
+
+
+# The sound this item makes when it is used, INSTEAD of the standard click. A gunshot on a bullet or a
+# thud on a punch is most of what makes an authored item feel like the thing it is named after, and the
+# click is generic by design — layering both would only muddy it.
+#
+# Optional: an item without one keeps the click. Volume is stored alongside because an author's clip is
+# whatever level it was recorded at, and the game cannot normalise it for them — which is also why it
+# can be auditioned here. Setting a level by eye and finding out in a round is not a workflow.
+func _add_item_sound_fields(body: VBoxContainer, item: Dictionary) -> void:
+	body.add_child(_side_field_label("USE SOUND  (OPTIONAL)"))
+
+	var zone: Control = load("res://scripts/journey_builder/DropZone.gd").new()
+	zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS
+	zone.picker_title = "Item use sound"
+	if str(item.get("sound", "")) != "":
+		zone.call_deferred("set_file", str(item["sound"]), false)
+	zone.file_dropped.connect(func(path: String) -> void: item["sound"] = path)
+	body.add_child(zone)
+
+	var readout: Label = _side_field_label(
+		"VOLUME  %d%%" % roundi(float(item.get("sound_volume", 1.0)) * 100.0)
+	)
+	body.add_child(readout)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var volume: HSlider = HSlider.new()
+	volume.min_value = 0.0
+	volume.max_value = 1.0
+	volume.step = 0.05
+	volume.value = float(item.get("sound_volume", 1.0))
+	volume.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	volume.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	volume.value_changed.connect(
+		func(v: float) -> void:
+			item["sound_volume"] = v
+			readout.text = "VOLUME  %d%%" % roundi(v * 100.0)
+	)
+	row.add_child(volume)
+	row.add_child(
+		_make_audio_test_button(
+			row,
+			func() -> String: return str(item.get("sound", "")),
+			func() -> float: return float(item.get("sound_volume", 1.0))
+		)
+	)
+	body.add_child(row)
+
+
 func _default_custom_item() -> Dictionary:
 	# Name starts blank so an untouched item reads as incomplete and cancels silently when the author
 	# adds one and immediately dismisses the modal (see _close_item_editor).
@@ -904,6 +995,8 @@ func _default_custom_item() -> Dictionary:
 		"price": 30,
 		"duration_ms": JourneyData.ITEM_DEFAULT_DURATION_MS,
 		"effects": [],
+		"sound": "",
+		"sound_volume": 1.0,
 	}
 
 
@@ -915,6 +1008,8 @@ func _default_item_effect(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 100}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
+		"score_add":
+			return {"kind": "score_add", "amount": 250}  # points awarded the instant it is used
 		"coin_jackpot":
 			return {"kind": "coin_jackpot", "factor": 2.0}
 		"coin_penalty":
@@ -954,6 +1049,12 @@ func _effect_kind_desc(kind: String) -> String:
 			return "Hides the video; the device keeps playing in the dark."
 		"score_multiplier":
 			return "Multiplies the round's score."
+		"score_add":
+			return (
+				"Adds score the instant it is used. In a boss round with a SCORE health bar that is "
+				+ "damage — scaled by her stance, so it glances off a guard and does nothing through "
+				+ "an attack. Elsewhere it is simply points."
+			)
 		"coin_jackpot":
 			return "Multiplies the round's coin payout. Settled at the next round end."
 		"coin_penalty":
@@ -1468,6 +1569,8 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 	UITheme.style_line_edit(desc_edit)
 	desc_edit.text_changed.connect(func(v: String) -> void: item["description"] = v)
 	body.add_child(desc_edit)
+
+	_add_item_sound_fields(body, item)
 
 	body.add_child(_side_field_label("TYPE"))
 	var type_dd: OptionButton = OptionButton.new()
@@ -1989,6 +2092,8 @@ func _make_item_effect_row(
 			row.add_child(_make_factor_spin(fx, "factor", 0.1, 3.0, 0.05, "×", 1.0, on_tune))
 		"score_multiplier":
 			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "score ×", 2.0))
+		"score_add":
+			row.add_child(_make_int_spin(fx, "amount", 0, 1000000, "+", 250))
 		"coin_jackpot":
 			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "coin ×", 2.0))
 		"coin_penalty":
@@ -3138,6 +3243,13 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	)
 	fork_audio_vol.visible = str(data.get("audio", "")) != ""
 	col.add_child(fork_audio_vol)
+	col.add_child(
+		_make_audio_test_button(
+			col,
+			func() -> String: return str(data.get("audio", "")),
+			func() -> float: return float(data.get("audio_volume", 1.0))
+		)
+	)
 	var fork_audio_rm: Button = Button.new()
 	fork_audio_rm.text = "✕ REMOVE AUDIO"
 	fork_audio_rm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -4823,6 +4935,13 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	var bgm_vol: SpinBox = _make_factor_spin(arr[idx], "bgm_volume", 0.0, 1.0, 0.05, "vol ", 0.6)
 	bgm_vol.visible = str(sb_data.get("bgm", "")) != ""
 	col.add_child(bgm_vol)
+	col.add_child(
+		_make_audio_test_button(
+			col,
+			func() -> String: return str(arr[idx].get("bgm", "")),
+			func() -> float: return float(arr[idx].get("bgm_volume", 0.6))
+		)
+	)
 	var bgm_rm_btn: Button = Button.new()
 	bgm_rm_btn.text = "✕ REMOVE MUSIC"
 	bgm_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5101,6 +5220,13 @@ func _make_side_storyboard_line_block(
 	)
 	audio_vol.visible = line_data.get("audio", "") != ""
 	col.add_child(audio_vol)
+	col.add_child(
+		_make_audio_test_button(
+			col,
+			func() -> String: return str(lines_arr[line_idx].get("audio", "")),
+			func() -> float: return float(lines_arr[line_idx].get("audio_volume", 1.0))
+		)
+	)
 	var audio_rm_btn: Button = Button.new()
 	audio_rm_btn.text = "✕ REMOVE AUDIO"
 	audio_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL

@@ -1412,6 +1412,37 @@ func test_the_outcome_flags_survive_normalizing() -> void:
 	assert_str(str(RoundTimeline.normalize({"won_flag": "  "})["won_flag"])).is_equal("")
 
 
+func test_an_encounter_of_pure_settings_is_not_empty() -> void:
+	# BOTH save paths drop a timeline that is_empty() calls empty, so anything it fails to notice is
+	# discarded on the way to disk. An encounter can be entirely configuration — this one has no events,
+	# no phases and no music, and is still a complete fight.
+	assert_bool(RoundTimeline.is_empty(RoundTimeline.normalize({"boss_name": "Yuno"}))).is_false()
+	assert_bool(RoundTimeline.is_empty(RoundTimeline.normalize({"hp_bar": false}))).is_false()
+	(
+		assert_bool(
+			RoundTimeline.is_empty(
+				RoundTimeline.normalize({"hp_source": "score", "damage_target": 4000})
+			)
+		)
+		. is_false()
+	)
+	assert_bool(RoundTimeline.is_empty(RoundTimeline.normalize({"max_attempts": 3}))).is_false()
+	assert_bool(RoundTimeline.is_empty(RoundTimeline.normalize({"won_flag": "beat"}))).is_false()
+
+
+func test_a_timeline_at_its_defaults_is_empty() -> void:
+	# The other half: a round that never had an encounter must not gain an inert block on disk, and one
+	# whose author cleared everything back out must lose it again.
+	assert_bool(RoundTimeline.is_empty({})).is_true()
+	assert_bool(RoundTimeline.is_empty(RoundTimeline.empty())).is_true()
+	assert_bool(RoundTimeline.is_empty(RoundTimeline.normalize({}))).is_true()
+	# Normalizing twice is what a save/load round trip does, and must not make it look authored.
+	(
+		assert_bool(RoundTimeline.is_empty(RoundTimeline.normalize(RoundTimeline.normalize({}))))
+		. is_true()
+	)
+
+
 func test_the_health_bar_carries_where_it_sits_on_screen() -> void:
 	assert_float(float(RoundTimeline.normalize({})["hp_bar_y"])).is_equal_approx(
 		RoundTimeline.DEFAULT_HP_BAR_Y, 0.001

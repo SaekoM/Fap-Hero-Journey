@@ -384,13 +384,19 @@ static func empty() -> Dictionary:
 
 
 ## True when this timeline would change nothing at play time, so callers can skip the whole subsystem
-## (and a round with one keeps behaving exactly like today's boss round).
+## (and a round with one keeps behaving exactly like today's boss round). BOTH places that drop a
+## timeline on save ask this, so anything it fails to notice is silently discarded.
+##
+## Compared against the DEFAULT rather than against a hand-written list of fields. It used to test only
+## events, phases and bgm — which was true when an encounter with no events did nothing, and stopped
+## being true the moment the encounter grew settings of its own. A boss that is named, has a score
+## health bar, a damage target, attempts and regeneration is a complete encounter carrying no events at
+## all, and it was being thrown away on save.
+##
+## Written this way so the same thing cannot happen again: a field added to empty() and normalize() is
+## covered here the day it is added, with nothing to remember.
 static func is_empty(timeline: Dictionary) -> bool:
-	return (
-		(timeline.get("events", []) as Array).is_empty()
-		and (timeline.get("phases", []) as Array).is_empty()
-		and str((timeline.get("bgm", {}) as Dictionary).get("clip", "")) == ""
-	)
+	return JSON.stringify(normalize(timeline)) == JSON.stringify(empty())
 
 
 ## Any dictionary → the canonical timeline shape, with defaults filled and unusable entries dropped.

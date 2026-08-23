@@ -23,6 +23,14 @@ public partial class InventoryService : Node
     // ActivateItem's several early-returning branches a given kind exits through.
     [Signal] public delegate void ItemActivatedEventHandler(string itemId, string itemKind);
 
+    // Fired alongside ItemActivated with the parts of a use that happen AT ONCE rather than over a
+    // duration: points to award, and a sound to play instead of the default click. Kept separate from
+    // ItemActivated so the instantaneous side can grow without changing that signal's shape, and sent
+    // as a dictionary rather than three arguments for the same reason.
+    //
+    // Keys: id, score_add (int), sound (String), sound_volume (float).
+    [Signal] public delegate void ItemUsedEventHandler(Godot.Collections.Dictionary use);
+
     // Fired when an activation was refused for a reason worth explaining, so the UI can say why rather
     // than appearing to ignore the click.
     [Signal] public delegate void ItemRefusedEventHandler(string reason);
@@ -546,15 +554,46 @@ public partial class InventoryService : Node
         // single kind. Push one active effect per effect in the bundle (all sharing the item's
         // duration), else the single kind. Consumers match on `kind`, so N entries apply independently.
         var bundle = source.ContainsKey("effects") ? source["effects"].AsGodotArray() : null;
+        // score_add is INSTANTANEOUS and is summed out here rather than pushed onto _active: it has
+        // nothing to apply over a duration, and leaving it in the active list would put a HUD chip on
+        // screen for an effect that finished the moment it started.
+        int scoreAdd = 0;
         if (bundle != null && bundle.Count > 0)
         {
             foreach (var effVar in bundle)
-                _active.Add(_MakeActiveEffect(itemId, displayName, effVar.AsGodotDictionary(), duration));
+            {
+                var eff = effVar.AsGodotDictionary();
+                if ((eff.ContainsKey("kind") ? eff["kind"].AsString() : "") == "score_add")
+                {
+                    scoreAdd += eff.ContainsKey("amount") ? eff["amount"].AsInt32() : 0;
+                    continue;
+                }
+                _active.Add(_MakeActiveEffect(itemId, displayName, eff, duration));
+            }
+        }
+        else if ((source.ContainsKey("kind") ? source["kind"].AsString() : "") == "score_add")
+        {
+            scoreAdd += source.ContainsKey("amount") ? source["amount"].AsInt32() : 0;
         }
         else
         {
             _active.Add(_MakeActiveEffect(itemId, displayName, source, duration));
         }
+
+        // The SOUND comes from the item the player actually clicked, not from a wildcard's rolled
+        // modifier: they chose that card and should hear it, whatever it turned out to do.
+        EmitSignal(
+            SignalName.ItemUsed,
+            new Godot.Collections.Dictionary
+            {
+                ["id"] = itemId,
+                ["score_add"] = scoreAdd,
+                ["sound"] = item.ContainsKey("sound") ? item["sound"].AsString() : "",
+                ["sound_volume"] = item.ContainsKey("sound_volume")
+                    ? item["sound_volume"].AsSingle()
+                    : 1.0f,
+            }
+        );
 
         EmitSignal(SignalName.InventoryChanged);
         EmitSignal(SignalName.ActiveEffectsChanged);

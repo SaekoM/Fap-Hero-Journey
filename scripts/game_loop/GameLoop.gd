@@ -4189,6 +4189,35 @@ func _on_item_activated(item_id: String, item_kind: String) -> void:
 	_last_item_kind = item_kind
 
 
+# The parts of a use that happen AT ONCE — points awarded and the item's own sound — as opposed to the
+# effects that run for a duration.
+#
+# The score goes in as SCORE rather than as boss damage, which is what makes one item work everywhere:
+# in an ordinary round it is simply points, and in a boss round with a score bar the damage accumulator
+# picks the delta up on the next frame and scales it by her stance. So a thrown punch lands, glances off
+# a guard, or is swallowed whole by an attack — none of which this has to know about.
+func _on_item_used(use: Dictionary) -> void:
+	var points: int = int(use.get("score_add", 0))
+	if points > 0:
+		ScoreService.AddScore(points)
+		_show_toast("✦  +%d" % points)
+	var clip: String = str(use.get("sound", "")).strip_edges()
+	if clip == "":
+		return
+	# Reuses the encounter's cue player rather than adding a second one: it is a pooled one-shot player
+	# with nothing boss-specific in it, and items are used in ordinary rounds too.
+	(
+		_ensure_audio_cues()
+		. play_cue(
+			{
+				"clip": clip,
+				"volume": clampf(float(use.get("sound_volume", 1.0)), 0.0, 1.0),
+				"kind": RoundTimeline.AUDIO_SFX,
+			}
+		)
+	)
+
+
 # An activation was refused for a reason the player deserves to see — otherwise the click looks ignored
 # and the item looks broken.
 func _on_item_refused(reason: String) -> void:
@@ -4863,6 +4892,7 @@ func _connect_signals() -> void:
 	InventoryService.OverrideActivated.connect(_on_override_activated)
 	# Every successful activation, for the encounter conditions that count item use.
 	InventoryService.connect("ItemActivated", _on_item_activated)
+	InventoryService.connect("ItemUsed", _on_item_used)
 	# ...and the refusals worth explaining, so a blocked click does not look like a broken item.
 	InventoryService.connect("ItemRefused", _on_item_refused)
 	# save_now utility item: writes a save mid-round so the player can resume

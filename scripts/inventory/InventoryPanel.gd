@@ -253,11 +253,16 @@ func _activate_card(card: Control, use_lbl: Label, slot_idx: int) -> void:
 	# with nothing to rebuild it (the refusal path emits no InventoryChanged), and the item reappeared
 	# the next time the panel was opened. The player was shown a use that never happened.
 	var items: Array = InventoryService.GetItems()
-	if slot_idx < items.size() and _held_by_boss(items[slot_idx] as Dictionary):
+	var data: Dictionary = items[slot_idx] if slot_idx < items.size() else {}
+	if _held_by_boss(data):
 		_refuse_card(card)
 		return
 	_activating = true
-	UISound.item_use()
+	# The item's OWN sound replaces the click rather than layering over it — an authored gunshot and a
+	# generic UI blip firing together muddies both, and the point of the sound is that the item is that
+	# thing. GameLoop plays it, on activation; this only stands down.
+	if str(data.get("sound", "")) == "":
+		UISound.item_use()
 	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	use_lbl.text = "✓ ACTIVATED"
 	use_lbl.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
