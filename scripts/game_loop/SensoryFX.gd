@@ -121,6 +121,12 @@ void fragment() {
 
 var _video: VideoStreamPlayer = null
 
+# The node the picture is actually DRAWN by, which owns the shader material. Normally that is the video
+# player itself, but a caller may decode into a hidden player and draw its frames through a TextureRect
+# (to letterbox at native aspect — VideoStreamPlayer has no aspect-preserving stretch). The audio still
+# belongs to the player, so the two are tracked separately.
+var _screen: CanvasItem = null
+
 var _murk: ColorRect = null  # "Murk" — dims the screen
 var _tunnel: TextureRect = null  # "Tunnel" — closing vignette
 var _tunnel_grad: Gradient = null  # Tunnel gradient (mid ramp point moves with intensity)
@@ -164,8 +170,10 @@ var _audio_fx: Dictionary = {}  # audio kind → its AudioEffect on the bus (tar
 # order: murk → tunnel → bloodshot → static → flicker → strobe), the video-FX
 # material, and the audio bus. Call once, where the overlay stack should sit in
 # the parent's draw order.
-func setup(video: VideoStreamPlayer, overlay_parent: Control) -> void:
+func setup(video: VideoStreamPlayer, overlay_parent: Control, screen: CanvasItem = null) -> void:
 	_video = video
+	# Defaults to the player, so every existing caller keeps today's behaviour exactly.
+	_screen = screen if screen != null else video
 
 	# Murk — a flat dark dim (a softer Blinded; you can still half-see).
 	_murk = _make_full_rect_color(Color(0, 0, 0, 0.72), overlay_parent)
@@ -407,7 +415,7 @@ func tremor_offset() -> Vector2:
 func _set_video_fx(param: String, value: float) -> void:
 	if _fx_mat == null:
 		return
-	_video.material = _fx_mat
+	_screen.material = _fx_mat
 	_fx_mat.set_shader_parameter(param, value)
 
 
@@ -429,7 +437,7 @@ func _reset_video_fx_params() -> void:
 # Clears all video effects and drops the shader off the video entirely.
 func _reset_video_fx() -> void:
 	_reset_video_fx_params()
-	_video.material = null
+	_screen.material = null
 
 
 # Sets the Tunnel vignette from intensity: `mid_offset` (from imin/imax) moves the ramp point — smaller
@@ -785,7 +793,7 @@ func _drop_shader_if_idle() -> void:
 		if _applied.has(k) or _fading.has(k):
 			return
 	if _video != null:
-		_video.material = null
+		_screen.material = null
 
 
 # Adds an audio bus effect for `kind`, replacing any prior instance so a re-apply (intensity change)

@@ -20,6 +20,13 @@ const SLIDE_TIME: float = 0.18
 # until the inventory list rebuilds (cleared in _refresh).
 var _activating: bool = false
 
+# How far a refused card kicks sideways. Small: it is a "no", not an error the player caused.
+const REFUSE_SHAKE_PX: float = 6.0
+
+# The device lock is a plain property with no signal, so the panel watches it while open — an attack can
+# start or finish with the inventory already on screen, and the cards have to follow.
+var _device_held: bool = false
+
 # Journey "stats" block at the bottom: the player-visible counters and their values. Built in code
 # (the scene predates counters); kept live via GameState.CounterChanged while the panel is open.
 var _stats_box: VBoxContainer = null
@@ -84,6 +91,16 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+# The device lock has no signal to connect to, so it is watched here while the panel is on screen: an
+# attack can start or finish with the inventory already open, and the cards have to follow it rather
+# than showing whatever was true when the panel was built.
+func _process(_delta: float) -> void:
+	if InventoryService.DeviceHeldByAttack == _device_held:
+		return
+	_device_held = InventoryService.DeviceHeldByAttack
+	_refresh()
+
+
 func close() -> void:
 	emit_signal("closed")
 	var tween: Tween = create_tween()
@@ -105,6 +122,7 @@ func _slide_in() -> void:
 
 func _refresh() -> void:
 	_activating = false
+	_device_held = InventoryService.DeviceHeldByAttack
 	for child in _item_list.get_children():
 		child.queue_free()
 
@@ -172,15 +190,30 @@ func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
 	col.add_child(desc_lbl)
 
 	var use_lbl: Label = Label.new()
-	use_lbl.text = "> CLICK TO ACTIVATE"
-	use_lbl.add_theme_color_override("font_color", UITheme.AMBER)
+	var held: bool = _held_by_boss(data)
+	use_lbl.text = "✖ THE BOSS IS ATTACKING" if held else "> CLICK TO ACTIVATE"
+	use_lbl.add_theme_color_override("font_color", UITheme.DARK_TEXT if held else UITheme.AMBER)
 	use_lbl.add_theme_font_size_override("font_size", 10)
 	col.add_child(use_lbl)
+	# Dimmed as well as relabelled: the card has to read as unavailable at a glance, before anyone has
+	# started reading words on it.
+	if held:
+		card.modulate.a = 0.45
 
 	# Let click events fall through every descendant to the card's gui_input.
 	_set_mouse_filter_recursive(margin, Control.MOUSE_FILTER_IGNORE)
 	card.gui_input.connect(_on_card_input.bind(card, use_lbl, slot_idx))
 	return card
+
+
+# An override item cannot interrupt a boss attack — InventoryService refuses it. The panel has to know
+# the same thing, or it offers something that will be turned down.
+#
+# The flag is named for the takeover case, but GameLoop raises it for an authored ATTACKING stance too:
+# what the player sees is "she is attacking", and it would be strange for that to mean two different
+# things depending on how the move was built.
+func _held_by_boss(data: Dictionary) -> bool:
+	return InventoryService.DeviceHeldByAttack and str(data.get("category", "")) == "override"
 
 
 # Classifies an item by its effect `kind` into a player-facing category.
@@ -215,8 +248,21 @@ func _on_card_input(event: InputEvent, card: Control, use_lbl: Label, slot_idx: 
 func _activate_card(card: Control, use_lbl: Label, slot_idx: int) -> void:
 	if _activating:
 		return
+	# Asked BEFORE the animation, not after it. The card used to play its whole "✓ ACTIVATED" flash and
+	# slide-out and only then call ActivateItem — so a refused activation left the card visually gone
+	# with nothing to rebuild it (the refusal path emits no InventoryChanged), and the item reappeared
+	# the next time the panel was opened. The player was shown a use that never happened.
+	var items: Array = InventoryService.GetItems()
+	var data: Dictionary = items[slot_idx] if slot_idx < items.size() else {}
+	if _held_by_boss(data):
+		_refuse_card(card)
+		return
 	_activating = true
-	UISound.item_use()
+	# The item's OWN sound replaces the click rather than layering over it — an authored gunshot and a
+	# generic UI blip firing together muddies both, and the point of the sound is that the item is that
+	# thing. GameLoop plays it, on activation; this only stands down.
+	if str(data.get("sound", "")) == "":
+		UISound.item_use()
 	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	use_lbl.text = "✓ ACTIVATED"
 	use_lbl.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
@@ -235,6 +281,20 @@ func _activate_card(card: Control, use_lbl: Label, slot_idx: int) -> void:
 	)
 	# Activate once the card has visually left — InventoryChanged → _refresh().
 	tw.tween_callback(func() -> void: InventoryService.ActivateItem(slot_idx))
+
+
+# Says no without spending anything: a short shake and a flash of the danger colour, leaving the card
+# exactly where it was. The reason is already on the card itself, so this only has to register that the
+# click was heard and declined.
+func _refuse_card(card: Control) -> void:
+	UISound.error()
+	var origin: float = card.position.x
+	var shake: Tween = create_tween()
+	shake.tween_property(card, "position:x", origin + REFUSE_SHAKE_PX, 0.05)
+	shake.tween_property(card, "position:x", origin - REFUSE_SHAKE_PX, 0.05)
+	shake.tween_property(card, "position:x", origin, 0.05)
+	shake.parallel().tween_property(card, "modulate", Color(1.6, 0.7, 0.7, 0.45), 0.05)
+	shake.tween_property(card, "modulate", Color(1.0, 1.0, 1.0, 0.45), 0.1)
 
 
 # --------------------------------------------------------------------------

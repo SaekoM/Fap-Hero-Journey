@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using Godot.Collections;
 using System.Collections.Generic;
 
@@ -17,6 +17,23 @@ public partial class InventoryService : Node
     // coordinator loads the item's funscript bundle and plays it over the round. Like save_now/
     // skip_round it's instantaneous here (consumed, never enters _active).
     [Signal] public delegate void OverrideActivatedEventHandler(string itemId);
+
+    // Fired for EVERY successful activation, whatever kind the item turns out to be. The boss
+    // encounter's conditions count item use, and a consumer counting it must not have to know which of
+    // ActivateItem's several early-returning branches a given kind exits through.
+    [Signal] public delegate void ItemActivatedEventHandler(string itemId, string itemKind);
+
+    // Fired alongside ItemActivated with the parts of a use that happen AT ONCE rather than over a
+    // duration: points to award, and a sound to play instead of the default click. Kept separate from
+    // ItemActivated so the instantaneous side can grow without changing that signal's shape, and sent
+    // as a dictionary rather than three arguments for the same reason.
+    //
+    // Keys: id, score_add (int), sound (String), sound_volume (float).
+    [Signal] public delegate void ItemUsedEventHandler(Godot.Collections.Dictionary use);
+
+    // Fired when an activation was refused for a reason worth explaining, so the UI can say why rather
+    // than appearing to ignore the click.
+    [Signal] public delegate void ItemRefusedEventHandler(string reason);
 
     // ---------------------------------------------------------------------------
     // Item registry
@@ -446,6 +463,12 @@ public partial class InventoryService : Node
     }
 
     // Removes the item at slotIndex and starts its effect timer immediately.
+    // Set by GameLoop while an authored boss ATTACK owns the device. An override item may not interrupt
+    // one: the encounter is the authored thing, and the override engine replaces a running takeover with
+    // a later one — so without this the item would silently cut the boss's attack short. Checked BEFORE
+    // the item is removed from the inventory, so a refused attempt costs the player nothing.
+    public bool DeviceHeldByAttack { get; set; }
+
     public bool ActivateItem(int slotIndex)
     {
         if (slotIndex < 0 || slotIndex >= _items.Count)
@@ -460,7 +483,19 @@ public partial class InventoryService : Node
         if (itemKind == "key" || itemKind == "cleanse")
             return false;
 
+        string itemCategory = item.ContainsKey("category") ? item["category"].AsString() : "";
+        if (DeviceHeldByAttack && itemCategory == "override")
+        {
+            EmitSignal(SignalName.ItemRefused, "The boss has the device. Wait for the attack to finish.");
+            return false;
+        }
+
         _items.RemoveAt(slotIndex);
+        EmitSignal(
+            SignalName.ItemActivated,
+            item.ContainsKey("id") ? item["id"].AsString() : "",
+            itemKind
+        );
 
         // save_now is an instantaneous utility — it doesn't enter the active-
         // effect list, it just fires a signal for GameLoop to handle and is
@@ -519,15 +554,46 @@ public partial class InventoryService : Node
         // single kind. Push one active effect per effect in the bundle (all sharing the item's
         // duration), else the single kind. Consumers match on `kind`, so N entries apply independently.
         var bundle = source.ContainsKey("effects") ? source["effects"].AsGodotArray() : null;
+        // score_add is INSTANTANEOUS and is summed out here rather than pushed onto _active: it has
+        // nothing to apply over a duration, and leaving it in the active list would put a HUD chip on
+        // screen for an effect that finished the moment it started.
+        int scoreAdd = 0;
         if (bundle != null && bundle.Count > 0)
         {
             foreach (var effVar in bundle)
-                _active.Add(_MakeActiveEffect(itemId, displayName, effVar.AsGodotDictionary(), duration));
+            {
+                var eff = effVar.AsGodotDictionary();
+                if ((eff.ContainsKey("kind") ? eff["kind"].AsString() : "") == "score_add")
+                {
+                    scoreAdd += eff.ContainsKey("amount") ? eff["amount"].AsInt32() : 0;
+                    continue;
+                }
+                _active.Add(_MakeActiveEffect(itemId, displayName, eff, duration));
+            }
+        }
+        else if ((source.ContainsKey("kind") ? source["kind"].AsString() : "") == "score_add")
+        {
+            scoreAdd += source.ContainsKey("amount") ? source["amount"].AsInt32() : 0;
         }
         else
         {
             _active.Add(_MakeActiveEffect(itemId, displayName, source, duration));
         }
+
+        // The SOUND comes from the item the player actually clicked, not from a wildcard's rolled
+        // modifier: they chose that card and should hear it, whatever it turned out to do.
+        EmitSignal(
+            SignalName.ItemUsed,
+            new Godot.Collections.Dictionary
+            {
+                ["id"] = itemId,
+                ["score_add"] = scoreAdd,
+                ["sound"] = item.ContainsKey("sound") ? item["sound"].AsString() : "",
+                ["sound_volume"] = item.ContainsKey("sound_volume")
+                    ? item["sound_volume"].AsSingle()
+                    : 1.0f,
+            }
+        );
 
         EmitSignal(SignalName.InventoryChanged);
         EmitSignal(SignalName.ActiveEffectsChanged);
@@ -626,6 +692,58 @@ public partial class InventoryService : Node
             return;
         _bossEffects.Clear();
         EmitSignal(SignalName.ActiveEffectsChanged);
+    }
+
+    // Key stamped onto boss effects installed by AddBossEffectsFrom, so the same set can be lifted
+    // again later. Underscore-prefixed like the other internal bookkeeping keys (_ref).
+    private const string SourceIdKey = "_source_id";
+
+    // Installs boss effects tagged with `sourceId`, so they can be removed as a group later without
+    // disturbing anything else. This is what lets a BOSS TIMELINE apply an effect for a bounded WINDOW:
+    // AddBossEffectsFrom when the window opens, RemoveBossEffectsFrom when it closes. Plain
+    // AddBossEffects stays the whole-round path and is untouched.
+    //
+    // Each entry is DUPLICATED before tagging: the caller's dictionary is authored data that may be
+    // reused (a preset dropped on the timeline twice), and stamping the original would leak this
+    // bookkeeping back into it.
+    public void AddBossEffectsFrom(string sourceId, Array effects)
+    {
+        bool added = false;
+        foreach (var fx in effects)
+        {
+            if (fx.VariantType != Variant.Type.Dictionary)
+                continue;
+            var copy = fx.AsGodotDictionary().Duplicate(true);
+            copy[SourceIdKey] = sourceId;
+            _bossEffects.Add(copy);
+            added = true;
+        }
+
+        if (added)
+            EmitSignal(SignalName.ActiveEffectsChanged);
+    }
+
+    // Removes every boss effect installed under `sourceId`. Untagged effects — the whole-round set from
+    // AddBossEffects — are never touched, so closing a timeline window cannot strip the round's own
+    // forced modifiers. A no-op when that source has nothing installed (a window closing twice, or one
+    // whose effects were already cleared at round end).
+    public void RemoveBossEffectsFrom(string sourceId)
+    {
+        bool removed = false;
+        for (int i = _bossEffects.Count - 1; i >= 0; i--)
+        {
+            if (
+                _bossEffects[i].ContainsKey(SourceIdKey)
+                && _bossEffects[i][SourceIdKey].AsString() == sourceId
+            )
+            {
+                _bossEffects.RemoveAt(i);
+                removed = true;
+            }
+        }
+
+        if (removed)
+            EmitSignal(SignalName.ActiveEffectsChanged);
     }
 
     // Immediately removes every active effect of the given kind. Used by GameLoop

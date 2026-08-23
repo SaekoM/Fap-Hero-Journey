@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -52,6 +52,25 @@ public partial class ScoreService : Node
         }
         SetMultiplier(multiplier);
     }
+
+    // The round IN PROGRESS, for the boss encounter's conditions. Deliberately separate from the
+    // Total* properties: a fork asking "are they struggling?" means struggling in THIS fight, and a
+    // running total that carries every earlier round would answer a different question entirely.
+    // The scoring thresholds, exposed so the encounter editor can work out what a full pass of a round
+    // is worth WITHOUT retyping them. A second copy in GDScript would drift silently the first time
+    // scoring was retuned, and the number an author tunes their boss against would quietly go wrong.
+    public int SmallStrokeMax => SmallMax;
+    public int MediumStrokeMax => MediumMax;
+    public int SmallStrokePoints => SmallPts;
+    public int MediumStrokePoints => MediumPts;
+    public int LargeStrokePoints => LargePts;
+
+    public int CurrentRoundScore => _current.Score;
+    public int CurrentRoundSmallStrokes => _current.SmallStrokes;
+    public int CurrentRoundMediumStrokes => _current.MediumStrokes;
+    public int CurrentRoundLargeStrokes => _current.LargeStrokes;
+    public int CurrentRoundStrokes =>
+        _current.SmallStrokes + _current.MediumStrokes + _current.LargeStrokes;
 
     public int TotalScore => _rounds.Sum(r => r.Score) + _current.Score;
     // Score of the most recently completed round (0 before any round ends). Used
@@ -157,6 +176,19 @@ public partial class ScoreService : Node
     // Docks points from the current round's score (pause penalty). Clamped at 0 so
     // a penalty can never eat into previously banked rounds. Emits ScoreChanged so
     // the HUD reflects the drain live.
+    // Awards points outright, outside the stroke model. The mirror of PenalizeScore, and used for the
+    // same reason: something happened that the funscript did not do. An item that damages the boss adds
+    // score here, and the round's damage accumulator picks the delta up on the next frame and scales it
+    // by whatever stance she is in — so a thrown punch lands, glances off a guard, or does nothing at
+    // all through an attack, without this needing to know any of that.
+    public void AddScore(int points)
+    {
+        if (points <= 0)
+            return;
+        _current.Score += points;
+        EmitSignal(SignalName.ScoreChanged, TotalScore);
+    }
+
     public void PenalizeScore(int points)
     {
         if (points <= 0)

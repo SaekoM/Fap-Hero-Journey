@@ -83,3 +83,46 @@ func test_oneshot_effect_params_round_trip() -> void:
 	assert_str(str((fx[3] as Dictionary)["counter"])).is_equal("belt")
 	assert_int(int((fx[3] as Dictionary)["delta"])).is_equal(2)
 	assert_str(str((fx[4] as Dictionary)["kind"])).is_equal("hud_hide")
+
+
+func test_use_sound_survives_the_round_trip() -> void:
+	# The trap this schema keeps setting: coerce/parse both build a FRESH dictionary from the keys they
+	# know, so a field missing from either direction is silently dropped between the editor and the save.
+	var item := {
+		"id": "itm_gun",
+		"name": "Revolver",
+		"category": "modifier",
+		"price": 60,
+		"effects": [{"kind": "score_add", "amount": 400}],
+		"sound": "/sfx/gunshot.ogg",
+		"sound_volume": 0.6,
+	}
+	var runtime := JourneyData.parse_journey_item(JourneyData.coerce_journey_item(item))
+	assert_str(str(runtime["sound"])).is_equal("/sfx/gunshot.ogg")
+	assert_float(float(runtime["sound_volume"])).is_equal_approx(0.6, 0.001)
+	assert_int(int((runtime["effects"] as Array)[0]["amount"])).is_equal(400)
+
+
+func test_an_override_keeps_its_use_sound_too() -> void:
+	# Written before the per-category branches return, so it is not a modifier-only field.
+	var item := {
+		"id": "itm_ov",
+		"name": "Grip",
+		"category": "override",
+		"price": 10,
+		"scripts": {"main": "/a.funscript"},
+		"sound": "/sfx/thud.ogg",
+		"sound_volume": 1.0,
+	}
+	var runtime := JourneyData.parse_journey_item(JourneyData.coerce_journey_item(item))
+	assert_str(str(runtime["sound"])).is_equal("/sfx/thud.ogg")
+
+
+func test_an_item_without_a_sound_writes_no_sound_keys() -> void:
+	# A blank would put a dead key in every saved journey, and the runtime reads "no sound" as "keep the
+	# standard click" — so absence has to stay absence.
+	var saved := JourneyData.coerce_journey_item(
+		{"id": "itm_x", "name": "Plain", "category": "modifier", "price": 5, "effects": []}
+	)
+	assert_bool(saved.has("Sound")).is_false()
+	assert_bool(saved.has("SoundVolume")).is_false()

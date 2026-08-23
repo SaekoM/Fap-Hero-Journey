@@ -504,6 +504,12 @@ static func _flow_analysis(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 		var exit_flags: Dictionary = (entry["flags"] as Dictionary).duplicate()
 		for f: String in JourneyData.clean_flag_list(data.get("set_flags", [])):
 			exit_flags[f] = true
+		# A boss encounter raises one of its own flags whichever way the fight goes, and they live in the
+		# round's timeline rather than its set_flags. This set means "settable on some route in", so BOTH
+		# belong: a fork gated on either is reachable, and without them every such fork read as a dead
+		# branch nothing in the journey could ever satisfy.
+		for f: String in JourneyData.boss_outcome_flags(data):
+			exit_flags[f] = true
 
 		match type:
 			"round":
@@ -924,6 +930,32 @@ static func _finding(
 
 
 # The inverse of the gate checks: authored content that nothing consumes.
+# A simulated run either beats the boss or does not, so at most ONE outcome flag is raised — raising
+# both would let a single run take fork branches that are mutually exclusive in play.
+#
+# The outcome is a COIN FLIP, deliberately not a model. Nothing here knows how hard the fight is, and
+# the point of the simulator is that both branches get traffic across the run count so neither reads as
+# unreachable. Take the resulting percentages as "both paths work", not as a difficulty estimate.
+#
+# Rolled over the two OUTCOMES rather than over the named flags: an author who named only `won_flag`
+# still loses half the time, and those runs simply raise nothing. Rolling the flags instead would have
+# made every run a win the moment one side was left unnamed.
+static func _roll_boss_outcome(
+	data: Dictionary, run_flags: Dictionary, rng: RandomNumberGenerator
+) -> void:
+	# A pool round plays one of its entries, so the fight itself is picked before its outcome is.
+	var fights: Array = JourneyData.boss_timelines(data)
+	if fights.is_empty():
+		return
+	var fight: Dictionary = fights[rng.randi() % fights.size()]
+	var key: String = RoundTimeline.OUTCOME_FLAG_KEYS[
+		rng.randi() % RoundTimeline.OUTCOME_FLAG_KEYS.size()
+	]
+	var flag: String = str(fight.get(key, "")).strip_edges()
+	if flag != "":
+		run_flags[flag] = true
+
+
 # Orphan flags (set but never required by any fork choice) and unused gate
 # items (key-kind items granted/stocked but never required — items with their
 # own effects, like Cleanse, are exempt: not being gated isn't waste for them).
@@ -941,6 +973,9 @@ static func _coverage_findings(graph: Dictionary, ctx: Dictionary) -> Array:
 		var node: Dictionary = nodes[id]
 		var data: Dictionary = node.get("data", {})
 		for f: String in JourneyData.clean_flag_list(data.get("set_flags", [])):
+			if not flag_set_at.has(f):
+				flag_set_at[f] = id
+		for f: String in JourneyData.boss_outcome_flags(data):
 			if not flag_set_at.has(f):
 				flag_set_at[f] = id
 		match str(node.get("type", "")):
@@ -1110,6 +1145,7 @@ static func simulate(
 			var type: String = str(node.get("type", ""))
 			for f: String in JourneyData.clean_flag_list(data.get("set_flags", [])):
 				run_flags[f] = true
+			_roll_boss_outcome(data, run_flags, rng)
 			_apply_counters(counters, data)
 
 			match type:

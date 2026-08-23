@@ -77,6 +77,9 @@ var _edit_btn_base_text: String = ""
 @onready
 var _delete_btn: Button = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/ActionRow/DeleteButton
 
+# How far DELETE sits from the safe actions beside it. Wide enough that reaching it is a decision.
+const DESTRUCTIVE_GAP: int = 40
+
 # Dynamically created in _populate_modal when the current journey has a save.
 # Inserted as the first child of the ActionRow so it sits before Play. Removed
 # (and Play recoloured) when the modal switches to a journey without a save.
@@ -459,6 +462,7 @@ func _connect_signals() -> void:
 	_build_export_button()
 	_build_import_button()
 	_build_rendition_button()
+	_isolate_delete_button()
 
 
 func _on_sort_pressed(field: String) -> void:
@@ -634,6 +638,25 @@ func _confirm_delete() -> void:
 # ---------------------------------------------------------------------------
 # Export (.fhj packaging)
 # ---------------------------------------------------------------------------
+
+
+# Puts DELETE at the far end of the action row, behind a gap.
+#
+# It sat between EDIT JOURNEY and EXPORT — the one irreversible action in the middle of a row of safe
+# ones, the same width and weight as its neighbours, reachable by a misjudged click aimed at either. The
+# row is built by appending, and DELETE happens to be defined in the scene before EXPORT and RENDITION
+# exist, so its position was an accident of construction rather than a decision.
+func _isolate_delete_button() -> void:
+	if not is_instance_valid(_delete_btn):
+		return
+	var row: Node = _delete_btn.get_parent()
+	if row == null:
+		return
+	var gap: Control = Control.new()
+	gap.custom_minimum_size.x = DESTRUCTIVE_GAP
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(gap)
+	row.move_child(_delete_btn, row.get_child_count() - 1)
 
 
 func _build_export_button() -> void:

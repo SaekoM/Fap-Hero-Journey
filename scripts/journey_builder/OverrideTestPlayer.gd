@@ -15,7 +15,11 @@ extends Node
 signal state_changed(playing: bool)  # true on start, false on stop/finish — drives the button label
 
 var _bundle: OverrideBundle = null
-var _timeline: OverrideTimeline = null
+
+# Typed as the base Control, not OverrideTimeline: the only thing this needs from a timeline widget is
+# `set_playhead(ms)`, and the BOSS encounter editor drives the same test-play through its own lane
+# timeline (BossTimeline). A narrower type would exclude it for no benefit.
+var _timeline: Control = null
 var _trim_in_ms: int = 0  # playhead offset: the slice plays rebased to 0 but sweeps the lit window
 var _start_ticks: int = 0  # wall-clock at play start; elapsed is read from it so it can't drift slow
 var _duration_ms: int = 1
@@ -34,7 +38,7 @@ func is_playing() -> bool:
 
 
 # Starts playback of `bundle`, sweeping `timeline`'s playhead across the trimmed window from `trim_in_ms`.
-func start(bundle: OverrideBundle, timeline: OverrideTimeline, trim_in_ms: int) -> void:
+func start(bundle: OverrideBundle, timeline: Control, trim_in_ms: int) -> void:
 	stop()
 	if bundle == null or bundle.is_empty():
 		return

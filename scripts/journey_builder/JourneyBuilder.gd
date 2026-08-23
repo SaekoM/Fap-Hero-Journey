@@ -43,6 +43,7 @@ const CAUSE_SRC_UNREADABLE: String = "src_unreadable"
 const CAUSE_DST_UNWRITABLE: String = "dst_unwritable"
 const CAUSE_TRANSCODE_FAILED: String = "transcode_failed"
 const CAUSE_TRIM_INVALID: String = "trim_invalid"
+const CAUSE_ENCOUNTER_INVALID: String = "encounter_invalid"
 const CAUSE_UNKNOWN_COPY_ERROR: String = "unknown_copy_error"
 # Graph-editor structural causes (L4 validation).
 const CAUSE_NO_START: String = "no_start"
@@ -414,6 +415,12 @@ func _all_set_flags() -> Dictionary:
 			flags[str(f)] = true
 		for f: Variant in d.get("clear_flags", []):  # a cleared flag is part of the flag universe too
 			flags[str(f)] = true
+		# A boss encounter raises its own flags on the way out, and they live inside the round's timeline
+		# rather than in the node's set_flags — a fork asking "did they beat her?" is asking about one of
+		# these, so leaving them out made every such fork look like a typo and offered the author nothing
+		# to type.
+		for flag: String in JourneyData.boss_outcome_flags(d):
+			flags[flag] = true
 		for e: Dictionary in n.get("out", []):
 			for f2: Variant in e.get("set_flags", []):
 				flags[str(f2)] = true
@@ -2155,6 +2162,12 @@ func _input(event: InputEvent) -> void:
 	# Only fresh key-down events; ignore key-up and auto-repeat (echo). The echo guard also stops a
 	# held Delete from chain-deleting nodes.
 	if not k.pressed or k.echo:
+		return
+	# A modal owns the keyboard while it is up. _input runs BEFORE the modal's own
+	# _unhandled_key_input, so without this the canvas would act on Ctrl+C / Delete / Ctrl+Z aimed at
+	# the encounter editor — copying graph nodes while the author thought they were copying events.
+	# Same shield the OS-file-drop handler uses.
+	if _modal_shield_open():
 		return
 
 	if k.ctrl_pressed:
@@ -4376,6 +4389,7 @@ func _collect_rendition_presave_issues() -> Array:
 		match str(n.get("type", "")):
 			"round":
 				_save_check_round(data, "Round %d" % ordinal, issues)
+				_save_check_encounter(data, "Round %d" % ordinal, issues)
 			"storyboard":
 				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
@@ -5084,6 +5098,14 @@ func _save_round_node_media(
 		)
 		boss_rel = str(gif["rel"]) if gif["handled"] else _pool_small_file(boss_src, abs_dir)
 	saved_data["boss_image"] = boss_rel
+
+	# Boss timeline (the authored encounter): its attack funscripts, cast art and audio cues are the
+	# author's own files, so they pool into content/ like every other round asset and the saved
+	# timeline carries rels — which is what lets an encounter travel in the .fhj.
+	if saved_data.has("timeline"):
+		saved_data["timeline"] = await _pool_timeline_media(
+			saved_data["timeline"] as Dictionary, abs_dir, modal
+		)
 
 	# Video → content pool. Legacy fallback: a pre-VideoPath round carries its video
 	# only on disk; a re-save must never drop it (the swap deletes the old folder).
@@ -5839,6 +5861,28 @@ func _pool_small_file(
 	return pool["rel"]
 
 
+# Pools a boss timeline's media into content/ and returns the timeline with its paths rewritten to
+# pooled rels. Each file is pooled the way its family expects: attack scripts as funscripts, audio
+# verbatim, and cue art through the GIF/animation bake — a cue image may be an ANIMATION (the Tier-1
+# attack-animation layer), and Godot can't decode GIF, so it can never ship verbatim. The enumeration
+# and the rewrite both live in RoundTimeline, so this only has to know how to pool a file.
+func _pool_timeline_media(timeline: Dictionary, abs_dir: String, modal: Control) -> Dictionary:
+	var mapping: Dictionary = {}
+	for entry: Dictionary in RoundTimeline.media_entries(timeline):
+		var src: String = str(entry["path"])
+		var kind: String = str(entry["kind"])
+		if kind == RoundTimeline.MEDIA_FUNSCRIPT:
+			mapping[src] = _pool_small_file(src, abs_dir, "funscript")
+		elif kind == RoundTimeline.MEDIA_IMAGE:
+			var gif: Dictionary = await _store_gif_source(
+				src, abs_dir, JourneyData.ANIM_CAP_STORYBOARD, false, modal
+			)
+			mapping[src] = str(gif["rel"]) if gif["handled"] else _pool_small_file(src, abs_dir)
+		else:
+			mapping[src] = _pool_small_file(src, abs_dir)
+	return RoundTimeline.remap_media(timeline, mapping)
+
+
 # Pools an override item's funscript bundle into content/ (hash-deduped, funscript-family), rewriting the
 # author's source paths to journey-root-relative pooled rels so the saved item — and the .fhj — carry the
 # files. Empty channels are dropped. Mirrors the round's per-channel pooling, minus segments (never cut).
@@ -6400,6 +6444,39 @@ func _graph_issue_label(node_id: String) -> String:
 		"loop_end":
 			return "A Loop End"
 	return "A node"
+
+
+# Boss ENCOUNTER validation, run through the timeline's own validate() — the same call that drives the
+# encounter editor's warnings, so what the editor flags is exactly what blocks the save rather than two
+# rules drifting apart.
+#
+# The round's LENGTH is passed when known. An unsaved round has none, and validate() then skips the
+# checks that need it (overlapping attacks, events past the end) while still catching the content
+# problems — an attack with no funscript, an empty cue, an effect window applying nothing. Guessing a
+# length would produce confident, wrong complaints.
+func _save_check_encounter(data: Dictionary, ctx: String, issues: Array) -> void:
+	# Only a BOSS round plays its encounter (GameLoop._load_round_timeline), so a timeline left behind on
+	# a round switched back to normal/effect is dormant data — it must not block the save.
+	if str(data.get("round_type", "normal")) != "boss":
+		return
+	var raw: Variant = data.get("timeline", {})
+	if not (raw is Dictionary) or (raw as Dictionary).is_empty():
+		return
+	for issue: Dictionary in RoundTimeline.validate(
+		raw as Dictionary, int(data.get("length_ms", 0))
+	):
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_ENCOUNTER_INVALID,
+					"item": "%s — encounter" % ctx,
+					"detail": str(issue.get("message", "")),
+					"hint":
+					"Open the round's BUILD ENCOUNTER editor; the block is highlighted there.",
+				}
+			)
+		)
 
 
 # Graph fork authoring checks (3c-ii): a fork's choices are its out-edges. Mirrors the tree's

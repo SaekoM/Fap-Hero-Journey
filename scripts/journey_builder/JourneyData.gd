@@ -486,6 +486,17 @@ static func effect_param_specs(kind: String) -> Array:
 					"step": 5
 				}
 			]
+		"score_add":
+			return [
+				{
+					"key": "amount",
+					"label": "Score added",
+					"ctl": "coins",
+					"min": 0,
+					"max": 1000000,
+					"step": 10
+				}
+			]
 		"interest":
 			return [
 				{
@@ -716,6 +727,16 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 				out.erase("pool_entries")
 				out.erase("show_encounter")
 				out.erase("no_repeat")
+			# Boss timeline (the authored encounter). Normalized through its own model so the saved
+			# shape is canonical, and dropped entirely when it would do nothing — an empty block on
+			# every round in every journey is pure noise on disk. Its media paths are rewritten to
+			# pooled rels later, by _save_round_node_media, like the rest of the round's media.
+			if out.has("timeline"):
+				var timeline: Dictionary = RoundTimeline.normalize(out["timeline"] as Dictionary)
+				if RoundTimeline.is_empty(timeline):
+					out.erase("timeline")
+				else:
+					out["timeline"] = timeline
 		"shop":
 			out["title"] = str(data.get("title", ""))
 			out["mode"] = str(data.get("mode", "pool"))
@@ -728,6 +749,9 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			# image + lines are overwritten by _save_storyboard_node_media.
 			out["coins"] = int(data.get("coins", 0))
 			out["item"] = str(data.get("item", ""))
+			# An organisational label for the builder's graph. Never shown to a player — a storyboard's
+			# on-screen content is its lines, and this is only how an author tells twelve of them apart.
+			out["name"] = str(data.get("name", ""))
 		"fork":
 			out["title"] = str(data.get("title", ""))
 			out["description"] = str(data.get("description", ""))
@@ -742,6 +766,10 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 		"checkpoint":
 			# A save point between rounds — its only field is the banner label.
 			out["name"] = str(data.get("name", ""))
+			# Dropped on the way out, so a journey authored before checkpoints auto-saved stops carrying
+			# it after its first re-save. It rewarded pressing CONTINUE instead of taking the break, and
+			# there is no longer a break to skip: reaching the checkpoint saves either way.
+			out.erase("continue_reward")
 	# Counter deltas can ride on ANY node type (a round bumps "belt", a storyboard bumps "arousal"),
 	# so normalize them here rather than per type. Cleaned to {name:int}; dropped entirely when empty
 	# so the schema stays lean (mirrors how set_flags only appears when non-empty).
@@ -946,6 +974,12 @@ static func coerce_journey_item(item: Dictionary) -> Dictionary:
 		out["Image"] = str(item.get("image", ""))
 	if category == "key":
 		return out
+	# The use sound rides EVERY usable category, so it is written before the per-category branches
+	# below return. Only when set: an item without one keeps the standard click, and writing a blank
+	# would put a dead key in every saved journey.
+	if str(item.get("sound", "")) != "":
+		out["Sound"] = str(item.get("sound", ""))
+		out["SoundVolume"] = clampf(float(item.get("sound_volume", 1.0)), 0.0, 1.0)
 	if category == "override":
 		# An override carries a funscript BUNDLE (main + axes + vibes); the save has already rewritten the
 		# paths to pooled content/ rels. DurationMs is the derived clip length (0 when unknown — the runtime
@@ -1007,6 +1041,9 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 	if category == "key":
 		item["kind"] = "key"
 		return item
+	if str(raw.get("Sound", "")) != "":
+		item["sound"] = str(raw.get("Sound", ""))
+		item["sound_volume"] = clampf(float(raw.get("SoundVolume", 1.0)), 0.0, 1.0)
 	if category == "override":
 		# No `kind` — activation is category-driven (InventoryService branches on category=="override"),
 		# so it stays manually usable (unlike a key). Scripts resolve to absolute in the scanner.
@@ -1331,6 +1368,37 @@ static func stage_with_speaker(
 	return out
 
 
+# Every flag the boss encounters on a ROUND node can raise — the round's own, plus each pool entry,
+# since an entry can be its own boss carrying its own encounter. Empty for anything that is not a boss.
+#
+# Shared because three separate things need it and none of them should know the timeline's shape: the
+# builder's flag universe (so a fork can name one), the auditor's dataflow (so a fork gated on one is
+# not read as a dead branch), and its coverage pass.
+static func boss_outcome_flags(round_data: Dictionary) -> Array:
+	var out: Array = []
+	for timeline: Dictionary in boss_timelines(round_data):
+		for flag: String in RoundTimeline.outcome_flags(timeline):
+			if not out.has(flag):
+				out.append(flag)
+	return out
+
+
+# The encounters a round node can actually play: its own, plus one per pool entry — a pool round plays
+# exactly ONE of them, which is why they are kept separate rather than merged. Only encounters that name
+# at least one outcome flag come back; the rest tell a journey nothing.
+static func boss_timelines(round_data: Dictionary) -> Array:
+	var out: Array = []
+	var holders: Array = [round_data]
+	for entry: Variant in round_data.get("pool_entries", []) as Array:
+		if entry is Dictionary:
+			holders.append(entry)
+	for holder: Dictionary in holders:
+		var timeline: Variant = holder.get("timeline", {})
+		if timeline is Dictionary and not RoundTimeline.outcome_flags(timeline).is_empty():
+			out.append(timeline)
+	return out
+
+
 # Normalizes a flag list (from a comma-separated field or a saved array) to a deduped, trimmed,
 # non-empty string array. Shared by a node's "sets flags" and a fork choice's "sets flags".
 static func clean_flag_list(v: Variant) -> Array:
@@ -1612,6 +1680,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 					"data":
 					{
 						"type": "storyboard",
+						"name": sb.get("name", ""),
 						"coins": sb.get("coins", 0),
 						"item": sb.get("item", ""),
 						"image": sb.get("image", ""),

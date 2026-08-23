@@ -225,3 +225,19 @@ func test_parent_graph_is_not_mutated() -> void:
 	assert_int((parent["nodes"]["a"]["out"] as Array).size()).is_equal(0)
 	assert_str(str(parent["nodes"]["a"]["data"]["video_path"])).is_equal("")
 	assert_bool((parent["nodes"] as Dictionary).has("b")).is_false()
+
+
+func test_storyboard_name_survives_the_round_trip() -> void:
+	# The loader inflates a storyboard from a fixed key list, so a field missing from EITHER direction is
+	# dropped between the builder and the save — the same trap that has eaten several fields already.
+	var saved := JourneyData.coerce_node_save_data(
+		"storyboard", {"name": "She finds out", "coins": 5, "item": "", "lines": []}
+	)
+	assert_str(str(saved["name"])).is_equal("She finds out")
+
+
+func test_a_storyboard_without_a_name_saves_a_blank_one() -> void:
+	# Blank rather than absent: the caption falls back to "STORYBOARD n" on an empty string, and a
+	# missing key would read the same way — but writing it keeps every storyboard the same shape.
+	var saved := JourneyData.coerce_node_save_data("storyboard", {"coins": 0, "lines": []})
+	assert_str(str(saved["name"])).is_equal("")

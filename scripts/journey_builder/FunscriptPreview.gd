@@ -405,7 +405,7 @@ func _build_segment_toolbar() -> Control:
 	set_in.tooltip_text = UITheme.wrap_tip("Mark the window start at the playhead")
 	set_in.pressed.connect(func() -> void: _set_mark(true))
 	bar.add_child(set_in)
-	var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.AMBER)
+	var set_out: Button = UITheme.make_icon_btn("OUT ⟧", false, UITheme.DANGER)
 	set_out.tooltip_text = UITheme.wrap_tip("Mark the window end at the playhead")
 	set_out.pressed.connect(func() -> void: _set_mark(false))
 	bar.add_child(set_out)
@@ -1507,7 +1507,7 @@ class _Graph:
 			draw_line(
 				Vector2(xo, area.position.y),
 				Vector2(xo, area.position.y + area.size.y),
-				UITheme.AMBER,
+				UITheme.DANGER,
 				2.0
 			)
 			draw_string(
@@ -1517,7 +1517,7 @@ class _Graph:
 				HORIZONTAL_ALIGNMENT_LEFT,
 				-1,
 				10,
-				UITheme.AMBER
+				UITheme.DANGER
 			)
 
 	# Position labels pinned to the left edge of the visible area (over a small

@@ -548,6 +548,13 @@ static func _resolve_round_paths(d: Dictionary, base: String) -> void:
 	d["boss_image"] = _abs(str(d.get("boss_image", "")), base)
 	_resolve_channels(d.get("axis_scripts", {}), base)
 	_resolve_channels(d.get("vib_scripts", {}), base)
+	# Boss timeline: its attack scripts / cast images / audio clips are pooled rels like every other
+	# media field, so they resolve here too. Normalized on the way in as well — the timeline is the one
+	# node-data block with a nested schema, and healing it once at load means no consumer has to guard.
+	if d.has("timeline"):
+		d["timeline"] = RoundTimeline.resolve_media(
+			RoundTimeline.normalize(d["timeline"] as Dictionary), base
+		)
 	# Pool round: each encounter entry carries its own media set — resolve them too (incl. a
 	# boss entry's intro image).
 	for entry: Dictionary in d.get("pool_entries", []):

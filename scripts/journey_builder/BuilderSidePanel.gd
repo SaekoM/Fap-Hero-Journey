@@ -43,6 +43,16 @@ const VIB_CHANNELS_INFO: Array = [
 # Gameplay forced-modifier kinds a boss round can impose. Visual/audio effects
 # (incl. the old BLACKOUT) now live in the "Non-gameplay modifiers" picker.
 const BOSS_MODIFIER_KINDS: Array = ["scale", "clamp", "reverse", "score_multiplier"]
+
+# A list modal sized to its contents: chrome (title, footer buttons, padding) plus a row each, clamped so
+# a long list still scrolls and a short one does not open onto a void.
+const ITEMS_MODAL_CHROME: int = 260
+const ITEMS_MODAL_ROW: int = 64
+const ITEMS_MODAL_MIN: int = 340
+const ITEMS_MODAL_MAX: int = 640
+
+# The audition button beside an audio field. Wide enough to read, narrow enough to stay a utility.
+const AUDIO_TEST_BTN_WIDTH: int = 84
 const BOSS_MODIFIER_LABELS: Array = [
 	"SCALE  —  STROKE LENGTH",
 	"CLAMP  —  POSITION RANGE",
@@ -692,6 +702,7 @@ const _ITEM_EFFECT_KINDS: Array = [
 	"block",
 	"blackout",
 	"score_multiplier",
+	"score_add",
 	"coin_jackpot",
 	"coin_penalty",
 	"toll",
@@ -815,9 +826,18 @@ func _make_custom_items_section() -> Control:
 # The custom-item LIST lives in its own modal (not the cramped side panel) so a journey can define many
 # items without crowding the builder. Rows edit/delete; ＋ ADD appends and opens the editor on top.
 # _custom_items_list points at this modal's container while it's open, so any edit refreshes the list.
+# Tall enough for what is actually in the list, capped so a long one still scrolls rather than running
+# off the screen.
+func _items_modal_height() -> int:
+	var rows: int = (_owner._journey_items as Array).size()
+	return clampi(ITEMS_MODAL_CHROME + rows * ITEMS_MODAL_ROW, ITEMS_MODAL_MIN, ITEMS_MODAL_MAX)
+
+
 func _open_items_manager_modal() -> void:
+	# Height follows the list instead of always reserving room for ten items. A journey with one item
+	# used to open a 640px panel with a single row at the top and a void beneath it.
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"CUSTOM ITEMS", UITheme.PURPLE_BRIGHT, Vector2i(560, 640)
+		"CUSTOM ITEMS", UITheme.PURPLE_BRIGHT, Vector2i(560, _items_modal_height())
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -893,6 +913,129 @@ func _rebuild_custom_items_list() -> void:
 		_custom_items_list.add_child(_make_custom_item_row(i))
 
 
+# A volume control and its audition button on one line, which is how they are used: set a level, hear
+# it, adjust. They were stacked, and the button spanned the panel — the utility outweighing the setting.
+#
+# Volume reads as a PERCENTAGE everywhere now. The three storyboard/fork fields showed a raw "vol 0.60"
+# while the item editor showed "VOLUME 60%", which is one idea wearing two faces.
+func _make_volume_row(
+	host: Node, target: Dictionary, key: String, default: float, read_path: Callable
+) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = 0
+	spin.max_value = 100
+	spin.step = 1
+	spin.suffix = "%"
+	spin.value = 100.0 * float(target.get(key, default))
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(spin)
+	spin.value_changed.connect(func(v: float) -> void: target[key] = v / 100.0)
+	row.add_child(spin)
+
+	row.add_child(
+		_make_audio_test_button(
+			host, read_path, func() -> float: return float(target.get(key, default))
+		)
+	)
+	return row
+
+
+# An audition button for an audio drop zone: press to hear the clip at the volume set beside it, press
+# again to stop. Every audio field in the builder had a drop zone and no way to hear what landed in it,
+# so a level was something an author set by eye and found out about in a round.
+#
+# Reads through CALLABLES rather than being handed values, because both the path and the volume change
+# after this is built — dropping a different file or nudging the level has to affect the next press.
+#
+# The player is parented to the caller's container, so it is freed with the panel and nothing is left
+# playing over a screen that has gone.
+func _make_audio_test_button(host: Node, read_path: Callable, read_volume: Callable) -> Button:
+	var player: AudioStreamPlayer = AudioStreamPlayer.new()
+	host.add_child(player)
+
+	var button: Button = Button.new()
+	button.text = "▶ TEST"
+	# Compact and shrink-to-fit rather than full width: it is a utility beside the thing it tests, and at
+	# panel width in the brightest colour on screen it read as the section's primary action.
+	button.size_flags_horizontal = Control.SIZE_SHRINK_END
+	button.custom_minimum_size.x = AUDIO_TEST_BTN_WIDTH
+	UITheme.style_button_subtle(button, UITheme.TOXIC_GREEN, 9, 4, 10)
+	button.pressed.connect(
+		func() -> void:
+			if player.playing:
+				player.stop()
+				button.text = "▶ TEST"
+				return
+			var path: String = str(read_path.call()).strip_edges()
+			if path == "":
+				_owner._show_status("Drop an audio file first.", true)
+				return
+			var stream: AudioStream = JourneyAudio.load_from_file(path)
+			if stream == null:
+				_owner._show_status("Could not read that audio file.", true)
+				return
+			player.stream = stream
+			player.volume_db = linear_to_db(maxf(0.0001, float(read_volume.call())))
+			player.play()
+			button.text = "■ STOP"
+	)
+	# A clip that runs out on its own puts the label back without anyone pressing anything.
+	player.finished.connect(func() -> void: button.text = "▶ TEST")
+	return button
+
+
+# The sound this item makes when it is used, INSTEAD of the standard click. A gunshot on a bullet or a
+# thud on a punch is most of what makes an authored item feel like the thing it is named after, and the
+# click is generic by design — layering both would only muddy it.
+#
+# Optional: an item without one keeps the click. Volume is stored alongside because an author's clip is
+# whatever level it was recorded at, and the game cannot normalise it for them — which is also why it
+# can be auditioned here. Setting a level by eye and finding out in a round is not a workflow.
+func _add_item_sound_fields(body: VBoxContainer, item: Dictionary) -> void:
+	body.add_child(_side_field_label("USE SOUND  (OPTIONAL)"))
+
+	var zone: Control = load("res://scripts/journey_builder/DropZone.gd").new()
+	zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS
+	zone.picker_title = "Item use sound"
+	if str(item.get("sound", "")) != "":
+		zone.call_deferred("set_file", str(item["sound"]), false)
+	zone.file_dropped.connect(func(path: String) -> void: item["sound"] = path)
+	body.add_child(zone)
+
+	var readout: Label = _side_field_label(
+		"VOLUME  %d%%" % roundi(float(item.get("sound_volume", 1.0)) * 100.0)
+	)
+	body.add_child(readout)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var volume: HSlider = HSlider.new()
+	volume.min_value = 0.0
+	volume.max_value = 1.0
+	volume.step = 0.05
+	volume.value = float(item.get("sound_volume", 1.0))
+	volume.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	volume.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	volume.value_changed.connect(
+		func(v: float) -> void:
+			item["sound_volume"] = v
+			readout.text = "VOLUME  %d%%" % roundi(v * 100.0)
+	)
+	row.add_child(volume)
+	row.add_child(
+		_make_audio_test_button(
+			row,
+			func() -> String: return str(item.get("sound", "")),
+			func() -> float: return float(item.get("sound_volume", 1.0))
+		)
+	)
+	body.add_child(row)
+
+
 func _default_custom_item() -> Dictionary:
 	# Name starts blank so an untouched item reads as incomplete and cancels silently when the author
 	# adds one and immediately dismisses the modal (see _close_item_editor).
@@ -904,6 +1047,8 @@ func _default_custom_item() -> Dictionary:
 		"price": 30,
 		"duration_ms": JourneyData.ITEM_DEFAULT_DURATION_MS,
 		"effects": [],
+		"sound": "",
+		"sound_volume": 1.0,
 	}
 
 
@@ -915,6 +1060,8 @@ func _default_item_effect(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 100}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
+		"score_add":
+			return {"kind": "score_add", "amount": 250}  # points awarded the instant it is used
 		"coin_jackpot":
 			return {"kind": "coin_jackpot", "factor": 2.0}
 		"coin_penalty":
@@ -954,6 +1101,12 @@ func _effect_kind_desc(kind: String) -> String:
 			return "Hides the video; the device keeps playing in the dark."
 		"score_multiplier":
 			return "Multiplies the round's score."
+		"score_add":
+			return (
+				"Adds score the instant it is used. In a boss round with a SCORE health bar that is "
+				+ "damage — scaled by her stance, so it glances off a guard and does nothing through "
+				+ "an attack. Elsewhere it is simply points."
+			)
 		"coin_jackpot":
 			return "Multiplies the round's coin payout. Settled at the next round end."
 		"coin_penalty":
@@ -1283,8 +1436,13 @@ func _open_character_editor_modal(char_idx: int, is_new: bool = false) -> void:
 		return
 	var chr: Dictionary = _owner._journey_characters[char_idx]
 
+	var portraits: int = (chr.get("portraits", []) as Array).size()
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"CHARACTER", UITheme.PURPLE_BRIGHT, Vector2i(520, 620)
+		"CHARACTER",
+		UITheme.PURPLE_BRIGHT,
+		Vector2i(
+			520, clampi(ITEMS_MODAL_CHROME + portraits * ITEMS_MODAL_ROW, 380, ITEMS_MODAL_MAX)
+		)
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -1468,6 +1626,8 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 	UITheme.style_line_edit(desc_edit)
 	desc_edit.text_changed.connect(func(v: String) -> void: item["description"] = v)
 	body.add_child(desc_edit)
+
+	_add_item_sound_fields(body, item)
 
 	body.add_child(_side_field_label("TYPE"))
 	var type_dd: OptionButton = OptionButton.new()
@@ -1989,6 +2149,8 @@ func _make_item_effect_row(
 			row.add_child(_make_factor_spin(fx, "factor", 0.1, 3.0, 0.05, "×", 1.0, on_tune))
 		"score_multiplier":
 			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "score ×", 2.0))
+		"score_add":
+			row.add_child(_make_int_spin(fx, "amount", 0, 1000000, "+", 250))
 		"coin_jackpot":
 			row.add_child(_make_factor_spin(fx, "factor", 1.0, 10.0, 0.25, "coin ×", 2.0))
 		"coin_penalty":
@@ -3133,8 +3295,8 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	fork_loop_toggle.visible = str(data.get("audio", "")) != ""
 	fork_loop_toggle.toggled.connect(func(on: bool) -> void: data["audio_loop"] = on)
 	col.add_child(fork_loop_toggle)
-	var fork_audio_vol: SpinBox = _make_factor_spin(
-		data, "audio_volume", 0.0, 1.0, 0.05, "vol ", 1.0
+	var fork_audio_vol: Control = _make_volume_row(
+		col, data, "audio_volume", 1.0, func() -> String: return str(data.get("audio", ""))
 	)
 	fork_audio_vol.visible = str(data.get("audio", "")) != ""
 	col.add_child(fork_audio_vol)
@@ -3369,7 +3531,8 @@ func _graph_node_label(node_id: String) -> String:
 			var sn: String = str(d.get("title", "")).strip_edges()
 			return "Shop — %s" % (sn if sn != "" else "(unnamed)")
 		"storyboard":
-			return "Storyboard"
+			var sbn: String = str(d.get("name", "")).strip_edges()
+			return "Storyboard — %s" % (sbn if sbn != "" else "(unnamed)")
 		"fork":
 			var fn: String = str(d.get("title", "")).strip_edges()
 			return "Fork — %s" % (fn if fn != "" else "(unnamed)")
@@ -3584,55 +3747,6 @@ func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
 	name_edit.text_changed.connect(func(val: String) -> void: arr[idx]["name"] = val)
 	col.add_child(name_edit)
 
-	# ON CONTINUE — a reward for pressing on instead of taking the break. Applied only when the player
-	# clicks Continue (never on a resume), so an author can reward not-saving: give an item, bump a
-	# counter, and/or set a flag, then gate a secret path or ending on it.
-	col.add_child(_side_divider_line())
-	var rhint: Label = Label.new()
-	rhint.text = "ON CONTINUE — GRANTED WHEN THE PLAYER SKIPS THE SAVE AND KEEPS GOING (NOT WHEN THEY SAVE & QUIT, THEN RESUME). USE IT TO REWARD PRESSING ON, THEN GATE A SECRET PATH OR ENDING ON WHAT'S COLLECTED."
-	rhint.add_theme_color_override("font_color", UITheme.SEPARATOR)
-	rhint.add_theme_font_size_override("font_size", 10)
-	rhint.uppercase = true
-	rhint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(rhint)
-	if not arr[idx].has("continue_reward"):
-		arr[idx]["continue_reward"] = {}
-	var reward: Dictionary = arr[idx]["continue_reward"]
-	col.add_child(_award_item_field(reward))
-	col.add_child(_make_set_counters_field(reward))
-	col.add_child(_make_set_flags_field(reward))
-	return col
-
-
-# An "award item" picker (built-ins + journey custom items, plus a None) → target["award_item"]. Used by
-# the checkpoint ON-CONTINUE reward; None (empty id) grants nothing.
-func _award_item_field(target: Dictionary) -> Control:
-	var col: VBoxContainer = VBoxContainer.new()
-	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label("AWARD ITEM"))
-	var entries: Array = [{"id": "", "label": "None"}]
-	for k: String in InventoryService.GetBuiltinItemIds():
-		entries.append({"id": k, "label": str(InventoryService.GetItemData(k).get("name", k))})
-	for it: Dictionary in _owner._journey_items:
-		var iid: String = str(it.get("id", ""))
-		if iid != "":
-			entries.append({"id": iid, "label": "%s  (custom)" % str(it.get("name", ""))})
-	var dd: OptionButton = OptionButton.new()
-	var cur: String = str(target.get("award_item", ""))
-	var sel: int = 0
-	for i: int in entries.size():
-		var e: Dictionary = entries[i]
-		dd.add_item(str(e["label"]), i)
-		dd.set_item_metadata(i, str(e["id"]))
-		if str(e["id"]) == cur:
-			sel = i
-	dd.selected = sel
-	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_option_button(dd)
-	dd.item_selected.connect(
-		func(i: int) -> void: target["award_item"] = str(dd.get_item_metadata(i))
-	)
-	col.add_child(dd)
 	return col
 
 
@@ -4754,6 +4868,21 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 6)
 
+	# First, because it is what the author looks for when they come back to this node. Builder-only: a
+	# storyboard's on-screen content is its lines, and this never reaches a player.
+	col.add_child(_side_field_label("NAME  (FOR YOUR MAP — PLAYERS NEVER SEE IT)"))
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.text = str(sb_data.get("name", ""))
+	name_edit.placeholder_text = "e.g. Intro, She finds out, Bad end"
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(
+		func(v: String) -> void:
+			arr[idx]["name"] = v
+			# The graph caption reads this, so the node relabels as it is typed rather than on reselect.
+			_owner._refresh_graph()
+	)
+	col.add_child(name_edit)
+
 	col.add_child(_side_field_label("COINS AWARDED"))
 	var coins_spin: SpinBox = SpinBox.new()
 	coins_spin.min_value = 0
@@ -4820,7 +4949,9 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	col.add_child(bgm_zone)
 	if str(sb_data.get("bgm", "")) != "":
 		bgm_zone.call_deferred("set_file", sb_data["bgm"])
-	var bgm_vol: SpinBox = _make_factor_spin(arr[idx], "bgm_volume", 0.0, 1.0, 0.05, "vol ", 0.6)
+	var bgm_vol: Control = _make_volume_row(
+		col, arr[idx], "bgm_volume", 0.6, func() -> String: return str(arr[idx].get("bgm", ""))
+	)
 	bgm_vol.visible = str(sb_data.get("bgm", "")) != ""
 	col.add_child(bgm_vol)
 	var bgm_rm_btn: Button = Button.new()
@@ -5096,8 +5227,12 @@ func _make_side_storyboard_line_block(
 		func(on: bool) -> void: lines_arr[line_idx]["audio_loop"] = on
 	)
 	col.add_child(audio_loop_toggle)
-	var audio_vol: SpinBox = _make_factor_spin(
-		lines_arr[line_idx], "audio_volume", 0.0, 1.0, 0.05, "vol ", 1.0
+	var audio_vol: Control = _make_volume_row(
+		col,
+		lines_arr[line_idx],
+		"audio_volume",
+		1.0,
+		func() -> String: return str(lines_arr[line_idx].get("audio", ""))
 	)
 	audio_vol.visible = line_data.get("audio", "") != ""
 	col.add_child(audio_vol)
@@ -5695,6 +5830,117 @@ func _make_warmup_toggle(arr: Array, idx: int) -> Control:
 
 # ── Boss round expander ──────────────────────────────────────────────────────
 
+# Probed video durations, keyed by source path. ffprobe is a subprocess, and the side panel rebuilds on
+# every selection — without this the encounter button would shell out each time.
+var _clock_probe_cache: Dictionary = {}
+
+
+# The round's length in ms — the clock the encounter's events are placed against. Tried in the order
+# that matches what actually plays: the VIDEO first (the runtime scheduler measures against
+# `_video.get_stream_length()`), then the saved `length_ms`, then the funscript's own span.
+#
+# `length_ms` alone is not enough: the save WRITES it, so an unsaved round has none, and gating on it
+# left the button greyed out for every round the author had not saved yet.
+func _round_clock_ms(data: Dictionary) -> int:
+	var video: String = str(data.get("video_path", ""))
+	if video != "":
+		if _clock_probe_cache.has(video):
+			return int(_clock_probe_cache[video])
+		var seconds: float = MediaPoolService.probe_duration_seconds(video)
+		var ms: int = int(round(seconds * 1000.0))
+		_clock_probe_cache[video] = ms
+		if ms > 0:
+			return ms
+	var saved: int = int(data.get("length_ms", 0))
+	if saved > 0:
+		return saved
+	return int(
+		JourneyData.read_funscript_stats(str(data.get("funscript_path", ""))).get("length_ms", 0)
+	)
+
+
+# Opens the encounter editor for this round, and reports what it already holds so the author can see at
+# a glance whether one is authored. The round's VIDEO LENGTH is the clock the editor places events
+# against; without one, end-anchored events could not be resolved, so the button says so rather than
+# opening an editor that would quietly mis-place them.
+# One boss-chrome switch. Absent means ON, matching the runtime's own default, so an existing journey
+# keeps its chrome without needing a re-save to write the key.
+func _make_chrome_toggle(arr: Array, idx: int, key: String, label: String, tip: String) -> Control:
+	var toggle: CheckButton = CheckButton.new()
+	toggle.text = label
+	toggle.tooltip_text = UITheme.wrap_tip(tip)
+	toggle.button_pressed = bool(arr[idx].get(key, true))
+	toggle.toggled.connect(func(pressed: bool) -> void: arr[idx][key] = pressed)
+	return toggle
+
+
+# The round's authored encounter, type-checked. Read fresh every time it is needed.
+func _round_timeline(data: Dictionary) -> Dictionary:
+	var raw: Variant = data.get("timeline", {})
+	return raw if raw is Dictionary else {}
+
+
+func _make_encounter_button(arr: Array, idx: int) -> Control:
+	var button: Button = Button.new()
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var count: int = (_round_timeline(arr[idx]).get("events", []) as Array).size()
+	button.text = "◆ EDIT ENCOUNTER  (%d)" % count if count > 0 else "◆ BUILD ENCOUNTER"
+	UITheme.style_button(button, UITheme.DANGER)
+
+	var length_ms: int = _round_clock_ms(arr[idx])
+	if length_ms <= 0:
+		button.disabled = true
+		button.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"Add this round's video (or its funscript) first — the encounter is placed against the round's length."
+			)
+		)
+		return button
+
+	button.pressed.connect(
+		func() -> void:
+			# A Node, so the tree owns it: open() parents it to the builder and closing frees it along
+			# with its modal, preview stage and any running device test.
+			var editor: BossTimelineEditor = BossTimelineEditor.new()
+			editor.saved.connect(
+				func(edited: Dictionary) -> void:
+					# Dropped entirely when it would do nothing, matching what the save does, so an
+					# emptied encounter leaves no dead block behind on the round.
+					if RoundTimeline.is_empty(edited):
+						arr[idx].erase("timeline")
+					else:
+						arr[idx]["timeline"] = edited
+					# Relabel BEFORE refreshing: _refresh_graph can rebuild this panel, which frees the
+					# very button being captured here — writing to it afterwards is a use-after-free.
+					# Guarded as well, since a rebuild can also be triggered from elsewhere while the
+					# encounter modal is open.
+					if is_instance_valid(button):
+						button.text = (
+							"◆ EDIT ENCOUNTER  (%d)" % (edited.get("events", []) as Array).size()
+						)
+					_owner._refresh_graph()
+			)
+			# The video and funscript drive the preview stage and the timeline's sync reference.
+			(
+				editor
+				. open(
+					_owner,
+					# Re-read at CLICK time, not when the button was built: saving an encounter replaces the
+					# round's timeline dict, and a value captured at build time would reopen the old one —
+					# which looked exactly like the edits had been lost.
+					_round_timeline(arr[idx]),
+					length_ms,
+					str(arr[idx].get("video_path", "")),
+					str(arr[idx].get("funscript_path", "")),
+					_owner._journey_characters,
+					_owner._journey_items,
+					_owner._journey_allow_finish
+				)
+			)
+	)
+	return button
+
 
 # A "BOSS ROUND" toggle that, when on, marks the round as a boss and reveals its
 # config: an optional intro image, an optional tagline, and a list of forced
@@ -5725,7 +5971,7 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	wrapper.add_child(boss_panel)
 
 	var hint: Label = Label.new()
-	hint.text = "BOSS ROUNDS DISABLE ITEM USE, APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE, AND OPEN WITH A TELEGRAPHED INTRO CARD."
+	hint.text = "BOSS ROUNDS APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE AND OPEN WITH A TELEGRAPHED INTRO CARD. ITEMS ARE LOCKED OUT UNLESS AN ENCOUNTER ALLOWS THEM."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
@@ -5753,6 +5999,36 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	UITheme.style_line_edit(tagline)
 	tagline.text_changed.connect(func(val: String) -> void: arr[idx]["boss_tagline"] = val)
 	boss_panel.add_child(tagline)
+
+	# The authored ENCOUNTER — attacks, cast cues, audio and windowed effects placed on this round's
+	# video clock (BOSS_ROUND_DESIGN). Optional: a boss with no timeline plays exactly as it always has,
+	# driven by the forced modifiers below.
+	boss_panel.add_child(_side_field_label("ENCOUNTER TIMELINE  (OPTIONAL)"))
+	boss_panel.add_child(_make_encounter_button(arr, idx))
+
+	# Boss CHROME. Both default ON, so a boss authored before these existed is untouched; an author who
+	# builds their own opener and atmosphere out of the encounter turns them off for a clean canvas.
+	(
+		boss_panel
+		. add_child(
+			_make_chrome_toggle(
+				arr,
+				idx,
+				"show_intro_card",
+				"SHOW INTRO CARD",
+				"The '⚔ BOSS ROUND' telegraph card, with its BEGIN gate. Off opens straight into the round."
+			)
+		)
+	)
+	boss_panel.add_child(
+		_make_chrome_toggle(
+			arr,
+			idx,
+			"show_boss_frame",
+			"SHOW BOSS VIGNETTE",
+			"The red border held over the video for the whole round."
+		)
+	)
 
 	# Forced modifiers list.
 	boss_panel.add_child(_side_field_label("FORCED MODIFIERS"))
