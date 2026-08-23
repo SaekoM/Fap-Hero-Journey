@@ -269,7 +269,7 @@ func set_round_progress(fraction: float) -> void:
 # Moves the chase bar one frame closer to the real one. Driven from set_round_progress rather than from
 # _process deliberately: the two must advance together, and this is the call both the round and the
 # preview already make every frame. As _process it did not run at all — the ghost sat where it started
-# and the gap simply grew, which is the one state the snap below cannot correct.
+# and the gap grew without bound, which is what the bar visibly did.
 func _step_chase() -> void:
 	if not is_instance_valid(_ghost):
 		return
@@ -333,12 +333,15 @@ func _refresh_fill() -> void:
 func _refresh_stance_label() -> void:
 	if not is_instance_valid(_stance_label):
 		return
+	# NORMAL shows NOTHING. It was drawn dim on the theory that a permanent label should not shout, but a
+	# dim word under a bar is not read as "normal" — at that size it reads as a smudge on the video. The
+	# absence IS the signal, which is already how the glow works: nothing to see means nothing is on.
+	if _stance == RoundTimeline.STANCE_NORMAL:
+		_stance_label.text = ""
+		return
 	_stance_label.text = RoundTimeline.stance_label(_stance)
-	var normal: bool = _stance == RoundTimeline.STANCE_NORMAL
-	_stance_label.add_theme_color_override(
-		"font_color", UITheme.DARK_TEXT if normal else _stance_color()
-	)
-	_stance_label.modulate.a = 0.45 if normal else 1.0
+	_stance_label.add_theme_color_override("font_color", _stance_color())
+	_stance_label.modulate.a = 1.0
 
 
 # One colour per stance, chosen so the two ZEROS never read as the same thing: she cannot be hurt either

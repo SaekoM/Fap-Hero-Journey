@@ -32,6 +32,11 @@ const NEW_WINDOW_MS: int = 5000
 # event never resizes it — see _build_inspector_row.
 const INSPECTOR_WIDTH: int = 520
 
+# How far a branch sits inside the segment that owns it, and how wide its tag field is. A tag is a
+# handful of characters; the indent is what makes the ownership visible at a glance.
+const BRANCH_INDENT: int = 18
+const BRANCH_TAG_WIDTH: int = 120
+
 # How the left column's height is divided between the picture and the lanes, and the floor below which
 # the lanes stop giving ground however tall the preview would like to be.
 const STAGE_STRETCH: float = 1.5
@@ -71,6 +76,10 @@ var _timeline_view: BossTimeline = null
 var _context_menu: PopupMenu = null
 var _scrollbar: HScrollBar = null
 var _inspector: VBoxContainer = null
+# Which inspector sections are folded open. Held on the EDITOR rather than rebuilt with the panel: the
+# inspector is torn down and rebuilt on every keystroke, so state living in it would fold everything
+# closed while an author typed.
+var _open_sections: Dictionary = {}
 # event id → the problems validate() found with it. Marked on the block and spelled out in the
 # inspector, so a warning never reflows the layout the way a growing footer label did.
 var _issues: Dictionary = {}
@@ -1271,6 +1280,43 @@ func _build_encounter_inspector() -> void:
 	)
 	_inspector.add_child(_labeled("Boss name (shown on the health bar)", name_field))
 
+	# The ITEMS toggle stays out here rather than in a fold of its own: it is one switch, and a header
+	# that hides a single checkbox costs more than it saves.
+	var items: CheckButton = CheckButton.new()
+	items.text = "PLAYER MAY USE ITEMS"
+	items.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Lets the player open their inventory during this encounter. Turn it off for a sealed-room fight. An authored ATTACK always outranks an override item — one used mid-attack is refused rather than consumed."
+		)
+	)
+	items.button_pressed = bool(_timeline.get("items_allowed", true))
+	items.toggled.connect(
+		func(pressed: bool) -> void:
+			_snapshot("field:items_allowed")
+			_timeline["items_allowed"] = pressed
+	)
+	_inspector.add_child(items)
+
+	_add_section("health", "HEALTH BAR", UITheme.DANGER, _build_health_section)
+	_add_section("segments", "SEGMENTS", UITheme.CYAN, _build_segments_section)
+	_add_section("outcomes", "HOW THE ROUND CAN END", UITheme.AMBER, _build_outcomes_section)
+
+	var hint: Label = Label.new()
+	hint.text = "Select a block to edit it, or add one from the row above."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(hint, UITheme.DARK_TEXT, 11)
+	_inspector.add_child(hint)
+
+
+# The health bar and everything that decides what drains it: whether it shows at all, where it sits,
+# whether phases cut it into stages, what fills it, and how she recovers.
+#
+# Split out of _build_encounter_inspector, which had grown past 190 lines. That mattered more than
+# tidiness: an early return added midway through it once silently removed the items toggle, the
+# segments list and every outcome block, because nothing about a single long function says which
+# sections come after the line you are editing.
+func _build_health_section() -> void:
 	var hp: CheckButton = CheckButton.new()
 	hp.text = "SHOW HEALTH BAR"
 	hp.tooltip_text = (
@@ -1290,11 +1336,14 @@ func _build_encounter_inspector() -> void:
 
 	# Only worth showing while there is a bar to move.
 	if bool(_timeline.get("hp_bar", true)):
+		# Percent, like the phase thresholds beside it. A raw 0.02 is the only placement in the editor
+		# expressed as a fraction, and it reads as a tuning constant rather than a position.
 		var bar_y: SpinBox = SpinBox.new()
-		bar_y.min_value = 0.0
-		bar_y.max_value = 1.0
-		bar_y.step = 0.01
-		bar_y.value = float(_timeline.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y))
+		bar_y.min_value = 0
+		bar_y.max_value = 100
+		bar_y.step = 1
+		bar_y.suffix = "%"
+		bar_y.value = 100.0 * float(_timeline.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y))
 		bar_y.tooltip_text = (
 			UITheme
 			. wrap_tip(
@@ -1309,10 +1358,10 @@ func _build_encounter_inspector() -> void:
 		bar_y.value_changed.connect(
 			func(value: float) -> void:
 				_snapshot("field:hp_bar_y")
-				_timeline["hp_bar_y"] = value
+				_timeline["hp_bar_y"] = value / 100.0
 				_rebuild_preview()
 		)
-		_inspector.add_child(_labeled("Health bar Y", bar_y))
+		_inspector.add_child(_labeled("Health bar Y (down the screen)", bar_y))
 
 	var ticks: CheckButton = CheckButton.new()
 	ticks.text = "SPLIT THE BAR BY PHASE"
@@ -1413,31 +1462,6 @@ func _build_encounter_inspector() -> void:
 		_add_target_recommendation()
 		_add_regen_fields()
 
-	var items: CheckButton = CheckButton.new()
-	items.text = "PLAYER MAY USE ITEMS"
-	items.tooltip_text = (
-		UITheme
-		. wrap_tip(
-			"Lets the player open their inventory during this encounter. Turn it off for a sealed-room fight. An authored ATTACK always outranks an override item — one used mid-attack is refused rather than consumed."
-		)
-	)
-	items.button_pressed = bool(_timeline.get("items_allowed", true))
-	items.toggled.connect(
-		func(pressed: bool) -> void:
-			_snapshot("field:items_allowed")
-			_timeline["items_allowed"] = pressed
-	)
-	_inspector.add_child(items)
-
-	_build_segments_section()
-	_build_outcomes_section()
-
-	var hint: Label = Label.new()
-	hint.text = "Select a block to edit it, or add one from the row above."
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_label(hint, UITheme.DARK_TEXT, 11)
-	_inspector.add_child(hint)
-
 
 # The DEFEAT events. They live here rather than on a lane because they have no place on the clock: they
 # play when the player gives in (the FINISH button), whenever that happens — so a position would be a lie.
@@ -1446,13 +1470,6 @@ func _build_encounter_inspector() -> void:
 # mode dropdown: an author needs to see at a glance which endings they have NOT written, and a single
 # list hides that behind reading every row.
 func _build_outcomes_section() -> void:
-	_inspector.add_child(HSeparator.new())
-
-	var title: Label = Label.new()
-	title.text = "HOW THE ROUND CAN END"
-	UITheme.style_label(title, UITheme.AMBER, 12, true)
-	_inspector.add_child(title)
-
 	var hold: SpinBox = _make_ms_spin(
 		int(_timeline.get("outcome_hold_ms", RoundTimeline.DEFAULT_OUTCOME_HOLD_MS))
 	)
@@ -1484,6 +1501,64 @@ func _build_outcomes_section() -> void:
 		),
 		"lost_flag"
 	)
+
+
+# A folding section of the inspector: a header that opens and closes a body of controls.
+#
+# The encounter settings run to about forty controls, and an author works one of these at a time — as one
+# scroll they read as a wall, with a segment list and three endings all carrying the same visual weight
+# as a checkbox. `builder` fills the body.
+#
+# The swap around `builder.call()` is what keeps this cheap: every section builder already writes to
+# `_inspector`, so pointing that at the body for the duration puts their output inside the fold without
+# any of them needing to know a fold exists.
+func _add_section(key: String, title: String, accent: Color, builder: Callable) -> void:
+	var open: bool = bool(_open_sections.get(key, false))
+
+	var header: Button = Button.new()
+	header.text = ("▾  " if open else "▸  ") + title
+	header.toggle_mode = true
+	header.button_pressed = open
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.focus_mode = Control.FOCUS_NONE
+	UITheme.style_button_subtle(header, accent, 11, 6, 12)
+	header.pressed.connect(
+		func() -> void:
+			_open_sections[key] = not bool(_open_sections.get(key, false))
+			_refresh()
+	)
+	_inspector.add_child(header)
+
+	if not open:
+		return
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	_inspector.add_child(body)
+	var outer: VBoxContainer = _inspector
+	_inspector = body
+	builder.call()
+	_inspector = outer
+
+
+# Segment problems are keyed to the SEGMENT rather than to an event, so the per-event issue panel never
+# shows them — without this they would be the one class of warning an author could not see anywhere.
+func _segment_issues_for(segment_id: String) -> Array:
+	if segment_id == "":
+		return []
+	var out: Array = []
+	for issue: Dictionary in RoundTimeline.validate(_timeline, _full_ms):
+		if str(issue.get("event_id", "")) != segment_id:
+			continue
+		if (
+			str(issue["code"])
+			in [
+				RoundTimeline.ISSUE_SEGMENT_THIN,
+				RoundTimeline.ISSUE_SEGMENT_DEAD_TAG,
+				RoundTimeline.ISSUE_SEGMENT_TAG_CLASH,
+			]
+		):
+			out.append(issue)
+	return out
 
 
 # Whether the bar is counting the player down rather than the clock. Winning, replays, damage windows and
@@ -1528,18 +1603,35 @@ func _build_outcome_block(
 	if on_mode == RoundTimeline.ON_WON:
 		_add_win_jump_fields()
 
-	# The FINISH warning belongs only to the ending FINISH triggers.
+	# The FINISH warning belongs only to the ending FINISH triggers — and only once there are cues for it
+	# to strand. On an empty section there is nothing dead yet, so it is a note about a setting rather
+	# than a fault, and firing amber before an author has written anything is how amber stops meaning
+	# something.
 	if on_mode == RoundTimeline.ON_GAVE_IN and not _allow_finish:
-		_inspector.add_child(_make_finish_warning())
+		if _outcome_events(on_mode).is_empty():
+			(
+				_inspector
+				. add_child(
+					_make_quiet_note(
+						(
+							"This journey's FINISH button is off, so a player can never give in. Turn on "
+							+ "ALLOW FINISH BUTTON in the journey settings before writing this ending."
+						),
+						9
+					)
+				)
+			)
+		else:
+			_inspector.add_child(_make_finish_warning())
 
 	# There is nothing to win against a bar that is only counting the clock down.
 	if on_mode == RoundTimeline.ON_WON and not _health_follows_score():
 		(
 			_inspector
 			. add_child(
-				_make_amber_callout(
+				_make_quiet_note(
 					(
-						"⚠  Reachable only when the health bar follows SCORE — against the clock the round "
+						"Reachable only when the health bar follows SCORE — against the clock the round "
 						+ "simply plays through and this never fires."
 					),
 					9
@@ -1586,15 +1678,11 @@ func _build_outcome_block(
 # telegraph, its attack, its impact sound — varies together instead of each part rolling on its own and
 # producing combinations nobody wrote.
 func _build_segments_section() -> void:
-	_inspector.add_child(HSeparator.new())
-
 	var header: HBoxContainer = HBoxContainer.new()
 	header.add_theme_constant_override("separation", 8)
-	var title: Label = Label.new()
-	title.text = "SEGMENTS"
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_label(title, UITheme.CYAN, 12, true)
-	header.add_child(title)
+	var spacer: Control = Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(spacer)
 
 	var add: Button = Button.new()
 	add.text = "＋ SEGMENT"
@@ -1626,15 +1714,6 @@ func _build_segments_section() -> void:
 	UITheme.style_label(blurb, UITheme.DARK_TEXT, 10)
 	_inspector.add_child(blurb)
 
-	for issue: Dictionary in RoundTimeline.validate(_timeline, _full_ms):
-		# Segment problems are keyed to the SEGMENT, so the per-event issue panel never shows them —
-		# they would otherwise be the one class of warning an author could not see anywhere.
-		if (
-			str(issue["code"])
-			in [RoundTimeline.ISSUE_SEGMENT_THIN, RoundTimeline.ISSUE_SEGMENT_DEAD_TAG]
-		):
-			_inspector.add_child(_make_amber_callout("⚠  " + str(issue["message"]), 10))
-
 	for i: int in (_segments() as Array).size():
 		_inspector.add_child(_make_segment_row(i))
 
@@ -1647,12 +1726,17 @@ func _make_segment_row(index: int) -> Control:
 	var segment: Dictionary = segments[index]
 	var box: VBoxContainer = VBoxContainer.new()
 	box.add_theme_constant_override("separation", 4)
+	# The segment's own problems, on the segment. They used to be listed together under the section
+	# heading, which put "Branch D has no events" several rows above the segment that owns D — the
+	# author had to work out which one it meant.
+	for issue: Dictionary in _segment_issues_for(str(segment.get("id", ""))):
+		box.add_child(_make_amber_callout("⚠  " + str(issue["message"]), 10))
 
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	var name_field: LineEdit = LineEdit.new()
 	name_field.text = str(segment.get("name", ""))
-	name_field.placeholder_text = "Segment name"
+	name_field.placeholder_text = "Move name — e.g. Opener, Punish"
 	name_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_line_edit(name_field)
 	name_field.text_changed.connect(
@@ -1704,6 +1788,12 @@ func _make_branch_row(branches: Array, index: int) -> Control:
 	style.bg_color = Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.06)
 	style.set_corner_radius_all(4)
 	style.set_content_margin_all(6)
+	# Indented, with a rail down the left edge. A branch and the segment that owns it were drawn as
+	# identical full-width fields, so a list of two segments read as four peers and nothing said which
+	# ones belonged together.
+	style.content_margin_left = BRANCH_INDENT
+	style.border_width_left = 2
+	style.border_color = Color(UITheme.CYAN, 0.55)
 	box.add_theme_stylebox_override("panel", style)
 
 	var column: VBoxContainer = VBoxContainer.new()
@@ -1713,8 +1803,11 @@ func _make_branch_row(branches: Array, index: int) -> Control:
 	head.add_theme_constant_override("separation", 8)
 	var tag: LineEdit = LineEdit.new()
 	tag.text = str(branch.get("tag", ""))
-	tag.placeholder_text = "Branch name"
-	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag.placeholder_text = "Branch"
+	# Sized for a tag rather than a sentence — these are "A", "B", "GENTLE". At full width it read as a
+	# second name field competing with the segment's own.
+	tag.custom_minimum_size.x = BRANCH_TAG_WIDTH
+	tag.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	tag.tooltip_text = (
 		UITheme
 		. wrap_tip(
@@ -2146,6 +2239,18 @@ func _add_issue_panel(id: String) -> void:
 
 
 # The editor's one "read this" box: an amber wash used for anything the author has to act on.
+# The quiet sibling of _make_amber_callout, for telling an author something TRUE rather than something
+# WRONG. A fresh encounter used to open with two amber callouts before anything was authored — neither a
+# mistake, both just settings that had not been turned on — and a warning colour that fires on an empty
+# document is one an author learns to scroll past. Amber is now reserved for validate()'s findings.
+func _make_quiet_note(text: String, font_size: int) -> Label:
+	var label: Label = Label.new()
+	label.text = text
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(label, UITheme.DARK_TEXT, font_size)
+	return label
+
+
 func _make_amber_callout(text: String, font_size: int) -> PanelContainer:
 	var panel: PanelContainer = PanelContainer.new()
 	var style: StyleBoxFlat = StyleBoxFlat.new()

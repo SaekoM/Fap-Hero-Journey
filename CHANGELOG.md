@@ -1,5 +1,199 @@
 # Changelog
 
+## v0.8.0
+
+The **boss encounter** release. A boss round used to be a normal round with forced modifiers and an intro
+card. It can now be an authored fight — attacks that seize the device, dialogue and art over the video, a
+health bar that answers to how you play, and moves that vary between attempts.
+
+Override items and a few smaller things ship alongside it.
+
+### ◆ Boss encounters
+
+A boss round can now carry an **encounter**: a set of authored moments placed on the round's own video
+clock. Everything below is optional. A boss round with no encounter plays exactly as it did before, and so
+does every journey made until now.
+
+#### The parts of an encounter
+
+An encounter is built from five kinds of thing, each on its own lane:
+
+- **Attacks** — the boss takes the device. Her funscript plays instead of the round's for as long as the
+  attack lasts, then hands it back. This is the move itself, not a picture of one.
+- **Cast** — a character portrait or a piece of art appears over the video, with an optional line of
+  dialogue underneath. Used for telegraphs, taunts, and the moments either side of a fight.
+- **Audio** — a one-shot sound or a line of narration. Narration ducks the rest of the mix so it can be
+  heard over the round.
+- **Effects** — a window of time during which a modifier applies: the stroke scaled, clamped, reversed,
+  blacked out, and so on. The same modifiers items use, held open for a stretch instead of a duration.
+- **Stances** — a window during which the boss takes damage differently. Explained under the health bar
+  below.
+
+#### The health bar
+
+Every encounter can show a named health bar. What drains it is the author's choice:
+
+- **Time** — the round's own progress, shown backwards. Cosmetic, and what every boss did before.
+- **Score** — it empties as you *earn*. This is what turns a boss round into a fight.
+
+With a score bar the author sets a **score to defeat**, and emptying the bar wins. The builder tells them
+exactly what a full pass of the round is worth, so the target is a decision rather than a guess.
+
+**Phases** divide the bar into stages. A phase begins when her health drops to a point the author chose —
+"below 60%" — rather than at a time on the clock, so the divisions on the bar always mean what they show.
+A phase can announce itself with a banner and recolour the bar.
+
+#### Stances — when to push, and when not to
+
+A stance window changes how much damage lands, and the bar says which one is in force:
+
+| Stance | Effect |
+| --- | --- |
+| **NORMAL** | ordinary damage |
+| **GUARDING** | half damage — she is covering up |
+| **IMMUNE** | nothing lands at all |
+| **VULNERABLE** | double damage — an opening |
+| **RECOVERING** | the bar runs *backwards*; she is healing |
+| **ATTACKING** | nothing lands, because she is the one doing something |
+
+The bar takes the stance's colour, glows in it, and names it in a word underneath. This is the part that
+makes a boss round something you play rather than sit through: hold back through a guard, go hard through
+an opening, and read the bar for which is which.
+
+**Her own attacks make her untouchable.** While an attack runs, the script driving the device is hers — so
+it deals no damage, and no override item can cut in. An author who writes the boss's moves into the
+round's own funscript instead of using the attack lane can mark those stretches ATTACKING by hand and get
+the same behaviour.
+
+#### The fight — losing, and going again
+
+A boss can be given more than one **attempt**. Run out of bar without winning and the round replays from
+the start, **carrying the damage you already did**. The bar shows which attempt you are on.
+
+Two endings can be authored, each a set of cast and audio cues that plays as the round bows out:
+
+- **If they win** — the moment she goes down. The round then plays out as aftermath rather than cutting
+  short, and can optionally skip ahead to a point the author marked on the timeline.
+- **If she wins** — played when the attempts run out, and also when the player presses FINISH mid-round.
+  Both are the same defeat.
+
+Either ending can raise a **flag**, so a later fork can ask how the fight went — advancing past a boss no
+longer means you beat it.
+
+She can also **recover**: across an authored window, while the game is **paused**, or a share of the bar
+returned **between attempts**.
+
+#### Encounters that don't repeat themselves
+
+Three tools, each for a different kind of repetition:
+
+- **Alternatives** — a cue can carry other versions of itself, one picked each time the round starts. The
+  original counts as a candidate, so two alternatives means three possible lines. An alternative can bring
+  its own art, its own framing, and its own expression of the same character.
+- **Segments** — a whole *move* varies together. A segment names two or more branches and exactly one
+  plays. Tag her telegraph, her attack and her impact sound with the same branch and all three swap as a
+  unit, which is what stops a fight assembling combinations nobody wrote. Two attacks on different
+  branches may start at the same moment and run for completely different lengths.
+- **Conditions** — a branch, or any single cue, can be gated on what the player has actually done: their
+  score, their pace, how many items they have used and which, how much health she has left, and which
+  attempt this is. Rules are read in the order they are written, and whatever carries no rule is what the
+  dice choose between.
+
+Conditions are checked at the moment the cue comes up, so "score above 500" means *by the time she got
+there* — not a guess made when the round began.
+
+#### Items during a boss
+
+Boss rounds locked items out entirely. An encounter can now **allow them**, which makes an item a real
+answer to a fight rather than something you carry past it. A boss round without an authored encounter
+keeps the old lockout, so nothing already made changes.
+
+While she is attacking, override items are refused rather than spent — the card says so and stays in your
+inventory.
+
+### ◆ Override items
+
+A new kind of item that **takes the device** when used, plays its own funscript over the round, and hands
+control back. Authors give it a script bundle (main plus any axes and vibration channels), an optional
+slice of that script, and optional effects that apply while it runs.
+
+- Overrides can be **tested on the device** from the builder without playing a round.
+- A **3D simulator** shows multi-axis scripts as they will move.
+- An override may not interrupt a boss's attack — the encounter is the authored thing.
+
+### ◆ Items that fight back
+
+- A new **score effect** adds points the instant an item is used. In a boss round with a score health bar
+  that *is* damage — and it runs through her stance, so a thrown punch lands, glances off a guard, or is
+  swallowed whole by an attack. Outside a boss round it is simply points.
+- Items can carry their **own sound**, played instead of the standard click, at a volume you set. A
+  gunshot on a bullet, a thud on a punch.
+- Every audio field in the builder now has a **▶ TEST button** — item sounds, fork audio, storyboard music
+  and line audio. Levels used to be something you set by eye and found out about in a round.
+
+### ◆ Checkpoints save automatically
+
+Reaching a checkpoint now **writes your resume point immediately**. Close the game whenever you like and
+you come back to the last one you passed — no button to remember, and it re-arms every time you pass
+another.
+
+**Save & Quit** is still there for stopping deliberately. The reward some checkpoints granted for
+*skipping* the save has been removed: there is no longer a break to skip.
+
+### ✨ Interface
+
+The encounter editor and the builder panels grew a lot this release. A pass over both:
+
+- **Encounter settings fold.** HEALTH BAR, SEGMENTS and HOW THE ROUND CAN END are now collapsible
+  sections rather than one forty-control scroll where a checkbox carried the same weight as a segment
+  list. Open sections stay open while you type.
+- **Branches sit inside the segment that owns them**, indented behind a rail, with the tag field sized
+  for a tag rather than a sentence. Two segments used to read as four peers with nothing saying which
+  belonged together — and a branch's warnings now sit on that branch instead of at the top of the list.
+- **Amber means a problem again.** A brand-new encounter used to open with two amber warnings before
+  anything had been authored, neither of them a mistake. Those are quiet notes now, and the FINISH
+  warning only raises once there are cues it would actually strand.
+- **Volume is a percentage everywhere**, and each volume sits on one line with a compact ▶ TEST beside
+  it instead of a full-width button underneath.
+- **Selected nodes are outlined in white** instead of a brighter version of their own colour — two amber
+  storyboards side by side both looked selected.
+- **Long node names end in an ellipsis** and show in full on hover, rather than being cut mid-word with
+  no sign it had happened.
+- **Item and character windows size to their contents** instead of always reserving room for ten rows.
+- **The health bar's position reads as a percentage**, matching the phase thresholds beside it.
+- Under the health bar, **NORMAL now shows nothing at all**. The absence is the signal — a dim word at
+  that size read as a smudge on the video.
+
+### 🩹 Fixes
+
+- **Crackling audio in videos.** The project mixed at 44.1 kHz while video audio is almost always 48 kHz,
+  so every clip was resampled continuously during playback — then resampled again by the sound device on
+  the way out. The mix rate now matches the content and the resampling is gone.
+- **Boss attacks no longer damage the boss.** The script playing during an attack is hers, so the score it
+  dealt was being counted against her.
+- **Audio ease in/out on encounter cues** is saved. The controls existed and the runtime honoured them;
+  the value was discarded in between.
+- In the cut editor the **OUT marker is red** — it used to share amber with the playhead.
+- **→ in the Quick Settings drawer** nudges the stroke range again. It was bound twice and the second
+  binding never ran.
+- The boss round panel **no longer claims boss rounds disable item use** — an encounter decides that now,
+  and the old text taught the opposite of how this release works.
+- **DELETE JOURNEY** moved to the end of its row, behind a gap. It sat between EDIT and EXPORT: the one
+  irreversible action among safe ones, the same size and weight as both.
+
+### 🧰 For creators (builder)
+
+- The encounter editor is a **video-editor-style modal**: lanes against the round's clock, a live preview
+  running the real cue layer and health bar, drag to move, drag an edge to trim, CTRL+wheel to zoom.
+- **Both edges of a media block cut into the source**, so an attack or an audio cue can be reduced to its
+  middle instead of always starting at the first stroke.
+- The preview can **play either ending on demand** and **pin any alternative**, so nothing has to be
+  reached by losing a fight or re-rolling until it comes up.
+- A **simulated player** panel drives the preview's conditions, so branching can be checked without
+  playing the round.
+- **Storyboards can be named.** The name labels the node on the map instead of the first speaker's name,
+  which made every scene the same character opens look identical. Players never see it.
+
 ## v0.7.7
 
 A randomizer release built around long videos: one clip now yields **many different rounds**, and the wait

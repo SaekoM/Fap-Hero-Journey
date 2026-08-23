@@ -592,6 +592,7 @@ func _load_current_item() -> void:
 		"storyboard":
 			_show_storyboard_screen(GameState.CurrentStoryboard())
 		"checkpoint":
+			_arm_checkpoint_save()
 			if just_resumed:
 				_advance_from_checkpoint()  # resumed onto it → don't re-show its banner
 			else:
@@ -1262,9 +1263,10 @@ func _skip_failed_round() -> void:
 # as a checkpoint. Two buttons: Save & Quit (writes a save + returns to
 # catalogue) or Continue (dismisses the banner and starts the round normally).
 # Pattern mirrors _show_boss_intro since both gate round start on user input.
-# The checkpoint node's gate: a Save & Quit / Continue banner reached BETWEEN rounds (its own
-# node now, not a round flag). Continue advances to the next item; Save & Quit writes a one-time
-# save at this node and exits. Dispatched from _load_current_item.
+# The checkpoint node's gate: a Save & Quit / Continue banner reached BETWEEN rounds (its own node now,
+# not a round flag). Continue advances to the next item; Save & Quit exits. The save itself is already
+# written by _arm_checkpoint_save on arrival, so the button is about LEAVING, not about saving — a
+# player who closes the window instead keeps the same resume point. Dispatched from _load_current_item.
 func _show_checkpoint_gate() -> void:
 	var data: Dictionary = GameState.CurrentItem().get("data", {})
 	_is_overlay_open = true  # suppress gameplay hotkeys while the banner is up
@@ -1287,7 +1289,7 @@ func _show_checkpoint_gate() -> void:
 		vbox.add_child(subtitle)
 
 	var hint: Label = Label.new()
-	hint.text = "You've reached a save point. Save & Quit to resume from here later, or continue playing now. The save is one-time — used up when you resume."
+	hint.text = "Your progress is saved here. Leave whenever you like and you'll come back to this point — or quit now and put it down properly."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_label(hint, UITheme.PURPLE_MID, 12, false)
@@ -1318,7 +1320,6 @@ func _show_checkpoint_gate() -> void:
 		func() -> void:
 			modal.queue_free()
 			_is_overlay_open = false
-			_apply_checkpoint_continue_reward(data)  # reward for skipping the break (not on resume)
 			_advance_from_checkpoint()
 	)
 	btn_row.add_child(continue_btn)
@@ -1326,16 +1327,20 @@ func _show_checkpoint_gate() -> void:
 	add_child(modal)
 
 
-# Grants a checkpoint's ON-CONTINUE reward — only when the player skips the save and keeps going (the
-# interactive Continue button), never on a resume (which re-enters the checkpoint after taking the break).
-# Lets an author reward pressing on: an item, a counter bump, and/or a flag, then gate a secret path or
-# ending on it (e.g. "collected every safe word → bonus finale"). No-op when nothing is configured.
-func _apply_checkpoint_continue_reward(data: Dictionary) -> void:
-	var reward: Dictionary = data.get("continue_reward", {})
-	if reward.is_empty():
-		return
-	_grant_item(str(reward.get("award_item", "")))  # guards "" internally, pops "✦ RECEIVED"
-	GameState.ApplyItemFlagsCounters(reward)  # reward carries set_counters / set_flags in the node shape
+# Writes the resume point the moment a checkpoint is REACHED, rather than only when the player chooses
+# SAVE & QUIT. The word already promises this: losing a run because the window was closed instead of a
+# particular button being pressed is a surprise, not a design.
+#
+# Called on a RESUME arrival too, not just a fresh pass. Resuming consumes the save, so without this the
+# player who returned to a checkpoint and quit again would land back at the start — a worse trap than the
+# one this removes, because by then they have learned to trust it. Every pass re-arms.
+#
+# SAVE & QUIT keeps its button: writing the save and leaving deliberately are still different things.
+func _arm_checkpoint_save() -> void:
+	if _test_mode:
+		return  # a preview must never write a run-save (see _write_journey_save)
+	if not _write_journey_save():
+		push_warning("GameLoop: checkpoint reached but the save could not be written")
 
 
 # Continue past a checkpoint node → advance to the next item (mirrors _on_shop_closed: a
@@ -2322,6 +2327,8 @@ func _exit_boss_mode() -> void:
 	_is_effect_round = false
 	InventoryService.ClearBossEffects()
 	_items_allowed = true
+	# _push_device_lock derives this every frame and owns it; this is a teardown guarantee, for the case
+	# where the round is torn down without another frame running. Not a second opinion about the state.
 	InventoryService.DeviceHeldByAttack = false
 	_inv_btn.disabled = false
 	if _boss_frame != null:

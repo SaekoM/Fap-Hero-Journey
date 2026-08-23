@@ -43,6 +43,16 @@ const VIB_CHANNELS_INFO: Array = [
 # Gameplay forced-modifier kinds a boss round can impose. Visual/audio effects
 # (incl. the old BLACKOUT) now live in the "Non-gameplay modifiers" picker.
 const BOSS_MODIFIER_KINDS: Array = ["scale", "clamp", "reverse", "score_multiplier"]
+
+# A list modal sized to its contents: chrome (title, footer buttons, padding) plus a row each, clamped so
+# a long list still scrolls and a short one does not open onto a void.
+const ITEMS_MODAL_CHROME: int = 260
+const ITEMS_MODAL_ROW: int = 64
+const ITEMS_MODAL_MIN: int = 340
+const ITEMS_MODAL_MAX: int = 640
+
+# The audition button beside an audio field. Wide enough to read, narrow enough to stay a utility.
+const AUDIO_TEST_BTN_WIDTH: int = 84
 const BOSS_MODIFIER_LABELS: Array = [
 	"SCALE  —  STROKE LENGTH",
 	"CLAMP  —  POSITION RANGE",
@@ -816,9 +826,18 @@ func _make_custom_items_section() -> Control:
 # The custom-item LIST lives in its own modal (not the cramped side panel) so a journey can define many
 # items without crowding the builder. Rows edit/delete; ＋ ADD appends and opens the editor on top.
 # _custom_items_list points at this modal's container while it's open, so any edit refreshes the list.
+# Tall enough for what is actually in the list, capped so a long one still scrolls rather than running
+# off the screen.
+func _items_modal_height() -> int:
+	var rows: int = (_owner._journey_items as Array).size()
+	return clampi(ITEMS_MODAL_CHROME + rows * ITEMS_MODAL_ROW, ITEMS_MODAL_MIN, ITEMS_MODAL_MAX)
+
+
 func _open_items_manager_modal() -> void:
+	# Height follows the list instead of always reserving room for ten items. A journey with one item
+	# used to open a 640px panel with a single row at the top and a void beneath it.
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"CUSTOM ITEMS", UITheme.PURPLE_BRIGHT, Vector2i(560, 640)
+		"CUSTOM ITEMS", UITheme.PURPLE_BRIGHT, Vector2i(560, _items_modal_height())
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -894,6 +913,36 @@ func _rebuild_custom_items_list() -> void:
 		_custom_items_list.add_child(_make_custom_item_row(i))
 
 
+# A volume control and its audition button on one line, which is how they are used: set a level, hear
+# it, adjust. They were stacked, and the button spanned the panel — the utility outweighing the setting.
+#
+# Volume reads as a PERCENTAGE everywhere now. The three storyboard/fork fields showed a raw "vol 0.60"
+# while the item editor showed "VOLUME 60%", which is one idea wearing two faces.
+func _make_volume_row(
+	host: Node, target: Dictionary, key: String, default: float, read_path: Callable
+) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = 0
+	spin.max_value = 100
+	spin.step = 1
+	spin.suffix = "%"
+	spin.value = 100.0 * float(target.get(key, default))
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(spin)
+	spin.value_changed.connect(func(v: float) -> void: target[key] = v / 100.0)
+	row.add_child(spin)
+
+	row.add_child(
+		_make_audio_test_button(
+			host, read_path, func() -> float: return float(target.get(key, default))
+		)
+	)
+	return row
+
+
 # An audition button for an audio drop zone: press to hear the clip at the volume set beside it, press
 # again to stop. Every audio field in the builder had a drop zone and no way to hear what landed in it,
 # so a level was something an author set by eye and found out about in a round.
@@ -909,8 +958,11 @@ func _make_audio_test_button(host: Node, read_path: Callable, read_volume: Calla
 
 	var button: Button = Button.new()
 	button.text = "▶ TEST"
-	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button_subtle(button, UITheme.TOXIC_GREEN, 10, 6, 11)
+	# Compact and shrink-to-fit rather than full width: it is a utility beside the thing it tests, and at
+	# panel width in the brightest colour on screen it read as the section's primary action.
+	button.size_flags_horizontal = Control.SIZE_SHRINK_END
+	button.custom_minimum_size.x = AUDIO_TEST_BTN_WIDTH
+	UITheme.style_button_subtle(button, UITheme.TOXIC_GREEN, 9, 4, 10)
 	button.pressed.connect(
 		func() -> void:
 			if player.playing:
@@ -1384,8 +1436,13 @@ func _open_character_editor_modal(char_idx: int, is_new: bool = false) -> void:
 		return
 	var chr: Dictionary = _owner._journey_characters[char_idx]
 
+	var portraits: int = (chr.get("portraits", []) as Array).size()
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"CHARACTER", UITheme.PURPLE_BRIGHT, Vector2i(520, 620)
+		"CHARACTER",
+		UITheme.PURPLE_BRIGHT,
+		Vector2i(
+			520, clampi(ITEMS_MODAL_CHROME + portraits * ITEMS_MODAL_ROW, 380, ITEMS_MODAL_MAX)
+		)
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -3238,18 +3295,11 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	fork_loop_toggle.visible = str(data.get("audio", "")) != ""
 	fork_loop_toggle.toggled.connect(func(on: bool) -> void: data["audio_loop"] = on)
 	col.add_child(fork_loop_toggle)
-	var fork_audio_vol: SpinBox = _make_factor_spin(
-		data, "audio_volume", 0.0, 1.0, 0.05, "vol ", 1.0
+	var fork_audio_vol: Control = _make_volume_row(
+		col, data, "audio_volume", 1.0, func() -> String: return str(data.get("audio", ""))
 	)
 	fork_audio_vol.visible = str(data.get("audio", "")) != ""
 	col.add_child(fork_audio_vol)
-	col.add_child(
-		_make_audio_test_button(
-			col,
-			func() -> String: return str(data.get("audio", "")),
-			func() -> float: return float(data.get("audio_volume", 1.0))
-		)
-	)
 	var fork_audio_rm: Button = Button.new()
 	fork_audio_rm.text = "✕ REMOVE AUDIO"
 	fork_audio_rm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3481,7 +3531,8 @@ func _graph_node_label(node_id: String) -> String:
 			var sn: String = str(d.get("title", "")).strip_edges()
 			return "Shop — %s" % (sn if sn != "" else "(unnamed)")
 		"storyboard":
-			return "Storyboard"
+			var sbn: String = str(d.get("name", "")).strip_edges()
+			return "Storyboard — %s" % (sbn if sbn != "" else "(unnamed)")
 		"fork":
 			var fn: String = str(d.get("title", "")).strip_edges()
 			return "Fork — %s" % (fn if fn != "" else "(unnamed)")
@@ -3696,55 +3747,6 @@ func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
 	name_edit.text_changed.connect(func(val: String) -> void: arr[idx]["name"] = val)
 	col.add_child(name_edit)
 
-	# ON CONTINUE — a reward for pressing on instead of taking the break. Applied only when the player
-	# clicks Continue (never on a resume), so an author can reward not-saving: give an item, bump a
-	# counter, and/or set a flag, then gate a secret path or ending on it.
-	col.add_child(_side_divider_line())
-	var rhint: Label = Label.new()
-	rhint.text = "ON CONTINUE — GRANTED WHEN THE PLAYER SKIPS THE SAVE AND KEEPS GOING (NOT WHEN THEY SAVE & QUIT, THEN RESUME). USE IT TO REWARD PRESSING ON, THEN GATE A SECRET PATH OR ENDING ON WHAT'S COLLECTED."
-	rhint.add_theme_color_override("font_color", UITheme.SEPARATOR)
-	rhint.add_theme_font_size_override("font_size", 10)
-	rhint.uppercase = true
-	rhint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(rhint)
-	if not arr[idx].has("continue_reward"):
-		arr[idx]["continue_reward"] = {}
-	var reward: Dictionary = arr[idx]["continue_reward"]
-	col.add_child(_award_item_field(reward))
-	col.add_child(_make_set_counters_field(reward))
-	col.add_child(_make_set_flags_field(reward))
-	return col
-
-
-# An "award item" picker (built-ins + journey custom items, plus a None) → target["award_item"]. Used by
-# the checkpoint ON-CONTINUE reward; None (empty id) grants nothing.
-func _award_item_field(target: Dictionary) -> Control:
-	var col: VBoxContainer = VBoxContainer.new()
-	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label("AWARD ITEM"))
-	var entries: Array = [{"id": "", "label": "None"}]
-	for k: String in InventoryService.GetBuiltinItemIds():
-		entries.append({"id": k, "label": str(InventoryService.GetItemData(k).get("name", k))})
-	for it: Dictionary in _owner._journey_items:
-		var iid: String = str(it.get("id", ""))
-		if iid != "":
-			entries.append({"id": iid, "label": "%s  (custom)" % str(it.get("name", ""))})
-	var dd: OptionButton = OptionButton.new()
-	var cur: String = str(target.get("award_item", ""))
-	var sel: int = 0
-	for i: int in entries.size():
-		var e: Dictionary = entries[i]
-		dd.add_item(str(e["label"]), i)
-		dd.set_item_metadata(i, str(e["id"]))
-		if str(e["id"]) == cur:
-			sel = i
-	dd.selected = sel
-	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_option_button(dd)
-	dd.item_selected.connect(
-		func(i: int) -> void: target["award_item"] = str(dd.get_item_metadata(i))
-	)
-	col.add_child(dd)
 	return col
 
 
@@ -4866,6 +4868,21 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 6)
 
+	# First, because it is what the author looks for when they come back to this node. Builder-only: a
+	# storyboard's on-screen content is its lines, and this never reaches a player.
+	col.add_child(_side_field_label("NAME  (FOR YOUR MAP — PLAYERS NEVER SEE IT)"))
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.text = str(sb_data.get("name", ""))
+	name_edit.placeholder_text = "e.g. Intro, She finds out, Bad end"
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(
+		func(v: String) -> void:
+			arr[idx]["name"] = v
+			# The graph caption reads this, so the node relabels as it is typed rather than on reselect.
+			_owner._refresh_graph()
+	)
+	col.add_child(name_edit)
+
 	col.add_child(_side_field_label("COINS AWARDED"))
 	var coins_spin: SpinBox = SpinBox.new()
 	coins_spin.min_value = 0
@@ -4932,16 +4949,11 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	col.add_child(bgm_zone)
 	if str(sb_data.get("bgm", "")) != "":
 		bgm_zone.call_deferred("set_file", sb_data["bgm"])
-	var bgm_vol: SpinBox = _make_factor_spin(arr[idx], "bgm_volume", 0.0, 1.0, 0.05, "vol ", 0.6)
+	var bgm_vol: Control = _make_volume_row(
+		col, arr[idx], "bgm_volume", 0.6, func() -> String: return str(arr[idx].get("bgm", ""))
+	)
 	bgm_vol.visible = str(sb_data.get("bgm", "")) != ""
 	col.add_child(bgm_vol)
-	col.add_child(
-		_make_audio_test_button(
-			col,
-			func() -> String: return str(arr[idx].get("bgm", "")),
-			func() -> float: return float(arr[idx].get("bgm_volume", 0.6))
-		)
-	)
 	var bgm_rm_btn: Button = Button.new()
 	bgm_rm_btn.text = "✕ REMOVE MUSIC"
 	bgm_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5215,18 +5227,15 @@ func _make_side_storyboard_line_block(
 		func(on: bool) -> void: lines_arr[line_idx]["audio_loop"] = on
 	)
 	col.add_child(audio_loop_toggle)
-	var audio_vol: SpinBox = _make_factor_spin(
-		lines_arr[line_idx], "audio_volume", 0.0, 1.0, 0.05, "vol ", 1.0
+	var audio_vol: Control = _make_volume_row(
+		col,
+		lines_arr[line_idx],
+		"audio_volume",
+		1.0,
+		func() -> String: return str(lines_arr[line_idx].get("audio", ""))
 	)
 	audio_vol.visible = line_data.get("audio", "") != ""
 	col.add_child(audio_vol)
-	col.add_child(
-		_make_audio_test_button(
-			col,
-			func() -> String: return str(lines_arr[line_idx].get("audio", "")),
-			func() -> float: return float(lines_arr[line_idx].get("audio_volume", 1.0))
-		)
-	)
 	var audio_rm_btn: Button = Button.new()
 	audio_rm_btn.text = "✕ REMOVE AUDIO"
 	audio_rm_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5962,7 +5971,7 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	wrapper.add_child(boss_panel)
 
 	var hint: Label = Label.new()
-	hint.text = "BOSS ROUNDS DISABLE ITEM USE, APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE, AND OPEN WITH A TELEGRAPHED INTRO CARD."
+	hint.text = "BOSS ROUNDS APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE AND OPEN WITH A TELEGRAPHED INTRO CARD. ITEMS ARE LOCKED OUT UNLESS AN ENCOUNTER ALLOWS THEM."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true

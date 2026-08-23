@@ -749,6 +749,9 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			# image + lines are overwritten by _save_storyboard_node_media.
 			out["coins"] = int(data.get("coins", 0))
 			out["item"] = str(data.get("item", ""))
+			# An organisational label for the builder's graph. Never shown to a player — a storyboard's
+			# on-screen content is its lines, and this is only how an author tells twelve of them apart.
+			out["name"] = str(data.get("name", ""))
 		"fork":
 			out["title"] = str(data.get("title", ""))
 			out["description"] = str(data.get("description", ""))
@@ -763,6 +766,10 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 		"checkpoint":
 			# A save point between rounds — its only field is the banner label.
 			out["name"] = str(data.get("name", ""))
+			# Dropped on the way out, so a journey authored before checkpoints auto-saved stops carrying
+			# it after its first re-save. It rewarded pressing CONTINUE instead of taking the break, and
+			# there is no longer a break to skip: reaching the checkpoint saves either way.
+			out.erase("continue_reward")
 	# Counter deltas can ride on ANY node type (a round bumps "belt", a storyboard bumps "arousal"),
 	# so normalize them here rather than per type. Cleaned to {name:int}; dropped entirely when empty
 	# so the schema stays lean (mirrors how set_flags only appears when non-empty).
@@ -1673,6 +1680,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 					"data":
 					{
 						"type": "storyboard",
+						"name": sb.get("name", ""),
 						"coins": sb.get("coins", 0),
 						"item": sb.get("item", ""),
 						"image": sb.get("image", ""),

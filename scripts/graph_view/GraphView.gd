@@ -939,6 +939,11 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 	# Map mode: nodes ignore the mouse so clicks pass through to pan/zoom.
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE if map_mode else Control.MOUSE_FILTER_STOP
 
+	# The full name on hover, since the label may be trimmed. Only when the node has no warning of its
+	# own to explain — that text is the more urgent thing to read, and it owns the same tooltip.
+	if not map_mode and str(item.get("warning", "")) == "" and primary != "":
+		panel.tooltip_text = primary
+
 	# Selected nodes get a heavier border via _node_stylebox.
 	var is_selected: bool = _current_layout_node_id in _selected_ids
 	panel.add_theme_stylebox_override("panel", _node_stylebox(accent, is_selected, is_terminal))
@@ -1003,7 +1008,10 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 	primary_lbl.text = primary
 	primary_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 	primary_lbl.add_theme_font_size_override("font_size", 13)
-	primary_lbl.clip_text = true
+	# Ellipsis rather than a hard clip: a name cut mid-word with no mark reads as the name itself, so an
+	# author cannot tell "Trading with the Comn" from a typo. The panel already stops the mouse in the
+	# editor, so the full text is one hover away.
+	primary_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	primary_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(primary_lbl)
 
@@ -1011,7 +1019,7 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 	secondary_lbl.text = secondary
 	secondary_lbl.add_theme_color_override("font_color", UITheme.DARK_TEXT)
 	secondary_lbl.add_theme_font_size_override("font_size", 10)
-	secondary_lbl.clip_text = true
+	secondary_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	secondary_lbl.uppercase = true
 	secondary_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(secondary_lbl)
@@ -1038,7 +1046,10 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 func _node_stylebox(accent: Color, selected: bool, terminal: bool = false) -> StyleBoxFlat:
 	var s: StyleBoxFlat = StyleBoxFlat.new()
 	s.bg_color = Color(0.04, 0.0, 0.06, 0.96)
-	s.border_color = accent
+	# Selection is WHITE, not more of the node's own colour. Every node type already glows in its accent
+	# — two amber storyboards side by side both looked lit, and the selected one was only slightly more
+	# so. A colour no node owns is unambiguous at any zoom.
+	s.border_color = UITheme.WHITE_SOFT if selected else accent
 	# Border: thicker when selected; slightly heavier than default when terminal.
 	var w: int = 3 if selected else (2 if terminal else 1)
 	s.border_width_left = w
@@ -1050,7 +1061,7 @@ func _node_stylebox(accent: Color, selected: bool, terminal: bool = false) -> St
 	s.corner_radius_bottom_left = 6
 	s.corner_radius_bottom_right = 6
 	if selected:
-		s.shadow_color = Color(accent.r, accent.g, accent.b, 0.50)
+		s.shadow_color = Color(UITheme.WHITE_SOFT, 0.35)
 		s.shadow_size = 8
 	elif terminal:
 		# Warm amber glow to signal "this is where the run ends".
@@ -1124,6 +1135,13 @@ func _type_label(item: Dictionary) -> String:
 			var n2: String = item.get("title", "")
 			return n2 if n2 != "" else "Shop"
 		"storyboard":
+			# The author's title first, exactly as a round uses its name. Falling back to the first
+			# SPEAKER was a guess that read as a character list rather than as a map — every scene the
+			# same character opens looked identical, which is the whole problem a title solves. Kept as
+			# the fallback so an untitled storyboard still says something.
+			var sb_title: String = str(item.get("name", "")).strip_edges()
+			if sb_title != "":
+				return sb_title
 			var first_speaker: String = ""
 			var lines: Array = item.get("lines", [])
 			if lines.size() > 0:

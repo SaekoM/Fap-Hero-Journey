@@ -84,7 +84,7 @@ func _build_ui() -> void:
 	panel.add_child(root)
 
 	var header: Label = Label.new()
-	header.text = "PLACEMENTS  —  drag to move, pull the corner to resize"
+	header.text = "POSITIONS  —  drag to move, pull the corner to resize"
 	header.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
 	header.add_theme_font_size_override("font_size", 14)
 	root.add_child(header)
@@ -121,7 +121,7 @@ func _build_ui() -> void:
 	body.add_child(side)
 
 	var list_hdr: Label = Label.new()
-	list_hdr.text = "PLACEMENTS"
+	list_hdr.text = "POSITIONS"
 	list_hdr.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	list_hdr.add_theme_font_size_override("font_size", 11)
 	side.add_child(list_hdr)
@@ -131,7 +131,7 @@ func _build_ui() -> void:
 	side.add_child(_list_col)
 
 	var add_btn: Button = Button.new()
-	add_btn.text = "＋ ADD PLACEMENT"
+	add_btn.text = "＋ ADD POSITION"
 	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
 	add_btn.pressed.connect(_add_placement)
 	side.add_child(add_btn)
@@ -144,7 +144,7 @@ func _build_ui() -> void:
 	side.add_child(_name_edit)
 
 	var del_btn: Button = Button.new()
-	del_btn.text = "✕ DELETE PLACEMENT"
+	del_btn.text = "✕ DELETE POSITION"
 	UITheme.style_button(del_btn, UITheme.MAGENTA)
 	del_btn.pressed.connect(_delete_selected)
 	side.add_child(del_btn)
