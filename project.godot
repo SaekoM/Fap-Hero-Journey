@@ -16,6 +16,10 @@ run/main_scene="uid://2kqlt5tkvd2b"
 config/features=PackedStringArray("4.6", "C#", "Forward Plus")
 config/icon="uid://ulq88yyawpam"
 
+[audio]
+
+driver/mix_rate=48000
+
 [autoload]
 
 UITheme="*res://Globals/UITheme.gd"
