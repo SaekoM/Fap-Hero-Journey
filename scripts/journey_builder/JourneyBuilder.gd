@@ -415,6 +415,12 @@ func _all_set_flags() -> Dictionary:
 			flags[str(f)] = true
 		for f: Variant in d.get("clear_flags", []):  # a cleared flag is part of the flag universe too
 			flags[str(f)] = true
+		# A boss encounter raises its own flags on the way out, and they live inside the round's timeline
+		# rather than in the node's set_flags — a fork asking "did they beat her?" is asking about one of
+		# these, so leaving them out made every such fork look like a typo and offered the author nothing
+		# to type.
+		for flag: String in JourneyData.boss_outcome_flags(d):
+			flags[flag] = true
 		for e: Dictionary in n.get("out", []):
 			for f2: Variant in e.get("set_flags", []):
 				flags[str(f2)] = true

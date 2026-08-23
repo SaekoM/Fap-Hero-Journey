@@ -34,11 +34,27 @@ var _scheduler: RoundTimelineScheduler = null
 var _fades: EffectWindowFades = EffectWindowFades.new()
 # id → the effect event, for every window currently open. Held so a fade tick can re-push them.
 var _open_effects: Dictionary = {}
+# Stance windows currently open. Kept apart from the effects because they mean something different: an
+# effect changes the player, a stance changes how the boss takes damage.
+var _open_stances: Dictionary = {}
 
 var _characters: Array = []  # the journey's cast, so a cue can resolve a character's portrait
-var _timeline: Dictionary = {}
+var _timeline: Dictionary = {}  # already baked: the chosen alternatives are folded into the events
+var _raw_timeline: Dictionary = {}  # as authored, so a re-roll has something to choose from again
+# The roll the current preview is showing, so RE-ROLL can produce a different one and everything else
+# can keep treating the timeline as plain events.
+var _variant_picks: Dictionary = {}
+var _segment_picks: Dictionary = {}
 var _full_ms: int = 1
 var _muted: bool = false
+# True while an ENDING is being previewed. The timed pass must stand still underneath it: the ending's
+# cues are not on the clock, so a scheduler tick would clear them the moment it ran.
+var _outcome_playing: bool = false
+
+# The player the preview pretends to have. Conditions are evaluated against THIS, so an author can see a
+# rule fire without producing the state for real — which, for "they are barely moving", would otherwise
+# mean sitting still through a round to check one line.
+var _sim_state: Dictionary = RoundTimeline.empty_state()
 
 # ── Building ─────────────────────────────────────────────────────────────────
 
@@ -173,14 +189,185 @@ func has_media() -> bool:
 ## is added, moved or edited — the scheduler is rebuilt rather than patched, which is cheap and cannot
 ## drift from the document.
 func rebuild(timeline: Dictionary, full_ms: int, playhead_ms: int) -> void:
-	_timeline = timeline
+	# Picks SURVIVE an edit. rebuild() runs on every keystroke, so rolling here would reshuffle the
+	# preview while an author was still typing the line they were watching — they would never see the
+	# same version twice. Only a stale pick is replaced, and only RE-ROLL deliberately reshuffles.
+	_raw_timeline = timeline
+	# The PREVIEW resolves segments up front, unlike the round. An author needs to look at one specific
+	# branch and have it stay put while they work on it; the round decides lazily so its conditions can
+	# read a player who has actually done something. Same model, opposite requirement.
+	_segment_picks = _reconcile_segments(timeline)
+	var survived: Dictionary = RoundTimeline.apply_segments(timeline, _segment_picks)
+	_variant_picks = _reconcile_picks(survived)
+	_timeline = RoundTimeline.apply_variants(survived, _variant_picks)
 	_full_ms = maxi(1, full_ms)
 	_rebuild_hud()
 	_scheduler = RoundTimelineScheduler.new(_timeline, _full_ms)
+	_push_progress(playhead_ms)
 	_cues.clear_all()
 	_open_effects.clear()
+	_open_stances.clear()
 	_fades.clear()  # a jump lands where it lands; ramps do not carry across a scrub
-	_apply(_scheduler.seek(playhead_ms))
+	_apply(_scheduler.seek(playhead_ms, _state_at(playhead_ms)))
+
+
+## Reshuffles every alternative and replays from where the playhead is, so an author can see the other
+## branches of what they wrote instead of only whichever one happened to come up.
+## Sets the player the preview evaluates rules against, and re-arms so the change is visible at once.
+func set_sim_state(state: Dictionary) -> void:
+	_sim_state = state
+	var at_ms: int = int(_video.stream_position * 1000.0) if has_media() else 0
+	rebuild(_raw_timeline, _full_ms, at_ms)
+
+
+## Plays one of the round's ENDINGS over whatever is on screen, and reports when it has finished.
+##
+## There is no other way to see one. An ending fires on the way OUT of a round, so the timed pass the
+## preview plays never reaches it — an author could write a whole defeat sequence and only ever find out
+## what it looked like by losing a fight for real.
+##
+## Fired exactly as the round fires it: every cue at once rather than in sequence, held for the
+## encounter's own `outcome_hold_ms`, because an ending is one composed moment and not a little scene.
+func play_outcome(on_mode: String) -> void:
+	if _scheduler == null or _outcome_playing:
+		return
+	var events: Array = _scheduler.outcome_events(on_mode)
+	if events.is_empty():
+		return
+	_outcome_playing = true
+	var was_playing: bool = has_media() and not _video.paused
+	if was_playing:
+		_video.paused = true  # the ending replaces the round rather than running alongside it
+	for event: Dictionary in events:
+		match str(event.get("track", "")):
+			RoundTimeline.TRACK_CAST:
+				_cues.show_cue(event, _image_path(event), true)
+			RoundTimeline.TRACK_AUDIO:
+				_audio.play_cue(event)
+	var hold_ms: int = int(_timeline.get("outcome_hold_ms", RoundTimeline.DEFAULT_OUTCOME_HOLD_MS))
+	if hold_ms > 0:
+		await get_tree().create_timer(hold_ms / 1000.0).timeout
+	_outcome_playing = false
+	# Back to whatever the playhead says, so the ending leaves nothing of itself behind.
+	_cues.clear_all()
+	_audio.stop_all()
+	var at_ms: int = int(_video.stream_position * 1000.0) if has_media() else 0
+	if _scheduler != null:
+		_apply(_scheduler.seek(at_ms, _state_at(at_ms)))
+	if was_playing:
+		_video.paused = false
+
+
+## Pins one cue to a specific alternative — 0 is the base, 1..n its alts — so an author can look at the
+## one they are editing instead of pressing CYCLE until it comes round again.
+func set_variant(event_id: String, index: int) -> void:
+	_variant_picks[event_id] = maxi(0, index)
+	var at_ms: int = int(_video.stream_position * 1000.0) if has_media() else 0
+	rebuild(_raw_timeline, _full_ms, at_ms)
+
+
+## Which alternative a cue is currently showing, so the row for it can say so. 0 is the base.
+func variant_of(event_id: String) -> int:
+	return int(_variant_picks.get(event_id, 0))
+
+
+## Steps to the next combination of branches and alternatives, and replays from the playhead.
+##
+## Deliberately a CYCLE rather than a re-roll. An author is reviewing what they wrote, not gambling: a
+## roll can show the same branch twice running and never reach the third, whereas keeping this pressed
+## walks every combination and comes back round. The dials carry like an odometer — the first advances,
+## and only when it wraps does the next move — so two segments reach all four pairings rather than
+## marching in lockstep and never showing a mixed one.
+func cycle() -> void:
+	var stepped: Dictionary = RoundTimeline.next_combination(
+		_raw_timeline, _segment_picks, _variant_picks, _sim_state
+	)
+	_segment_picks = stepped["segments"]
+	_variant_picks = stepped["variants"]
+	var at_ms: int = int(_video.stream_position * 1000.0) if has_media() else 0
+	rebuild(_raw_timeline, _full_ms, at_ms)
+
+
+# Same reasoning as _reconcile_picks: a segment's branch must not change while an author is typing.
+func _reconcile_segments(timeline: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for segment: Dictionary in timeline.get("segments", []) as Array:
+		var tags: Array = RoundTimeline.segment_tags(segment)
+		if tags.size() < 2:
+			continue
+		var id: String = str(segment.get("id", ""))
+		# The RULES answer first, against the simulated player — the same question the round asks, so an
+		# author watching a conditioned branch win here is watching what will actually happen.
+		var ruled: String = RoundTimeline.matched_branch(segment, _sim_state)
+		if ruled != "":
+			out[id] = ruled
+			continue
+		# Nothing ruled, so this is the pool a roll would decide. CYCLE walks it instead: in a workbench
+		# a deterministic first pick beats being shown a different half of the encounter each time.
+		var held: String = str(_segment_picks.get(id, ""))
+		out[id] = held if tags.has(held) else str(tags[0])
+	return out
+
+
+# Keeps a pick that is still valid, defaults anything new to the base cue, and forgets events whose
+# alternatives have gone — so adding a third alternative to one cue cannot renumber the choice showing
+# on another.
+func _reconcile_picks(timeline: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for event: Dictionary in timeline.get("events", []) as Array:
+		var alts: Array = event.get("alts", [])
+		if alts.is_empty():
+			continue
+		var id: String = str(event.get("id", ""))
+		var held: int = int(_variant_picks.get(id, -1))
+		out[id] = held if held >= 0 and held <= alts.size() else 0  # 0 is the base cue
+	return out
+
+
+# The simulated player as the scheduler sees them, with BOSS HEALTH filled in from where the bar actually
+# is rather than left to the dial. Health is never a free variable — it is the score and the playhead
+# read back out — and phases key off it, so letting an author set it by hand would have let the preview
+# show a stage the bar contradicted.
+func _state_at(at_ms: int) -> Dictionary:
+	var state: Dictionary = _sim_state.duplicate(true)
+	state[RoundTimeline.SIGNAL_BOSS_HP] = 1.0 - _damage_fraction(float(at_ms) / float(_full_ms))
+	return state
+
+
+# Fills the bar from a position. Called on every REBUILD as well as every playing frame, because paused
+# is the normal state in an editor: without the rebuild call, moving the simulated score changed a number
+# the author could not see until they pressed play.
+func _push_progress(at_ms: int) -> void:
+	_hud.set_round_progress(_damage_fraction(float(at_ms) / float(_full_ms)))
+
+
+# Mirrors GameLoop._damage_fraction: the clock, or the player, depending on what the bar was pointed at.
+# The same RoundTimeline call does the arithmetic in both, so the preview cannot disagree with the round
+# about how full the bar is.
+func _damage_fraction(elapsed_fraction: float) -> float:
+	if str(_timeline.get("hp_source", RoundTimeline.HP_TIME)) != RoundTimeline.HP_SCORE:
+		return elapsed_fraction
+	return RoundTimeline.damage_fraction(
+		_timeline, int(_sim_state.get(RoundTimeline.SIGNAL_SCORE, 0))
+	)
+
+
+## The branch tags this roll did NOT pick, so the timeline can fade them. Derived rather than stored:
+## it is exactly "every tag any segment declares, minus the one that won".
+func dormant_tags() -> Array:
+	var out: Array = []
+	for segment: Dictionary in _raw_timeline.get("segments", []) as Array:
+		var chosen: String = str(_segment_picks.get(str(segment.get("id", "")), ""))
+		for tag: String in RoundTimeline.segment_tags(segment):
+			if tag != chosen:
+				out.append(tag)
+	return out
+
+
+## True when there is more than one version of anything, so the transport can offer CYCLE only when it
+## would actually do something.
+func has_choices() -> bool:
+	return not _variant_picks.is_empty() or not _segment_picks.is_empty()
 
 
 ## Jumps to `ms`. seek() (rather than tick()) is deliberate: it reconciles windows and re-arms one-shots
@@ -194,8 +381,9 @@ func seek(ms: int) -> void:
 	_cues.clear_all()  # cues from the old position are not ours any more
 	_hud.kill_phase_tween()  # nor is a banner announcing a phase we just scrubbed past
 	_open_effects.clear()
+	_open_stances.clear()
 	_fades.clear()
-	_apply(_scheduler.seek(ms))
+	_apply(_scheduler.seek(ms, _state_at(ms)))
 
 
 ## Starts or stops playback, returning whether it is now playing.
@@ -239,13 +427,16 @@ func _process(delta: float) -> void:
 	# anchored position instead of drifting off screen.
 	if _fx != null:
 		_video_rect.position = _fx.tremor_offset()
-	if _video.paused:
+	if _video.paused or _outcome_playing:
 		return
 	_tick_fades(delta)
 	var position_ms: int = int(_video.stream_position * 1000.0)
-	_hud.set_round_progress(float(position_ms) / float(_full_ms))
+	# Fed the same way the round feeds it, so an author who points the bar at SCORE watches it answer
+	# the simulated player instead of the clock — the only way to see that setting do anything without
+	# playing a round for real.
+	_push_progress(position_ms)
 	if _scheduler != null:
-		_apply(_scheduler.tick(position_ms))
+		_apply(_scheduler.tick(position_ms, _state_at(position_ms)))
 	advanced.emit(position_ms)
 
 
@@ -258,6 +449,8 @@ func _apply(decisions: Dictionary) -> void:
 	for event: Dictionary in decisions["stop"] as Array:
 		if str(event.get("track", "")) == RoundTimeline.TRACK_CAST:
 			_cues.clear(str(event.get("id", "")))
+		elif str(event.get("track", "")) == RoundTimeline.TRACK_STANCE:
+			_open_stances.erase(str(event.get("id", "")))
 		elif str(event.get("track", "")) == RoundTimeline.TRACK_EFFECT:
 			var closing: String = str(event.get("id", ""))
 			# Held open while it eases out, exactly as the round holds it — the ramp reports when it is
@@ -267,15 +460,19 @@ func _apply(decisions: Dictionary) -> void:
 	for event: Dictionary in decisions["start"] as Array:
 		if str(event.get("track", "")) == RoundTimeline.TRACK_CAST:
 			_cues.show_cue(event, _image_path(event), false)
+		elif str(event.get("track", "")) == RoundTimeline.TRACK_STANCE:
+			_open_stances[str(event.get("id", ""))] = event
 		elif str(event.get("track", "")) == RoundTimeline.TRACK_EFFECT:
 			var opening: String = str(event.get("id", ""))
 			_open_effects[opening] = event
 			_fades.begin(opening, event)
+	_hud.set_stance(RoundTimeline.active_stance(_open_stances.values()))
 	_reconcile_fx()
 	if bool(decisions.get("phase_changed", false)):
 		var phase: Dictionary = decisions.get("phase", {})
 		if bool(phase.get("banner", false)):
 			_hud.show_phase(str(phase.get("name", "")).strip_edges())
+		_hud.set_base_tint(RoundTimeline.phase_tint(phase, UITheme.DANGER))
 	for event: Dictionary in decisions["fire"] as Array:
 		match str(event.get("track", "")):
 			RoundTimeline.TRACK_CAST:
@@ -352,8 +549,15 @@ func _rebuild_hud() -> void:
 	var marks: Array = []
 	if bool(_timeline.get("phase_ticks", true)):
 		for phase: Dictionary in RoundTimeline.resolved_phases(_timeline, _full_ms):
-			marks.append(float(phase["resolved_at_ms"]) / float(_full_ms))
-	_hud.setup(str(_timeline.get("boss_name", "")), marks)
+			marks.append(1.0 - float(phase["resolved_hp_at"]))
+	_hud.setup(
+		str(_timeline.get("boss_name", "")),
+		marks,
+		float(_timeline.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y))
+	)
+	# The preview always shows the FIRST pass: an author is looking at the fight as a player meets it,
+	# and the pips exist so they can see the shape of a multi-attempt boss without playing three of them.
+	_hud.set_attempts(1, maxi(1, int(_timeline.get("max_attempts", 1))))
 
 
 # A cue's art: the named character's portrait when it has one, otherwise the cue's own image. The same

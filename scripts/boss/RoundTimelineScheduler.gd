@@ -34,8 +34,8 @@ const MAX_CATCHUP_MS: int = 2000
 # Events for the normal (victory) pass, resolved to absolute positions and sorted.
 var _events: Array = []
 
-# The `on: "defeat"` set — never fired by tick(); the bail-out path asks for them explicitly.
-var _defeat: Array = []
+# Events that fire on the way OUT of the round — never by tick(); each exit path asks for its own set.
+var _outcomes: Array = []
 
 var _phases: Array = []
 
@@ -50,11 +50,34 @@ var _pos_ms: int = -1
 
 var _phase_id: String = ""
 
+# Segments, and the branch each has committed to. A fork is UNDECIDED until one of its events first
+# wants to happen — see _branch_allows(). Deciding at round start instead would evaluate every condition
+# against a player who has not done anything yet, which is the whole reason conditions exist.
+var _segments: Dictionary = {}  # segment_id → segment
+var _tag_owner: Dictionary = {}  # tag → segment_id
+var _picks: Dictionary = {}  # segment_id → the tag that won
 
-func _init(timeline: Dictionary = {}, video_duration_ms: int = 0) -> void:
+# id → true/false for every event whose own `condition` has been judged. Latched on first consideration
+# rather than re-read each tick: a window whose condition flickered would switch itself on and off
+# mid-stretch, which reads as a bug rather than as responsiveness.
+var _gated: Dictionary = {}
+
+# Injected so a test can seed it and a round is reproducible. Only consulted for branches the author
+# left unconditioned — a rule always beats a roll.
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+
+
+func _init(
+	timeline: Dictionary = {}, video_duration_ms: int = 0, rng: RandomNumberGenerator = null
+) -> void:
 	_events = RoundTimeline.resolved_events(timeline, video_duration_ms)
-	_defeat = RoundTimeline.resolved_events(timeline, video_duration_ms, true)
+	_outcomes = RoundTimeline.resolved_events(timeline, video_duration_ms, true)
 	_phases = RoundTimeline.resolved_phases(timeline, video_duration_ms)
+	for segment: Dictionary in timeline.get("segments", []) as Array:
+		_segments[str(segment.get("id", ""))] = segment
+	_tag_owner = RoundTimeline.tag_owners(timeline)
+	if rng != null:
+		_rng = rng
 
 
 # ── Driving ──────────────────────────────────────────────────────────────────
@@ -66,10 +89,10 @@ func _init(timeline: Dictionary = {}, video_duration_ms: int = 0) -> void:
 ## first), and `fire` last. `phase` is {} when the position sits outside every phase.
 ##
 ## Backward movement, and any forward jump beyond MAX_CATCHUP_MS, are handled as a seek — see seek().
-func tick(pos_ms: int) -> Dictionary:
+func tick(pos_ms: int, state: Dictionary = {}) -> Dictionary:
 	var prev: int = _pos_ms
 	if prev >= 0 and (pos_ms < prev or pos_ms - prev > MAX_CATCHUP_MS):
-		return seek(pos_ms)
+		return seek(pos_ms, state)
 	if prev < 0:
 		# First tick of a pass. Baseline just BEHIND the position: an event sitting exactly on it still
 		# fires (a round opener at 0), while everything further back counts as already past. Baselining
@@ -85,18 +108,53 @@ func tick(pos_ms: int) -> Dictionary:
 		# Half-open on the left so an event exactly at the previous position never fires twice, and
 		# closed on the right so one landing exactly on this tick is not skipped.
 		if at > prev and at <= pos_ms and not _fired.has(e["id"]):
+			# Marked fired either way: an event held back by its branch or its condition has HAPPENED as
+			# far as the clock is concerned, and re-testing it on every later tick would let it slip in
+			# the moment the player's state drifted past the threshold.
 			_fired[str(e["id"])] = true
-			out["fire"].append(e)
-	_reconcile_windows(pos_ms, out)
-	_update_phase(pos_ms, out)
+			if _plays(e, state):
+				out["fire"].append(e)
+	_reconcile_windows(pos_ms, out, state)
+	_update_phase(state, out)
 	return out
+
+
+# Whether this event happens at all: its segment must have picked its branch, and its own condition must
+# hold. Both are decided HERE, the first moment the event matters, and then remembered.
+func _plays(event: Dictionary, state: Dictionary) -> bool:
+	return _branch_allows(event, state) and _gate_allows(event, state)
+
+
+# Commits the event's segment to a branch if it has not already, then reports whether this event is on
+# it. An untagged event, or one whose tag no segment claims, always plays — an unrecognised tag must
+# never silently delete content.
+func _branch_allows(event: Dictionary, state: Dictionary) -> bool:
+	var tag: String = str(event.get("variant_tag", ""))
+	if tag == "" or not _tag_owner.has(tag):
+		return true
+	var segment_id: String = str(_tag_owner[tag])
+	if not _picks.has(segment_id):
+		_picks[segment_id] = RoundTimeline.choose_branch(_segments[segment_id], state, _rng)
+	return str(_picks[segment_id]) == tag
+
+
+func _gate_allows(event: Dictionary, state: Dictionary) -> bool:
+	var id: String = str(event.get("id", ""))
+	if not _gated.has(id):
+		_gated[id] = RoundTimeline.evaluate_condition(event.get("condition", []), state)
+	return bool(_gated[id])
+
+
+## The branch each segment committed to this round, for anything that needs to show what happened.
+func picked_branches() -> Dictionary:
+	return _picks.duplicate()
 
 
 ## Jumps to `pos_ms` WITHOUT firing everything in between — the device re-anchor / resume path. Windows
 ## reconcile to the new position (so an effect that covers it switches on, and one that no longer does
 ## switches off), and one-shots are re-baselined: those now behind us are marked as already fired, those
 ## ahead are re-armed so a backward seek can play them again. Returns the same record as tick().
-func seek(pos_ms: int) -> Dictionary:
+func seek(pos_ms: int, state: Dictionary = {}) -> Dictionary:
 	_pos_ms = pos_ms
 	var out: Dictionary = _blank()
 	for e: Dictionary in _events:
@@ -107,8 +165,8 @@ func seek(pos_ms: int) -> Dictionary:
 			_fired[id] = true  # behind us now — skipped, not replayed
 		else:
 			_fired.erase(id)  # ahead of us again — allowed to fire when reached
-	_reconcile_windows(pos_ms, out)
-	_update_phase(pos_ms, out)
+	_reconcile_windows(pos_ms, out, state)
+	_update_phase(state, out)
 	return out
 
 
@@ -121,6 +179,10 @@ func reset() -> Dictionary:
 		out["stop"].append(_active[id])
 	_active.clear()
 	_fired.clear()
+	# A replay is a fresh encounter: the forks decide again, against whatever the player is doing NOW.
+	# seek() deliberately keeps them — scrubbing inside one round must not reshuffle it.
+	_picks.clear()
+	_gated.clear()
 	_pos_ms = -1
 	_phase_id = ""
 	return out
@@ -139,10 +201,14 @@ func finish() -> Dictionary:
 # ── Queries ──────────────────────────────────────────────────────────────────
 
 
-## The authored `on: "defeat"` events, in order — one authored event for the bail-out path, in place of
-## the victory outro.
-func defeat_events() -> Array:
-	return _defeat.duplicate()
+## The events authored for one way OUT of the round, in order. The caller names which exit it is taking,
+## rather than there being an accessor per outcome — the set grows, the shape does not.
+func outcome_events(on_mode: String) -> Array:
+	var out: Array = []
+	for e: Dictionary in _outcomes:
+		if str(e.get("on", "")) == on_mode:
+			out.append(e)
+	return out
 
 
 ## Every window currently applied, in no particular order.
@@ -165,7 +231,7 @@ func events() -> Array:
 
 ## True when there is nothing at all to drive, so the GameLoop can skip the whole subsystem.
 func is_idle() -> bool:
-	return _events.is_empty() and _phases.is_empty() and _defeat.is_empty()
+	return _events.is_empty() and _phases.is_empty() and _outcomes.is_empty()
 
 
 # ── Internals ────────────────────────────────────────────────────────────────
@@ -174,14 +240,18 @@ func is_idle() -> bool:
 # Windows are decided by CONTAINMENT, never by remembering an edge was crossed: "should this be on at
 # `pos`?" compared against "is it on?". That is what makes the same code correct after a pause, a seek
 # backwards into the middle of a window, or a replay.
-func _reconcile_windows(pos_ms: int, out: Dictionary) -> void:
+func _reconcile_windows(pos_ms: int, out: Dictionary, state: Dictionary) -> void:
 	for e: Dictionary in _events:
 		if not _is_windowed(e):
 			continue
 		var duration: int = int(e.get("duration_ms", 0))
 		var id: String = str(e["id"])
 		var at: int = int(e["resolved_at_ms"])
-		var should_be_on: bool = at <= pos_ms and pos_ms < at + duration
+		# A window only asks about its branch once it would otherwise be opening. Testing every window on
+		# every tick would commit every fork in the encounter on the first frame, against a player who
+		# has not moved yet.
+		var contains: bool = at <= pos_ms and pos_ms < at + duration
+		var should_be_on: bool = contains and (_active.has(id) or _plays(e, state))
 		var is_on: bool = _active.has(id)
 		if should_be_on and not is_on:
 			_active[id] = e
@@ -191,15 +261,17 @@ func _reconcile_windows(pos_ms: int, out: Dictionary) -> void:
 			out["stop"].append(e)
 
 
-# The current phase is simply the last one whose start is at or behind the position — containment
-# again, so it is as seek-proof as the windows are.
-func _update_phase(pos_ms: int, out: Dictionary) -> void:
+# The current phase is the last one the boss has dropped to the health of — containment again, but on
+# the BAR rather than the clock, so it is as seek-proof as the windows are and a replay carrying damage
+# over resumes in the stage that damage earned rather than starting the fight's shape again.
+func _update_phase(state: Dictionary, out: Dictionary) -> void:
+	var hp: float = float(state.get(RoundTimeline.SIGNAL_BOSS_HP, 1.0))
 	var found: Dictionary = {}
 	for p: Dictionary in _phases:
-		if int(p["resolved_at_ms"]) <= pos_ms:
+		if float(p["resolved_hp_at"]) >= hp:
 			found = p
 		else:
-			break  # _phases is sorted, so the first one ahead ends the search
+			break  # _phases runs full health first, so the first one below ends the search
 	var found_id: String = str(found.get("id", ""))
 	if found_id != _phase_id:
 		_phase_id = found_id
@@ -211,7 +283,7 @@ func _update_phase(pos_ms: int, out: Dictionary) -> void:
 # so a media event's own length can never be mistaken for a window — see the class comment.
 static func _is_windowed(event: Dictionary) -> bool:
 	match str(event.get("track", "")):
-		RoundTimeline.TRACK_EFFECT:
+		RoundTimeline.TRACK_EFFECT, RoundTimeline.TRACK_STANCE:
 			return true
 		RoundTimeline.TRACK_CAST:
 			return int(event.get("duration_ms", 0)) > 0

@@ -1341,6 +1341,37 @@ static func stage_with_speaker(
 	return out
 
 
+# Every flag the boss encounters on a ROUND node can raise — the round's own, plus each pool entry,
+# since an entry can be its own boss carrying its own encounter. Empty for anything that is not a boss.
+#
+# Shared because three separate things need it and none of them should know the timeline's shape: the
+# builder's flag universe (so a fork can name one), the auditor's dataflow (so a fork gated on one is
+# not read as a dead branch), and its coverage pass.
+static func boss_outcome_flags(round_data: Dictionary) -> Array:
+	var out: Array = []
+	for timeline: Dictionary in boss_timelines(round_data):
+		for flag: String in RoundTimeline.outcome_flags(timeline):
+			if not out.has(flag):
+				out.append(flag)
+	return out
+
+
+# The encounters a round node can actually play: its own, plus one per pool entry — a pool round plays
+# exactly ONE of them, which is why they are kept separate rather than merged. Only encounters that name
+# at least one outcome flag come back; the rest tell a journey nothing.
+static func boss_timelines(round_data: Dictionary) -> Array:
+	var out: Array = []
+	var holders: Array = [round_data]
+	for entry: Variant in round_data.get("pool_entries", []) as Array:
+		if entry is Dictionary:
+			holders.append(entry)
+	for holder: Dictionary in holders:
+		var timeline: Variant = holder.get("timeline", {})
+		if timeline is Dictionary and not RoundTimeline.outcome_flags(timeline).is_empty():
+			out.append(timeline)
+	return out
+
+
 # Normalizes a flag list (from a comma-separated field or a saved array) to a deduped, trimmed,
 # non-empty string array. Shared by a node's "sets flags" and a fork choice's "sets flags".
 static func clean_flag_list(v: Variant) -> Array:

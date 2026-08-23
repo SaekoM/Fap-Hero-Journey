@@ -30,7 +30,13 @@ const NEW_WINDOW_MS: int = 5000
 # Fixed width of the right-hand inspector. Wide enough that the busiest panel (an effect's kind, its
 # intensity and its two fade fields) reads without wrapping, and held constant so selecting a different
 # event never resizes it — see _build_inspector_row.
-const INSPECTOR_WIDTH: int = 400
+const INSPECTOR_WIDTH: int = 520
+
+# How the left column's height is divided between the picture and the lanes, and the floor below which
+# the lanes stop giving ground however tall the preview would like to be.
+const STAGE_STRETCH: float = 1.5
+const LANES_STRETCH: float = 1.0
+const LANES_MIN_H: int = 180
 
 # Side of the subtitle colour swatch. Square reads as a colour chip; the default button shape stretched
 # to the row height and read as an oddly thin control.
@@ -41,6 +47,10 @@ const UNDO_DEPTH: int = 60
 # Repeated edits of the same KIND within this window collapse into one undo step, so dragging a block
 # or scrubbing a spin box is a single undo rather than a hundred.
 const COALESCE_MS: int = 500
+
+# Entries in the track's right-click menu.
+const CONTEXT_SET_WIN_POINT: int = 0
+const CONTEXT_CLEAR_WIN_POINT: int = 1
 
 var _timeline: Dictionary = {}
 var _full_ms: int = 1
@@ -58,6 +68,7 @@ var _reference_points: Array = []  # the round's stroke as (t_ms, pos), reused b
 
 var _modal: Control = null
 var _timeline_view: BossTimeline = null
+var _context_menu: PopupMenu = null
 var _scrollbar: HScrollBar = null
 var _inspector: VBoxContainer = null
 # event id → the problems validate() found with it. Marked on the block and spelled out in the
@@ -80,6 +91,12 @@ var _stage: BossPreviewStage = null
 # The transport that drives it, which stays here: it is modal chrome, not part of the picture.
 var _play_button: Button = null
 var _time_label: Label = null
+var _cycle_button: Button = null
+
+# The pretend player the preview judges rules against, and the row of controls that sets it. Shown only
+# once the encounter actually has a rule, because until then there is nothing for it to change.
+var _sim_state: Dictionary = RoundTimeline.empty_state()
+var _sim_row: Control = null
 
 # ── Undo / clipboard ─────────────────────────────────────────────────────────
 
@@ -126,13 +143,32 @@ func open(
 	_modal = parts["modal"]
 	var column: VBoxContainer = parts["vbox"]
 
-	# Stage and inspector share a row: the preview wants the height, and a wide modal has the width to
-	# spare — stacking them would push the timeline off the bottom.
-	column.add_child(_build_stage_row())
+	# The modal is two columns, not a stack. Everything that is about the ROUND — the picture, the
+	# transport, the lanes — shares the left one and therefore shares a width; the inspector owns the
+	# right one for the modal's whole height.
+	#
+	# It used to be a stack, with the timeline spanning the full width underneath both. That gave the
+	# timeline width it did not need and cost the inspector the height it did: segments made the lanes
+	# tall enough to squeeze everything above them, while the inspector — which is the thing with real
+	# vertical content — was cut off at the stage's bottom edge and scrolled constantly.
+	var body: HBoxContainer = HBoxContainer.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 12)
+
+	var work: VBoxContainer = VBoxContainer.new()
+	work.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	work.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	work.add_theme_constant_override("separation", 6)
+	work.add_child(_build_stage())
 	# Transport and the Boss Kit share the strip between the stage and the lanes: both are things you
 	# reach for WHILE looking at the timeline, so they sit next to it rather than up at the title.
-	column.add_child(_build_transport_row())
-	_build_timeline_row(column)
+	work.add_child(_build_transport_row())
+	work.add_child(_build_sim_row())
+	_build_timeline_row(work)
+	body.add_child(work)
+
+	body.add_child(_build_inspector_row())
+	column.add_child(body)
 	column.add_child(_build_footer())
 
 	add_child(_modal)
@@ -164,22 +200,19 @@ func _modal_size() -> Vector2i:
 # ── Preview stage ────────────────────────────────────────────────────────────
 
 
-# The preview stage beside the inspector. Everything about the picture — the video, the cue layer, the
-# audio, the sensory engine, the health bar and the scheduler driving them — lives in BossPreviewStage.
-# This only places it and listens for the two things the rest of the modal needs to know.
-func _build_stage_row() -> Control:
-	var row: HBoxContainer = HBoxContainer.new()
-	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	row.add_theme_constant_override("separation", 12)
-
+# The preview stage at the top of the working column. Everything about the picture — the video, the cue
+# layer, the audio, the sensory engine, the health bar and the scheduler driving them — lives in
+# BossPreviewStage. This only places it and listens for the two things the rest of the modal needs.
+func _build_stage() -> Control:
 	_stage = BossPreviewStage.new()
-	row.add_child(_stage)
+	_stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# The picture gets the larger share of the column, but the lanes below keep a real amount of it —
+	# they are the thing being edited, and a preview nobody is looking at should not crowd them out.
+	_stage.size_flags_stretch_ratio = STAGE_STRETCH
 	_stage.build(_characters)
 	_stage.deselect_requested.connect(func() -> void: _select(""))
 	_stage.advanced.connect(_on_stage_advanced)
-
-	row.add_child(_build_inspector_row())
-	return row
+	return _stage
 
 
 # Playback moved. The picture is the stage's; the playhead, the ruler and the clock are the modal's.
@@ -211,6 +244,26 @@ func _build_transport_row() -> Control:
 	_time_label = Label.new()
 	UITheme.style_label(_time_label, UITheme.DARK_TEXT, 12)
 	row.add_child(_time_label)
+
+	# Without this an author can only ever see whichever alternative happened to come up, which makes
+	# the other versions they wrote unreviewable.
+	_cycle_button = Button.new()
+	_cycle_button.text = "⟳ CYCLE BRANCHES"
+	_cycle_button.focus_mode = Control.FOCUS_NONE
+	_cycle_button.tooltip_text = UITheme.wrap_tip(
+		(
+			"Step to the next branch, and to the next alternative line where a cue has them. Keep "
+			+ "pressing to walk every combination and come back round. Only affects the preview."
+		)
+	)
+	UITheme.style_button_subtle(_cycle_button, UITheme.CYAN, 10, 6, 11)
+	_cycle_button.pressed.connect(
+		func() -> void:
+			_stage.cycle()
+			# Read back AFTER the step, so the rows and the curves match what the stage just chose.
+			_sync_branch_view()
+	)
+	row.add_child(_cycle_button)
 
 	var gap: Control = Control.new()
 	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -295,8 +348,13 @@ func _build_kit_row() -> Control:
 	var phase_button: Button = Button.new()
 	phase_button.text = "＋ PHASE"
 	UITheme.style_button_subtle(phase_button, UITheme.PURPLE_MID, 10, 6, 11)
+	phase_button.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"A new stage of the fight, placed on the HEALTH STRIP above the tracks. Drag it there to say how far down the bar she changes."
+		)
+	)
 	phase_button.pressed.connect(func() -> void: _add_phase())
-	_make_kit_draggable(phase_button, "phase", "")
 	row.add_child(phase_button)
 
 	return row
@@ -324,8 +382,6 @@ func _on_kit_dropped(kind: String, value: String, at_ms: int) -> void:
 	match kind:
 		"track":
 			_add_event(value, at_ms)
-		"phase":
-			_add_phase(at_ms)
 
 
 func _build_timeline_row(column: VBoxContainer) -> void:
@@ -334,14 +390,38 @@ func _build_timeline_row(column: VBoxContainer) -> void:
 	_timeline_view.event_selected.connect(_on_event_selected)
 	_timeline_view.event_moved.connect(_on_event_moved)
 	_timeline_view.event_resized.connect(_on_event_resized)
+	_timeline_view.event_head_dragged.connect(_on_event_head_dragged)
 	_timeline_view.playhead_scrubbed.connect(_on_playhead_scrubbed)
 	_timeline_view.view_changed.connect(_on_view_changed)
 	_timeline_view.kit_dropped.connect(_on_kit_dropped)
 	_timeline_view.phase_moved.connect(_on_phase_moved)
-	column.add_child(_timeline_view)
+	_timeline_view.context_menu_requested.connect(_on_timeline_context_menu)
+	# The wheel used to zoom, which authors found by accident. Scrolling took it over, so the gesture
+	# that replaced it has to be stated — CTRL+wheel is not something anyone discovers.
+	_timeline_view.tooltip_text = (UITheme.wrap_tip(
+		(
+			"CTRL+wheel zooms · wheel scrolls the lanes · middle-drag pans · right-click for the "
+			+ "win-skip point. Drag a block to move it, or its right edge to resize."
+		)
+	))
+
+	# Segments stack downwards without limit — a strip per branch, per segment — so the lanes cannot be
+	# given whatever height they ask for. Inside a scroll they take the room the column can spare and
+	# the rest is reachable, instead of the encounter squeezing everything above it off the top.
+	#
+	# Horizontal scrolling stays OFF: the lanes already own that axis, where CTRL+wheel zooms and the
+	# scrollbar below pans. A second horizontal scroll would fight both. The plain wheel belongs to THIS
+	# container — the lanes leave it unhandled so it arrives here.
+	var lanes: ScrollContainer = ScrollContainer.new()
+	lanes.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	lanes.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	lanes.size_flags_stretch_ratio = LANES_STRETCH
+	lanes.custom_minimum_size.y = LANES_MIN_H
+	lanes.add_child(_timeline_view)
+	column.add_child(lanes)
 
 	# A sibling scrollbar pans the zoomed view — the same pairing the override editor uses, so the
-	# wheel is free to zoom without stealing panning.
+	# wheel is free for scrolling and CTRL+wheel for zoom, without either stealing panning.
 	_scrollbar = HScrollBar.new()
 	_scrollbar.value_changed.connect(
 		func(value: float) -> void: _timeline_view.set_view_start(int(value))
@@ -370,6 +450,118 @@ func _build_inspector_row() -> Control:
 	_inspector.add_theme_constant_override("separation", 6)
 	scroll.add_child(_inspector)
 	return holder
+
+
+# PREVIEW AS IF: the player the rules are judged against. Without this an author can write a condition
+# and have no way to watch it fire — they would have to play the round and physically produce the state,
+# which for "they have stopped moving" means sitting still through it to check one line.
+#
+# It drives the SAME calls the round makes (matched_branch, evaluate_condition), so a branch winning here
+# is the branch that will win there. It is a lens on the encounter, never part of it: nothing here is
+# saved, and the round builds its own state from the real player.
+func _build_sim_row() -> Control:
+	_sim_row = HBoxContainer.new()
+	_sim_row.add_theme_constant_override("separation", 10)
+	_rebuild_sim_fields()
+	return _sim_row
+
+
+# The controls themselves, rebuilt rather than mutated so AT REST can put every field back at once. They
+# live in the transport, NOT the inspector, so rebuilding the inspector would not have touched them.
+func _rebuild_sim_fields() -> void:
+	for child: Node in _sim_row.get_children():
+		_sim_row.remove_child(child)
+		child.queue_free()
+	var row: HBoxContainer = _sim_row
+
+	var title: Label = Label.new()
+	title.text = "PREVIEW AS IF"
+	UITheme.style_label(title, UITheme.TOXIC_GREEN, 10, true)
+	row.add_child(title)
+
+	for signal_name: String in RoundTimeline.SIGNALS:
+		# Boss health is DERIVED — the score and the playhead read back out — so the preview computes it
+		# and the bar above shows it. A dial here would let an author set a health the bar disagreed with,
+		# and phases key off health, so the two would have shown different stages of the same fight.
+		if signal_name == RoundTimeline.SIGNAL_BOSS_HP:
+			continue
+		row.add_child(
+			_labeled(RoundTimeline.signal_label(signal_name), _make_sim_field(signal_name))
+		)
+
+	var reset: Button = Button.new()
+	reset.text = "⟲ AT REST"
+	reset.focus_mode = Control.FOCUS_NONE
+	# Everything else in this row is a _labeled() pair — caption stacked over control — so a bare button
+	# centres against the whole pair and sits above their baseline. Bottom-aligning lines it up.
+	reset.size_flags_vertical = Control.SIZE_SHRINK_END
+	reset.tooltip_text = UITheme.wrap_tip(
+		"Back to a player who has done nothing yet — how every round actually starts."
+	)
+	UITheme.style_button_subtle(reset, UITheme.DARK_TEXT, 10, 6, 10)
+	reset.pressed.connect(
+		func() -> void:
+			_sim_state = RoundTimeline.empty_state()
+			_rebuild_sim_fields()  # the controls must show the values they were just reset to
+			_push_sim_state()
+	)
+	row.add_child(reset)
+
+
+# One control per signal, matching the kind of value it holds — the same split the clause editor makes,
+# so a number is a number and an item is picked from a list rather than typed.
+func _make_sim_field(signal_name: String) -> Control:
+	if RoundTimeline.is_text_signal(signal_name):
+		var by_id: bool = signal_name == RoundTimeline.SIGNAL_LAST_ITEM_ID
+		var options: Array = [{"value": "", "label": "(nothing used)"}]
+		options.append_array(_known_item_ids() if by_id else _known_item_kinds())
+		var picker: OptionButton = OptionButton.new()
+		picker.clip_text = true
+		picker.custom_minimum_size = Vector2(130, 0)
+		for option: Dictionary in options:
+			picker.add_item(str(option["label"]))
+		picker.selected = maxi(
+			0, _option_values(options).find(str(_sim_state.get(signal_name, "")))
+		)
+		picker.item_selected.connect(
+			func(i: int) -> void:
+				_sim_state[signal_name] = str((options[i] as Dictionary)["value"])
+				_push_sim_state()
+		)
+		return picker
+
+	var number: SpinBox = SpinBox.new()
+	number.min_value = 0
+	number.max_value = 100000
+	number.step = 1
+	number.custom_minimum_size = Vector2(80, 0)
+	number.value = float(_sim_state.get(signal_name, 0))
+	UITheme.style_spin_box(number)
+	number.value_changed.connect(
+		func(value: float) -> void:
+			_sim_state[signal_name] = value
+			_push_sim_state()
+	)
+	return number
+
+
+# Hands the pretend player to the stage and re-reads what it decided, so the lit branch row and the
+# reference curves move the instant a value changes.
+func _push_sim_state() -> void:
+	_stage.set_sim_state(_sim_state)
+	_sync_branch_view()
+
+
+# The row is only meaningful once something in the encounter actually reads a player.
+func _encounter_has_rules() -> bool:
+	for segment: Dictionary in _segments():
+		for branch: Dictionary in segment.get("branches", []) as Array:
+			if not RoundTimeline.condition_clauses(branch.get("condition", {})).is_empty():
+				return true
+	for event: Dictionary in _timeline["events"] as Array:
+		if not RoundTimeline.condition_clauses(event.get("condition", {})).is_empty():
+			return true
+	return false
 
 
 func _build_footer() -> Control:
@@ -596,7 +788,8 @@ func _refresh() -> void:
 		# set_events(), which leaves the view the author arranged alone.
 		_view_ready = true
 		_timeline_view.setup(_timeline, _full_ms)
-	_timeline_view.set_events(_timed_events(), _timeline["phases"])
+	_timeline_view.set_value_labels(_value_labels())
+	_timeline_view.set_events(_timed_events(), _timeline["phases"], _segments())
 	# The preview runs the REAL scheduler, so it has to be rebuilt whenever the timeline changes.
 	_rebuild_preview()
 	_refresh_scrollbar()
@@ -610,9 +803,15 @@ func _refresh() -> void:
 # device actually be doing here?" — which the raw reference curve alone cannot.
 func _refresh_overlays() -> void:
 	var overlays: Array = []
+	var dormant: Array = _stage.dormant_tags() if is_instance_valid(_stage) else []
 	for event: Dictionary in _timeline["events"] as Array:
 		var at: int = RoundTimeline.resolve_at_ms(event, _full_ms)
 		if at == RoundTimeline.NO_TIME:
+			continue
+		# A branch that is not the live one contributes NO curve. Drawing every branch stacked the
+		# alternatives on one graph, which reads as a single round doing all of them at once — the exact
+		# confusion the strip rows were built to remove, reappearing on the reference strip.
+		if dormant.has(str(event.get("variant_tag", ""))):
 			continue
 		match str(event.get("track", "")):
 			RoundTimeline.TRACK_ATTACK:
@@ -721,15 +920,15 @@ func _shift(points: Array, offset_ms: int) -> Array:
 func _timed_events() -> Array:
 	var out: Array = []
 	for event: Dictionary in _timeline["events"] as Array:
-		if str(event.get("on", RoundTimeline.ON_ALWAYS)) != RoundTimeline.ON_DEFEAT:
+		if not RoundTimeline.is_outcome_event(event):
 			out.append(event)
 	return out
 
 
-func _defeat_events() -> Array:
+func _outcome_events(on_mode: String) -> Array:
 	var out: Array = []
 	for event: Dictionary in _timeline["events"] as Array:
-		if str(event.get("on", RoundTimeline.ON_ALWAYS)) == RoundTimeline.ON_DEFEAT:
+		if str(event.get("on", RoundTimeline.ON_ALWAYS)) == on_mode:
 			out.append(event)
 	return out
 
@@ -763,25 +962,34 @@ func _add_event(track: String, at_ms: int = -1) -> void:
 		"at_ms": at_ms if at_ms >= 0 else _playhead_ms,
 		"anchor": RoundTimeline.ANCHOR_START,
 	}
-	# An effect is meaningless as an instant, so it arrives as a window; the rest default to one-shots.
-	if track == RoundTimeline.TRACK_EFFECT:
+	# An effect and a stance are both meaningless as instants, so they arrive as windows; the rest
+	# default to one-shots.
+	if track == RoundTimeline.TRACK_EFFECT or track == RoundTimeline.TRACK_STANCE:
 		event["duration_ms"] = NEW_WINDOW_MS
+	# GUARDED rather than NORMAL: a stance window that changes nothing is a block an author placed for no
+	# reason, and guarding is the commonest thing they came here to do.
+	if track == RoundTimeline.TRACK_STANCE:
+		event["stance"] = RoundTimeline.STANCE_GUARDED
 	(_timeline["events"] as Array).append(event)
 	_selected_id = str(event["id"])
 	_timeline_view.set_selected(_selected_id)
 	_refresh()
 
 
-func _add_phase(at_ms: int = -1) -> void:
+# A new stage of the fight, placed on the HEALTH BAR rather than the clock. Each one starts a third of a
+# bar further down than the last, which is a reasonable opening guess for the usual two- or three-stage
+# boss and saves the author from typing a number before they know what they want.
+func _add_phase() -> void:
 	_snapshot("add")
 	var phases: Array = _timeline["phases"]
+	var next_hp: float = clampf(1.0 - float(phases.size()) / 3.0, 0.0, 1.0)
 	(
 		phases
 		. append(
 			{
 				"id": RoundTimeline.new_event_id("phs"),
 				"name": "PHASE %d" % (phases.size() + 1),
-				"at_ms": _playhead_ms,
+				RoundTimeline.PHASE_HP_KEY: next_hp,
 				"banner": true,
 			}
 		)
@@ -852,12 +1060,95 @@ func _on_event_resized(id: String, duration_ms: int) -> void:
 	_refresh()
 
 
-# A phase marker was dragged along its band.
-func _on_phase_moved(id: String, at_ms: int) -> void:
+# The LEFT edge was dragged: the block starts later and ends where it did. For a media block that also
+# cuts the same amount off the FRONT of the source, which is the whole point of the gesture — an attack
+# could otherwise only ever begin at its funscript's first stroke, and an author wanting the middle of a
+# script had no way to ask for it.
+#
+# The out-point is deliberately left alone. Both edges cut into the source, and each one should only
+# move the end it is being dragged from.
+func _on_event_head_dragged(id: String, at_ms: int) -> void:
+	var event: Dictionary = _find(id)
+	if event.is_empty():
+		return
+	_snapshot("resize:" + id)  # same tag as the other edge, so one gesture is one undo step
+	var track: String = str(event.get("track", ""))
+	var media: bool = track == RoundTimeline.TRACK_ATTACK or track == RoundTimeline.TRACK_AUDIO
+	var trim: Dictionary = event.get("trim", {})
+	var in_ms: int = int(trim.get("in_ms", 0))
+	var was_at: int = RoundTimeline.resolve_at_ms(event, _full_ms)
+	var was_long: int = maxi(0, int(event.get("duration_ms", 0)))
+
+	# Worked out on the ROUND's clock and converted back once at the end, so an END-anchored block trims
+	# the same way a START-anchored one does instead of backwards.
+	var from_end: bool = (
+		str(event.get("anchor", RoundTimeline.ANCHOR_START)) == RoundTimeline.ANCHOR_END
+	)
+	var wanted: int = _full_ms - at_ms if from_end else at_ms
+	var moved: int = wanted - was_at
+	# Dragging the head back can only give back what was already cut. Past that there is no more source
+	# to reveal, and letting it keep going would make the block claim a length its media cannot fill.
+	if media and moved < -in_ms:
+		moved = -in_ms
+	var new_at: int = maxi(0, was_at + moved)
+	event["at_ms"] = maxi(0, _full_ms - new_at) if from_end else new_at
+	event["duration_ms"] = maxi(0, was_long - moved)
+
+	if not media:
+		_refresh()  # nothing to cut into: a cast or effect window simply starts later
+		return
+	# No trim yet means the block plays the whole source, so the length it had IS that source's length —
+	# which is what the out-point has to become, or the tail would be lost the moment the head moved.
+	var out_ms: int = int(trim.get("out_ms", in_ms + was_long))
+	event["trim"] = {"in_ms": maxi(0, in_ms + moved), "out_ms": out_ms}
+	_refresh()
+
+
+# The track was right-clicked. Built fresh each time rather than kept around: the entries depend on what
+# is currently set, and a menu that has to be re-synced is a menu that will eventually be out of date.
+func _on_timeline_context_menu(at_ms: int, at_global: Vector2) -> void:
+	if is_instance_valid(_context_menu):
+		_context_menu.queue_free()
+	_context_menu = PopupMenu.new()
+	_context_menu.add_item("⚑ Skip ahead to here on win", CONTEXT_SET_WIN_POINT)
+	_context_menu.add_item("Clear the win skip", CONTEXT_CLEAR_WIN_POINT)
+	# Nothing to clear yet, so the entry stays visible — saying what exists — but cannot be chosen.
+	_context_menu.set_item_disabled(
+		_context_menu.get_item_index(CONTEXT_CLEAR_WIN_POINT),
+		int(_timeline.get("win_jump_ms", RoundTimeline.NO_TIME)) == RoundTimeline.NO_TIME
+	)
+	_context_menu.id_pressed.connect(func(id: int) -> void: _run_context_action(id, at_ms))
+	add_child(_context_menu)
+	_context_menu.popup(Rect2i(Vector2i(at_global), Vector2i.ZERO))
+
+
+# Setting where a win skips to by pointing at it. The number alone was unusable — an author had no way
+# to see what "10000ms from the end" actually landed on.
+#
+# Placing the flag turns the skip ON, because placing it IS asking for it. Stored against whichever
+# anchor the encounter already uses, so the flag stays on the frame that was pointed at either way.
+func _run_context_action(id: int, at_ms: int) -> void:
+	match id:
+		CONTEXT_SET_WIN_POINT:
+			_snapshot("field:win_jump_ms")
+			var from_end: bool = (
+				str(_timeline.get("win_jump_anchor", RoundTimeline.ANCHOR_END))
+				== RoundTimeline.ANCHOR_END
+			)
+			_timeline["win_jump_ms"] = maxi(0, _full_ms - at_ms) if from_end else maxi(0, at_ms)
+			_refresh()
+		CONTEXT_CLEAR_WIN_POINT:
+			_snapshot("field:win_jump_ms")
+			_timeline["win_jump_ms"] = RoundTimeline.NO_TIME
+			_refresh()
+
+
+# A phase marker was dragged along the health strip, setting the health it takes over at.
+func _on_phase_moved(id: String, hp_at: float) -> void:
 	_snapshot("move:" + id)
 	for phase: Dictionary in _timeline["phases"] as Array:
 		if str(phase.get("id", "")) == id:
-			phase["at_ms"] = maxi(0, at_ms)
+			phase[RoundTimeline.PHASE_HP_KEY] = clampf(hp_at, 0.0, 1.0)
 			_refresh()
 			return
 
@@ -905,8 +1196,8 @@ func _rebuild_inspector() -> void:
 	header.add_theme_constant_override("separation", 10)
 	var title: Label = Label.new()
 	title.text = str(event.get("track", "")).to_upper()
-	if str(event.get("on", RoundTimeline.ON_ALWAYS)) == RoundTimeline.ON_DEFEAT:
-		title.text += "  ·  ON DEFEAT"
+	if RoundTimeline.is_outcome_event(event):
+		title.text += "  ·  %s" % RoundTimeline.outcome_label(str(event["on"]))
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_label(title, BossTimeline.track_color(str(event.get("track", ""))), 14, true)
 	header.add_child(title)
@@ -917,14 +1208,16 @@ func _rebuild_inspector() -> void:
 	header.add_child(delete)
 	_inspector.add_child(header)
 
-	if str(event.get("on", RoundTimeline.ON_ALWAYS)) == RoundTimeline.ON_DEFEAT:
+	if RoundTimeline.is_outcome_event(event):
 		var note: Label = Label.new()
-		note.text = "Plays when the player gives in — not at a time on the timeline."
+		note.text = "Plays on the way out of the round — not at a time on the timeline."
 		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		UITheme.style_label(note, UITheme.AMBER, 10)
 		_inspector.add_child(note)
 	else:
 		_add_time_fields(event)
+		_add_branch_field(event)
+		_add_condition_rows(_inspector, event, "Only if…")
 	match str(event.get("track", "")):
 		RoundTimeline.TRACK_ATTACK:
 			_add_line_edit(event, "name", "Attack name (shown on the HUD chip)")
@@ -939,6 +1232,7 @@ func _rebuild_inspector() -> void:
 			_add_placement_fields(event)
 			_add_transition_field(event)
 			_add_fade_fields(event, "in_ms", "out_ms", "Cue fade in / out (ms)")
+			_add_alts_list(event)
 		RoundTimeline.TRACK_AUDIO:
 			_add_file_field(
 				event,
@@ -948,6 +1242,9 @@ func _rebuild_inspector() -> void:
 				func(path: String) -> void: _adopt_media_length(event, _audio_length_ms(path))
 			)
 			_add_fade_fields(event, "fade_in_ms", "fade_out_ms", "Audio ease in / out (ms)")
+			_add_alts_list(event)
+		RoundTimeline.TRACK_STANCE:
+			_add_stance_field(event)
 		RoundTimeline.TRACK_EFFECT:
 			_add_effects_picker(event)
 			_add_fade_fields(event, "fade_in_ms", "fade_out_ms", "Effect ease in / out (ms)")
@@ -991,12 +1288,38 @@ func _build_encounter_inspector() -> void:
 	)
 	_inspector.add_child(hp)
 
+	# Only worth showing while there is a bar to move.
+	if bool(_timeline.get("hp_bar", true)):
+		var bar_y: SpinBox = SpinBox.new()
+		bar_y.min_value = 0.0
+		bar_y.max_value = 1.0
+		bar_y.step = 0.01
+		bar_y.value = float(_timeline.get("hp_bar_y", RoundTimeline.DEFAULT_HP_BAR_Y))
+		bar_y.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				(
+					"Where the name and bar sit down the screen: 0 is the top edge, 1 the bottom. The whole "
+					+ "block moves together, and it never runs off either end — so cast art can have the "
+					+ "top of the frame if that is where it wants to be."
+				)
+			)
+		)
+		UITheme.style_spin_box(bar_y)
+		bar_y.value_changed.connect(
+			func(value: float) -> void:
+				_snapshot("field:hp_bar_y")
+				_timeline["hp_bar_y"] = value
+				_rebuild_preview()
+		)
+		_inspector.add_child(_labeled("Health bar Y", bar_y))
+
 	var ticks: CheckButton = CheckButton.new()
-	ticks.text = "SHOW PHASE MARKS ON THE BAR"
+	ticks.text = "SPLIT THE BAR BY PHASE"
 	ticks.tooltip_text = (
 		UITheme
 		. wrap_tip(
-			"A division mark on the health bar for each phase, so the player can see another stage is coming."
+			"Cuts the health bar into one stage per phase, so the player can see there is more of this fight coming without being told. The divisions follow the phases you placed, so they cannot disagree with the banners."
 		)
 	)
 	ticks.button_pressed = bool(_timeline.get("phase_ticks", true))
@@ -1008,6 +1331,105 @@ func _build_encounter_inspector() -> void:
 	)
 	_inspector.add_child(ticks)
 
+	var hp_row: HBoxContainer = HBoxContainer.new()
+	hp_row.add_theme_constant_override("separation", 8)
+
+	var source: OptionButton = OptionButton.new()
+	source.add_item("TIME — round progress")
+	source.add_item("SCORE — what they earn")
+	source.selected = (1 if _health_follows_score() else 0)
+	source.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"What drains the bar. TIME is the clock read backwards — the same number the ordinary "
+				+ "progress bar shows. SCORE points it at the player, so it empties as they earn. Emptying "
+				+ "it does nothing by itself: hang a rule on Score to decide what happens."
+			)
+		)
+	)
+	source.item_selected.connect(
+		func(index: int) -> void:
+			_snapshot("field:hp_source")
+			_timeline["hp_source"] = (
+				RoundTimeline.HP_SCORE if index == 1 else RoundTimeline.HP_TIME
+			)
+			_refresh()
+	)
+	hp_row.add_child(_labeled("Health bar follows", source))
+
+	if _health_follows_score():
+		var target: SpinBox = SpinBox.new()
+		# Zero, not one: a SpinBox snaps to min + n*step, so a minimum of 1 with a step of 50 could only
+		# land on 1, 51, 101 … and a typed 1000 became 1001. The model floors it at 1 regardless.
+		target.min_value = 0
+		target.max_value = 1000000
+		target.step = 50
+		target.value = float(_timeline.get("damage_target", RoundTimeline.DEFAULT_DAMAGE_TARGET))
+		target.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				(
+					"Score that empties the bar. What is achievable depends entirely on the round, so tune "
+					+ "it against what you actually see yourself score playing this one."
+				)
+			)
+		)
+		UITheme.style_spin_box(target)
+		target.value_changed.connect(
+			func(value: float) -> void:
+				_snapshot("field:damage_target")
+				_timeline["damage_target"] = int(value)
+				_refresh_derived()
+		)
+		hp_row.add_child(_labeled("Score to defeat", target))
+
+		var attempts: SpinBox = SpinBox.new()
+		attempts.min_value = 1
+		attempts.max_value = 20
+		attempts.step = 1
+		attempts.value = float(_timeline.get("max_attempts", RoundTimeline.DEFAULT_MAX_ATTEMPTS))
+		attempts.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				(
+					"How many passes the player gets. ONE plays the round once and moves on, whatever the "
+					+ "bar reached. More turns it into a fight: a pass that ends with the boss still "
+					+ "standing replays this round, carrying the damage already done."
+				)
+			)
+		)
+		UITheme.style_spin_box(attempts)
+		attempts.value_changed.connect(
+			func(value: float) -> void:
+				_snapshot("field:max_attempts")
+				_timeline["max_attempts"] = int(value)
+				_refresh()
+		)
+		hp_row.add_child(_labeled("Attempts", attempts))
+	_inspector.add_child(hp_row)
+	# Sits under the row it explains, and only when the bar actually reads a score.
+	if _health_follows_score():
+		_add_target_recommendation()
+		_add_regen_fields()
+
+	var items: CheckButton = CheckButton.new()
+	items.text = "PLAYER MAY USE ITEMS"
+	items.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Lets the player open their inventory during this encounter. Turn it off for a sealed-room fight. An authored ATTACK always outranks an override item — one used mid-attack is refused rather than consumed."
+		)
+	)
+	items.button_pressed = bool(_timeline.get("items_allowed", true))
+	items.toggled.connect(
+		func(pressed: bool) -> void:
+			_snapshot("field:items_allowed")
+			_timeline["items_allowed"] = pressed
+	)
+	_inspector.add_child(items)
+
+	_build_segments_section()
 	_build_outcomes_section()
 
 	var hint: Label = Label.new()
@@ -1020,39 +1442,134 @@ func _build_encounter_inspector() -> void:
 # The DEFEAT events. They live here rather than on a lane because they have no place on the clock: they
 # play when the player gives in (the FINISH button), whenever that happens — so a position would be a lie.
 # Everything else about it is an ordinary cast or audio event.
+# The three ways out of the round, each with its own list. Separate sections rather than one list with a
+# mode dropdown: an author needs to see at a glance which endings they have NOT written, and a single
+# list hides that behind reading every row.
 func _build_outcomes_section() -> void:
-	var separator: HSeparator = HSeparator.new()
-	_inspector.add_child(separator)
+	_inspector.add_child(HSeparator.new())
 
 	var title: Label = Label.new()
-	title.text = "IF THE PLAYER GIVES IN"
+	title.text = "HOW THE ROUND CAN END"
 	UITheme.style_label(title, UITheme.AMBER, 12, true)
 	_inspector.add_child(title)
 
-	var blurb: Label = Label.new()
-	blurb.text = (
-		"Played when the player presses FINISH mid-round, instead of the ending you placed on the "
-		+ "timeline."
-	)
-	blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_label(blurb, UITheme.DARK_TEXT, 10)
-	_inspector.add_child(blurb)
-
-	if not _allow_finish:
-		_inspector.add_child(_make_finish_warning())
-
-	for defeat_event: Dictionary in _defeat_events():
-		_inspector.add_child(_make_outcome_row(defeat_event))
-
 	var hold: SpinBox = _make_ms_spin(
-		int(_timeline.get("defeat_hold_ms", RoundTimeline.DEFAULT_DEFEAT_HOLD_MS))
+		int(_timeline.get("outcome_hold_ms", RoundTimeline.DEFAULT_OUTCOME_HOLD_MS))
+	)
+	hold.tooltip_text = UITheme.wrap_tip(
+		"How long any of these endings is held before the round tears down. Shared by all three."
 	)
 	hold.value_changed.connect(
 		func(value: float) -> void:
-			_snapshot("field:defeat_hold_ms")
-			_timeline["defeat_hold_ms"] = int(value)
+			_snapshot("field:outcome_hold_ms")
+			_timeline["outcome_hold_ms"] = int(value)
 	)
 	_inspector.add_child(_labeled("Hold before the round ends (ms)", hold))
+
+	_build_outcome_block(
+		RoundTimeline.ON_WON,
+		"IF THEY WIN",
+		(
+			"Played the moment the health bar empties. The round then plays out as aftermath — it does "
+			+ "not cut short."
+		),
+		"won_flag"
+	)
+	_build_outcome_block(
+		RoundTimeline.ON_GAVE_IN,
+		"IF SHE WINS",
+		(
+			"Played when the player presses FINISH mid-round, and when the last attempt ends with the "
+			+ "boss still standing. Both are the same defeat as far as this ending is concerned."
+		),
+		"lost_flag"
+	)
+
+
+# Whether the bar is counting the player down rather than the clock. Winning, replays, damage windows and
+# phase thresholds all only mean anything in that mode.
+func _health_follows_score() -> bool:
+	return str(_timeline.get("hp_source", RoundTimeline.HP_TIME)) == RoundTimeline.HP_SCORE
+
+
+# One ending: what it is, the beats it plays, an optional flag it raises, and the buttons to add to it.
+func _build_outcome_block(
+	on_mode: String, heading: String, blurb_text: String, flag_key: String
+) -> void:
+	var header: HBoxContainer = HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	var title: Label = Label.new()
+	title.text = heading
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(title, UITheme.CYAN, 10, true)
+	header.add_child(title)
+
+	# An ending fires on the way OUT of a round, so the preview's timed pass never reaches one. Without
+	# this an author could write a whole defeat sequence and only find out what it looked like by
+	# losing a fight for real.
+	if not _outcome_events(on_mode).is_empty():
+		var play: Button = Button.new()
+		play.text = "▶ PLAY"
+		play.tooltip_text = UITheme.wrap_tip(
+			"Plays this ending over the preview, held for the same time the round holds it."
+		)
+		UITheme.style_button_subtle(play, UITheme.TOXIC_GREEN, 9, 4, 10)
+		play.pressed.connect(func() -> void: _stage.play_outcome(on_mode))
+		header.add_child(play)
+	_inspector.add_child(header)
+
+	var blurb: Label = Label.new()
+	blurb.text = blurb_text
+	blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(blurb, UITheme.DARK_TEXT, 9)
+	_inspector.add_child(blurb)
+
+	# Only a win can skip the clip — the other two endings are already at the end of the round.
+	if on_mode == RoundTimeline.ON_WON:
+		_add_win_jump_fields()
+
+	# The FINISH warning belongs only to the ending FINISH triggers.
+	if on_mode == RoundTimeline.ON_GAVE_IN and not _allow_finish:
+		_inspector.add_child(_make_finish_warning())
+
+	# There is nothing to win against a bar that is only counting the clock down.
+	if on_mode == RoundTimeline.ON_WON and not _health_follows_score():
+		(
+			_inspector
+			. add_child(
+				_make_amber_callout(
+					(
+						"⚠  Reachable only when the health bar follows SCORE — against the clock the round "
+						+ "simply plays through and this never fires."
+					),
+					9
+				)
+			)
+		)
+
+	for event: Dictionary in _outcome_events(on_mode):
+		_inspector.add_child(_make_outcome_row(event))
+
+	if flag_key != "":
+		var flag: LineEdit = LineEdit.new()
+		flag.text = str(_timeline.get(flag_key, ""))
+		flag.placeholder_text = "Flag to raise (optional)"
+		flag.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				(
+					"Raises this run flag when the round ends this way, so a later fork or round can ask "
+					+ "how the fight went. Advancing past the boss no longer means they beat it."
+				)
+			)
+		)
+		UITheme.style_line_edit(flag)
+		flag.text_changed.connect(
+			func(value: String) -> void:
+				_snapshot("field:" + flag_key)
+				_timeline[flag_key] = value
+		)
+		_inspector.add_child(flag)
 
 	var add_row: HBoxContainer = HBoxContainer.new()
 	add_row.add_theme_constant_override("separation", 8)
@@ -1060,9 +1577,495 @@ func _build_outcomes_section() -> void:
 		var button: Button = Button.new()
 		button.text = "＋ %s" % track.to_upper()
 		UITheme.style_button_subtle(button, BossTimeline.track_color(track), 10, 6, 11)
-		button.pressed.connect(func() -> void: _add_defeat_event(track))
+		button.pressed.connect(func() -> void: _add_outcome_event(on_mode, track))
 		add_row.add_child(button)
 	_inspector.add_child(add_row)
+
+
+# SEGMENTS. A segment names a set of branches and plays exactly one of them, so a whole move — its
+# telegraph, its attack, its impact sound — varies together instead of each part rolling on its own and
+# producing combinations nobody wrote.
+func _build_segments_section() -> void:
+	_inspector.add_child(HSeparator.new())
+
+	var header: HBoxContainer = HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	var title: Label = Label.new()
+	title.text = "SEGMENTS"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(title, UITheme.CYAN, 12, true)
+	header.add_child(title)
+
+	var add: Button = Button.new()
+	add.text = "＋ SEGMENT"
+	UITheme.style_button_subtle(add, UITheme.CYAN, 10, 6, 11)
+	add.pressed.connect(
+		func() -> void:
+			_snapshot("add-segment")
+			(
+				(_segments() as Array)
+				. append(
+					{
+						"id": RoundTimeline.new_event_id("seg"),
+						"name": "Move %d" % ((_segments() as Array).size() + 1),
+						"branches": _fresh_branches(2),
+					}
+				)
+			)
+			_refresh()
+	)
+	header.add_child(add)
+	_inspector.add_child(header)
+
+	var blurb: Label = Label.new()
+	blurb.text = (
+		"One branch of each segment plays per round. Tag an event with a branch below to put it on that "
+		+ "branch; untagged events always play."
+	)
+	blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(blurb, UITheme.DARK_TEXT, 10)
+	_inspector.add_child(blurb)
+
+	for issue: Dictionary in RoundTimeline.validate(_timeline, _full_ms):
+		# Segment problems are keyed to the SEGMENT, so the per-event issue panel never shows them —
+		# they would otherwise be the one class of warning an author could not see anywhere.
+		if (
+			str(issue["code"])
+			in [RoundTimeline.ISSUE_SEGMENT_THIN, RoundTimeline.ISSUE_SEGMENT_DEAD_TAG]
+		):
+			_inspector.add_child(_make_amber_callout("⚠  " + str(issue["message"]), 10))
+
+	for i: int in (_segments() as Array).size():
+		_inspector.add_child(_make_segment_row(i))
+
+
+# One segment: its name, then a row per branch. Branches are listed individually rather than typed as a
+# comma-separated string, because each one now carries the RULE that selects it — and a rule needs
+# somewhere to live that a text field cannot give it.
+func _make_segment_row(index: int) -> Control:
+	var segments: Array = _segments()
+	var segment: Dictionary = segments[index]
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var name_field: LineEdit = LineEdit.new()
+	name_field.text = str(segment.get("name", ""))
+	name_field.placeholder_text = "Segment name"
+	name_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_line_edit(name_field)
+	name_field.text_changed.connect(
+		func(value: String) -> void:
+			_snapshot("field:segment_name")
+			segment["name"] = value
+			_refresh_derived()
+	)
+	row.add_child(name_field)
+
+	var remove: Button = Button.new()
+	remove.text = "✕"
+	UITheme.style_button_subtle(remove, UITheme.DANGER, 8, 4, 11)
+	remove.pressed.connect(
+		func() -> void:
+			_snapshot("delete-segment")
+			segments.remove_at(index)
+			_refresh()
+	)
+	row.add_child(remove)
+	box.add_child(row)
+
+	var branches: Array = segment.get("branches", [])
+	if not (segment.get("branches", null) is Array):
+		branches = []
+		segment["branches"] = branches
+	for i: int in branches.size():
+		box.add_child(_make_branch_row(branches, i))
+
+	var add: Button = Button.new()
+	add.text = "＋ BRANCH"
+	UITheme.style_button_subtle(add, UITheme.CYAN, 10, 6, 10)
+	add.pressed.connect(
+		func() -> void:
+			_snapshot("add-branch")
+			branches.append({"tag": _next_free_tag(_all_tags()), "condition": {}})
+			_refresh()
+	)
+	box.add_child(add)
+	return box
+
+
+# One branch: its name, the rule that picks it, and a remove button. The rule reads as a sentence in the
+# same words the timeline gutter uses, so an author meets the identical phrasing in both places.
+func _make_branch_row(branches: Array, index: int) -> Control:
+	var branch: Dictionary = branches[index]
+	var box: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.06)
+	style.set_corner_radius_all(4)
+	style.set_content_margin_all(6)
+	box.add_theme_stylebox_override("panel", style)
+
+	var column: VBoxContainer = VBoxContainer.new()
+	column.add_theme_constant_override("separation", 4)
+
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	var tag: LineEdit = LineEdit.new()
+	tag.text = str(branch.get("tag", ""))
+	tag.placeholder_text = "Branch name"
+	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tag.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Renaming a branch does NOT retag the events already on it — they fall off and start always "
+				+ "playing, so retag them from each event's Branch field."
+			)
+		)
+	)
+	UITheme.style_line_edit(tag)
+	tag.text_changed.connect(
+		func(value: String) -> void:
+			_snapshot("field:branch_tag")
+			branch["tag"] = value
+			_refresh_derived()
+	)
+	head.add_child(tag)
+
+	var drop: Button = Button.new()
+	drop.text = "✕"
+	UITheme.style_button_subtle(drop, UITheme.DANGER, 8, 4, 10)
+	drop.pressed.connect(
+		func() -> void:
+			_snapshot("delete-branch")
+			branches.remove_at(index)
+			_refresh()
+	)
+	head.add_child(drop)
+	column.add_child(head)
+
+	_add_condition_rows(column, branch, "Plays when…")
+	box.add_child(column)
+	return box
+
+
+# The clause editor, shared by a segment's branches and by an event's own gate. `owner` is whatever dict
+# holds the `condition` key, so both callers get identical behaviour from one implementation.
+func _add_condition_rows(parent: Control, owner: Dictionary, label: String) -> void:
+	var condition: Dictionary = owner.get("condition", {})
+	if not (owner.get("condition", null) is Dictionary):
+		condition = {"match": RoundTimeline.MATCH_ALL, "clauses": []}
+		owner["condition"] = condition
+	var clauses: Array = condition.get("clauses", [])
+	if not (condition.get("clauses", null) is Array):
+		clauses = []
+		condition["clauses"] = clauses
+
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 6)
+	var caption: Label = Label.new()
+	# An empty rule reads as the dice roll it actually is, rather than as a blank the author has to
+	# interpret — the same word the timeline gutter prints.
+	caption.text = "%s  %s" % [label, RoundTimeline.condition_text(condition, _value_labels())]
+	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(caption, UITheme.DARK_TEXT, 9)
+	head.add_child(caption)
+
+	var add: Button = Button.new()
+	add.text = "＋ RULE"
+	UITheme.style_button_subtle(add, UITheme.TOXIC_GREEN, 8, 4, 9)
+	add.pressed.connect(
+		func() -> void:
+			_snapshot("add-rule")
+			clauses.append(
+				{"signal": RoundTimeline.SIGNAL_SCORE, "op": RoundTimeline.OP_LT, "value": 100}
+			)
+			_refresh()
+	)
+	head.add_child(add)
+	parent.add_child(head)
+
+	# The joiner only appears once there are two clauses to join — offered earlier it is a control with
+	# nothing to do, and a decision an author has no reason to have made yet.
+	if clauses.size() > 1:
+		var mode: OptionButton = OptionButton.new()
+		mode.add_item("ALL must hold")
+		mode.add_item("ANY may hold")
+		mode.selected = (
+			1 if RoundTimeline.condition_match(condition) == RoundTimeline.MATCH_ANY else 0
+		)
+		mode.item_selected.connect(
+			func(i: int) -> void:
+				_snapshot("field:condition_match")
+				condition["match"] = RoundTimeline.MATCHES[i]
+				_refresh()
+		)
+		parent.add_child(mode)
+
+	for i: int in clauses.size():
+		parent.add_child(_make_clause_row(clauses, i))
+
+
+# One clause: signal, comparison, value. Every clause must hold for the rule to pass (or any one of them
+# under ANY), which is why they stack rather than nesting — an author who needs alternatives writes
+# another branch.
+func _make_clause_row(clauses: Array, index: int) -> Control:
+	var clause: Dictionary = clauses[index]
+	# Two lines rather than one: the signal on its own, then the comparison. Once signals read as words
+	# — "Medium Strokes (21-70)" — a single row could not hold one beside an operator, a value and a
+	# remove button, and the panel simply clipped whatever fell off the end.
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+
+	var signal_pick: OptionButton = OptionButton.new()
+	for name: String in RoundTimeline.SIGNALS:
+		signal_pick.add_item(RoundTimeline.signal_label(name))
+	signal_pick.selected = maxi(0, RoundTimeline.SIGNALS.find(str(clause.get("signal", ""))))
+	signal_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	signal_pick.item_selected.connect(
+		func(i: int) -> void:
+			_snapshot("field:clause_signal")
+			var chosen: String = RoundTimeline.SIGNALS[i]
+			var previous: String = str(clause.get("signal", ""))
+			var was_text: bool = RoundTimeline.is_text_signal(previous)
+			var now_text: bool = RoundTimeline.is_text_signal(chosen)
+			clause["signal"] = chosen
+			# The value is reset whenever it stops meaning anything: crossing between a number and a
+			# name, or swapping one name signal for the other, since an item KIND is not a valid item
+			# ID. Two numeric signals keep the value, which is usually what an author wants.
+			if previous != chosen and (was_text or now_text):
+				clause["value"] = "" if now_text else 0
+			# ...and an operator the new signal has no use for. Left alone, switching to an item signal
+			# kept "<", which _clause_holds silently reads as equality — so the rule would have worked
+			# while reading as something else entirely.
+			if not RoundTimeline.ops_for(chosen).has(str(clause.get("op", ""))):
+				clause["op"] = RoundTimeline.OP_EQ
+			# The value editor differs for a name signal, so the row is rebuilt rather than left showing
+			# a spin box for something that is not a number.
+			_refresh()
+	)
+	# Clipped rather than allowed to grow: an OptionButton sizes itself to its longest entry, so one
+	# long custom item name would otherwise widen the row past the panel however wide the panel is.
+	signal_pick.clip_text = true
+	box.add_child(signal_pick)
+
+	# Only the comparisons that mean something for this signal — an item name has no ordering, so
+	# offering "<" would let an author write a rule that cannot say what it appears to say.
+	var signal_name: String = str(clause.get("signal", ""))
+	var ops: Array = RoundTimeline.ops_for(signal_name)
+	var op_pick: OptionButton = OptionButton.new()
+	for op: String in ops:
+		op_pick.add_item(RoundTimeline.op_label(op, signal_name))
+	op_pick.selected = maxi(0, ops.find(str(clause.get("op", ""))))
+	op_pick.item_selected.connect(
+		func(i: int) -> void:
+			_snapshot("field:clause_op")
+			clause["op"] = str(ops[i])
+			_refresh_derived()
+	)
+	row.add_child(op_pick)
+
+	if RoundTimeline.is_text_signal(str(clause.get("signal", ""))):
+		row.add_child(_make_name_value_picker(clause))
+	else:
+		var number: SpinBox = SpinBox.new()
+		number.min_value = 0
+		number.max_value = 100000
+		number.step = 1
+		number.value = float(clause.get("value", 0))
+		number.custom_minimum_size = Vector2(90, 0)
+		UITheme.style_spin_box(number)
+		number.value_changed.connect(
+			func(value: float) -> void:
+				_snapshot("field:clause_value")
+				clause["value"] = value
+				_refresh_derived()
+		)
+		row.add_child(number)
+
+	var drop: Button = Button.new()
+	drop.text = "✕"
+	UITheme.style_button_subtle(drop, UITheme.DANGER, 6, 4, 9)
+	drop.pressed.connect(
+		func() -> void:
+			_snapshot("delete-rule")
+			clauses.remove_at(index)
+			_refresh()
+	)
+	row.add_child(drop)
+	box.add_child(row)
+	return box
+
+
+# A picker for the clause's value when the signal names something rather than counting it. A DROPDOWN
+# rather than a text field for the same reason branch tags are: a name that matches nothing simply never
+# fires, so a typo would read as "the boss ignored my rule" with nothing on screen to explain why.
+func _make_name_value_picker(clause: Dictionary) -> Control:
+	var by_id: bool = str(clause.get("signal", "")) == RoundTimeline.SIGNAL_LAST_ITEM_ID
+	var options: Array = _known_item_ids() if by_id else _known_item_kinds()
+	var current: String = str(clause.get("value", ""))
+	# An item the journey no longer has still has to round-trip. Dropping it from the list would quietly
+	# rewrite the author's rule to whatever happened to sit at index 0.
+	if current != "" and not _option_values(options).has(current):
+		options.append({"value": current, "label": "%s  (missing)" % current})
+
+	var picker: OptionButton = OptionButton.new()
+	picker.custom_minimum_size = Vector2(120, 0)
+	picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Same reason as the signal picker: a long item name truncates instead of pushing the row wider.
+	picker.clip_text = true
+	for option: Dictionary in options:
+		picker.add_item(str(option["label"]))
+	picker.selected = maxi(0, _option_values(options).find(current))
+	picker.item_selected.connect(
+		func(i: int) -> void:
+			_snapshot("field:clause_value")
+			clause["value"] = str((options[i] as Dictionary)["value"])
+			_refresh_derived()
+	)
+	return picker
+
+
+# value → the name an author would recognise, for every item and kind a rule can name. Handed to
+# condition_text so a printed rule says "Silver Key" rather than the id it is stored under.
+func _value_labels() -> Dictionary:
+	var out: Dictionary = {}
+	for source: Array in [_known_item_ids(), _known_item_kinds()]:
+		for option: Dictionary in source:
+			out[str(option["value"])] = str(option["label"])
+	return out
+
+
+static func _option_values(options: Array) -> Array:
+	var out: Array = []
+	for option: Dictionary in options:
+		out.append(str(option["value"]))
+	return out
+
+
+# Every item an author could reach: the built-in shop items plus THIS journey's custom ones. Built-ins
+# come from GetBuiltinItemIds rather than GetAllItemIds on purpose — the latter also carries journey
+# items left in play-state from a test-play, which would double this journey's entries and leak the
+# previous journey's into the list.
+func _known_item_ids() -> Array:
+	var out: Array = []
+	for id: Variant in InventoryService.GetBuiltinItemIds():
+		var data: Dictionary = InventoryService.GetItemData(str(id))
+		out.append({"value": str(id), "label": str(data.get("name", id))})
+	for raw: Variant in _items:
+		if not (raw is Dictionary):
+			continue
+		var item: Dictionary = raw
+		var name: String = str(item.get("name", "")).strip_edges()
+		(
+			out
+			. append(
+				{
+					"value": str(item.get("id", "")),
+					"label":
+					"%s  (this journey)" % (name if name != "" else str(item.get("id", ""))),
+				}
+			)
+		)
+	return out
+
+
+# The item KINDS in play, derived from the same two sources rather than hard-coded — a kind added to the
+# registry later should appear here without anyone remembering to update a list.
+func _known_item_kinds() -> Array:
+	var seen: Dictionary = {}
+	for id: Variant in InventoryService.GetBuiltinItemIds():
+		var kind: String = str(InventoryService.GetItemData(str(id)).get("kind", ""))
+		if kind != "":
+			seen[kind] = true
+	for raw: Variant in _items:
+		if not (raw is Dictionary):
+			continue
+		for effect: Variant in (raw as Dictionary).get("effects", []) as Array:
+			if effect is Dictionary:
+				var effect_kind: String = str((effect as Dictionary).get("kind", ""))
+				if effect_kind != "":
+					seen[effect_kind] = true
+	var out: Array = []
+	for kind: Variant in seen:
+		out.append({"value": str(kind), "label": str(kind)})
+	return out
+
+
+# Which branch this event belongs to. A DROPDOWN rather than a text field on purpose: a tag no segment
+# claims is treated as "always plays", so a typo would silently put the event on every branch at once —
+# a failure that looks like nothing at all until an encounter plays two moves on top of each other.
+func _add_branch_field(event: Dictionary) -> void:
+	var tags: Array = _all_tags()
+	if tags.is_empty():
+		return  # nothing to belong to yet; the section above is where branches are created
+
+	var picker: OptionButton = OptionButton.new()
+	picker.add_item("ALWAYS PLAYS")
+	for tag: String in tags:
+		picker.add_item(tag)
+	picker.selected = maxi(0, tags.find(str(event.get("variant_tag", ""))) + 1)
+	picker.tooltip_text = UITheme.wrap_tip(
+		"Put this event on one branch of a segment, or leave it playing every time."
+	)
+	picker.item_selected.connect(
+		func(index: int) -> void:
+			_snapshot("field:variant_tag")
+			event["variant_tag"] = "" if index == 0 else str(tags[index - 1])
+			_refresh_derived()
+	)
+	_inspector.add_child(_labeled("Branch", picker))
+
+
+# The timeline's segments list, created on demand so an encounter that never uses one carries no key.
+func _segments() -> Array:
+	if not (_timeline.get("segments", null) is Array):
+		_timeline["segments"] = []
+	return _timeline["segments"]
+
+
+# Every branch name any segment declares, in declaration order.
+# A pair of branches nothing else has claimed. Tags are namespaced across the WHOLE encounter, not per
+# segment — apply_segments() maps a tag to exactly one owning segment — so two segments both offering
+# "A" and "B" meant the second one's choice quietly did nothing and cycling appeared to skip it.
+func _fresh_branches(count: int) -> Array:
+	var taken: Array = _all_tags()
+	var out: Array = []
+	for _i: int in count:
+		var tag: String = _next_free_tag(taken)
+		taken.append(tag)
+		out.append({"tag": tag, "condition": {}})
+	return out
+
+
+# The first spreadsheet-style name not already in use: A … Z, then AA, AB and so on.
+func _next_free_tag(taken: Array) -> String:
+	var n: int = 0
+	while true:
+		var tag: String = ""
+		var i: int = n
+		while true:
+			tag = String.chr(65 + i % 26) + tag
+			i = i / 26 - 1
+			if i < 0:
+				break
+		if not taken.has(tag):
+			return tag
+		n += 1
+	return "A"  # unreachable; GDScript wants a terminal return
+
+
+func _all_tags() -> Array:
+	var out: Array = []
+	for segment: Dictionary in _segments():
+		for tag: String in RoundTimeline.segment_tags(segment):
+			if not out.has(tag):
+				out.append(tag)
+	return out
 
 
 # Says why this whole section is inert. The controls stay editable rather than being disabled: an author
@@ -1080,23 +2083,23 @@ func _make_finish_warning() -> Control:
 
 
 # One defeat event in the list: what it is, click to edit, and a remove button.
-func _make_outcome_row(defeat_event: Dictionary) -> Control:
+func _make_outcome_row(gave_in_event: Dictionary) -> Control:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 
 	var open: Button = Button.new()
-	var label: String = str(defeat_event.get("text", ""))
+	var label: String = str(gave_in_event.get("text", ""))
 	if label == "":
-		label = str(defeat_event.get("clip", "")).get_file()
+		label = str(gave_in_event.get("clip", "")).get_file()
 	if label == "":
-		label = str(defeat_event.get("track", "")).to_upper()
+		label = str(gave_in_event.get("track", "")).to_upper()
 	open.text = "✎  " + label
 	open.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	open.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	UITheme.style_button_subtle(
-		open, BossTimeline.track_color(str(defeat_event.get("track", ""))), 10, 6, 11
+		open, BossTimeline.track_color(str(gave_in_event.get("track", ""))), 10, 6, 11
 	)
-	open.pressed.connect(func() -> void: _select(str(defeat_event.get("id", ""))))
+	open.pressed.connect(func() -> void: _select(str(gave_in_event.get("id", ""))))
 	row.add_child(open)
 
 	var remove: Button = Button.new()
@@ -1107,7 +2110,7 @@ func _make_outcome_row(defeat_event: Dictionary) -> Control:
 			_snapshot("delete")
 			var kept: Array = []
 			for event: Dictionary in _timeline["events"] as Array:
-				if str(event.get("id", "")) != str(defeat_event.get("id", "")):
+				if str(event.get("id", "")) != str(gave_in_event.get("id", "")):
 					kept.append(event)
 			_timeline["events"] = kept
 			_refresh()
@@ -1118,13 +2121,13 @@ func _make_outcome_row(defeat_event: Dictionary) -> Control:
 
 # Adds a defeat event. `at_ms` is fixed at 0 and never shown — it plays on the bail-out, so the
 # number would only invite an author to tune something that has no effect.
-func _add_defeat_event(track: String) -> void:
+func _add_outcome_event(on_mode: String, track: String) -> void:
 	_snapshot("add")
 	var event: Dictionary = {
 		"id": RoundTimeline.new_event_id(),
 		"track": track,
 		"at_ms": 0,
-		"on": RoundTimeline.ON_DEFEAT,
+		"on": on_mode,
 	}
 	(_timeline["events"] as Array).append(event)
 	_select(str(event["id"]))
@@ -1168,7 +2171,7 @@ func _find_phase(id: String) -> Dictionary:
 	return {}
 
 
-# The phase marker editor: rename, retime, toggle its banner, delete.
+# The phase marker editor: rename, set the health it takes over at, toggle its banner, delete.
 func _build_phase_inspector(phase: Dictionary) -> void:
 	var header: HBoxContainer = HBoxContainer.new()
 	header.add_theme_constant_override("separation", 10)
@@ -1190,13 +2193,37 @@ func _build_phase_inspector(phase: Dictionary) -> void:
 	name_field.text_changed.connect(func(value: String) -> void: phase["name"] = value)
 	_inspector.add_child(_labeled("Name", name_field))
 
-	var at_spin: SpinBox = _make_ms_spin(int(phase.get("at_ms", 0)))
-	at_spin.value_changed.connect(
+	var hp_spin: SpinBox = SpinBox.new()
+	hp_spin.min_value = 0
+	hp_spin.max_value = 100
+	hp_spin.step = 1
+	hp_spin.suffix = "%"
+	hp_spin.value = 100.0 * RoundTimeline.phase_hp_at(phase, _full_ms)
+	hp_spin.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"She enters this stage the moment the bar drops to here. 100% is the opening stage. "
+				+ "Phases follow the BAR, not the clock — so a division on it always means what it says."
+			)
+		)
+	)
+	UITheme.style_spin_box(hp_spin)
+	hp_spin.value_changed.connect(
 		func(value: float) -> void:
-			phase["at_ms"] = int(value)
+			phase[RoundTimeline.PHASE_HP_KEY] = clampf(value / 100.0, 0.0, 1.0)
 			_refresh()
 	)
-	_inspector.add_child(_labeled("Starts (ms)", at_spin))
+	_inspector.add_child(_labeled("Starts at health", hp_spin))
+
+	# Against the clock the bar is round progress read backwards, so a health point is still a time — but
+	# an author pointing the bar at SCORE is the case this was built for, and it is worth saying so.
+	if not _health_follows_score():
+		var note: Label = Label.new()
+		note.text = "Health follows the CLOCK, so this is %s into the round." % _hp_as_time(phase)
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		UITheme.style_label(note, UITheme.DARK_TEXT, 9)
+		_inspector.add_child(note)
 
 	var banner: CheckButton = CheckButton.new()
 	banner.text = "SHOW BANNER"
@@ -1207,6 +2234,16 @@ func _build_phase_inspector(phase: Dictionary) -> void:
 			_refresh()
 	)
 	_inspector.add_child(banner)
+
+
+# Where a health point lands on the clock, for the note above — only meaningful while the bar is being
+# driven by time, which is exactly when it is shown.
+func _hp_as_time(phase: Dictionary) -> String:
+	var full_ms: int = _full_ms
+	if full_ms <= 0:
+		return "an unknown point"
+	var at_ms: int = int((1.0 - RoundTimeline.phase_hp_at(phase, full_ms)) * float(full_ms))
+	return "%d:%02d" % [at_ms / 60000, (at_ms / 1000) % 60]
 
 
 func _add_time_fields(event: Dictionary) -> void:
@@ -1417,6 +2454,516 @@ func _add_subtitle_fields(event: Dictionary) -> void:
 	)
 	style_row.add_child(_labeled("Line Y", line_y))
 	_inspector.add_child(style_row)
+
+
+# ALTERNATIVES. One of these plays instead of the base each time the round is entered, so a boss met
+# twice does not repeat itself word for word. The base counts as a candidate — two alternatives means
+# three possible lines — which is what an author means by the word and what roll_variants implements.
+#
+# Only content is swappable (RoundTimeline.ALT_FIELDS). Timing, placement and fades stay on the parent,
+# because an alternative that could move itself would let one candidate reorder against its siblings.
+func _add_alts_list(event: Dictionary) -> void:
+	var track: String = str(event.get("track", ""))
+	var alts: Array = event.get("alts", [])
+	if not (event.get("alts", null) is Array):
+		alts = []
+		event["alts"] = alts
+
+	var header: HBoxContainer = HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	var title: Label = Label.new()
+	title.text = "ALTERNATIVES (%d)" % alts.size()
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(title, UITheme.CYAN, 10, true)
+	header.add_child(title)
+
+	var add: Button = Button.new()
+	add.text = "＋ ALTERNATIVE"
+	add.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Another version of this one, picked at random when the round starts. The original stays in "
+				+ "the running — two alternatives means three possible outcomes."
+			)
+		)
+	)
+	UITheme.style_button_subtle(add, UITheme.CYAN, 10, 6, 11)
+	add.pressed.connect(
+		func() -> void:
+			_snapshot("add-alt")
+			alts.append(_blank_alt(track))
+			_refresh()
+	)
+	header.add_child(add)
+	_inspector.add_child(header)
+
+	# The BASE counts as a candidate — two alternatives means three possible outcomes — so it needs its
+	# own way back into the preview once one of the others has been pinned.
+	if not alts.is_empty():
+		var base: Button = Button.new()
+		var on_base: bool = _stage.variant_of(str(event["id"])) == 0
+		base.text = ("◉ " if on_base else "◎ ") + "SHOW THE ORIGINAL"
+		UITheme.style_button_subtle(
+			base, UITheme.TOXIC_GREEN if on_base else UITheme.DARK_TEXT, 9, 4, 10
+		)
+		base.pressed.connect(
+			func() -> void:
+				_stage.set_variant(str(event["id"]), 0)
+				_refresh()  # the ◉/◎ marks live in the inspector, so it has to be rebuilt
+		)
+		_inspector.add_child(base)
+
+	for i: int in alts.size():
+		_inspector.add_child(_make_alt_row(alts, i, track, event))
+
+
+# One alternative: the handful of fields it may overlay, and a remove button. Deliberately a SUBSET of
+# the base cue's controls — showing all of them would imply an alternative can change timing, which it
+# cannot.
+# What an empty alternative looks like on each track — the one field it exists to swap.
+func _blank_alt(track: String) -> Dictionary:
+	return {"text": ""} if track == RoundTimeline.TRACK_CAST else {"clip": ""}
+
+
+func _make_alt_row(alts: Array, index: int, track: String, alt_of: Dictionary) -> Control:
+	var alt: Dictionary = alts[index]
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var label: Label = Label.new()
+	label.text = "#%d" % (index + 1)
+	UITheme.style_label(label, UITheme.DARK_TEXT, 10, true)
+	row.add_child(label)
+
+	if track == RoundTimeline.TRACK_CAST:
+		var line: LineEdit = LineEdit.new()
+		line.text = str(alt.get("text", ""))
+		line.placeholder_text = "Subtitle for this version"
+		line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_line_edit(line)
+		line.text_changed.connect(
+			func(value: String) -> void:
+				_snapshot("field:alt_text")
+				alt["text"] = value
+				_refresh_derived()
+		)
+		row.add_child(line)
+	else:
+		var name_label: Label = Label.new()
+		name_label.text = (
+			str(alt.get("clip", "")).get_file() if str(alt.get("clip", "")) != "" else "(no clip)"
+		)
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		UITheme.style_label(name_label, UITheme.WHITE_SOFT, 10)
+		row.add_child(name_label)
+
+	# Pins the preview to THIS candidate. CYCLE walks every combination in the encounter, which is the
+	# wrong tool when an author is editing one line and wants to look at it — they had to keep pressing
+	# until it came round again.
+	var showing: bool = _stage.variant_of(str(alt_of["id"])) == index + 1
+	var pin: Button = Button.new()
+	pin.text = "◉" if showing else "◎"
+	pin.tooltip_text = UITheme.wrap_tip("Show this version in the preview.")
+	UITheme.style_button_subtle(
+		pin, UITheme.TOXIC_GREEN if showing else UITheme.DARK_TEXT, 8, 4, 11
+	)
+	pin.pressed.connect(
+		func() -> void:
+			_stage.set_variant(str(alt_of["id"]), index + 1)
+			_refresh()  # the ◉/◎ marks live in the inspector, so it has to be rebuilt
+	)
+	row.add_child(pin)
+
+	var remove: Button = Button.new()
+	remove.text = "✕"
+	UITheme.style_button_subtle(remove, UITheme.DANGER, 8, 4, 11)
+	remove.pressed.connect(
+		func() -> void:
+			_snapshot("delete-alt")
+			alts.remove_at(index)
+			_refresh()
+	)
+	row.add_child(remove)
+	box.add_child(row)
+
+	# The swappable media sits on its own line: a drop zone needs the width.
+	var media_key: String = "image" if track == RoundTimeline.TRACK_CAST else "clip"
+	var extensions: Array = (
+		JourneyData.IMAGE_EXTENSIONS
+		if track == RoundTimeline.TRACK_CAST
+		else JourneyAudio.AUDIO_EXTENSIONS
+	)
+	var zone: Control = load("res://scripts/journey_builder/DropZone.gd").new()
+	zone.accepted_extensions = extensions
+	zone.picker_title = "Alternative media"
+	if str(alt.get(media_key, "")) != "":
+		zone.call_deferred("set_file", str(alt[media_key]), false)
+	zone.file_dropped.connect(
+		func(path: String) -> void:
+			_snapshot("field:alt_media")
+			alt[media_key] = path
+			_refresh()
+	)
+	box.add_child(zone)
+	if track == RoundTimeline.TRACK_CAST:
+		var expression: Control = _make_alt_expression_picker(alt, alt_of)
+		if expression != null:
+			box.add_child(expression)
+		box.add_child(_make_alt_framing_row(alt))
+	return box
+
+
+# A different EXPRESSION of the same character — the natural way to vary a character's cue, and cheaper
+# than dropping a loose image, which severs the character link entirely. Only offered when the parent
+# names a character that actually has more than one expression to choose between.
+func _make_alt_expression_picker(alt: Dictionary, alt_of: Dictionary) -> Control:
+	var chosen: Dictionary = _character_by_id(str(alt_of.get("character_id", "")))
+	if chosen.is_empty():
+		return null
+	var portraits: Array = chosen.get("portraits", [])
+	if portraits.size() < 2:
+		return null
+	var picker: OptionButton = OptionButton.new()
+	picker.clip_text = true
+	picker.add_item("SAME AS BASE")
+	var selected: int = 0
+	for i: int in portraits.size():
+		var portrait: Dictionary = portraits[i]
+		picker.add_item(str(portrait.get("name", "Expression %d" % (i + 1))))
+		if alt.has("portrait") and str(portrait.get("id", "")) == str(alt["portrait"]):
+			selected = i + 1
+	picker.selected = selected
+	picker.item_selected.connect(
+		func(index: int) -> void:
+			_snapshot("field:alt_portrait")
+			if index == 0:
+				alt.erase("portrait")  # back to inheriting rather than pinned to whatever showed
+			else:
+				alt["portrait"] = str((portraits[index - 1] as Dictionary).get("id", ""))
+			_refresh()
+	)
+	return _labeled("Expression", picker)
+
+
+# Per-alternative FRAMING. A portrait and a wide shot want different placement, and an alt that leaves
+# these alone still inherits the parent's — each control writes only when it is touched, so a blank
+# alternative stays a pure content swap.
+func _make_alt_framing_row(alt: Dictionary) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+
+	var anchor: OptionButton = OptionButton.new()
+	anchor.clip_text = true
+	anchor.add_item("SAME AS BASE")
+	for name: String in RoundTimeline.CAST_ANCHORS:
+		anchor.add_item(name.to_upper())
+	anchor.selected = (
+		0
+		if not alt.has("anchor_pos")
+		else 1 + maxi(0, RoundTimeline.CAST_ANCHORS.find(str(alt["anchor_pos"])))
+	)
+	anchor.item_selected.connect(
+		func(index: int) -> void:
+			_snapshot("field:alt_anchor_pos")
+			if index == 0:
+				alt.erase("anchor_pos")  # back to inheriting, not pinned to whatever was showing
+			else:
+				alt["anchor_pos"] = RoundTimeline.CAST_ANCHORS[index - 1]
+			_refresh_derived()
+	)
+	row.add_child(_labeled("Position", anchor))
+
+	var scale: SpinBox = SpinBox.new()
+	scale.min_value = 0.05
+	scale.max_value = 4.0
+	scale.step = 0.05
+	scale.value = float(alt.get("scale", 1.0))
+	UITheme.style_spin_box(scale)
+	scale.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:alt_scale")
+			alt["scale"] = value
+			_refresh_derived()
+	)
+	row.add_child(_labeled("Size", scale))
+
+	# Attached to the alternative only once it is actually nudged. Writing it up front would overlay a
+	# {0,0} offset onto the parent's own, silently un-nudging every alternative of a cue that had one.
+	var offset: Dictionary = (alt.get("offset", {"x": 0.0, "y": 0.0}) as Dictionary).duplicate()
+	var nudge_x: SpinBox = _make_float_spin(offset, "x", -2000.0, 2000.0, 5.0)
+	var nudge_y: SpinBox = _make_float_spin(offset, "y", -2000.0, 2000.0, 5.0)
+	var attach: Callable = func(_value: float) -> void: alt["offset"] = offset
+	nudge_x.value_changed.connect(attach)
+	nudge_y.value_changed.connect(attach)
+	row.add_child(_labeled("X", nudge_x))
+	row.add_child(_labeled("Y", nudge_y))
+	return row
+
+
+# Where a win skips the clip to. Optional: left off, the round simply plays out as aftermath.
+func _add_win_jump_fields() -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var enabled: CheckButton = CheckButton.new()
+	enabled.text = "SKIP AHEAD ON WIN"
+	enabled.button_pressed = (
+		int(_timeline.get("win_jump_ms", RoundTimeline.NO_TIME)) != RoundTimeline.NO_TIME
+	)
+	enabled.tooltip_text = UITheme.wrap_tip(
+		(
+			"Jumps the clip forward the moment she goes down, so a win reaches the ending sooner. "
+			+ "Forward only — a backward jump would replay events the encounter has already fired."
+		)
+	)
+	enabled.toggled.connect(
+		func(pressed: bool) -> void:
+			_snapshot("field:win_jump_ms")
+			_timeline["win_jump_ms"] = 10000 if pressed else RoundTimeline.NO_TIME
+			_refresh()
+	)
+	row.add_child(enabled)
+	_inspector.add_child(row)
+
+	if int(_timeline.get("win_jump_ms", RoundTimeline.NO_TIME)) == RoundTimeline.NO_TIME:
+		return
+
+	var where: HBoxContainer = HBoxContainer.new()
+	where.add_theme_constant_override("separation", 8)
+
+	var anchor: OptionButton = OptionButton.new()
+	anchor.add_item("FROM THE END")
+	anchor.add_item("FROM THE START")
+	anchor.selected = (
+		1
+		if (
+			str(_timeline.get("win_jump_anchor", RoundTimeline.ANCHOR_END))
+			== RoundTimeline.ANCHOR_START
+		)
+		else 0
+	)
+	anchor.tooltip_text = UITheme.wrap_tip(
+		(
+			"FROM THE END is usually what you want: skip to the last 10 seconds survives you "
+			+ "re-cutting the clip, where a position measured from the start does not."
+		)
+	)
+	anchor.item_selected.connect(
+		func(index: int) -> void:
+			_snapshot("field:win_jump_anchor")
+			_timeline["win_jump_anchor"] = (
+				RoundTimeline.ANCHOR_START if index == 1 else RoundTimeline.ANCHOR_END
+			)
+			_refresh_derived()
+	)
+	where.add_child(_labeled("Measured", anchor))
+
+	var at: SpinBox = _make_ms_spin(maxi(0, int(_timeline.get("win_jump_ms", 0))))
+	at.tooltip_text = UITheme.wrap_tip(
+		"Right-click the timeline to put this on a frame you can actually see, marked ⚑ WIN."
+	)
+	at.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:win_jump_ms")
+			_timeline["win_jump_ms"] = int(value)
+			_refresh()
+	)
+	where.add_child(_labeled("Jump to (ms)", at))
+	_inspector.add_child(where)
+
+	var hint: Label = Label.new()
+	hint.text = "Right-click the timeline → Skip ahead to here on win, to place the ⚑ WIN flag."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(hint, UITheme.DARK_TEXT, 9)
+	_inspector.add_child(hint)
+
+
+# The two ways she claws health back. Both default to OFF, so no existing encounter gains a mechanic it
+# was not authored with, and both live here rather than on the timeline because they are properties of
+# the FIGHT rather than moments in it. The third way — a RECOVERING stance — is a window on the track.
+func _add_regen_fields() -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var pause: SpinBox = SpinBox.new()
+	pause.min_value = 0
+	pause.max_value = 100000
+	pause.step = 1  # a step above 1 would make "1 per second" unreachable — see damage_target
+	pause.value = float(_timeline.get("pause_regen_per_sec", 0))
+	pause.tooltip_text = (UITheme.wrap_tip(
+		(
+			"Health she wins back for every second the game is PAUSED. Zero is off. Pausing is the "
+			+ "only slowdown a player can actually perform — the score comes from the script, not "
+			+ "from them — so this is what makes stepping away from a fight cost something."
+		)
+	))
+	UITheme.style_spin_box(pause)
+	pause.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:pause_regen_per_sec")
+			_timeline["pause_regen_per_sec"] = int(value)
+			_refresh_derived()
+	)
+	row.add_child(_labeled("Heals while paused (per sec)", pause))
+
+	var attempt: SpinBox = SpinBox.new()
+	attempt.min_value = 0
+	attempt.max_value = 100
+	attempt.step = 1
+	attempt.suffix = "%"
+	attempt.value = 100.0 * float(_timeline.get("attempt_regen_pct", 0.0))
+	attempt.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"How much of the bar she recovers before each replay. Zero is off, and the fight is pure "
+				+ "attrition. Anything above it turns a replay into an escalation rather than a grind — "
+				+ "at 100% every attempt starts her at full."
+			)
+		)
+	)
+	UITheme.style_spin_box(attempt)
+	attempt.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:attempt_regen_pct")
+			_timeline["attempt_regen_pct"] = value / 100.0
+			_refresh_derived()
+	)
+	row.add_child(_labeled("Heals between attempts", attempt))
+	_inspector.add_child(row)
+
+	if not RoundTimeline.allows_replay(_timeline):
+		var note: Label = Label.new()
+		note.text = "Healing between attempts needs more than one attempt to matter."
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		UITheme.style_label(note, UITheme.DARK_TEXT, 9)
+		_inspector.add_child(note)
+
+
+# What a full pass of this round deals, and a button to size the boss against it.
+#
+# Without this an author picks `damage_target` blind, and the number decides how long every fight lasts.
+# It is computable exactly — scoring runs off the script, not the player — so there is no reason to make
+# them guess it.
+func _add_target_recommendation() -> void:
+	var suggested: int = _full_pass_score()
+	if suggested <= 0:
+		var note: Label = Label.new()
+		note.text = (
+			"Add this round's funscript to see what a full pass is worth — without it the target is a "
+			+ "guess."
+		)
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		UITheme.style_label(note, UITheme.DARK_TEXT, 9)
+		_inspector.add_child(note)
+		return
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var note: Label = Label.new()
+	note.text = "A full pass deals %d." % suggested
+	note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(note, UITheme.TOXIC_GREEN, 9)
+	row.add_child(note)
+
+	var use: Button = Button.new()
+	use.text = "USE"
+	use.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Sets the target to one full pass, so the fight is decided within the round. Set it HIGHER "
+				+ "for a boss that takes more than one attempt, LOWER for one that goes down early and "
+				+ "leaves the rest of the clip as aftermath."
+			)
+		)
+	)
+	UITheme.style_button_subtle(use, UITheme.TOXIC_GREEN, 10, 6, 10)
+	use.pressed.connect(
+		func() -> void:
+			_snapshot("field:damage_target")
+			_timeline["damage_target"] = suggested
+			_refresh()
+	)
+	row.add_child(use)
+	_inspector.add_child(row)
+
+
+# The round's own funscript, scored the way the round will score it. Zero when there is no script to
+# read — a video-only round has nothing to compute from.
+func _full_pass_score() -> int:
+	if _reference_points.is_empty():
+		return 0
+	return (
+		RoundTimeline
+		. expected_pass_score(
+			_reference_points,
+			{
+				"small_max": ScoreService.SmallStrokeMax,
+				"medium_max": ScoreService.MediumStrokeMax,
+				"small_pts": ScoreService.SmallStrokePoints,
+				"medium_pts": ScoreService.MediumStrokePoints,
+				"large_pts": ScoreService.LargeStrokePoints,
+			}
+		)
+	)
+
+
+# How the boss takes damage while this window is open, as a NAME rather than a number — the bar shows
+# one word, so the thing an author picks should be that word.
+func _add_stance_field(event: Dictionary) -> void:
+	var picker: OptionButton = OptionButton.new()
+	picker.clip_text = true  # or it sizes to its longest entry and pushes the inspector wider
+	for stance: String in RoundTimeline.STANCES:
+		picker.add_item("%s   x%s" % [RoundTimeline.stance_label(stance), _mult_text(stance)])
+	picker.selected = maxi(0, RoundTimeline.STANCES.find(RoundTimeline.event_stance(event)))
+	picker.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"How much damage lands while this window is open, and the word the health bar shows. "
+				+ "RECOVERING runs the bar backwards — she heals. ATTACKING is for a move written into the "
+				+ "ROUND's own funscript rather than placed on the attack track: nothing can detect one, so "
+				+ "mark it here: she takes no damage through it and override items cannot cut in, exactly "
+				+ "as on the attack track. An attack there needs none, being both already. Only ONE "
+				+ "stance can be in force, so these must not overlap."
+			)
+		)
+	)
+	UITheme.style_option_button(picker)
+	picker.item_selected.connect(
+		func(index: int) -> void:
+			_snapshot("field:stance")
+			event["stance"] = RoundTimeline.STANCES[index]
+			_refresh()
+	)
+	_inspector.add_child(_labeled("Stance", picker))
+
+	if not _health_follows_score():
+		(
+			_inspector
+			. add_child(
+				_make_amber_callout(
+					(
+						"⚠  The health bar follows the CLOCK here, so there is no damage for a stance to "
+						+ "change. Point it at SCORE in the encounter settings to make this do anything."
+					),
+					9
+				)
+			)
+		)
+
+
+# The multiplier as it reads in a menu: whole where it is whole, so "x2" rather than "x2.0".
+func _mult_text(stance: String) -> String:
+	var mult: float = RoundTimeline.stance_mult(stance)
+	return str(int(mult)) if is_equal_approx(mult, float(int(mult))) else str(mult)
 
 
 # How a cast cue ENTERS. All three modes were implemented in BossCueLayer from the start but none had a
@@ -1924,15 +3471,31 @@ func _make_float_spin(
 # full refresh would replace the dictionaries the open fields are bound to and yank focus out of the
 # spin box being dragged.
 func _refresh_derived() -> void:
-	_timeline_view.set_events(_timed_events(), _timeline["phases"])
-	_refresh_overlays()
-	_refresh_issues()
+	# The preview settles its branch picks FIRST. The lane rows and the reference overlays are both
+	# derived from those picks, so deriving them beforehand would draw the previous roll.
 	_rebuild_preview()
+	_timeline_view.set_value_labels(_value_labels())
+	_timeline_view.set_events(_timed_events(), _timeline["phases"], _segments())
+	_refresh_issues()
 
 
 # Re-arms the preview against the edited timeline and lands it back on the playhead.
 func _rebuild_preview() -> void:
 	_stage.rebuild(_timeline, _full_ms, _playhead_ms)
+	if is_instance_valid(_cycle_button):
+		_cycle_button.visible = _stage.has_choices()
+	if is_instance_valid(_sim_row):
+		_sim_row.visible = _encounter_has_rules()
+	_sync_branch_view()
+
+
+# Pushes the preview's branch picks at everything that shows them. Fed from the stage rather than
+# recomputed here, so the faded rows and the reference curves are always the branches the preview
+# actually chose — a second calculation could quietly disagree with the picture.
+func _sync_branch_view() -> void:
+	_timeline_view.set_dormant_tags(_stage.dormant_tags())
+	_timeline_view.set_win_point(RoundTimeline.win_jump_at_ms(_timeline, _full_ms))
+	_refresh_overlays()
 
 
 # On import, a media event takes the source's OWN length: an attack block that has to be hand-matched to

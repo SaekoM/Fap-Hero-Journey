@@ -2,7 +2,7 @@ class_name BossTimeline
 extends Control
 ## The boss encounter's authoring surface: the round's clock drawn as LANES of event blocks — attacks,
 ## effects, cast cues and audio — with a phase band above them (BOSS_ROUND_DESIGN §6). Blocks are
-## dragged to move, their right edge dragged to resize, and clicked to select; the wheel zooms around
+## dragged to move, their right edge dragged to resize, and clicked to select; CTRL+wheel zooms around
 ## the cursor and middle-drag pans, exactly like the override editor's timeline.
 ##
 ## Purely a view/input widget, like OverrideTimeline: it owns no journey data and writes nothing back.
@@ -20,13 +20,23 @@ extends Control
 signal event_selected(id: String)
 signal event_moved(id: String, at_ms: int)  # a block was dragged; at_ms is in its own anchor's terms
 signal event_resized(id: String, duration_ms: int)
+## The LEFT edge was dragged. `at_ms` is the block's new start, in its own anchor; the END stays put.
+##
+## Its own signal rather than a move plus a resize, because for a media block the two are one gesture
+## with one meaning: cut this much off the FRONT of the source. Reported as a move would have slid the
+## block later and then cut its tail, which is the opposite of what the drag looks like.
+signal event_head_dragged(id: String, at_ms: int)
 signal playhead_scrubbed(ms: int)
 signal view_changed(start_ms: int, span_ms: int)
 ## Something was dragged out of the Boss Kit and dropped on the track. `kind` is what the kit item was
 ## ("track" / "phase") and `value` names it; `at_ms` is where it landed on the round's clock.
 signal kit_dropped(kind: String, value: String, at_ms: int)
-## A phase marker was dragged along the band.
-signal phase_moved(id: String, at_ms: int)
+## The track was right-clicked at `at_ms`. The widget offers no menu of its own — it reports WHERE, and
+## the editor decides what can be done there.
+signal context_menu_requested(at_ms: int, at_global: Vector2)
+
+## A phase marker was dragged along the health strip. `hp_at` is the health it now takes over at, 0..1.
+signal phase_moved(id: String, hp_at: float)
 
 const PAD: float = 8.0
 const MIN_VIEW_MS: int = 500
@@ -34,6 +44,11 @@ const ZOOM_STEP: float = 0.8
 
 # A one-shot has no duration, so it is drawn as a fixed-width marker instead of a zero-wide sliver.
 const MARKER_W: float = 10.0
+
+# How much of its colour a block keeps when its branch is not the one currently rolled. Gentler than it
+# was under the flat layout: the branch ROW now carries that signal, so the block only has to look
+# secondary rather than do the whole job of saying "not this one".
+const DORMANT_ALPHA: float = 0.55
 
 # Width of the drawn resize grip at each end of a windowed block, and the grab tolerance around it.
 # The grip is VISIBLE rather than an invisible hot zone — an edge you cannot see is an edge you find by
@@ -51,12 +66,37 @@ const REFERENCE_H: float = 96.0
 const LANE_H: float = 30.0
 const LANE_GAP: float = 4.0
 const PHASE_BAND_H: float = 16.0
+# The health strip's own ground, matching the HUD bar's backing so it reads as the bar laid flat rather
+# than as one more lane of the time track it sits above.
+const STRIP_BACKING: Color = Color(0.10, 0.0, 0.02, 1.0)
 const RULER_H: float = 14.0
 const LABEL_W: float = 58.0  # gutter holding each lane's name
+
+# ── Segment strips ──────────────────────────────────────────────────────────
+# A segment is drawn as its OWN block below the backbone lanes: a header, then one row per branch.
+# Parallel rows are what makes exclusivity legible — "one of these plays" needs no explaining — and they
+# also fix the flat layout's real defect, where two branches at the same time stacked on one lane and
+# only the topmost could ever be clicked.
+const SEGMENT_HEADER_H: float = 18.0
+const SEGMENT_GAP: float = 8.0
+
+# The gutter widens when segments exist, because a branch row is labelled with the CONDITION that picks
+# it. Printing the rule at the exact place and time it applies is the whole point — logic parked in a
+# side panel is what made the structure feel implied.
+const SEGMENT_LABEL_W: float = 168.0
+
+# Backing for the branch row the current roll picked, so the live path reads at a glance.
+const LIVE_ROW_BG: Color = Color(1, 1, 1, 0.07)
+const DEAD_ROW_BG: Color = Color(1, 1, 1, 0.02)
+# Two near-identical greys were the only thing saying which branch the preview had picked, which read as
+# "cycling did nothing". The live row now gets a coloured rail down its left edge and says so in words.
+const LIVE_RAIL_W: float = 3.0
+const DORMANT_TEXT_ALPHA: float = 0.45
 
 # Lane order, top to bottom. Attacks lead because they are the encounter's spine.
 const LANES: Array[String] = [
 	RoundTimeline.TRACK_ATTACK,
+	RoundTimeline.TRACK_STANCE,
 	RoundTimeline.TRACK_EFFECT,
 	RoundTimeline.TRACK_CAST,
 	RoundTimeline.TRACK_AUDIO
@@ -72,6 +112,17 @@ var _events: Array = []  # normalized events, in the editor's own order
 var _phases: Array = []
 var _full_ms: int = 1
 var _selected_id: String = ""
+var _dormant_tags: Array = []
+# value → display name for anything a branch rule can name, so the gutter reads "Silver Key" and not the
+# id it is stored under. Supplied by the editor, which is the side that knows this journey's items.
+var _value_labels: Dictionary = {}
+var _segments: Array = []
+var _collapsed: Dictionary = {}  # segment_id → true while its rows are folded away
+# Derived layout, rebuilt whenever the events, segments or fold states change: tag → row y, plus the
+# per-segment geometry the header and bracket are drawn from.
+var _row_y: Dictionary = {}
+var _strips: Array = []
+var _strips_h: float = 0.0
 var _playhead_ms: int = -1
 
 var _view_start: int = 0
@@ -82,6 +133,9 @@ var _drag_id: String = ""
 var _drag_grab_offset_ms: int = 0  # cursor-to-block-start distance, so a move doesn't snap to the cursor
 var _drag_end_ms: int = 0  # a left-edge resize pins the block's END, so it is captured when the drag starts
 var _pan_anchor_ms: int = 0
+# Where a win skips the clip to, or NO_TIME. Held resolved rather than as the encounter's own
+# offset-plus-anchor, because the widget only ever needs to know which column to draw the flag in.
+var _win_point_ms: int = RoundTimeline.NO_TIME
 
 
 func _init() -> void:
@@ -95,7 +149,9 @@ func _init() -> void:
 func setup(timeline: Dictionary, full_ms: int) -> void:
 	_events = (timeline.get("events", []) as Array).duplicate(true)
 	_phases = (timeline.get("phases", []) as Array).duplicate(true)
+	_segments = (timeline.get("segments", []) as Array).duplicate(true)
 	_full_ms = maxi(1, full_ms)
+	_rebuild_layout()
 	_view_start = 0
 	_view_span = _full_ms
 	queue_redraw()
@@ -104,9 +160,34 @@ func setup(timeline: Dictionary, full_ms: int) -> void:
 
 ## Swaps the event list without disturbing zoom, pan or selection — the editor calls this after every
 ## edit, and resetting the view each time would make authoring unusable.
-func set_events(events: Array, phases: Array) -> void:
+## Branch tags the preview did NOT pick this roll. Their blocks stay on the lane — an author has to see
+## everything they wrote — but are drawn faded, so which branch is currently live reads at a glance and
+## RE-ROLL visibly swaps it.
+func set_value_labels(labels: Dictionary) -> void:
+	_value_labels = labels
+
+
+## Where a win skips the clip to, already resolved against the round's length. NO_TIME hides the flag.
+func set_win_point(at_ms: int) -> void:
+	if _win_point_ms == at_ms:
+		return
+	_win_point_ms = at_ms
+	queue_redraw()
+
+
+func set_dormant_tags(tags: Array) -> void:
+	if _dormant_tags == tags:
+		return
+	_dormant_tags = tags
+	_rebuild_layout()
+	queue_redraw()
+
+
+func set_events(events: Array, phases: Array, segments: Array = []) -> void:
 	_events = events.duplicate(true)
 	_phases = phases.duplicate(true)
+	_segments = segments.duplicate(true)
+	_rebuild_layout()
 	queue_redraw()
 
 
@@ -137,7 +218,83 @@ func set_view_start(start_ms: int) -> void:
 
 
 func _preferred_height() -> float:
-	return REFERENCE_H + PHASE_BAND_H + LANES.size() * (LANE_H + LANE_GAP) + RULER_H + 2.0 * PAD
+	return (
+		REFERENCE_H
+		+ PHASE_BAND_H
+		+ LANES.size() * (LANE_H + LANE_GAP)
+		+ _strips_h
+		+ RULER_H
+		+ 2.0 * PAD
+	)
+
+
+# The gutter has to hold a condition once segments exist; before that the narrow lane names are plenty.
+func _gutter_w() -> float:
+	return SEGMENT_LABEL_W if not _segments.is_empty() else LABEL_W
+
+
+# Where the backbone lanes end and the segment strips begin.
+func _strips_top() -> float:
+	return PAD + REFERENCE_H + PHASE_BAND_H + LANES.size() * (LANE_H + LANE_GAP)
+
+
+# Recomputes every segment's header and branch-row positions, and the span each strip brackets. Derived
+# rather than authored: a segment has no time of its own, so the bracket is simply the extent of the
+# events tagged into it — which is also the honest answer to "how far does this fork reach".
+func _rebuild_layout() -> void:
+	_row_y.clear()
+	_strips.clear()
+	var y: float = _strips_top()
+	for segment: Dictionary in _segments:
+		var id: String = str(segment.get("id", ""))
+		var folded: bool = bool(_collapsed.get(id, false))
+		var strip: Dictionary = {
+			"id": id,
+			"name": str(segment.get("name", "")),
+			"header_y": y,
+			"folded": folded,
+			"rows": [],
+			"from_ms": -1,
+			"to_ms": -1,
+		}
+		y += SEGMENT_HEADER_H
+		for branch: Dictionary in segment.get("branches", []) as Array:
+			var tag: String = str(branch.get("tag", ""))
+			var row: Dictionary = {
+				"tag": tag,
+				"y": y,
+				"text": RoundTimeline.condition_text(branch.get("condition", {}), _value_labels),
+				"live": not _dormant_tags.has(tag),
+			}
+			if not folded:
+				_row_y[tag] = y
+				y += LANE_H + LANE_GAP
+			(strip["rows"] as Array).append(row)
+			_extend_span(strip, tag)
+		_strips.append(strip)
+		y += SEGMENT_GAP
+	_strips_h = maxf(0.0, y - _strips_top())
+	custom_minimum_size = Vector2(0, _preferred_height())
+
+
+# Grows a strip's bracket to cover every event carrying `tag`.
+func _extend_span(strip: Dictionary, tag: String) -> void:
+	for event: Dictionary in _events:
+		if str(event.get("variant_tag", "")) != tag:
+			continue
+		var at: int = _event_at_ms(event)
+		var end: int = at + int(event.get("duration_ms", 0))
+		if int(strip["from_ms"]) < 0 or at < int(strip["from_ms"]):
+			strip["from_ms"] = at
+		if end > int(strip["to_ms"]):
+			strip["to_ms"] = end
+
+
+# An event on a FOLDED segment is not drawn at all — it is summarised by the header's chip instead. It
+# must therefore not be hit-testable either, which falls out of both going through this one predicate.
+func _event_visible(event: Dictionary) -> bool:
+	var tag: String = str(event.get("variant_tag", ""))
+	return tag == "" or _row_y.has(tag)
 
 
 ## The round's main funscript, as (t_ms, pos) points, drawn as a reference strip above the lanes.
@@ -163,7 +320,7 @@ func set_issues(issue_ids: Dictionary) -> void:
 
 
 func _track_x0() -> float:
-	return PAD + LABEL_W
+	return PAD + _gutter_w()
 
 
 func _span_px() -> float:
@@ -172,6 +329,22 @@ func _span_px() -> float:
 
 func _ms_to_x(ms: int) -> float:
 	return _track_x0() + (float(ms - _view_start) / float(_view_span)) * _span_px()
+
+
+# The health strip spans the whole track width regardless of zoom: 1.0 at the left, 0.0 at the right,
+# the same direction the bar drains.
+func _hp_to_x(hp_at: float) -> float:
+	return _track_x0() + (1.0 - clampf(hp_at, 0.0, 1.0)) * _span_px()
+
+
+func _x_to_hp(x: float) -> float:
+	return clampf(1.0 - (x - _track_x0()) / _span_px(), 0.0, 1.0)
+
+
+# Phases in play order with their health points resolved. Not cached: the list is a handful of entries
+# and it has to follow an edit immediately, which is the whole reason the widget redraws.
+func _resolved_phases() -> Array:
+	return RoundTimeline.resolved_phases({"phases": _phases}, _full_ms)
 
 
 func _x_to_ms(x: float) -> int:
@@ -211,24 +384,37 @@ func _event_rect(event: Dictionary) -> Rect2:
 	var x: float = _ms_to_x(at)
 	var duration: int = int(event.get("duration_ms", 0))
 	var w: float = MARKER_W if duration <= 0 else maxf(MARKER_W, _ms_to_x(at + duration) - x)
-	return Rect2(x, _lane_y(str(event.get("track", ""))), w, LANE_H)
+	return Rect2(x, _event_row_y(event), w, LANE_H)
+
+
+# A tagged event sits in its BRANCH's row; everything untagged stays on the backbone lane for its track.
+# Track identity is carried by the block's colour either way, so nothing is lost by moving it.
+func _event_row_y(event: Dictionary) -> float:
+	var tag: String = str(event.get("variant_tag", ""))
+	if tag != "" and _row_y.has(tag):
+		return float(_row_y[tag])
+	return _lane_y(str(event.get("track", "")))
 
 
 # ── Input ────────────────────────────────────────────────────────────────────
 
 
 func _gui_input(event: InputEvent) -> void:
-	# accept_event() on everything handled, so a wheel or drag here never also scrolls the editor's
-	# outer ScrollContainer.
+	# accept_event() on everything handled, so a drag here never also scrolls whatever holds the lanes.
+	#
+	# The WHEEL is the deliberate exception. A plain wheel is left unhandled so it reaches the scroll
+	# container the lanes sit in — segments stack downwards without limit, so scrolling is the common
+	# thing to want and zooming the rare one. Zoom moved to CTRL+wheel, where every other timeline in
+	# every other tool puts it.
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
 		match mb.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
-				if mb.pressed:
+				if mb.pressed and mb.ctrl_pressed:
 					_zoom_at(ZOOM_STEP, mb.position.x)
 					accept_event()
 			MOUSE_BUTTON_WHEEL_DOWN:
-				if mb.pressed:
+				if mb.pressed and mb.ctrl_pressed:
 					_zoom_at(1.0 / ZOOM_STEP, mb.position.x)
 					accept_event()
 			MOUSE_BUTTON_MIDDLE:
@@ -236,9 +422,18 @@ func _gui_input(event: InputEvent) -> void:
 				if mb.pressed:
 					_pan_anchor_ms = _x_to_ms(mb.position.x)
 				accept_event()
+			MOUSE_BUTTON_RIGHT:
+				# A menu rather than an immediate edit: right-clicking is how people probe an unfamiliar
+				# widget, and a bare click that silently moved the win flag punished that.
+				if mb.pressed and mb.position.x >= _track_x0():
+					context_menu_requested.emit(
+						_x_to_ms(mb.position.x), get_global_mouse_position()
+					)
+				accept_event()
 			MOUSE_BUTTON_LEFT:
 				if mb.pressed:
-					_begin_drag(mb.position)
+					if not _toggle_strip_at(mb.position):
+						_begin_drag(mb.position)
 				else:
 					_drag = ""
 					_drag_id = ""
@@ -251,8 +446,8 @@ func _gui_input(event: InputEvent) -> void:
 # Decides what a press means: grabbing a block's right edge resizes it, its body moves it, and empty
 # track scrubs the playhead.
 func _begin_drag(pos: Vector2) -> void:
-	# The phase band sits above the lanes and owns its own drags, so a marker can be slid along without
-	# fighting the events underneath.
+	# The health strip sits above the lanes and owns its own drags, so a marker can be slid along it
+	# without fighting the events underneath.
 	if pos.y >= PAD + REFERENCE_H and pos.y < PAD + REFERENCE_H + PHASE_BAND_H:
 		var phase: Dictionary = _phase_at_point(pos)
 		if not phase.is_empty():
@@ -278,8 +473,9 @@ func _begin_drag(pos: Vector2) -> void:
 	if windowed and pos.x >= rect.end.x - EDGE_GRAB_PX:
 		_drag = "resize"
 	elif windowed and pos.x <= rect.position.x + EDGE_GRAB_PX:
-		# Dragging the LEFT grip moves the start while pinning the end, so a window can be trimmed from
-		# either side rather than only stretched rightwards.
+		# Dragging the LEFT grip pins the end and cuts into the front. On a media block that means the
+		# SOURCE is cut — an attack can be reduced to its middle strokes rather than always having to
+		# begin at the funscript's first one.
 		_drag = "resize_left"
 		_drag_end_ms = _event_at_ms(hit) + int(hit.get("duration_ms", 0))
 	else:
@@ -317,7 +513,7 @@ func _apply_drag(pos: Vector2) -> void:
 		"phase":
 			var phase: Dictionary = _find_phase(_drag_id)
 			if not phase.is_empty():
-				phase_moved.emit(_drag_id, _x_to_ms(pos.x))
+				phase_moved.emit(_drag_id, _x_to_hp(pos.x))
 		"resize_left":
 			var event: Dictionary = _find(_drag_id)
 			if not event.is_empty():
@@ -326,8 +522,7 @@ func _apply_drag(pos: Vector2) -> void:
 				var reported: int = start
 				if str(event.get("anchor", RoundTimeline.ANCHOR_START)) == RoundTimeline.ANCHOR_END:
 					reported = maxi(0, _full_ms - start)
-				event_moved.emit(_drag_id, reported)
-				event_resized.emit(_drag_id, _drag_end_ms - start)
+				event_head_dragged.emit(_drag_id, reported)
 	queue_redraw()
 
 
@@ -352,18 +547,18 @@ func _drop_data(pos: Vector2, data: Variant) -> void:
 func _event_at_point(pos: Vector2) -> Dictionary:
 	var found: Dictionary = {}
 	for event: Dictionary in _events:
-		if _event_rect(event).has_point(pos):
+		if _event_visible(event) and _event_rect(event).has_point(pos):
 			found = event
 	return found
 
 
-# The phase whose band contains `pos` — the last one starting at or before it, so the click lands on the
-# stretch the author sees rather than only on its 1px start line.
+# The phase whose stretch of the strip contains `pos` — the last one starting at or before it, so the
+# click lands on the stretch the author sees rather than only on its 1px start line.
 func _phase_at_point(pos: Vector2) -> Dictionary:
 	var found: Dictionary = {}
-	for phase: Dictionary in _phases:
-		if _ms_to_x(_event_at_ms(phase)) <= pos.x:
-			found = phase
+	for phase: Dictionary in _resolved_phases():
+		if _hp_to_x(float(phase["resolved_hp_at"])) <= pos.x:
+			found = _find_phase(str(phase["id"]))
 	return found
 
 
@@ -392,29 +587,46 @@ func _draw() -> void:
 	_draw_reference()
 	_draw_phase_band()
 	_draw_lanes()
+	_draw_strips()
 	for event: Dictionary in _events:
-		_draw_event(event)
+		if _event_visible(event):
+			_draw_event(event)
+	_draw_win_point()
 	_draw_playhead()
 	_draw_ruler()
 
 
-# Phases as tinted bands running the full width of their stretch, so the encounter's structure reads
-# at a glance. Each runs until the next one starts.
+# The health bar laid flat: full health at the left, empty at the right, cut into the stages the author
+# wrote. It is NOT the clock — it does not zoom or scroll with the tracks below it, because health is a
+# different axis, and drawing phases on the time track was what made the bar and the banners disagree.
+# Its own dark backing says so at a glance.
 func _draw_phase_band() -> void:
 	var y: float = PAD + REFERENCE_H
-	for i: int in _phases.size():
-		var phase: Dictionary = _phases[i]
-		var start: int = _event_at_ms(phase)
-		var end: int = _full_ms
-		if i + 1 < _phases.size():
-			end = _event_at_ms(_phases[i + 1] as Dictionary)
-		var x0: float = _ms_to_x(start)
-		var x1: float = _ms_to_x(end)
+	draw_rect(Rect2(_track_x0(), y, _span_px(), PHASE_BAND_H), STRIP_BACKING)
+	draw_string(
+		ThemeDB.fallback_font,
+		Vector2(PAD, y + PHASE_BAND_H - 4.0),
+		"HEALTH",
+		HORIZONTAL_ALIGNMENT_LEFT,
+		LABEL_W - 4.0,
+		10,
+		UITheme.DARK_TEXT
+	)
+	var phases: Array = _resolved_phases()
+	for i: int in phases.size():
+		var phase: Dictionary = phases[i]
+		var x0: float = _hp_to_x(float(phase["resolved_hp_at"]))
+		# Each stage runs until the next one takes over; the last runs to an empty bar.
+		var x1: float = _track_x0() + _span_px()
+		if i + 1 < phases.size():
+			x1 = _hp_to_x(float((phases[i + 1] as Dictionary)["resolved_hp_at"]))
 		var tint: Color = RoundTimeline.phase_tint(phase, UITheme.PURPLE_MID)
+		if str(phase.get("id", "")) == _selected_id:
+			tint = UITheme.PURPLE_BRIGHT
 		draw_rect(
 			Rect2(x0, y, maxf(2.0, x1 - x0), PHASE_BAND_H), Color(tint.r, tint.g, tint.b, 0.22)
 		)
-		draw_line(Vector2(x0, y), Vector2(x0, y + PHASE_BAND_H), tint, 1.0)
+		draw_line(Vector2(x0, y), Vector2(x0, y + PHASE_BAND_H), tint, 2.0)
 		var label: String = str(phase.get("name", ""))
 		if label != "":
 			draw_string(
@@ -551,6 +763,103 @@ func _draw_lanes() -> void:
 		)
 
 
+# A segment as its own block: a header naming the fork, then one row per branch labelled with the rule
+# that picks it. The rows being PARALLEL is what says "one of these plays" — the thing the flat layout
+# could only imply.
+# Folds or unfolds the segment whose header was clicked, reporting whether it consumed the click so a
+# header press never also starts dragging whatever happens to sit behind it.
+func _toggle_strip_at(pos: Vector2) -> bool:
+	for strip: Dictionary in _strips:
+		var y: float = float(strip["header_y"])
+		if pos.y >= y and pos.y < y + SEGMENT_HEADER_H:
+			var id: String = str(strip["id"])
+			_collapsed[id] = not bool(_collapsed.get(id, false))
+			_rebuild_layout()
+			queue_redraw()
+			return true
+	return false
+
+
+func _draw_strips() -> void:
+	for strip: Dictionary in _strips:
+		_draw_strip_header(strip)
+		if bool(strip["folded"]):
+			continue
+		_draw_strip_bracket(strip)
+		for row: Dictionary in strip["rows"] as Array:
+			_draw_branch_row(row)
+
+
+func _draw_strip_header(strip: Dictionary) -> void:
+	var y: float = float(strip["header_y"])
+	var rows: int = (strip["rows"] as Array).size()
+	var folded: bool = bool(strip["folded"])
+	draw_rect(
+		Rect2(PAD, y, size.x - 2.0 * PAD, SEGMENT_HEADER_H),
+		Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.10)
+	)
+	var name: String = str(strip["name"])
+	if name == "":
+		name = "SEGMENT"
+	# Folded, the strip still has to say what it is hiding, or collapsing one would look like deleting it.
+	var caption: String = "%s  %s" % ["▶" if folded else "▼", name.to_upper()]
+	if folded:
+		caption += "  ·  %d branches" % rows
+	draw_string(
+		ThemeDB.fallback_font,
+		Vector2(PAD + 4.0, y + SEGMENT_HEADER_H * 0.75),
+		caption,
+		HORIZONTAL_ALIGNMENT_LEFT,
+		size.x - 2.0 * PAD - 8.0,
+		10,
+		UITheme.CYAN
+	)
+
+
+# The bracket spans exactly the events tagged into this segment — the fork's reach, drawn rather than
+# inferred. Nothing tagged yet means nothing to bracket.
+func _draw_strip_bracket(strip: Dictionary) -> void:
+	if int(strip["from_ms"]) < 0:
+		return
+	var x0: float = _ms_to_x(int(strip["from_ms"]))
+	var x1: float = maxf(x0 + 2.0, _ms_to_x(int(strip["to_ms"])))
+	var y: float = float(strip["header_y"]) + SEGMENT_HEADER_H - 2.0
+	var tint: Color = Color(UITheme.CYAN.r, UITheme.CYAN.g, UITheme.CYAN.b, 0.55)
+	draw_line(Vector2(x0, y), Vector2(x1, y), tint, 1.0)
+	draw_line(Vector2(x0, y), Vector2(x0, y + 4.0), tint, 1.0)
+	draw_line(Vector2(x1, y), Vector2(x1, y + 4.0), tint, 1.0)
+
+
+func _draw_branch_row(row: Dictionary) -> void:
+	var y: float = float(row["y"])
+	var live: bool = bool(row["live"])
+	draw_rect(Rect2(_track_x0(), y, _span_px(), LANE_H), LIVE_ROW_BG if live else DEAD_ROW_BG)
+	if live:
+		# Runs the full width, not just the gutter, so the picked branch is obvious wherever the author
+		# happens to be looking along the track.
+		draw_rect(Rect2(_track_x0(), y, LIVE_RAIL_W, LANE_H), UITheme.CYAN)
+		draw_rect(Rect2(_track_x0(), y + LANE_H - 1.0, _span_px(), 1.0), Color(UITheme.CYAN, 0.35))
+	# The rule, then the branch it selects — read left to right it is a sentence: "score < 100 → GENTLE".
+	draw_string(
+		ThemeDB.fallback_font,
+		Vector2(PAD + 6.0, y + LANE_H * 0.45),
+		str(row["text"]),
+		HORIZONTAL_ALIGNMENT_LEFT,
+		_gutter_w() - 10.0,
+		9,
+		UITheme.WHITE_SOFT if live else UITheme.DARK_TEXT
+	)
+	draw_string(
+		ThemeDB.fallback_font,
+		Vector2(PAD + 6.0, y + LANE_H * 0.88),
+		("▶ " if live else "→ ") + str(row["tag"]),
+		HORIZONTAL_ALIGNMENT_LEFT,
+		_gutter_w() - 10.0,
+		10,
+		UITheme.CYAN if live else Color(UITheme.DARK_TEXT, DORMANT_TEXT_ALPHA)
+	)
+
+
 func _draw_event(event: Dictionary) -> void:
 	var rect: Rect2 = _event_rect(event)
 	# Cheap cull: a zoomed-in view can leave most of the encounter off-screen.
@@ -558,6 +867,12 @@ func _draw_event(event: Dictionary) -> void:
 		return
 	var color: Color = track_color(str(event.get("track", "")))
 	var selected: bool = str(event.get("id", "")) == _selected_id
+	# A block on a branch this roll did not pick is dimmed rather than hidden: an author needs to see
+	# every branch they wrote, and hiding half the timeline whenever the dice landed differently would
+	# make the encounter look like it had lost content.
+	var dormant: bool = _dormant_tags.has(str(event.get("variant_tag", "")))
+	if dormant:
+		color = Color(color.r, color.g, color.b, color.a * DORMANT_ALPHA)
 	# A block with a validation problem is HIGHLIGHTED rather than badged: an icon needs room a short
 	# block does not have and competes with the label, whereas a colour shift reads at any width and at
 	# any zoom. The track colour still shows through the fill, so what KIND of event it is stays legible.
@@ -612,6 +927,8 @@ static func track_color(track: String) -> Color:
 	match track:
 		RoundTimeline.TRACK_ATTACK:
 			return UITheme.DANGER
+		RoundTimeline.TRACK_STANCE:
+			return UITheme.TOXIC_GREEN
 		RoundTimeline.TRACK_EFFECT:
 			return UITheme.PURPLE_BRIGHT
 		RoundTimeline.TRACK_CAST:
@@ -619,6 +936,27 @@ static func track_color(track: String) -> Color:
 		RoundTimeline.TRACK_AUDIO:
 			return UITheme.AMBER
 	return UITheme.DARK_TEXT
+
+
+# The point a win skips the clip to, as a flag rather than another hairline: it is a property of the
+# encounter, not a position the author is currently at, and must not be mistaken for the playhead.
+func _draw_win_point() -> void:
+	if _win_point_ms == RoundTimeline.NO_TIME:
+		return
+	var x: float = _ms_to_x(_win_point_ms)
+	if x < _track_x0() or x > size.x:
+		return
+	var bottom: float = size.y - RULER_H
+	draw_line(Vector2(x, PAD), Vector2(x, bottom), UITheme.TOXIC_GREEN, 1.0)
+	draw_string(
+		ThemeDB.fallback_font,
+		Vector2(x + 4.0, PAD + 10.0),
+		"⚑ WIN",
+		HORIZONTAL_ALIGNMENT_LEFT,
+		-1,
+		9,
+		UITheme.TOXIC_GREEN
+	)
 
 
 func _draw_playhead() -> void:

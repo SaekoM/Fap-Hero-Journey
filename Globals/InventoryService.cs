@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using Godot.Collections;
 using System.Collections.Generic;
 
@@ -17,6 +17,15 @@ public partial class InventoryService : Node
     // coordinator loads the item's funscript bundle and plays it over the round. Like save_now/
     // skip_round it's instantaneous here (consumed, never enters _active).
     [Signal] public delegate void OverrideActivatedEventHandler(string itemId);
+
+    // Fired for EVERY successful activation, whatever kind the item turns out to be. The boss
+    // encounter's conditions count item use, and a consumer counting it must not have to know which of
+    // ActivateItem's several early-returning branches a given kind exits through.
+    [Signal] public delegate void ItemActivatedEventHandler(string itemId, string itemKind);
+
+    // Fired when an activation was refused for a reason worth explaining, so the UI can say why rather
+    // than appearing to ignore the click.
+    [Signal] public delegate void ItemRefusedEventHandler(string reason);
 
     // ---------------------------------------------------------------------------
     // Item registry
@@ -446,6 +455,12 @@ public partial class InventoryService : Node
     }
 
     // Removes the item at slotIndex and starts its effect timer immediately.
+    // Set by GameLoop while an authored boss ATTACK owns the device. An override item may not interrupt
+    // one: the encounter is the authored thing, and the override engine replaces a running takeover with
+    // a later one — so without this the item would silently cut the boss's attack short. Checked BEFORE
+    // the item is removed from the inventory, so a refused attempt costs the player nothing.
+    public bool DeviceHeldByAttack { get; set; }
+
     public bool ActivateItem(int slotIndex)
     {
         if (slotIndex < 0 || slotIndex >= _items.Count)
@@ -460,7 +475,19 @@ public partial class InventoryService : Node
         if (itemKind == "key" || itemKind == "cleanse")
             return false;
 
+        string itemCategory = item.ContainsKey("category") ? item["category"].AsString() : "";
+        if (DeviceHeldByAttack && itemCategory == "override")
+        {
+            EmitSignal(SignalName.ItemRefused, "The boss has the device. Wait for the attack to finish.");
+            return false;
+        }
+
         _items.RemoveAt(slotIndex);
+        EmitSignal(
+            SignalName.ItemActivated,
+            item.ContainsKey("id") ? item["id"].AsString() : "",
+            itemKind
+        );
 
         // save_now is an instantaneous utility — it doesn't enter the active-
         // effect list, it just fires a signal for GameLoop to handle and is

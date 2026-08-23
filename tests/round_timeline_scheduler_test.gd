@@ -165,36 +165,52 @@ func test_finish_returns_open_windows_for_teardown() -> void:
 # ── Phases ───────────────────────────────────────────────────────────────────
 
 
-func _phase(id: String, at_ms: int) -> Dictionary:
-	return {"id": id, "name": id.to_upper(), "at_ms": at_ms}
+func _phase(id: String, hp_at: float) -> Dictionary:
+	return {"id": id, "name": id.to_upper(), "hp_at": hp_at}
 
 
-func test_phase_changes_are_reported_once_on_entry() -> void:
-	var s: RoundTimelineScheduler = _sched([], 60000, [_phase("p1", 0), _phase("p2", 10000)])
-	var first: Dictionary = s.tick(0)
+# Phases key off the BAR, so a scheduler tick has to be told how much fight the boss has left.
+func _hp(left: float) -> Dictionary:
+	return {RoundTimeline.SIGNAL_BOSS_HP: left}
+
+
+func test_phase_changes_are_reported_once_as_health_drops() -> void:
+	var s: RoundTimelineScheduler = _sched([], 60000, [_phase("p1", 1.0), _phase("p2", 0.5)])
+	var first: Dictionary = s.tick(0, _hp(1.0))
 	assert_bool(bool(first["phase_changed"])).is_true()
 	assert_str(str((first["phase"] as Dictionary)["id"])).is_equal("p1")
 
-	assert_bool(bool(s.tick(5000)["phase_changed"])).is_false()  # still in p1
+	# Time moving without the bar moving changes nothing — that is the whole point of the rework.
+	assert_bool(bool(s.tick(20000, _hp(0.7))["phase_changed"])).is_false()
 
-	var second: Dictionary = s.tick(10000)
+	var second: Dictionary = s.tick(21000, _hp(0.5))
 	assert_bool(bool(second["phase_changed"])).is_true()
 	assert_str(str((second["phase"] as Dictionary)["id"])).is_equal("p2")
 	assert_str(str(s.current_phase()["id"])).is_equal("p2")
 
 
-func test_seeking_backwards_returns_to_the_earlier_phase() -> void:
-	var s: RoundTimelineScheduler = _sched([], 60000, [_phase("p1", 0), _phase("p2", 10000)])
-	s.tick(12000)
-	var back: Dictionary = s.seek(2000)
+func test_the_phase_follows_the_health_a_seek_reports() -> void:
+	# Containment, not history: a pass that starts the bar back at full is in the opening stage again,
+	# which is what makes a replay of a boss that was NOT damaged play its opening.
+	var s: RoundTimelineScheduler = _sched([], 60000, [_phase("p1", 1.0), _phase("p2", 0.5)])
+	s.tick(30000, _hp(0.4))
+	var back: Dictionary = s.seek(2000, _hp(1.0))
 	assert_bool(bool(back["phase_changed"])).is_true()
 	assert_str(str((back["phase"] as Dictionary)["id"])).is_equal("p1")
 
 
-func test_position_before_the_first_phase_is_no_phase() -> void:
-	var s: RoundTimelineScheduler = _sched([], 60000, [_phase("p2", 10000)])
-	assert_bool(bool(s.tick(500)["phase_changed"])).is_false()
+func test_health_above_every_phase_is_no_phase() -> void:
+	var s: RoundTimelineScheduler = _sched([], 60000, [_phase("p2", 0.5)])
+	assert_bool(bool(s.tick(500, _hp(1.0))["phase_changed"])).is_false()
 	assert_bool(s.current_phase().is_empty()).is_true()
+
+
+func test_a_phase_authored_on_the_clock_converts_to_a_health_point() -> void:
+	# An encounter written before phases followed health keeps working: halfway through a 60s round is
+	# a half-empty bar, because a bar driven by time IS the round's progress read backwards.
+	var s: RoundTimelineScheduler = _sched([], 60000, [{"id": "p2", "name": "P2", "at_ms": 30000}])
+	assert_bool(bool(s.tick(0, _hp(0.9))["phase_changed"])).is_false()
+	assert_str(str((s.tick(1000, _hp(0.5))["phase"] as Dictionary)["id"])).is_equal("p2")
 
 
 # ── End anchoring + the defeat split ─────────────────────────────────────────
@@ -216,10 +232,10 @@ func test_unresolvable_end_anchors_never_fire() -> void:
 	assert_array(s.tick(999999)["fire"]).is_empty()
 
 
-func test_defeat_events_are_held_back_from_the_normal_pass() -> void:
+func test_outcome_events_are_held_back_from_the_normal_pass() -> void:
 	var events: Array = [
 		_one_shot("victory", 5000, "end"),
-		{"id": "defeat", "track": "audio", "at_ms": 0, "on": "defeat", "clip": "/lose.ogg"},
+		{"id": "defeat", "track": "audio", "at_ms": 0, "on": "gave_in", "clip": "/lose.ogg"},
 	]
 	var s: RoundTimelineScheduler = _sched(events, 60000)
 	# Playing all the way through never fires the defeat event...
@@ -227,7 +243,7 @@ func test_defeat_events_are_held_back_from_the_normal_pass() -> void:
 	s.seek(54000)  # skip ahead to the outro the announced way
 	assert_array(_ids(s.tick(55000)["fire"])).is_equal(["victory"])
 	# ...it is handed out only when the bail-out path asks.
-	assert_array(_ids(s.defeat_events())).is_equal(["defeat"])
+	assert_array(_ids(s.outcome_events("gave_in"))).is_equal(["defeat"])
 
 
 func test_is_idle_on_an_empty_timeline() -> void:
@@ -237,3 +253,155 @@ func test_is_idle_on_an_empty_timeline() -> void:
 	assert_array(d["fire"]).is_empty()
 	assert_array(d["start"]).is_empty()
 	assert_bool(bool(d["phase_changed"])).is_false()
+
+
+# ── Lazy branch resolution (Phase 6) ─────────────────────────────────────────
+
+
+func _forked(events: Array, branches: Array) -> Dictionary:
+	return RoundTimeline.normalize(
+		{"events": events, "segments": [{"id": "seg1", "branches": branches}]}
+	)
+
+
+func _tagged_cast(id: String, at_ms: int, tag: String) -> Dictionary:
+	return {"id": id, "track": "cast", "at_ms": at_ms, "text": id, "variant_tag": tag}
+
+
+func test_a_fork_decides_from_the_state_at_the_moment_it_matters() -> void:
+	# The whole reason resolution is lazy: at round start the score is zero and every condition would
+	# judge a player who has not done anything yet.
+	var t: Dictionary = _forked(
+		[_tagged_cast("gentle", 2000, "GENTLE"), _tagged_cast("brutal", 2000, "BRUTAL")],
+		[
+			{"tag": "BRUTAL", "condition": [{"signal": "score", "op": "gte", "value": 500}]},
+			{"tag": "GENTLE", "condition": []},
+		]
+	)
+	var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000)
+	# Ticks before the fork must not commit it — the player is still earning their score.
+	s.tick(500, {"score": 0})
+	assert_bool(s.picked_branches().is_empty()).is_true()
+
+	var fired: Array = _ids(s.tick(2000, {"score": 900})["fire"])
+	assert_array(fired).is_equal(["brutal"])
+	assert_str(str(s.picked_branches()["seg1"])).is_equal("BRUTAL")
+
+
+func test_a_committed_fork_does_not_change_its_mind_later() -> void:
+	var t: Dictionary = _forked(
+		[
+			_tagged_cast("a1", 1000, "A"),
+			_tagged_cast("b1", 1000, "B"),
+			_tagged_cast("a2", 2500, "A"),
+			_tagged_cast("b2", 2500, "B"),
+		],
+		[
+			{"tag": "A", "condition": [{"signal": "score", "op": "lt", "value": 100}]},
+			{"tag": "B", "condition": []},
+		]
+	)
+	var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000)
+	assert_array(_ids(s.tick(1000, {"score": 10})["fire"])).is_equal(["a1"])
+	# Score has since climbed past the threshold, but the encounter already took this road.
+	assert_array(_ids(s.tick(2500, {"score": 5000})["fire"])).is_equal(["a2"])
+
+
+func test_an_untagged_event_is_unaffected_by_any_fork() -> void:
+	var t: Dictionary = _forked(
+		[
+			_tagged_cast("a1", 1000, "A"),
+			{"id": "spine", "track": "cast", "at_ms": 1000, "text": "x"}
+		],
+		[{"tag": "A", "condition": []}, {"tag": "B", "condition": []}]
+	)
+	var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000)
+	assert_bool(_ids(s.tick(1000, {})["fire"]).has("spine")).is_true()
+
+
+func test_an_event_condition_gates_it_and_latches() -> void:
+	var t: Dictionary = (
+		RoundTimeline
+		. normalize(
+			{
+				"events":
+				[
+					{
+						"id": "taunt",
+						"track": "cast",
+						"at_ms": 2000,
+						"text": "Struggling?",
+						"condition": [{"signal": "score", "op": "lt", "value": 100}],
+					}
+				]
+			}
+		)
+	)
+	var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000)
+	# Doing well, so the taunt is suppressed — and stays suppressed rather than sneaking in later.
+	assert_array(_ids(s.tick(2000, {"score": 900})["fire"])).is_empty()
+	assert_array(_ids(s.tick(3000, {"score": 0})["fire"])).is_empty()
+
+
+func test_a_window_keeps_its_branch_for_the_whole_stretch() -> void:
+	# A window re-testing its condition every tick would flicker on and off mid-stretch.
+	var t: Dictionary = _forked(
+		[
+			{
+				"id": "win",
+				"track": "effect",
+				"at_ms": 1000,
+				"duration_ms": 5000,
+				"effects": [{"kind": "murk"}],
+				"variant_tag": "A",
+			}
+		],
+		[
+			{"tag": "A", "condition": [{"signal": "score", "op": "lt", "value": 100}]},
+			{"tag": "B", "condition": []},
+		]
+	)
+	var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000)
+	assert_array(_ids(s.tick(1500, {"score": 0})["start"])).is_equal(["win"])
+	# Score climbs past the threshold mid-window: it must NOT be torn down for that.
+	assert_array(_ids(s.tick(3000, {"score": 9000})["stop"])).is_empty()
+	assert_array(_ids(s.tick(4500, {"score": 9000})["stop"])).is_empty()
+	# It still closes on its own boundary — the window is 1000..6000.
+	assert_array(_ids(s.tick(6000, {"score": 9000})["stop"])).is_equal(["win"])
+
+
+func test_a_replay_decides_again_but_a_scrub_does_not() -> void:
+	var t: Dictionary = _forked(
+		[_tagged_cast("a1", 1000, "A"), _tagged_cast("b1", 1000, "B")],
+		[
+			{"tag": "A", "condition": [{"signal": "score", "op": "lt", "value": 100}]},
+			{"tag": "B", "condition": []},
+		]
+	)
+	var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000)
+	s.tick(1000, {"score": 0})
+	assert_str(str(s.picked_branches()["seg1"])).is_equal("A")
+
+	# Scrubbing around inside one round must not reshuffle the encounter under the player.
+	s.seek(500, {"score": 9000})
+	assert_str(str(s.picked_branches()["seg1"])).is_equal("A")
+
+	# A replay is a fresh encounter, so it judges the player as they are now.
+	s.reset()
+	assert_bool(s.picked_branches().is_empty()).is_true()
+	s.tick(1000, {"score": 9000})
+	assert_str(str(s.picked_branches()["seg1"])).is_equal("B")
+
+
+func test_an_unconditioned_fork_still_rolls() -> void:
+	var t: Dictionary = _forked(
+		[_tagged_cast("a1", 1000, "A"), _tagged_cast("b1", 1000, "B")],
+		[{"tag": "A", "condition": []}, {"tag": "B", "condition": []}]
+	)
+	var seen: Dictionary = {}
+	for i: int in 60:
+		var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+		rng.seed = i
+		var s: RoundTimelineScheduler = RoundTimelineScheduler.new(t, 60000, rng)
+		seen[_ids(s.tick(1000, {})["fire"])[0]] = true
+	assert_int(seen.size()).is_equal(2)
