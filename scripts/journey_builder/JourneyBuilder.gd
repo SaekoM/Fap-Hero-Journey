@@ -91,6 +91,9 @@ const SIDE_PANEL_WIDTH: int = 480
 
 # Journey metadata: stored as member vars since the side-panel editor widgets
 # are created and destroyed dynamically when the user navigates the graph.
+# What _dirty_signature() returned when this journey was last loaded or saved. Anything else means
+# there is work on screen that is not on disk. Empty until the first baseline is taken.
+var _saved_signature: String = ""
 var _journey_name: String = ""
 # The journey's stable id (JourneyData.stamp_journey_identity). Empty for a new journey - minted
 # on first save. Loaded from disk when editing, so a re-save or rename never re-mints it.
@@ -2262,7 +2265,73 @@ func _focus_is_text_field() -> bool:
 
 
 func _on_back_pressed() -> void:
+	if not _has_unsaved_changes():
+		_leave_builder()
+		return
+	_show_unsaved_prompt()
+
+
+func _leave_builder() -> void:
 	Transition.change_scene("res://scenes/main/Main.tscn")
+
+
+# Three ways out rather than two. An author who reached for BACK with an hour of work on screen should
+# not have to choose between losing it and cancelling to go and find the save button — so saving is one
+# of the answers, not a thing you must go back and do first.
+#
+# Not the shared _show_builder_confirm: that one is Cancel + a single action, and widening it would put
+# a third button on every other confirmation in this file.
+func _show_unsaved_prompt() -> void:
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"UNSAVED CHANGES", UITheme.AMBER, Vector2i(620, 300)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+
+	var lbl: Label = Label.new()
+	lbl.text = ("This journey has changes that aren't on disk yet. Leaving now discards them.")
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 13, false)
+	vbox.add_child(lbl)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	vbox.add_child(row)
+
+	var cancel_btn: Button = Button.new()
+	cancel_btn.text = "CANCEL"
+	cancel_btn.custom_minimum_size = Vector2(150, 0)
+	UITheme.style_button(cancel_btn, UITheme.PURPLE_MID)
+	cancel_btn.pressed.connect(func() -> void: modal.queue_free())
+	row.add_child(cancel_btn)
+
+	var discard_btn: Button = Button.new()
+	discard_btn.text = "DISCARD & LEAVE"
+	discard_btn.custom_minimum_size = Vector2(190, 0)
+	UITheme.style_button(discard_btn, UITheme.DANGER)
+	discard_btn.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			_leave_builder()
+	)
+	row.add_child(discard_btn)
+
+	var save_btn: Button = Button.new()
+	save_btn.text = "SAVE & LEAVE"
+	save_btn.custom_minimum_size = Vector2(190, 0)
+	UITheme.style_button(save_btn, UITheme.CYAN)
+	# A save that succeeds returns to the catalogue on its own; one that fails shows its own error and
+	# leaves the author in the builder with their work, which is the right outcome either way.
+	save_btn.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			_on_save_pressed()
+	)
+	row.add_child(save_btn)
+
+	add_child(modal)
 
 
 # Absolute path of this journey's folder on disk, or "" if it hasn't been saved
@@ -2681,6 +2750,7 @@ func _load_graph(journey: Dictionary) -> void:
 			(loaded["nodes"][id] as Dictionary)["pos"] = tree_pos[id]
 	_graph_model.clear()
 	_graph_model.merge(loaded, true)
+	_mark_clean()
 
 
 # Enters rendition (overlay) mode: loads the base graph with all of its nodes GHOSTED (read-only), then
@@ -2725,6 +2795,10 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 	_graph.set_ghost_nodes(_rendition_parent_ids)  # the deferred set_graph reads this
 	_push_backdrops()
 	_show_rendition_banner(parent_title)
+	# A fresh overlay starts clean: _load_graph above took its baseline from the BASE, and resetting the
+	# identity here would otherwise read as unsaved work before the author had touched anything.
+	# _load_rendition_delta re-takes it when an existing delta is loaded on top.
+	_mark_clean()
 
 
 # Loads an existing rendition's delta ON TOP of the just-ghosted base (call right after
@@ -2776,6 +2850,7 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 	_map_backdrops = _dup_backdrops(delta.get("map_backdrops", []))
 	_push_backdrops()
 	_refresh_graph()
+	_mark_clean()
 
 
 # Marks rendition mode in the existing TopBar (rather than a floating banner, which overlapped the
@@ -3556,6 +3631,37 @@ func _graph_snapshot() -> Dictionary:
 		"comments": (_graph_model.get("comments", []) as Array).duplicate(true),
 		"groups": (_graph_model.get("groups", []) as Array).duplicate(true),
 	}
+
+
+# Everything the author can change, as one comparable string.
+#
+# The _journey_* fields are collected by REFLECTION rather than a hand-written list. There are two
+# dozen of them and every release adds more, and a field left off such a list would make this answer
+# "nothing changed" for an edit that really happened — the one failure here that silently destroys
+# work. The graph comes from the same snapshot the undo stack already trusts.
+func _dirty_signature() -> String:
+	var state: Dictionary = {"graph": _graph_snapshot()}
+	for prop: Dictionary in get_property_list():
+		var prop_name: String = str(prop.get("name", ""))
+		if not prop_name.begins_with("_journey_"):
+			continue
+		var value: Variant = get(prop_name)
+		# A node or resource reference has no stable text form; none of these fields should hold one,
+		# but a future one might, and JSON.stringify would quietly emit null for every such field and
+		# make them all compare equal.
+		if not (value is Object):
+			state[prop_name] = value
+	return JSON.stringify(state)
+
+
+# This is now the state on disk — take it as the baseline the back button compares against.
+func _mark_clean() -> void:
+	_saved_signature = _dirty_signature()
+
+
+func _has_unsaved_changes() -> bool:
+	# No baseline means nothing was ever loaded or saved, so there is nothing to have diverged from.
+	return _saved_signature != "" and _dirty_signature() != _saved_signature
 
 
 # Records the current graph state so the next mutation can be undone. A fresh action invalidates the
@@ -5528,6 +5634,7 @@ func _invalidate_existing_run_saves(paths: Dictionary) -> void:
 # to the journey catalogue. The 1.5s delay gives the user a moment to see
 # the confirmation before the scene changes.
 func _finalize_save_success() -> void:
+	_mark_clean()
 	var message: String = "Journey saved! Returning to catalogue..."
 	if _invalidated_save_count > 0:
 		message = "Journey saved! Existing player save reset. Returning to catalogue..."

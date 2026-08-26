@@ -914,7 +914,7 @@ func _start_round_after_gates(round: Dictionary) -> void:
 	# The intro card is a per-round toggle (BOSS_ROUND_DESIGN §7.1). Default ON, so every boss authored
 	# before the switch existed still telegraphs exactly as it did; an author who opens cold into their
 	# own authored telegraph turns it off.
-	if _is_boss_round and bool(round.get("show_intro_card", true)):
+	if _is_boss_round and bool(round.get("show_intro_card", true)) and not _is_boss_replay():
 		# A rolled boss: fade the encounter card out, THEN telegraph with the boss intro card.
 		if enc_root != null:
 			await _fade_and_free_overlay(enc_root)
@@ -1387,6 +1387,14 @@ func _fade_and_free_overlay(node: Control, dur: float = 0.4) -> void:
 	await t.finished
 	if is_instance_valid(node):
 		node.queue_free()
+
+
+# True when this load is a repeat pass at a boss the player has already fought. Read straight from the
+# counter rather than from _boss_attempt, which is not populated until _load_round_timeline runs inside
+# _begin_round — long after the intro card has been shown or skipped. The counter holds the attempt that
+# just ended, so anything above zero means this is not the first arrival.
+func _is_boss_replay() -> bool:
+	return GameState.CounterValue(RoundTimeline.attempt_counter_key(GameState.CurrentNodeId())) > 0
 
 
 func _show_boss_intro(round: Dictionary) -> void:
@@ -2523,6 +2531,27 @@ func _find_video(folder: String) -> String:
 	return ""
 
 
+# Lifts a clip that some earlier jump left dark, at the first moment a new one is genuinely ready.
+#
+# _transition_swap has a head-of-clip fade of its own, but it cannot serve this: on a boss replay the
+# swap action returns at its first await, so playback has not begun when it checks is_playing() and it
+# skips the fade entirely — which is how a jump-darkened clip reached the next attempt still black and
+# muted. Here the stream is loaded and playing, so "ready" is not a guess.
+#
+# A no-op for the ordinary case: nothing but a jump leaves the clip dark, so this only ever fires when
+# there is darkness to lift.
+func _fade_in_darkened_clip() -> void:
+	if _video.modulate == Color.WHITE:
+		return
+	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
+	_video.modulate = Color.BLACK
+	_video.volume_db = -40.0
+	_clip_fade_tween = create_tween().set_parallel(true)
+	_clip_fade_tween.tween_property(_video, "modulate", Color.WHITE, CLIP_FADE_TIME)
+	_clip_fade_tween.tween_property(_video, "volume_db", 0.0, CLIP_FADE_TIME)
+
+
 func _load_video(path: String) -> void:
 	_video.position = Vector2.ZERO
 	_video.size = get_viewport_rect().size
@@ -2538,6 +2567,7 @@ func _load_video(path: String) -> void:
 		if stream and stream is VideoStream:
 			_video.stream = stream as VideoStream
 			_video.play()
+			_fade_in_darkened_clip()
 			FunscriptPlayer.Play()
 			return
 		push_warning("GameLoop: could not load .ogv at %s" % path)
@@ -2559,6 +2589,7 @@ func _load_video(path: String) -> void:
 	stream.set("file", abs_path)
 	_video.stream = stream as VideoStream
 	_video.play()
+	_fade_in_darkened_clip()
 
 	# EIRTeam.FFmpeg surfaces open/decode failures as C++-level push_errors
 	# rather than a catchable GDScript return value. Give the player one frame
@@ -4033,6 +4064,27 @@ func _jump_after_win() -> void:
 func _jump_playhead_to(target: int) -> void:
 	if _video == null or _video.stream == null:
 		return
+	if target <= int(_video.stream_position * 1000.0):
+		return
+	# Fade the PICTURE down and move while it is dark. Only the clip: the HUD belongs to the round, and
+	# the round is not what is cutting here.
+	#
+	# The fade back up is queued but abandoned by _move_playhead_to when the jump ended the round —
+	# there is nothing to come back to, and lifting the black would show the frames the region existed
+	# to hide. The clip then stays dark until the next one starts, where _load_video lifts it.
+	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
+	_clip_fade_tween = create_tween()
+	_clip_fade_tween.tween_property(_video, "modulate", Color.BLACK, CLIP_FADE_TIME)
+	_clip_fade_tween.parallel().tween_property(_video, "volume_db", -40.0, CLIP_FADE_TIME)
+	_clip_fade_tween.tween_callback(_move_playhead_to.bind(target))
+	_clip_fade_tween.tween_property(_video, "modulate", Color.WHITE, CLIP_FADE_TIME)
+	_clip_fade_tween.parallel().tween_property(_video, "volume_db", 0.0, CLIP_FADE_TIME)
+
+
+func _move_playhead_to(target: int) -> void:
+	if _video == null or _video.stream == null:
+		return
 	var now: int = int(_video.stream_position * 1000.0)
 	if target <= now:
 		return
@@ -4050,8 +4102,16 @@ func _jump_playhead_to(target: int) -> void:
 		# seek(), not tick(): everything skipped over counts as already past rather than firing in one
 		# burst on the far side of the jump.
 		_apply_timeline_decisions(_timeline_scheduler.seek(target, _round_player_state()))
+	# The funscript needs the same treatment for the same reason: SyncTo moves only the clock, leaving
+	# the keyframe cursor behind, and the next frame would then score every stroke the jump passed over.
+	FunscriptPlayer.SeekTo(target / 1000.0)
 	HandyService.seek(target)
 	_video.stream_position = target / 1000.0
+	# The round ended inside the line above — the jump landed on the clip's end. Drop the queued fade
+	# back up: it would lift the black off exactly the frames the region was gating, and the round
+	# transition owns the screen from here. The next clip start puts the picture back.
+	if _round_ended_guard and _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
 
 
 # Clears the fight down to a standing start. Safe to call before the round's timeline is known, which is

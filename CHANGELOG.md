@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.8.2
+
+The crackling is gone — properly this time, in the video decoder itself rather than around it. Alongside
+it: boss health thresholds that can finally say what they mean, regions that stop handing out damage for
+video nobody watched, and a few rough edges from the first encounters built in anger.
+
+### ◆ Crackling audio — the actual cause
+
+v0.8.0 fixed *a* crackle: the project mixed at 44.1 kHz while video audio is 48 kHz, so every clip was
+resampled continuously. That was real, and it is still fixed. It was not the whole story — players on
+48 kHz sources kept reporting the same noise, sporadically, on journeys whose source files were clean.
+
+The survivor was in **EIRTeam.FFmpeg**, the video decoder. It handed decoded audio to the engine only
+once a chunk was already due, so the mixer was never more than a frame or so ahead. Any hitch longer
+than a frame — a garbage collection, a texture upload, a busy scene — and the buffer ran dry. The engine
+fades a starved block to silence and jumps back to full amplitude on the next one, and that discontinuity
+is the crackle. It landed on the mix-block grid, which is why it was audible as a tick rather than a
+dropout, and why it came and went between sessions: whether the buffer ran close to empty was decided by
+each session's timing.
+
+Audio is now handed over up to 100 ms ahead, so a hitch eats headroom instead of the mixer's next block.
+Playback timing is unchanged — the buffer drains in real time either way.
+
+This required patching the decoder and building it, so the addon is now a **custom build** rather than
+the stock release. The fix has been offered upstream, where this has been an open report for years.
+
+### ◆ Regions that mean what they say
+
+**A boss-health condition is authored as a percentage.** Boss health is the one signal the model keeps as
+a 0–1 fraction, and the shared rule editor offered a whole-number box for it — so a fraction could only
+ever be 0 or 1, and "at or below 10%" was stored as "at or below 1000%". That is true at every health
+there is, so the region played every time. It now reads and writes percent, matching the phase
+thresholds beside it.
+
+**Existing rules are migrated without changing what they do**, which is worth understanding before
+re-testing an encounter: a rule that was already always-true stays always-true, displayed as 100%. The
+fix makes the threshold *expressible*, not retroactively correct — **a health threshold authored before
+this release has to be entered again** to mean what its author intended.
+
+**Skipped video no longer pays out.** A region skip moved the playhead but left the funscript's cursor
+behind, so the next frame fired every stroke the jump had passed over and scored all of them at once. A
+thirty-second skip landed thirty seconds of strokes in a single frame — as damage, in a boss round, which
+is why a fight could lose most of a health bar to a scene nobody watched. The same flaw applied to the
+win skip-ahead, where it had gone unnoticed.
+
+**A skip fades rather than cuts.** The picture fades down, moves while dark, and comes back when the next
+clip is actually ready. A skip that ends the round stays dark and hands the screen to the round
+transition, so the frames a region exists to hide are never briefly revealed on the way out.
+
+### 🩹 Fixes
+
+- **The boss telegraph no longer replays between attempts.** Its intro card announced the fight again on
+  every pass, including a resume onto a fight already in progress. It plays on arrival now, which is the
+  only time there is anything to announce.
+- **Leaving the builder asks first.** BACK returned to the catalogue immediately, and any unsaved work
+  went with it. It now offers to save, discard, or stay — and only when there is genuinely something
+  unsaved, so a journey opened and closed unchanged still leaves without comment.
+
 ## v0.8.1
 
 A fast follower for v0.8.0, from the first real encounters built with it: conditional video regions, a

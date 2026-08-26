@@ -2092,7 +2092,13 @@ func _make_clause_row(clauses: Array, index: int) -> Control:
 			# The value is reset whenever it stops meaning anything: crossing between a number and a
 			# name, or swapping one name signal for the other, since an item KIND is not a valid item
 			# ID. Two numeric signals keep the value, which is usually what an author wants.
-			if previous != chosen and (was_text or now_text):
+			# Boss health counts as a change of meaning as well: it is a 0-1 fraction where every other
+			# numeric signal is a count, so carrying a score of 500 across would read as 50000%.
+			var crossed_fraction: bool = (
+				(previous == RoundTimeline.SIGNAL_BOSS_HP)
+				!= (chosen == RoundTimeline.SIGNAL_BOSS_HP)
+			)
+			if previous != chosen and (was_text or now_text or crossed_fraction):
 				clause["value"] = "" if now_text else 0
 			# ...and an operator the new signal has no use for. Left alone, switching to an item signal
 			# kept "<", which _clause_holds silently reads as equality — so the rule would have worked
@@ -2127,17 +2133,26 @@ func _make_clause_row(clauses: Array, index: int) -> Control:
 	if RoundTimeline.is_text_signal(str(clause.get("signal", ""))):
 		row.add_child(_make_name_value_picker(clause))
 	else:
+		# Boss health is the one signal the model keeps as a 0-1 FRACTION; every other number is a count.
+		# Edited as a raw fraction in a whole-number box it could only ever say 0 or 1, so "at or below
+		# 10%" became "at or below 1000%" — true at every health there is, and the region always played.
+		# Shown as a percentage it matches how phases next door already ask for a threshold.
+		var is_fraction: bool = str(clause.get("signal", "")) == RoundTimeline.SIGNAL_BOSS_HP
 		var number: SpinBox = SpinBox.new()
 		number.min_value = 0
-		number.max_value = 100000
+		number.max_value = 100.0 if is_fraction else 100000.0
 		number.step = 1
-		number.value = float(clause.get("value", 0))
+		if is_fraction:
+			number.suffix = "%"
+			number.value = clampf(float(clause.get("value", 0)) * 100.0, 0.0, 100.0)
+		else:
+			number.value = float(clause.get("value", 0))
 		number.custom_minimum_size = Vector2(90, 0)
 		UITheme.style_spin_box(number)
 		number.value_changed.connect(
 			func(value: float) -> void:
 				_snapshot("field:clause_value")
-				clause["value"] = value
+				clause["value"] = (value / 100.0) if is_fraction else value
 				_refresh_derived()
 		)
 		row.add_child(number)

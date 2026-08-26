@@ -1030,6 +1030,24 @@ public partial class FunscriptPlayer : Node
         }
     }
 
+    // Moves the play clock AND every channel's cursor to a new video position without dispatching
+    // anything in between. SyncTo deliberately only moves the clock, so after a jump the per-frame loop
+    // in _Process would walk every keyframe it had skipped and score them all in a single frame — a
+    // 30-second region skip landing 30 seconds of strokes at once, which in a boss round reads as the
+    // health bar collapsing. Any code that MOVES the playhead must call this instead of relying on the
+    // next SyncTo to notice.
+    public void SeekTo(double videoPositionSec)
+    {
+        // An override owns the clock while it runs; EndOverride re-anchors the cursors itself.
+        if (_overrideActive)
+            return;
+
+        double posMs = videoPositionSec * 1000.0;
+        _positionMs = posMs;
+        _SeekIndicesTo(posMs);
+        _clockPrimed = true;
+    }
+
     public override void _Process(double delta)
     {
         // Runs whenever playing — not gated on _actions having content, so vib /
