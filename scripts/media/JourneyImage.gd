@@ -30,7 +30,27 @@ signal animation_finished
 var loop: bool = true
 var muted: bool = false
 
+## How a CROP-fitted image is framed. Set BEFORE show_path(); ignored by every other fit, which either
+## shows the whole image or distorts it and so has nothing to frame.
+##
+##   focus — the point of the IMAGE, in 0-1 on each axis, kept as near the centre of the frame as the
+##           overflow allows. (0.5, 0.5) is the engine's own centred crop; (0.5, 0.0) keeps the top.
+##   zoom  — multiplier over the scale that exactly covers the frame. 1.0 is cover; larger pushes in.
+##
+## Normalized rather than pixel offsets on purpose: the frame's aspect differs between the 16:9 editor
+## preview and whatever window the player has, so an offset tuned in one is wrong in the other. A focal
+## point means the same thing in both.
+##
+## Not a TextureRect feature — STRETCH_KEEP_ASPECT_COVERED always crops dead centre at exactly cover
+## scale — so anything other than the default is sized and placed by hand (see _apply_crop_align).
+var focus: Vector2 = Vector2(0.5, 0.5)
+var zoom: float = 1.0
+
 var _rect: TextureRect = null
+# True only while an edge-aligned crop is in force. Every other fit is drawn by the TextureRect's own
+# stretch mode, and _apply_crop_align must keep its hands off those — sizing the rect by hand turns a
+# letterboxed "fit" into a crop.
+var _manual_crop: bool = false
 var _player: VideoStreamPlayer = null
 
 
@@ -54,8 +74,31 @@ static func stretch_for_fit(fit: String, fallback: int) -> int:
 	return fallback
 
 
+# Shows a background as JourneyData.resolved_background_view() described it — path plus the author's
+# framing. `fallback_stretch` is the surface's own historical default, used when the background names
+# no fit (or came from a plain node/line image, which never carries one).
+func show_background(view: Dictionary, fallback_stretch: int) -> bool:
+	focus = Vector2(
+		clampf(float(view.get("focus_x", 0.5)), 0.0, 1.0),
+		clampf(float(view.get("focus_y", 0.5)), 0.0, 1.0)
+	)
+	zoom = maxf(float(view.get("zoom", 1.0)), 1.0)
+	return show_path(
+		str(view.get("path", "")),
+		TextureRect.EXPAND_IGNORE_SIZE,
+		stretch_for_fit(str(view.get("image_fit", "")), fallback_stretch)
+	)
+
+
 func show_path(path: String, expand_mode: int, stretch_mode: int) -> bool:
 	_clear()
+	# A fresh show decides all of this again from its own stretch mode. Reset rather than leave it: the
+	# storyboard reuses ONE JourneyImage for every line, so a stale connection would fire for an image
+	# that no longer wants hand-positioning, and stale clipping would crop the next letterboxed one.
+	_manual_crop = false
+	clip_contents = false
+	if resized.is_connected(_apply_crop_align):
+		resized.disconnect(_apply_crop_align)
 	if path == "":
 		return false
 	if path.get_extension().to_lower() == ANIMATED_EXT:
@@ -70,7 +113,72 @@ func _make_rect(expand_mode: int, stretch_mode: int) -> TextureRect:
 	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	r.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(r)
+	_manual_crop = _wants_manual_crop(stretch_mode)
+	if _manual_crop:
+		# Our own clipping, since the rect will be deliberately bigger than this control.
+		clip_contents = true
+		r.stretch_mode = TextureRect.STRETCH_SCALE  # we compute the exact aspect-preserving size
+		r.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		resized.connect(_apply_crop_align)
 	return r
+
+
+# True only when the framing differs from what the engine already does — a dead-centre crop at cover
+# scale IS the built-in mode, so it stays on it and costs nothing.
+func _wants_manual_crop(stretch_mode: int) -> bool:
+	if stretch_mode != TextureRect.STRETCH_KEEP_ASPECT_COVERED:
+		return false
+	return not is_equal_approx(zoom, 1.0) or not focus.is_equal_approx(Vector2(0.5, 0.5))
+
+
+# Sizes the rect to cover this control (times `zoom`) preserving aspect, then slides it so `focus`
+# sits as near the frame's centre as the overflow allows. Re-run on every resize, because the overflow
+# depends on the frame's shape — which the editor preview and the player's window do not share.
+func _apply_crop_align() -> void:
+	# Not for every image: only a non-default crop is positioned by hand. Without this guard the cover
+	# maths ran for "fit" and "stretch" too, overwriting the rect's size and position and drawing every
+	# background cropped whatever the author chose.
+	if not _manual_crop or _rect == null or _rect.texture == null:
+		return
+	var overflow: Vector2 = _layout_crop()
+	if overflow.x < 0.0:
+		return
+	# focus 0 keeps the leading edge, 1 the trailing, 0.5 centres — the same meaning on both axes and
+	# the same meaning whatever the frame's aspect turns out to be.
+	_rect.position = -overflow * focus
+
+
+# Sizes the rect and reports how much of it hangs outside the frame, or (-1, -1) when there is nothing
+# to lay out yet. Shared so a caller dragging the image can convert pixels into focus without
+# re-deriving the scale.
+func _layout_crop() -> Vector2:
+	var frame: Vector2 = size
+	var tex: Vector2 = _rect.texture.get_size()
+	if frame.x <= 0.0 or frame.y <= 0.0 or tex.x <= 0.0 or tex.y <= 0.0:
+		return Vector2(-1.0, -1.0)
+	# The LARGER ratio, so neither axis is left short — that is what "cover" means.
+	var scale: float = maxf(frame.x / tex.x, frame.y / tex.y) * maxf(zoom, 1.0)
+	var drawn: Vector2 = tex * scale
+	_rect.size = drawn
+	return (drawn - frame).max(Vector2.ZERO)
+
+
+# Moves the framing by a drag in SCREEN pixels, returning the focus it settled on. An axis with no
+# overflow cannot move, so dragging it does nothing rather than drifting the image off its own edge.
+func drag_focus(delta_px: Vector2) -> Vector2:
+	if _rect == null or _rect.texture == null:
+		return focus
+	var overflow: Vector2 = _layout_crop()
+	if overflow.x < 0.0:
+		return focus
+	var moved: Vector2 = focus
+	if overflow.x > 0.0:
+		moved.x = clampf(focus.x - delta_px.x / overflow.x, 0.0, 1.0)
+	if overflow.y > 0.0:
+		moved.y = clampf(focus.y - delta_px.y / overflow.y, 0.0, 1.0)
+	focus = moved
+	_apply_crop_align()
+	return focus
 
 
 func _show_still(path: String, expand_mode: int, stretch_mode: int) -> bool:
@@ -79,6 +187,7 @@ func _show_still(path: String, expand_mode: int, stretch_mode: int) -> bool:
 		return false
 	_rect = _make_rect(expand_mode, stretch_mode)
 	_rect.texture = ImageTexture.create_from_image(img)
+	_apply_crop_align()  # the texture is known now, so the first layout can be exact
 	return true
 
 

@@ -20,11 +20,26 @@ var _selected: int = -1
 var _preview: Control = null  # the 16:9 stage area (boxes are its children, positioned by fraction)
 var _box_nodes: Array = []  # Control per working placement, index-aligned with _working
 var _list_col: VBoxContainer = null  # the side list of placements
+# Backdrop preview: a setting's background drawn behind the boxes, so positions are tuned against the
+# art they will actually sit on rather than against flat grey.
+var _stage_bg: JourneyImage = null
+# Solo: show only the selected position. A character with six positions and several expressions stacks
+# into an unreadable pile, and the box being dragged is the only one that matters at that moment.
+var _solo: bool = false
+# The journey's settings library, for the backdrop picker. Empty when the caller has none to offer.
+var _settings: Array = []
+# The setting currently previewed, and the holder for its variant picker — rebuilt whenever the
+# setting changes, because the variants belong to it.
+var _preview_setting: Dictionary = {}
+var _variant_holder: VBoxContainer = null
 var _name_edit: LineEdit = null  # rename field for the selected placement
 
 
-func setup(placements: Array, sample_portraits: Array) -> void:
+# `settings` is optional so any existing caller keeps working — without it the backdrop picker simply
+# offers "(none)" and the stage stays flat.
+func setup(placements: Array, sample_portraits: Array, settings: Array = []) -> void:
 	_sample_portraits = sample_portraits
+	_settings = settings
 	_working = _build_working(placements)
 	_build_ui()
 	_rebuild_boxes()
@@ -112,6 +127,14 @@ func _build_ui() -> void:
 	pv_panel.add_theme_stylebox_override("panel", pv_style)
 	stage_wrap.add_child(pv_panel)
 	pv_panel.add_child(_preview)
+
+	# Behind every box and the VN guide: added first, so nothing has to be re-ordered around it.
+	_stage_bg = JourneyImage.new()
+	_stage_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_stage_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_stage_bg.visible = false
+	_preview.add_child(_stage_bg)
+
 	_add_vn_bar_guide()
 
 	# Right: the placement list + add + rename/delete + DONE/CANCEL.
@@ -119,6 +142,23 @@ func _build_ui() -> void:
 	side.add_theme_constant_override("separation", 6)
 	side.custom_minimum_size = Vector2(220, 0)
 	body.add_child(side)
+
+	side.add_child(_side_label("PREVIEW AGAINST"))
+	side.add_child(_make_setting_preview_picker())
+	_variant_holder = VBoxContainer.new()
+	_variant_holder.add_theme_constant_override("separation", 4)
+	side.add_child(_variant_holder)
+
+	var solo_btn: CheckBox = CheckBox.new()
+	solo_btn.text = "Only show selected"
+	solo_btn.add_theme_font_size_override("font_size", 11)
+	solo_btn.toggled.connect(
+		func(on: bool) -> void:
+			_solo = on
+			_apply_solo()
+	)
+	side.add_child(solo_btn)
+	side.add_child(HSeparator.new())
 
 	var list_hdr: Label = Label.new()
 	list_hdr.text = "POSITIONS"
@@ -166,6 +206,79 @@ func _build_ui() -> void:
 	side.add_child(cancel_btn)
 
 
+# Picks which setting's background to tune against. "(none)" keeps the flat stage, which is still the
+# right answer for a character who appears everywhere rather than in one place.
+func _make_setting_preview_picker() -> OptionButton:
+	var picker: OptionButton = OptionButton.new()
+	picker.clip_text = true
+	picker.add_item("(none)")
+	picker.set_item_metadata(0, "")
+	for setting: Variant in _settings:
+		if not (setting is Dictionary):
+			continue
+		var name: String = str((setting as Dictionary).get("name", "")).strip_edges()
+		picker.add_item(name if name != "" else "(unnamed)")
+		picker.set_item_metadata(picker.item_count - 1, setting)
+	picker.item_selected.connect(
+		func(i: int) -> void:
+			var chosen: Variant = picker.get_item_metadata(i)
+			_preview_setting = chosen if chosen is Dictionary else {}
+			_rebuild_variant_picker()
+			_show_stage_background(_preview_setting, "")
+	)
+	return picker
+
+
+# A second picker for WHICH variant, shown only when the chosen setting has more than one. Day and
+# Night light a room differently enough to move where a portrait should stand, which is the whole
+# reason an author made two.
+func _rebuild_variant_picker() -> void:
+	for c: Node in _variant_holder.get_children():
+		c.queue_free()
+	var backgrounds: Array = _preview_setting.get("backgrounds", [])
+	if backgrounds.size() < 2:
+		return
+	_variant_holder.add_child(_side_label("VARIANT"))
+	var picker: OptionButton = OptionButton.new()
+	picker.clip_text = true
+	for i: int in backgrounds.size():
+		var bg: Dictionary = backgrounds[i]
+		var name: String = str(bg.get("name", "")).strip_edges()
+		picker.add_item(name if name != "" else "Variant %d" % (i + 1))
+		picker.set_item_metadata(i, str(bg.get("id", "")))
+	picker.selected = 0
+	picker.item_selected.connect(
+		func(i: int) -> void:
+			_show_stage_background(_preview_setting, str(picker.get_item_metadata(i)))
+	)
+	_variant_holder.add_child(picker)
+
+
+# Draws one variant of the chosen setting, or clears the stage when "(none)" is picked. A blank
+# `background_id` means the setting's default, which is what a fresh pick shows.
+func _show_stage_background(setting: Dictionary, background_id: String) -> void:
+	if setting.is_empty():
+		_stage_bg.visible = false
+		return
+	var background: Dictionary = JourneyData.setting_background(setting, background_id)
+	if str(background.get("path", "")) == "":
+		_stage_bg.visible = false
+		return
+	_stage_bg.visible = true
+	# Through show_background so the author's own fit and crop alignment apply — the point is to judge
+	# a portrait against the backdrop as it will really be framed, not a differently-cropped stand-in.
+	_stage_bg.show_background(background, TextureRect.STRETCH_KEEP_ASPECT_COVERED)
+
+
+# Hides every box but the selected one while solo is on. Kept as its own pass rather than folded into
+# _make_box, so selecting a different position re-applies it without rebuilding the boxes.
+func _apply_solo() -> void:
+	for i: int in _box_nodes.size():
+		var box: Control = _box_nodes[i]
+		if is_instance_valid(box):
+			box.visible = not _solo or i == _selected
+
+
 func _side_label(text: String) -> Label:
 	var l: Label = Label.new()
 	l.text = text
@@ -197,6 +310,7 @@ func _rebuild_boxes() -> void:
 	_box_nodes.clear()
 	for i: int in _working.size():
 		_box_nodes.append(_make_box(i))
+	_apply_solo()
 
 
 func _make_box(idx: int) -> Control:
@@ -328,6 +442,7 @@ func _select(idx: int) -> void:
 	for i: int in _box_nodes.size():
 		if is_instance_valid(_box_nodes[i]):
 			_style_box(_box_nodes[i], i == _selected)
+	_apply_solo()  # solo follows the selection, so picking a position swaps which one is shown
 	if _name_edit != null:
 		_name_edit.text = str(_working[idx].get("name", ""))
 		_name_edit.editable = not bool(_working[idx].get("builtin", false))  # built-in names are fixed

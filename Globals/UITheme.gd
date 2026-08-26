@@ -126,6 +126,7 @@ const PURPLE_BRIGHT: Color = Color(0.698, 0.118, 1.0, 1.0)  # #b21eff
 # Accent colors
 const MAGENTA: Color = Color(0.878, 0.0, 0.878, 1.0)  # #e000e0
 const WHITE_SOFT: Color = Color(0.878, 0.780, 1.0, 1.0)  # #e0c7ff
+const AUDIO_TEST_BTN_WIDTH: int = 84  # compact: a utility beside its field, not a section action
 const AMBER: Color = Color(1.0, 0.65, 0.15, 1.0)
 const TOXIC_GREEN: Color = Color(0.45, 1.0, 0.35, 1.0)
 const CYAN: Color = Color(0.10, 0.85, 0.90, 1.0)
@@ -196,6 +197,55 @@ func style_button(
 
 
 # Compact icon-only button (used by JourneyBuilder rows for ↑ ↓ ✕ etc.).
+# A ▶ TEST button wired to its own hidden player: press to hear the clip `read_path` names at the
+# volume `read_volume` reports, press again to stop. Lives here rather than in one panel because three
+# different editors now offer it and an author should not meet two versions of the same control.
+#
+# `on_error` reports a missing or unreadable file however the caller shows problems — a status bar in
+# the builder's side panel, the button's own label in a full-screen editor. Omitted, failures are
+# silent, which is only ever right when the caller has already checked the path.
+func make_audio_test_button(
+	host: Node, read_path: Callable, read_volume: Callable, on_error: Callable = Callable()
+) -> Button:
+	var player: AudioStreamPlayer = AudioStreamPlayer.new()
+	host.add_child(player)
+
+	var button: Button = Button.new()
+	button.text = "▶ TEST"
+	# Compact and shrink-to-fit rather than full width: it is a utility beside the thing it tests, and at
+	# panel width in the brightest colour on screen it read as the section's primary action.
+	button.size_flags_horizontal = Control.SIZE_SHRINK_END
+	button.custom_minimum_size.x = AUDIO_TEST_BTN_WIDTH
+	style_button_subtle(button, TOXIC_GREEN, 9, 4, 10)
+
+	var fail: Callable = func(message: String) -> void:
+		if on_error.is_valid():
+			on_error.call(message)
+
+	button.pressed.connect(
+		func() -> void:
+			if player.playing:
+				player.stop()
+				button.text = "▶ TEST"
+				return
+			var path: String = str(read_path.call()).strip_edges()
+			if path == "":
+				fail.call("Drop an audio file first.")
+				return
+			var stream: AudioStream = JourneyAudio.load_from_file(path)
+			if stream == null:
+				fail.call("Could not read that audio file.")
+				return
+			player.stream = stream
+			player.volume_db = linear_to_db(maxf(0.0001, float(read_volume.call())))
+			player.play()
+			button.text = "■ STOP"
+	)
+	# A clip that runs out on its own puts the label back without anyone pressing anything.
+	player.finished.connect(func() -> void: button.text = "▶ TEST")
+	return button
+
+
 func make_icon_btn(icon: String, disabled: bool, accent: Color) -> Button:
 	var btn: Button = Button.new()
 	btn.text = icon

@@ -52,7 +52,6 @@ const ITEMS_MODAL_MIN: int = 340
 const ITEMS_MODAL_MAX: int = 640
 
 # The audition button beside an audio field. Wide enough to read, narrow enough to stay a utility.
-const AUDIO_TEST_BTN_WIDTH: int = 84
 const BOSS_MODIFIER_LABELS: Array = [
 	"SCALE  —  STROKE LENGTH",
 	"CLAMP  —  POSITION RANGE",
@@ -75,6 +74,8 @@ var _custom_items_list: VBoxContainer = null
 # count stays live as items are added/removed. _custom_items_list points at the open modal's container.
 var _manage_items_btn: Button = null
 var _characters_list: VBoxContainer = null  # same live-container pattern as _custom_items_list
+var _settings_list: VBoxContainer = null  # journey-level reusable places (backgrounds + music)
+var _journey_bgm_list: VBoxContainer = null  # the journey-wide score, one row per track
 
 
 func _init(owner: JourneyBuilder) -> void:
@@ -432,6 +433,8 @@ func show_journey_info_panel() -> void:
 	side_vbox.add_child(_make_custom_items_section())
 
 	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_settings_section())
+	side_vbox.add_child(_make_journey_bgm_section())
 	side_vbox.add_child(_make_characters_section())
 
 	side_vbox.add_child(_side_section_separator())
@@ -953,38 +956,14 @@ func _make_volume_row(
 # The player is parented to the caller's container, so it is freed with the panel and nothing is left
 # playing over a screen that has gone.
 func _make_audio_test_button(host: Node, read_path: Callable, read_volume: Callable) -> Button:
-	var player: AudioStreamPlayer = AudioStreamPlayer.new()
-	host.add_child(player)
-
-	var button: Button = Button.new()
-	button.text = "▶ TEST"
-	# Compact and shrink-to-fit rather than full width: it is a utility beside the thing it tests, and at
-	# panel width in the brightest colour on screen it read as the section's primary action.
-	button.size_flags_horizontal = Control.SIZE_SHRINK_END
-	button.custom_minimum_size.x = AUDIO_TEST_BTN_WIDTH
-	UITheme.style_button_subtle(button, UITheme.TOXIC_GREEN, 9, 4, 10)
-	button.pressed.connect(
-		func() -> void:
-			if player.playing:
-				player.stop()
-				button.text = "▶ TEST"
-				return
-			var path: String = str(read_path.call()).strip_edges()
-			if path == "":
-				_owner._show_status("Drop an audio file first.", true)
-				return
-			var stream: AudioStream = JourneyAudio.load_from_file(path)
-			if stream == null:
-				_owner._show_status("Could not read that audio file.", true)
-				return
-			player.stream = stream
-			player.volume_db = linear_to_db(maxf(0.0001, float(read_volume.call())))
-			player.play()
-			button.text = "■ STOP"
+	# The control itself is UITheme's — three editors offer it now. This wrapper only supplies how THIS
+	# panel reports a problem, which is its status line.
+	return UITheme.make_audio_test_button(
+		host,
+		read_path,
+		read_volume,
+		func(message: String) -> void: _owner._show_status(message, true)
 	)
-	# A clip that runs out on its own puts the label back without anyone pressing anything.
-	player.finished.connect(func() -> void: button.text = "▶ TEST")
-	return button
 
 
 # The sound this item makes when it is used, INSTEAD of the standard click. A gunshot on a bullet or a
@@ -1312,6 +1291,358 @@ func _discard_journey_item(item_idx: int, item: Dictionary) -> void:
 			return
 
 
+# A setting reference: which place, and which of its backgrounds. Used by every surface that can carry
+# one — a storyboard node, one of its lines, a shop, a checkpoint, a fork.
+#
+# "(none)" is always first and always available, so a node can opt out of settings entirely and keep
+# whatever image it already had. The variant picker only appears once a place is chosen, because a
+# variant of nothing is not a thing an author can reason about.
+func _make_setting_picker(holder: Dictionary, on_change: Callable = Callable()) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("SETTING"))
+
+	var settings: Array = _owner._journey_settings
+	var place: OptionButton = OptionButton.new()
+	place.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	place.clip_text = true
+	place.add_item("(none)")
+	place.set_item_metadata(0, "")
+	var current: String = str(holder.get("setting", ""))
+	var selected: int = 0
+	for i: int in settings.size():
+		var setting: Dictionary = settings[i]
+		var sname: String = str(setting.get("name", "")).strip_edges()
+		place.add_item(sname if sname != "" else "(unnamed)")
+		place.set_item_metadata(place.item_count - 1, str(setting.get("id", "")))
+		if str(setting.get("id", "")) == current:
+			selected = place.item_count - 1
+	# A setting the journey no longer has still has to round-trip: dropping it from the list would
+	# quietly rewrite the author's reference to whatever sat at index 0.
+	if current != "" and selected == 0:
+		place.add_item("%s  (missing)" % current)
+		place.set_item_metadata(place.item_count - 1, current)
+		selected = place.item_count - 1
+	place.selected = selected
+	col.add_child(place)
+
+	var variant_holder: VBoxContainer = VBoxContainer.new()
+	variant_holder.add_theme_constant_override("separation", 4)
+	col.add_child(variant_holder)
+
+	var fill_variants: Callable = func() -> void:
+		for c: Node in variant_holder.get_children():
+			c.queue_free()
+		var setting: Dictionary = JourneyData.setting_by_id(
+			_owner._journey_settings, str(holder.get("setting", ""))
+		)
+		var backgrounds: Array = setting.get("backgrounds", [])
+		if backgrounds.size() < 2:
+			return  # one variant is the default and needs no choosing
+		variant_holder.add_child(_side_field_label("BACKGROUND"))
+		var variant: OptionButton = OptionButton.new()
+		variant.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		variant.clip_text = true
+		var want: String = str(holder.get("setting_bg", ""))
+		var pick: int = 0
+		for i: int in backgrounds.size():
+			var bg: Dictionary = backgrounds[i]
+			var bname: String = str(bg.get("name", "")).strip_edges()
+			variant.add_item(bname if bname != "" else "Background %d" % (i + 1))
+			variant.set_item_metadata(i, str(bg.get("id", "")))
+			if str(bg.get("id", "")) == want:
+				pick = i
+		variant.selected = pick
+		variant.item_selected.connect(
+			func(i: int) -> void:
+				holder["setting_bg"] = str(variant.get_item_metadata(i))
+				if on_change.is_valid():
+					on_change.call()
+		)
+		variant_holder.add_child(variant)
+	fill_variants.call()
+
+	place.item_selected.connect(
+		func(i: int) -> void:
+			holder["setting"] = str(place.get_item_metadata(i))
+			# The old variant id belongs to the old place, so it would resolve to that place's default
+			# rather than this one's. Clear it and let the new setting's first background stand.
+			holder["setting_bg"] = ""
+			fill_variants.call()
+			if on_change.is_valid():
+				on_change.call()
+	)
+	return col
+
+
+# The journey's own score: several tracks, shuffled at runtime, under every non-playable node that does
+# not override it. A playlist rather than one loop so a long journey does not wear a single track out.
+func _make_journey_bgm_section() -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var header: Label = Label.new()
+	header.text = "JOURNEY MUSIC"
+	header.add_theme_color_override("font_color", UITheme.CYAN)
+	header.add_theme_font_size_override("font_size", 13)
+	box.add_child(header)
+	var hint: Label = Label.new()
+	hint.text = (
+		"Plays under storyboards, shops, checkpoints and forks — anything that is not a round. "
+		+ "A setting's music or a storyboard's own overrides it. Several tracks shuffle; it pauses "
+		+ "for a round and picks up where it left off."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 6)
+	box.add_child(list)
+	_journey_bgm_list = list
+	_rebuild_journey_bgm_list()
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD TRACK"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_bgm.append("")
+			_rebuild_journey_bgm_list()
+	)
+	box.add_child(add_btn)
+	return box
+
+
+func _rebuild_journey_bgm_list() -> void:
+	if not is_instance_valid(_journey_bgm_list):
+		return
+	for c: Node in _journey_bgm_list.get_children():
+		c.queue_free()
+	for i: int in _owner._journey_bgm.size():
+		_journey_bgm_list.add_child(_make_journey_bgm_row(i))
+	if _owner._journey_bgm.is_empty():
+		return
+	# One volume for the whole playlist: a per-track level would be a mastering job, not an authoring
+	# one. Built inline rather than through _make_volume_row, which writes into a Dictionary — the
+	# journey volume is a plain field on the builder, and a carrier dict to bridge them would be more
+	# machinery than the eight lines it saves.
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var label: Label = Label.new()
+	label.text = "VOLUME"
+	label.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	label.add_theme_font_size_override("font_size", 10)
+	row.add_child(label)
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = 0
+	spin.max_value = 100
+	spin.step = 1
+	spin.suffix = "%"
+	spin.value = roundi(_owner._journey_bgm_volume * 100.0)
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(spin)
+	spin.value_changed.connect(
+		func(value: float) -> void: _owner._journey_bgm_volume = clampf(value / 100.0, 0.0, 1.0)
+	)
+	row.add_child(spin)
+	row.add_child(
+		_make_audio_test_button(
+			_journey_bgm_list,
+			func() -> String:
+				return str(_owner._journey_bgm[0]) if _owner._journey_bgm.size() > 0 else "",
+			func() -> float: return _owner._journey_bgm_volume
+		)
+	)
+	_journey_bgm_list.add_child(row)
+
+
+func _make_journey_bgm_row(idx: int) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var zone: PanelContainer = DropZoneScript.new()
+	zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
+	zone.picker_title = "Select Journey Music"
+	zone.picker_filters = ["*.ogg,*.mp3,*.wav ; Audio Files"]
+	zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(zone)
+	if str(_owner._journey_bgm[idx]) != "":
+		zone.call_deferred("set_file", str(_owner._journey_bgm[idx]), false)
+	zone.file_dropped.connect(func(path: String) -> void: _owner._journey_bgm[idx] = path)
+	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	rm.pressed.connect(
+		func() -> void:
+			_owner._journey_bgm.remove_at(idx)
+			_rebuild_journey_bgm_list()
+	)
+	row.add_child(rm)
+	return row
+
+
+# ── Settings (journey-level reusable places) ────────────────────────────
+# Same shape as the cast: a short list of rows in the journey panel, each setting's full field set in a
+# modal. A setting is a PLACE — its backgrounds are variants of that place the way a character's
+# portraits are expressions, and its music is what plays while the story is there. Storyboards, shops,
+# checkpoints and forks reference one by id.
+func _make_settings_section() -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	var header: Label = Label.new()
+	header.text = "SETTINGS"
+	header.add_theme_color_override("font_color", UITheme.CYAN)
+	header.add_theme_font_size_override("font_size", 13)
+	box.add_child(header)
+	var hint: Label = Label.new()
+	hint.text = (
+		"Reusable places: a background and the music that belongs to it, defined once and "
+		+ "picked per node or per storyboard line. Consecutive scenes sharing a setting keep "
+		+ "the same track playing instead of restarting it."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	box.add_child(hint)
+
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	box.add_child(list)
+	_settings_list = list
+	_rebuild_settings_list()
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD SETTING"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_settings.append(_default_setting())
+			_rebuild_settings_list()
+			_open_setting_editor_modal(_owner._journey_settings.size() - 1)
+	)
+	box.add_child(add_btn)
+	return box
+
+
+func _rebuild_settings_list() -> void:
+	if not is_instance_valid(_settings_list):
+		return
+	for c: Node in _settings_list.get_children():
+		c.queue_free()
+	for i: int in _owner._journey_settings.size():
+		_settings_list.add_child(_make_setting_row(i))
+
+
+func _default_setting() -> Dictionary:
+	# One empty background to start: a setting with none has nothing to show, and an author adding a
+	# place almost always has its picture to hand.
+	return {
+		"id": JourneyData.new_setting_id(),
+		"name": "",
+		"backgrounds": [{"id": JourneyData.new_background_id(), "name": "", "path": ""}],
+		"bgm": "",
+		"bgm_volume": JourneyData.DEFAULT_BGM_VOLUME,
+	}
+
+
+func _make_setting_row(setting_idx: int) -> Control:
+	var setting: Dictionary = _owner._journey_settings[setting_idx]
+
+	var card: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = UITheme.PANEL_BG
+	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	card.add_theme_stylebox_override("panel", style)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	card.add_child(row)
+
+	var info: VBoxContainer = VBoxContainer.new()
+	info.add_theme_constant_override("separation", 1)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+
+	var name_lbl: Label = Label.new()
+	var sname: String = str(setting.get("name", "")).strip_edges()
+	name_lbl.text = sname if sname != "" else "(unnamed)"
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	info.add_child(name_lbl)
+
+	var badge: Label = Label.new()
+	var n_bg: int = (setting.get("backgrounds", []) as Array).size()
+	var music: String = "  ·  ♪" if str(setting.get("bgm", "")) != "" else ""
+	# Usage on the row, not just in the audit: it is what makes deleting a setting a decision rather
+	# than a guess, and it says which of a grown library is safe to tidy away.
+	var uses: int = _setting_uses(str(setting.get("id", "")))
+	var used: String = "  ·  used %d×" % uses if uses > 0 else "  ·  unused"
+	badge.text = "%d background%s%s%s" % [n_bg, "" if n_bg == 1 else "s", music, used]
+	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.SEPARATOR)
+	badge.add_theme_font_size_override("font_size", 10)
+	info.add_child(badge)
+
+	var edit_btn: Button = Button.new()
+	edit_btn.text = "✎ EDIT"
+	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
+	edit_btn.pressed.connect(func() -> void: _open_setting_editor_modal(setting_idx))
+	row.add_child(edit_btn)
+
+	var del_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	del_btn.pressed.connect(func() -> void: _confirm_delete_setting(setting_idx))
+	row.add_child(del_btn)
+	return card
+
+
+func _setting_uses(setting_id: String) -> int:
+	return JourneyData.setting_reference_count(_owner._graph_model.get("nodes", {}), setting_id)
+
+
+# Deleting an UNUSED setting is instant — there is nothing to lose and a confirmation for every tidy-up
+# trains people to click through it. Deleting one that scenes point at asks first, because those
+# references break silently: the scenes keep playing, just without the backdrop and music they were
+# written around, and this editor has no undo to walk it back.
+func _confirm_delete_setting(setting_idx: int) -> void:
+	if setting_idx < 0 or setting_idx >= _owner._journey_settings.size():
+		return
+	var setting: Dictionary = _owner._journey_settings[setting_idx]
+	var uses: int = _setting_uses(str(setting.get("id", "")))
+	if uses == 0:
+		_owner._journey_settings.remove_at(setting_idx)
+		_rebuild_settings_list()
+		return
+
+	var name: String = str(setting.get("name", "")).strip_edges()
+	_owner._show_builder_confirm(
+		"DELETE SETTING",
+		(
+			'"%s" is used by %d place%s in this journey. Deleting it leaves them with no backdrop and no music.'
+			% [name if name != "" else "(unnamed)", uses, "" if uses == 1 else "s"]
+		),
+		"DELETE ANYWAY",
+		func() -> void:
+			_owner._journey_settings.remove_at(setting_idx)
+			_rebuild_settings_list()
+	)
+
+
+# Opens the full-screen editor for one setting. Replaces the modal that used to hold these fields: a
+# setting is almost entirely about its art, and how a background is framed cannot be judged from a
+# thumbnail in a 520px window. The editor edits the live dictionary, so closing needs no save step.
+func _open_setting_editor_modal(setting_idx: int) -> void:
+	if setting_idx < 0 or setting_idx >= _owner._journey_settings.size():
+		return
+	var editor: SettingEditor = SettingEditor.new()
+	_owner.add_child(editor)
+	editor.setup(_owner._journey_settings[setting_idx])
+	# The row shows the setting's name and its variant count, both of which the editor can change.
+	editor.closed.connect(_rebuild_settings_list)
+
+
 # ── Cast roster (journey-level storyboard characters) ───────────────────────
 # Same shape as the custom-items section: a short list of rows in the journey panel, each character's
 # full field set (name / portrait / default side) living in a modal. Characters mutate
@@ -1577,7 +1908,7 @@ func _open_character_placement_editor(chr: Dictionary) -> void:
 			samples.append(str((por as Dictionary).get("path", "")))
 	var editor: PlacementEditor = PlacementEditor.new()
 	_owner.add_child(editor)
-	editor.setup(chr.get("placements", []), samples)
+	editor.setup(chr.get("placements", []), samples, _owner._journey_settings)
 	editor.done.connect(func(placements: Array) -> void: chr["placements"] = placements)
 
 
@@ -3151,6 +3482,7 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
+	col.add_child(_make_setting_picker(data))
 
 	col.add_child(_side_field_label("TITLE"))
 	var title_edit: LineEdit = LineEdit.new()
@@ -3731,6 +4063,7 @@ func _build_side_panel_editor(
 func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
+	col.add_child(_make_setting_picker(arr[idx]))
 
 	var hint: Label = Label.new()
 	hint.text = "A SAVE POINT BETWEEN ROUNDS. PLAYERS REACHING IT CAN SAVE & QUIT TO RESUME FROM HERE LATER, OR CONTINUE. PLACE IT BEFORE A ROUND YOU WANT TO ACT AS A CHECKPOINT."
@@ -4491,6 +4824,7 @@ func _prompt_save_round_template(arr: Array, idx: int, reselect: Callable) -> vo
 
 func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	var shop_data: Dictionary = arr[idx]
+	var setting_picker: Control = _make_setting_picker(shop_data)
 	# Backfill config defaults so first-time edits have keys to write to.
 	if not shop_data.has("mode"):
 		shop_data["mode"] = "pool"
@@ -4514,6 +4848,7 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 6)
 
+	col.add_child(setting_picker)
 	col.add_child(_side_field_label("SHOP TITLE"))
 	var title_edit: LineEdit = LineEdit.new()
 	title_edit.placeholder_text = "Shop title (optional)..."
@@ -4884,6 +5219,9 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	)
 	col.add_child(name_edit)
 
+	# The scene's default place. Any line may name a different one; see the per-line picker.
+	col.add_child(_make_setting_picker(sb_data))
+
 	col.add_child(_side_field_label("COINS AWARDED"))
 	var coins_spin: SpinBox = SpinBox.new()
 	coins_spin.min_value = 0
@@ -5151,6 +5489,10 @@ func _make_side_storyboard_line_block(
 	# on-stage portrait's name matches this speaker.
 	_add_speaker_chips(col, lines_arr, line_idx, speaker_edit, refresh_storyboard)
 
+	# Per-line override of the scene's place — how a storyboard moves the story somewhere else mid-scene.
+	# Left as "(none)" the line simply inherits the node's, which is the normal case.
+	col.add_child(_make_setting_picker(lines_arr[line_idx]))
+
 	col.add_child(_side_field_label("DIALOGUE"))
 	var text_edit: TextEdit = TextEdit.new()
 	text_edit.placeholder_text = "Dialogue text..."
@@ -5228,6 +5570,26 @@ func _make_side_storyboard_line_block(
 		func(on: bool) -> void: lines_arr[line_idx]["audio_loop"] = on
 	)
 	col.add_child(audio_loop_toggle)
+	var audio_duck_toggle: CheckButton = CheckButton.new()
+	audio_duck_toggle.text = "LOWER MUSIC WHILE IT PLAYS"
+	audio_duck_toggle.add_theme_font_size_override("font_size", 11)
+	audio_duck_toggle.button_pressed = bool(line_data.get("audio_duck", false))
+	audio_duck_toggle.visible = line_data.get("audio", "") != ""
+	audio_duck_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"For a voiced line. The music steps back while this audio plays and comes straight back "
+				+ "afterwards — whichever music it is, the journey's, the setting's or this storyboard's. "
+				+ "Leave it off for a sound effect: a thud or a gunshot should land ON the music, not "
+				+ "instead of it."
+			)
+		)
+	)
+	audio_duck_toggle.toggled.connect(
+		func(on: bool) -> void: lines_arr[line_idx]["audio_duck"] = on
+	)
+	col.add_child(audio_duck_toggle)
 	var audio_vol: Control = _make_volume_row(
 		col,
 		lines_arr[line_idx],
@@ -5248,6 +5610,7 @@ func _make_side_storyboard_line_block(
 			audio_zone.call_deferred("set_file", "")
 			audio_rm_btn.visible = false
 			audio_loop_toggle.visible = false
+			audio_duck_toggle.visible = false
 			audio_vol.visible = false
 	)
 	audio_zone.file_dropped.connect(
@@ -5255,6 +5618,7 @@ func _make_side_storyboard_line_block(
 			lines_arr[line_idx]["audio"] = p
 			audio_rm_btn.visible = p != ""
 			audio_loop_toggle.visible = p != ""
+			audio_duck_toggle.visible = p != ""
 			audio_vol.visible = p != ""
 	)
 	col.add_child(audio_rm_btn)

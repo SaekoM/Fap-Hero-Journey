@@ -571,6 +571,42 @@ static func _journey_characters_resolved(data: Dictionary, base: String) -> Arra
 	return characters
 
 
+# Settings — parsed to runtime with every background and theme's pooled relative path resolved to
+# absolute, so the storyboard screen and SettingMusic can use them directly. Mirrors
+# _journey_characters_resolved.
+static func _journey_settings_resolved(data: Dictionary, base: String) -> Array:
+	var settings: Array = JourneyData.parse_journey_settings(data.get("Settings", []))
+	for c: Dictionary in settings:
+		for bg: Variant in c.get("backgrounds", []):
+			(bg as Dictionary)["path"] = _resolved_media(
+				str((bg as Dictionary).get("path", "")), base
+			)
+		c["bgm"] = _resolved_media(str(c.get("bgm", "")), base)
+	return settings
+
+
+# The journey's own score, each track resolved the same way.
+static func _journey_bgm_resolved(data: Dictionary, base: String) -> Array:
+	var out: Array = []
+	var raw: Variant = data.get("Bgm", [])
+	var tracks: Array = raw if raw is Array else [str(raw)]
+	for t: Variant in tracks:
+		var resolved: String = _resolved_media(str(t), base)
+		if resolved != "":
+			out.append(resolved)
+	return out
+
+
+# A pooled relative path made absolute against the journey folder. Already-absolute paths and engine
+# paths are left alone, so a hand-edited journey.json pointing somewhere real still works.
+static func _resolved_media(path: String, base: String) -> String:
+	if path == "":
+		return ""
+	if path.begins_with("res://") or path.begins_with("user://") or path.is_absolute_path():
+		return path
+	return base.path_join(path)
+
+
 static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dictionary:
 	return {
 		"folder": path,
@@ -614,6 +650,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Storyboard cast — referenced by each storyboard line's `stage`. Each character carries its own
 		# portraits (paths resolved) and placements (position/size boxes).
 		"characters": _journey_characters_resolved(data, path),
+		"settings": _journey_settings_resolved(data, path),
+		"bgm": _journey_bgm_resolved(data, path),
+		"bgm_volume": float(data.get("BgmVolume", JourneyData.DEFAULT_BGM_VOLUME)),
 		"cover_path": find_cover_image(path),
 		"modified_time": FileAccess.get_modified_time(path + "/journey.json"),
 		"rounds": [],

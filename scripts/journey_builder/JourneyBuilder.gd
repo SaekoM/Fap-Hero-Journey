@@ -52,6 +52,12 @@ const CAUSE_CYCLE: String = "cycle"
 const CAUSE_UNREACHABLE: String = "unreachable"
 const CAUSE_LOOP_UNSATISFIABLE: String = "loop_unsatisfiable"
 const CAUSE_LOOP_UNPAIRED: String = "loop_unpaired"
+const CAUSE_SETTING_MISSING: String = "setting_missing"
+const CAUSE_SETTING_EMPTY: String = "setting_empty"
+const CAUSE_SETTING_UNUSED: String = "setting_unused"
+# Issues raised by the last presave pass that did NOT block it — reported once the save succeeds.
+var _pending_save_warnings: Array = []
+const CAUSE_SETTING_MEDIA_MISSING: String = "setting_media_missing"
 
 const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
@@ -125,6 +131,13 @@ var _journey_allow_finish: bool = false  # author opt-in: the player "I came" / 
 var _journey_finish_node: String = ""  # entry node of the off-graph aftercare sequence played on FINISH (round/storyboard; optional)
 var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
 var _journey_characters: Array = []  # storyboard cast (runtime dicts: id/name/portraits[]/placements[])
+# Reusable places: {id, name, backgrounds[{id,name,path}], bgm, bgm_volume}. Referenced by id from
+# storyboards, shops, checkpoints and forks so one backdrop and one theme are authored once.
+var _journey_settings: Array = []
+# The journey's own score under every non-playable node a setting does not override. Several tracks,
+# shuffled and reshuffled at runtime so a long journey does not wear one loop out.
+var _journey_bgm: Array = []
+var _journey_bgm_volume: float = 0.6
 
 # Folder the journey was loaded from when editing. If the journey is renamed,
 # the save writes a new folder; this lets us delete the stale original.
@@ -336,6 +349,8 @@ func _compute_node_warnings() -> Dictionary:
 			"fork":
 				_save_check_fork_graph(n, "Fork", issues)
 				_check_dead_flag_paths(n, known_flags, issues)
+		# Any node type can carry a setting, so this sits outside the match.
+		_save_check_settings(n, _node_audit_label(n), issues)
 		if not issues.is_empty():
 			var details: Array = []
 			for it: Dictionary in issues:
@@ -2726,6 +2741,9 @@ func _load_graph(journey: Dictionary) -> void:
 	# Cast roster — from the scanner's resolved `characters` (absolute portrait paths for display), same
 	# reasoning as items above (`parsed["characters"]` would be the raw pass-through, unresolved).
 	_journey_characters = (journey.get("characters", []) as Array).duplicate(true)
+	_journey_settings = (journey.get("settings", []) as Array).duplicate(true)
+	_journey_bgm = (journey.get("bgm", []) as Array).duplicate(true)
+	_journey_bgm_volume = float(journey.get("bgm_volume", JourneyData.DEFAULT_BGM_VOLUME))
 	_journey_map_fog = bool(parsed.get("map_fog", false))
 	_journey_map_fog_reveal = int(parsed.get("map_fog_reveal", 1))
 	_journey_mystery_preview = bool(parsed.get("mystery_preview", false))
@@ -4500,6 +4518,10 @@ func _collect_rendition_presave_issues() -> Array:
 				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
 				_save_check_fork_graph(n, "Fork %d" % ordinal, issues)
+		# Any node type can carry a setting, so this sits outside the match.
+		_save_check_settings(
+			n, "%s %d" % [str(n.get("type", "Node")).capitalize(), ordinal], issues
+		)
 	for gi: Dictionary in JourneyGraph.validate_graph(_graph_model, _journey_finish_node):
 		if str(gi.get("kind", "")) == "no_start":
 			continue  # the rendition inherits the base's start through its anchors
@@ -4662,20 +4684,31 @@ func _reset_save_state() -> void:
 	_pending_test_location = {}
 
 
-# Runs the whole-tree presave validation pass. Returns false (and shows the
-# multi-issue modal) when any problems exist.
+# Runs the whole-tree presave validation pass. Returns false (and shows the multi-issue modal) when
+# anything genuinely PREVENTS saving.
+#
+# An issue marked `warn_only` does not: it describes a journey that saves and plays, just not as tidily
+# as it might — a setting nobody uses, a background whose source has moved. Refusing the save over
+# those would punish an author for housekeeping they may be part-way through, so they are carried to
+# the save-success message instead and named there.
 func _validate_presave() -> bool:
-	var issues: Array = _collect_presave_issues()
-	if issues.is_empty():
+	var blocking: Array = []
+	_pending_save_warnings = []
+	for issue: Dictionary in _collect_presave_issues():
+		if bool(issue.get("warn_only", false)):
+			_pending_save_warnings.append(issue)
+		else:
+			blocking.append(issue)
+	if blocking.is_empty():
 		return true
 	var headline: String = (
 		"Found %d issue%s that prevent saving. Fix the items below and try again."
 		% [
-			issues.size(),
-			"s" if issues.size() != 1 else "",
+			blocking.size(),
+			"s" if blocking.size() != 1 else "",
 		]
 	)
-	_show_save_error_modal("CANNOT SAVE JOURNEY", headline, issues)
+	_show_save_error_modal("CANNOT SAVE JOURNEY", headline, blocking)
 	return false
 
 
@@ -4716,6 +4749,13 @@ func _check_animated_images() -> bool:
 				var p: String = str((por as Dictionary).get("path", ""))
 				if p != "" and MediaPoolService.is_animated_source(p):
 					sources.append(p)
+	# A setting's backgrounds are journey-level too, and an animated one needs the same bake.
+	for c: Variant in _journey_settings:
+		if c is Dictionary:
+			for bg: Variant in (c as Dictionary).get("backgrounds", []):
+				var bg_path: String = str((bg as Dictionary).get("path", ""))
+				if bg_path != "" and MediaPoolService.is_animated_source(bg_path):
+					sources.append(bg_path)
 	if sources.is_empty() or MediaPoolService.is_available():
 		return true
 
@@ -4991,6 +5031,38 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		saved_char["portraits"] = portraits_out
 		characters_for_save.append(saved_char)
 
+	# Settings carry the same two kinds of media as everything else: backgrounds go through the image
+	# path (deduped as stills, baked when animated) and the theme through the small-file pool, exactly
+	# as a storyboard's own BGM does. Keyed by setting id + background id so nothing collides.
+	var settings_for_save: Array = []
+	for c: Dictionary in _journey_settings:
+		var saved_setting: Dictionary = (c as Dictionary).duplicate(true)
+		var backgrounds_out: Array = []
+		for bg: Variant in saved_setting.get("backgrounds", []):
+			var bg_copy: Dictionary = (bg as Dictionary).duplicate(true)
+			var bg_src: String = str(bg_copy.get("path", ""))
+			if bg_src != "":
+				bg_copy["path"] = await _store_journey_image(
+					bg_src,
+					abs_dir,
+					abs_media_dir,
+					"set_%s_%s" % [str(saved_setting.get("id", "x")), str(bg_copy.get("id", "b"))],
+					copied_images,
+					JourneyData.ANIM_CAP_STORYBOARD,
+					modal
+				)
+			backgrounds_out.append(bg_copy)
+		saved_setting["backgrounds"] = backgrounds_out
+		saved_setting["bgm"] = _pool_small_file(str(saved_setting.get("bgm", "")), abs_dir)
+		settings_for_save.append(saved_setting)
+
+	# The journey's own score — several tracks, shuffled at runtime.
+	var journey_bgm_out: Array = []
+	for track: Variant in _journey_bgm:
+		var rel: String = _pool_small_file(str(track), abs_dir)
+		if rel != "":
+			journey_bgm_out.append(rel)
+
 	var result: Dictionary = {
 		"Name": paths["journey_name"],
 		"Author": _journey_author.strip_edges(),
@@ -5012,6 +5084,9 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"FinishNode": _journey_finish_node,
 		"Items": JourneyData.coerce_journey_items(items_for_save),
 		"Characters": JourneyData.coerce_journey_characters(characters_for_save),
+		"Settings": JourneyData.coerce_journey_settings(settings_for_save),
+		"Bgm": journey_bgm_out,
+		"BgmVolume": clampf(_journey_bgm_volume, 0.0, 1.0),
 	}
 	# Identity + version stamps. _journey_id is empty for a new journey (minted here) and carries
 	# the loaded id for an existing one, so re-saving — or renaming — never changes it.
@@ -5477,6 +5552,13 @@ func _save_storyboard_node_media(
 			"text": str(line.get("text", "")),
 			"image": li_rel,
 		}
+		# A line's own place, when it overrides the storyboard's. Ids only — the media belongs to the
+		# setting and is pooled with the library, not per line. Omitted when unset so the schema stays
+		# lean, the way stage and audio do.
+		var line_setting: String = str(line.get("setting", ""))
+		if line_setting != "":
+			line_out["setting"] = line_setting
+			line_out["setting_bg"] = str(line.get("setting_bg", ""))
 		# Persistent-stage portraits: a list of {character, portrait?, placement?} (ids only — the media
 		# is pooled once per character). Carries through verbatim; omitted when empty to keep the schema
 		# lean (mirrors set_counters / audio).
@@ -5490,6 +5572,8 @@ func _save_storyboard_node_media(
 			line_out["audio"] = audio_rel
 			line_out["audio_loop"] = bool(line.get("audio_loop", false))
 			line_out["audio_volume"] = clampf(float(line.get("audio_volume", 1.0)), 0.0, 1.0)
+			# Whether the score steps back while this line plays — see StoryboardScreen._play_line_audio.
+			line_out["audio_duck"] = bool(line.get("audio_duck", false))
 		lines_out.append(line_out)
 	saved_data["lines"] = lines_out
 	# Optional overarching BGM — one looping track under every line, pooled like the line accents.
@@ -5638,7 +5722,6 @@ func _finalize_save_success() -> void:
 	var message: String = "Journey saved! Returning to catalogue..."
 	if _invalidated_save_count > 0:
 		message = "Journey saved! Existing player save reset. Returning to catalogue..."
-
 	# An animation clipped to the length cap is named rather than silently shortened — otherwise the
 	# author just finds their image mysteriously ending early and assumes it's a bug. Held longer
 	# than the plain confirmation so there's time to actually read it.
@@ -5654,6 +5737,17 @@ func _finalize_save_success() -> void:
 			]
 		)
 		hold = 4.0
+
+	# Things worth knowing that were not worth refusing the save over. APPENDED rather than assigned, so
+	# a truncation notice and a settings note can both be told. Named rather than counted: "1 warning"
+	# tells an author nothing they can act on.
+	if not _pending_save_warnings.is_empty():
+		var notes: Array = []
+		for issue: Dictionary in _pending_save_warnings:
+			notes.append("%s — %s" % [str(issue.get("item", "")), str(issue.get("detail", ""))])
+		message += "%s" % "".join(notes)
+		hold = maxf(hold, 3.0 + 0.8 * float(notes.size()))
+		_pending_save_warnings = []
 
 	_show_status(message, false)
 	await get_tree().create_timer(hold).timeout
@@ -6427,8 +6521,59 @@ func _collect_custom_item_issues(issues: Array) -> void:
 # always valid and full free-form authoring isn't reachable yet. For now: journey meta, at
 # least one round node, and the per-round / per-storyboard source checks (reused as-is —
 # they read a node's lowercase data dict directly, identical to a tree item).
+# Journey-level checks on the settings LIBRARY itself, as opposed to the nodes that point at it.
+#
+# Both warn rather than block. A setting nobody uses is untidy, not broken, and a background whose
+# source has moved still leaves a journey that plays — just without that picture. Refusing to save over
+# either would be punishing an author for housekeeping they may be mid-way through.
+func _collect_settings_library_issues(issues: Array) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for setting: Variant in _journey_settings:
+		if not (setting is Dictionary):
+			continue
+		var entry: Dictionary = setting
+		var name: String = str(entry.get("name", "")).strip_edges()
+		var label: String = 'Setting "%s"' % (name if name != "" else "(unnamed)")
+
+		# Defined but pointed at by nothing. Worth saying because the failure it causes is silent and
+		# confusing: the scenes an author MEANT to dress simply play with the journey's own music and no
+		# backdrop, which reads as the setting not working rather than as never having been applied.
+		if JourneyData.setting_reference_count(nodes, str(entry.get("id", ""))) == 0:
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_SETTING_UNUSED,
+						"item": label,
+						"detail": "Defined, but no node or storyboard line uses it.",
+						"hint": "Pick it on a storyboard, shop, checkpoint or fork — or delete it.",
+						"warn_only": true,
+					}
+				)
+			)
+
+		# A source that has moved or been deleted since it was dropped in. Caught here rather than at
+		# pooling time, where it would simply store nothing and the background would go blank in play.
+		for source: String in JourneyData.settings_media_sources([entry]):
+			if FileAccess.file_exists(ProjectSettings.globalize_path(source)):
+				continue
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_SETTING_MEDIA_MISSING,
+						"item": label,
+						"detail": "Cannot find %s." % source.get_file(),
+						"hint": "Drop the file in again, or clear the field.",
+						"warn_only": true,
+					}
+				)
+			)
+
+
 func _collect_presave_issues_graph() -> Array:
 	var issues: Array = []
+	_collect_settings_library_issues(issues)
 	_collect_journey_meta_issues(issues)
 
 	var nodes: Dictionary = _graph_model.get("nodes", {})
@@ -6469,6 +6614,11 @@ func _collect_presave_issues_graph() -> Array:
 				_save_check_loop(id, data, "Loop %d" % ordinal, issues)
 			"loop_start":
 				_save_check_loop_start(id, "Loop %d" % ordinal, issues)
+		# Any node type can carry a setting, so this sits outside the match — and before the stamp
+		# below, so a stale-setting warning navigates to its node like every other issue.
+		_save_check_settings(
+			n, "%s %d" % [str(n.get("type", "Node")).capitalize(), ordinal], issues
+		)
 		# Stamp the source node onto everything this node's checks just produced, so its error
 		# row in the modal can navigate straight to it on the canvas.
 		for k: int in range(before, issues.size()):
@@ -7057,6 +7207,67 @@ func _save_check_pool_source(path: String, kind: String, elabel: String, issues:
 				}
 			)
 		)
+
+
+# A node (or storyboard line) pointing at a setting the journey no longer has. Not fatal — the scene
+# falls back to whatever image it carried before — but silent, and the author almost certainly meant
+# the place to be there. Warns rather than blocks: deleting a setting should not make a journey
+# unsaveable, it should tell you what referenced it.
+func _node_audit_label(node: Dictionary) -> String:
+	return str(node.get("type", "Node")).capitalize()
+
+
+func _save_check_settings(node: Dictionary, ctx: String, issues: Array) -> void:
+	var data: Dictionary = node.get("data", {})
+	var holders: Array = [{"where": ctx, "holder": data}]
+	var lines: Array = data.get("lines", [])
+	for i: int in lines.size():
+		if lines[i] is Dictionary:
+			holders.append({"where": "%s line %d" % [ctx, i + 1], "holder": lines[i]})
+
+	for entry: Dictionary in holders:
+		var holder: Dictionary = entry["holder"]
+		var setting_id: String = str(holder.get("setting", ""))
+		if setting_id == "":
+			continue
+		var setting: Dictionary = JourneyData.setting_by_id(_journey_settings, setting_id)
+		if setting.is_empty():
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_SETTING_MISSING,
+						"item": str(entry["where"]),
+						"detail": "Points at a setting that no longer exists.",
+						"hint": "Pick a setting that exists, or clear it to (none).",
+						"warn_only": true,
+					}
+				)
+			)
+			continue
+		var backgrounds: Array = setting.get("backgrounds", [])
+		var has_art: bool = false
+		for bg: Variant in backgrounds:
+			if bg is Dictionary and str((bg as Dictionary).get("path", "")) != "":
+				has_art = true
+				break
+		if not has_art:
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_SETTING_EMPTY,
+						"item": str(entry["where"]),
+						"detail":
+						(
+							'Uses setting "%s", which has no background image.'
+							% str(setting.get("name", "(unnamed)"))
+						),
+						"hint": "Add a background to that setting, or clear the reference.",
+						"warn_only": true,
+					}
+				)
+			)
 
 
 func _save_check_storyboard(sb_data: Dictionary, ctx: String, issues: Array) -> void:

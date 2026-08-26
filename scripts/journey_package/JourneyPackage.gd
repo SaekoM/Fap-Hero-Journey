@@ -197,6 +197,19 @@ static func enumerate_assets(journey_data: Dictionary, cover_rel: String = "") -
 				if por is Dictionary:
 					_note(roles, str((por as Dictionary).get("Path", "")), ROLE_IMAGE)
 
+	# Settings are journey-level like the cast: each background is an image, each theme an audio track,
+	# and the journey's own score is a list of them. A setting referenced by several nodes still notes
+	# its media once — _note dedupes by relative path.
+	for st: Variant in journey_data.get("Settings", []):
+		if st is Dictionary:
+			for bg: Variant in (st as Dictionary).get("Backgrounds", []):
+				if bg is Dictionary:
+					_note(roles, str((bg as Dictionary).get("Path", "")), ROLE_IMAGE)
+			_note(roles, str((st as Dictionary).get("Bgm", "")), ROLE_AUDIO)
+	var journey_bgm: Variant = journey_data.get("Bgm", [])
+	for track: Variant in journey_bgm if journey_bgm is Array else [journey_bgm]:
+		_note(roles, str(track), ROLE_AUDIO)
+
 	# Rendition overlay media lives OUTSIDE the Nodes block: overlay fork-choice card images on anchor
 	# edges (author art → paid), and slot-fill media routed by the slot's field exactly like a round's own
 	# (a filled video slot is scene → free; scripts/boss art → paid). A base journey has neither key.

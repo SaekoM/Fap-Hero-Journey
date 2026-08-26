@@ -45,6 +45,7 @@ func _ready() -> void:
 
 
 func setup(fork_data: Dictionary) -> void:
+	SettingBackdrop.attach(self, _backdrop, fork_data)
 	var title: String = fork_data.get("title", "")
 	if title != "":
 		_fork_title.text = title.to_upper()

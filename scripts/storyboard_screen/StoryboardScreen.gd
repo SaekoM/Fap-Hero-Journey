@@ -4,6 +4,9 @@ signal completed(coins: int)
 signal map_requested  # player tapped the "◇ MAP" button (GameLoop owns the map)
 
 const VN_BAR_HEIGHT: int = 210
+# Matches SettingMusic's crossfade, so a line that changes place moves its picture and its score over
+# the same span rather than one chasing the other.
+const BG_FADE_SECS: float = 0.4
 
 # Cast portraits (the VN "stage") are drawn over the background and under the VN bar. Each is placed by
 # a PLACEMENT box (screen-fraction x/y/w/h) resolved from the line's stage id via JourneyData —
@@ -22,7 +25,9 @@ const PORTRAIT_DIM: Color = Color(0.5, 0.5, 0.58, 1)
 var _lines: Array = []
 var _line_idx: int = 0
 var _coins: int = 0
-var _def_image: String = ""
+# The storyboard node itself, kept so each line can resolve its backdrop and music against the node's
+# defaults and the journey's settings library.
+var _node: Dictionary = {}
 var _can_advance: bool = false
 
 # Auto-advance countdown (journey opt-in). GameLoop sets auto_advance_secs before _ready; when >0
@@ -38,13 +43,16 @@ var _countdown_lbl: Label = null
 var _audio: AudioStreamPlayer = null
 var _current_audio_path: String = ""
 # Optional storyboard BGM — one looping track under EVERY line (started once in setup, stopped at exit).
-var _bgm: AudioStreamPlayer = null
 
 var _skip_btn: Button = null
 var _map_btn: Button = null
 
 # Draws the storyboard image (still or baked animation) in $BgImage's place — see _setup_bg_image.
 var _bg_view: JourneyImage = null
+# The backdrop currently drawn, so an unchanged one is never reloaded — that would restart an animated
+# background and dissolve a picture into itself.
+var _bg_shown: Dictionary = {}
+var _bg_fade: Tween = null
 
 # Persistent-stage cast, from the journey roster. Each line's `stage` is a LIST of {character, portrait,
 # placement}; portrait/placement default to the character's first of each. Each character carries its own
@@ -65,10 +73,10 @@ func _ready() -> void:
 	_add_countdown_label()
 	_audio = AudioStreamPlayer.new()
 	_audio.bus = "Master"
+	# A one-shot lifts the duck the moment it ends rather than at the next line, so the score is back up
+	# under the pause where a reader actually sits.
+	_audio.finished.connect(func() -> void: SettingMusic.unduck())
 	add_child(_audio)
-	_bgm = AudioStreamPlayer.new()
-	_bgm.bus = "Master"
-	add_child(_bgm)
 	_fade.color = Color.BLACK
 	_fade.modulate.a = 1.0
 	await get_tree().process_frame
@@ -85,13 +93,12 @@ func _ready() -> void:
 
 func setup(data: Dictionary) -> void:
 	_coins = data.get("coins", 0)
-	_def_image = data.get("image", "")
+	_node = data
 	_lines = data.get("lines", [])
 	_line_idx = 0
 	_build_cast()
-	_start_bgm(str(data.get("bgm", "")), float(data.get("bgm_volume", 0.6)))
 	if _lines.is_empty():
-		_load_bg_image(_def_image)
+		_apply_scene({})
 		return
 	_show_line()
 
@@ -108,18 +115,81 @@ func _build_cast() -> void:
 				_cast[id] = c
 
 
-# Starts the storyboard's overarching BGM (looping, under every line) at its author-set volume. No-op
-# when no BGM is set.
-func _start_bgm(path: String, volume: float) -> void:
-	if path == "" or _bgm == null:
+# Asks for the music this line should be under, every line.
+#
+# Asking repeatedly is deliberate and free: SettingMusic compares the request against what is already
+# playing and does nothing when they match, so a scene's theme runs unbroken across its lines and on
+# into the next node that wants the same thing. That continuity is why the music lives in an autoload
+# rather than in a player owned by this screen — a screen is rebuilt per node, and anything it owns
+# restarts with it.
+func _apply_scene_audio(line: Dictionary) -> void:
+	var wanted: Dictionary = JourneyData.resolved_bgm(
+		GameState.Journey.get("settings", []),
+		_node,
+		line,
+		GameState.Journey.get("bgm", []),
+		float(GameState.Journey.get("bgm_volume", 0.6))
+	)
+	if wanted.is_empty():
+		SettingMusic.stop()
 		return
-	var stream: AudioStream = JourneyAudio.load_from_file(path)
-	if stream == null:
+	SettingMusic.play_playlist(wanted.get("playlist", []), float(wanted.get("volume", 0.6)))
+
+
+# Ghosts the stage as it looks RIGHT NOW, so the frame that follows can dissolve out of it.
+#
+# A copy of the drawn frame rather than a second set of layers: the cast portraits are cached per
+# character and tinted through modulate, so they cannot be duplicated to fade one against the other —
+# and fading only the backdrop is what made the first attempt look broken, with the picture dissolving
+# while the characters on it popped.
+#
+# Sits UNDER the VN bar, so the live bar covers the copy of itself in the ghost and the dialogue never
+# double-exposes. Nothing else on screen is above it, so everything the scene change touched fades as
+# one thing.
+func _ghost_stage() -> void:
+	var viewport_texture: ViewportTexture = get_viewport().get_texture()
+	if viewport_texture == null:
 		return
-	JourneyAudio.set_loop(stream, true)  # BGM always loops
-	_bgm.stream = stream
-	_bgm.volume_db = _volume_db(volume)
-	_bgm.play()
+	var frame: Image = viewport_texture.get_image()
+	if frame == null:
+		return
+
+	var ghost: TextureRect = TextureRect.new()
+	ghost.texture = ImageTexture.create_from_image(frame)
+	ghost.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	ghost.stretch_mode = TextureRect.STRETCH_SCALE
+	ghost.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(ghost)
+	move_child(ghost, _vn_bar.get_index())
+
+	if _bg_fade != null and _bg_fade.is_valid():
+		_bg_fade.kill()
+	_bg_fade = create_tween()
+	_bg_fade.tween_property(ghost, "modulate:a", 0.0, BG_FADE_SECS)
+	_bg_fade.tween_callback(ghost.queue_free)
+
+
+# True when this line moves the story somewhere else — a different place, not merely a different line
+# in the same one. Only that is worth a transition; an ordinary line swapping an expression is not.
+func _changes_scene(line: Dictionary) -> bool:
+	if _bg_shown.is_empty():
+		return false  # the first line has nothing to dissolve out of
+	var incoming: Dictionary = JourneyData.resolved_background_view(
+		GameState.Journey.get("settings", []), _node, line
+	)
+	return incoming != _bg_shown
+
+
+# Draws the backdrop and sets the music for one line (or for a storyboard with no lines at all).
+func _apply_scene(line: Dictionary) -> void:
+	# Ghost BEFORE anything changes — the copy has to be of the scene being left.
+	if _changes_scene(line):
+		_ghost_stage()
+	_load_bg_view(
+		JourneyData.resolved_background_view(GameState.Journey.get("settings", []), _node, line)
+	)
+	_apply_scene_audio(line)
 
 
 # Linear 0–1 author volume → dB for an AudioStreamPlayer; 0 mutes.
@@ -129,10 +199,7 @@ func _volume_db(v: float) -> float:
 
 func _show_line() -> void:
 	var line: Dictionary = _lines[_line_idx]
-	var img: String = line.get("image", "")
-	if img == "":
-		img = _def_image
-	_load_bg_image(img)
+	_apply_scene(line)
 
 	var spk: String = line.get("speaker", "")
 	_speaker.visible = spk != ""
@@ -155,7 +222,13 @@ func _show_line() -> void:
 
 # Plays this line's optional audio accent. A line repeating the clip already playing (a bed carried
 # across lines) is left alone so it doesn't restart; anything else swaps in the new clip (or silence).
+# Plays the line's audio accent, and steps the score back under it when the author asked.
+#
+# Unducked FIRST, every time: a looping accent never reports finished, so without this the score would
+# stay held down for the rest of the scene once one looping line had ducked it. Clearing on every line
+# means the duck lasts exactly as long as the line that asked for it.
 func _play_line_audio(line: Dictionary) -> void:
+	SettingMusic.unduck()
 	var path: String = str(line.get("audio", ""))
 	if path != "" and path == _current_audio_path and _audio.playing:
 		return
@@ -170,6 +243,8 @@ func _play_line_audio(line: Dictionary) -> void:
 	_audio.stream = stream
 	_audio.volume_db = _volume_db(float(line.get("audio_volume", 1.0)))
 	_audio.play()
+	if bool(line.get("audio_duck", false)):
+		SettingMusic.duck()
 
 
 # Shows a storyboard image — still, or an animation the builder baked to looping H.264.
@@ -177,8 +252,15 @@ func _play_line_audio(line: Dictionary) -> void:
 # This used to re-implement JourneyData.load_image_smart's magic-byte sniffing inline; it now goes
 # through JourneyImage, which owns both cases (and that sniffing) in one place. $BgImage is left in
 # the scene but retired — see _setup_bg_image.
-func _load_bg_image(path: String) -> void:
-	_bg_view.show_path(path, _bg_image.expand_mode, _bg_image.stretch_mode)
+# Same, for a resolved background that may carry the author's own framing. $BgImage's stretch stays the
+# FALLBACK — a plain line image, or a background with no fit set, is framed exactly as it always was.
+func _load_bg_view(view: Dictionary) -> void:
+	# Identical backdrop: leave it alone. Re-showing would restart an animated background and dissolve
+	# a picture into itself — the same reasoning that keeps the music from restarting per line.
+	if view == _bg_shown:
+		return
+	_bg_shown = view.duplicate()
+	_bg_view.show_background(view, _bg_image.stretch_mode)
 
 
 # Puts a JourneyImage exactly where $BgImage sat (same index, so layering is unchanged) and hides
@@ -326,8 +408,8 @@ func _finish() -> void:
 	_timer_active = false
 	if _audio != null:
 		_audio.stop()
-	if _bgm != null:
-		_bgm.stop()
+	# The score outlives this screen, so a duck taken for a line must not leave with it still held down.
+	SettingMusic.unduck()
 	if _countdown_lbl != null:
 		_countdown_lbl.visible = false
 	_skip_btn.visible = false

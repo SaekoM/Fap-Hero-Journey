@@ -376,6 +376,10 @@ public partial class GameState : Node
             ["audio_volume"] = data.ContainsKey("audio_volume") ? data["audio_volume"].AsSingle() : 1.0,
             // Carried through so GameLoop._current_map_key can key the fork's map marker.
             ["after_order"] = data.ContainsKey("after_order") ? data["after_order"].AsInt32() : 0,
+            // The setting this fork is staged in: its backdrop and its music. Ids only — the media
+            // belongs to the journey's settings library, which the screen looks up for itself.
+            ["setting"] = data.ContainsKey("setting") ? data["setting"].AsString() : "",
+            ["setting_bg"] = data.ContainsKey("setting_bg") ? data["setting_bg"].AsString() : "",
             ["paths"] = paths,
         };
     }

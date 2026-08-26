@@ -80,6 +80,7 @@ func _animate_in() -> void:
 # GameState.CurrentShop() and carries the journey-authored shop config:
 # title, mode ("pool"/"fixed"), count, items[], price_multiplier.
 func setup(shop_data: Dictionary) -> void:
+	SettingBackdrop.attach(self, _backdrop, shop_data)
 	var title: String = shop_data.get("title", "")
 	if title != "":
 		_title.text = "// %s //" % title.to_upper()

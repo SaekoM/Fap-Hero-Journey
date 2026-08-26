@@ -1122,6 +1122,9 @@ const PLACEMENT_BUILTINS: Dictionary = {
 	"center": {"name": "Center", "x": 0.30, "y": 0.10, "w": 0.40, "h": 0.76},
 	"right": {"name": "Right", "x": 0.60, "y": 0.10, "w": 0.40, "h": 0.76},
 }
+# Matches the storyboard line BGM default, so a setting's music arrives at the level authors already
+# expect from the field it replaces.
+const DEFAULT_BGM_VOLUME: float = 0.6
 const PLACEMENT_MIN_SIZE: float = 0.05  # a box can't be smaller than this fraction, so it stays grabbable
 
 
@@ -1319,6 +1322,318 @@ static func resolve_placement(id: String, placements: Array) -> Dictionary:
 		}
 	var b: Dictionary = PLACEMENT_BUILTINS["center"]
 	return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
+
+
+# ── Settings (reusable backdrop + score for a place) ────────────────────────
+# A journey-level named place: its backgrounds (variants, exactly as a character has expressions) and
+# the music that belongs to it. Storyboards, shops, checkpoints and forks reference one by id, so the
+# same tavern art and tavern theme are authored once and changed in one place.
+#
+# The music is the part that earns its keep at runtime: because a setting is an IDENTITY, consecutive
+# lines sharing one resolve to the same clip and the track is left alone instead of being restarted per
+# line (see resolved_bgm and SettingMusic).
+
+
+static func new_setting_id() -> String:
+	return "set_%08x%08x" % [randi(), randi()]
+
+
+static func new_background_id() -> String:
+	return "bgd_%08x%08x" % [randi(), randi()]
+
+
+static func coerce_backgrounds(list: Array) -> Array:
+	var out: Array = []
+	for b: Variant in list:
+		if b is Dictionary:
+			(
+				out
+				. append(
+					{
+						"Id": str((b as Dictionary).get("id", "")),
+						"Name": str((b as Dictionary).get("name", "")),
+						"Path": str((b as Dictionary).get("path", "")),
+						"Fit": str((b as Dictionary).get("image_fit", "")),
+						"FocusX": float((b as Dictionary).get("focus_x", 0.5)),
+						"FocusY": float((b as Dictionary).get("focus_y", 0.5)),
+						"Zoom": float((b as Dictionary).get("zoom", 1.0)),
+					}
+				)
+			)
+	return out
+
+
+static func parse_backgrounds(raw: Array) -> Array:
+	var out: Array = []
+	for b: Variant in raw:
+		if not (b is Dictionary):
+			continue
+		var d: Dictionary = b
+		var id: String = str(d.get("Id", "")).strip_edges()
+		if id == "":
+			id = new_background_id()  # heal a blank id so the background stays referenceable
+		(
+			out
+			. append(
+				{
+					"id": id,
+					"name": str(d.get("Name", "")),
+					"path": str(d.get("Path", "")),
+					# How the art fills its frame, and — for a crop — where in the image the frame sits.
+					# Blank fit keeps whatever framing the surface always used; a centred focus at zoom
+					# 1.0 is exactly the engine's own crop, so an untouched background costs nothing.
+					"image_fit": str(d.get("Fit", "")),
+					"focus_x": _focus_from(d, "FocusX", "Align", ["left"], ["right"]),
+					"focus_y": _focus_from(d, "FocusY", "Align", ["top"], ["bottom"]),
+					"zoom": maxf(float(d.get("Zoom", 1.0)), 1.0),
+				}
+			)
+		)
+	return out
+
+
+# One axis of the focal point, migrating the retired Align presets when the numeric field is absent.
+# A journey authored against top/bottom/left/right keeps the framing it was given — the presets were
+# always particular focal points, so this is a change of vocabulary rather than of meaning.
+static func _focus_from(
+	raw: Dictionary, key: String, legacy_key: String, at_zero: Array, at_one: Array
+) -> float:
+	if raw.has(key):
+		return clampf(float(raw[key]), 0.0, 1.0)
+	var legacy: String = str(raw.get(legacy_key, ""))
+	if legacy in at_zero:
+		return 0.0
+	if legacy in at_one:
+		return 1.0
+	return 0.5
+
+
+static func coerce_journey_setting(src: Dictionary) -> Dictionary:
+	return {
+		"Id": str(src.get("id", "")),
+		"Name": str(src.get("name", "")),
+		"Backgrounds": coerce_backgrounds(src.get("backgrounds", [])),
+		"Bgm": str(src.get("bgm", "")),
+		"BgmVolume": float(src.get("bgm_volume", DEFAULT_BGM_VOLUME)),
+	}
+
+
+static func coerce_journey_settings(list: Array) -> Array:
+	var out: Array = []
+	for c: Variant in list:
+		if c is Dictionary:
+			out.append(coerce_journey_setting(c))
+	return out
+
+
+static func parse_journey_setting(raw: Dictionary) -> Dictionary:
+	var id: String = str(raw.get("Id", "")).strip_edges()
+	if id == "":
+		id = new_setting_id()
+	return {
+		"id": id,
+		"name": str(raw.get("Name", "")),
+		"backgrounds": parse_backgrounds(raw.get("Backgrounds", [])),
+		"bgm": str(raw.get("Bgm", "")),
+		"bgm_volume": float(raw.get("BgmVolume", DEFAULT_BGM_VOLUME)),
+	}
+
+
+static func parse_journey_settings(raw: Array) -> Array:
+	var out: Array = []
+	for r: Variant in raw:
+		if r is Dictionary:
+			out.append(parse_journey_setting(r))
+	return out
+
+
+# The setting a reference names, or {} when it names nothing or something deleted. A stale reference
+# resolves to nothing rather than to the wrong place: silently falling back to whichever setting sat at
+# index 0 would dress a scene in another scene's clothes with nothing on screen to explain it.
+static func setting_by_id(settings: Array, id: String) -> Dictionary:
+	if id == "":
+		return {}
+	for c: Variant in settings:
+		if c is Dictionary and str((c as Dictionary).get("id", "")) == id:
+			return c
+	return {}
+
+
+# The background a reference names, falling back to the setting's FIRST. Unlike a stale setting, a
+# stale background variant still has a right answer — the place is known, only the variant is not, and
+# showing the default beats showing nothing.
+static func setting_background(setting: Dictionary, background_id: String) -> Dictionary:
+	var list: Array = setting.get("backgrounds", [])
+	if list.is_empty():
+		return {}
+	if background_id != "":
+		for b: Variant in list:
+			if b is Dictionary and str((b as Dictionary).get("id", "")) == background_id:
+				return b
+	return list[0]
+
+
+# ── Resolving a scene's backdrop and score ──────────────────────────────────
+# Both follow ONE rule: the most specific source that has an answer wins. For a storyboard that reads
+# line → node → journey; a shop, checkpoint or fork has no lines, so it is node → journey.
+#
+# `line` may be an empty dictionary for the node-level surfaces, which is why every lookup below is
+# written to tolerate one.
+
+
+# The image a scene should show, or "" for none. An explicit image beats a setting at the SAME level:
+# it is the more specific statement of intent, and it is also what every storyboard authored before
+# settings existed carries — so nothing already made changes behaviour when a setting is added above it.
+static func resolved_background(settings: Array, node: Dictionary, line: Dictionary = {}) -> String:
+	var line_image: String = str(line.get("image", ""))
+	if line_image != "":
+		return line_image
+	var from_line: String = _setting_background_path(settings, line)
+	if from_line != "":
+		return from_line
+	var node_image: String = str(node.get("image", ""))
+	if node_image != "":
+		return node_image
+	return _setting_background_path(settings, node)
+
+
+# The music a scene should play as {clip, volume}, or {} for silence. Precedence is line BGM, then the
+# setting in force, then the journey's own score — most specific wins, so a storyboard line that
+# already carried its own music keeps overriding everything above it exactly as it used to.
+#
+# `journey_bgm` is the journey-level playlist (an Array of clips); a single clip is accepted too, since
+# that is what a hand-edited journey.json is most likely to hold.
+static func resolved_bgm(
+	settings: Array,
+	node: Dictionary,
+	line: Dictionary = {},
+	journey_bgm: Variant = [],
+	journey_volume: float = DEFAULT_BGM_VOLUME
+) -> Dictionary:
+	# Most specific first, and within a level an explicit clip beats a setting's. The NODE's own bgm sits
+	# above the node's setting for the same reason a node's own image does — and because every storyboard
+	# authored before settings existed carries one, so adding a setting above it changes nothing.
+	for holder: Dictionary in [line, node]:
+		var own: String = str(holder.get("bgm", ""))
+		if own != "":
+			return {
+				"clip": own,
+				"volume": float(holder.get("bgm_volume", DEFAULT_BGM_VOLUME)),
+				"playlist": [own],
+			}
+		var setting: Dictionary = setting_by_id(settings, str(holder.get("setting", "")))
+		var clip: String = str(setting.get("bgm", ""))
+		if clip != "":
+			return {
+				"clip": clip,
+				"volume": float(setting.get("bgm_volume", DEFAULT_BGM_VOLUME)),
+				"playlist": [clip],
+			}
+	var tracks: Array = journey_bgm if journey_bgm is Array else [str(journey_bgm)]
+	var cleaned: Array = []
+	for t: Variant in tracks:
+		if str(t) != "":
+			cleaned.append(str(t))
+	if cleaned.is_empty():
+		return {}
+	# The journey score is a SHUFFLED SET rather than one clip, so its identity is the whole list: any
+	# track of it playing means the right music is already on, and it must not restart per node.
+	return {"clip": "", "volume": journey_volume, "playlist": cleaned}
+
+
+# The background path a node or line's setting reference resolves to, or "" when it names nothing.
+static func _setting_background_path(settings: Array, holder: Dictionary) -> String:
+	return str(_setting_background(settings, holder).get("path", ""))
+
+
+# The background dictionary a reference resolves to, or {} — the framing fields ride along with the
+# path, so a caller that can honour them does not have to look the setting up a second time.
+static func _setting_background(settings: Array, holder: Dictionary) -> Dictionary:
+	var setting: Dictionary = setting_by_id(settings, str(holder.get("setting", "")))
+	if setting.is_empty():
+		return {}
+	return setting_background(setting, str(holder.get("setting_bg", "")))
+
+
+# What a scene should show, WITH its framing: {path, image_fit, align}. Same precedence as
+# resolved_background — which stays, because most callers only want the path.
+#
+# An explicit line or node image carries no framing of its own, so it resolves with blank fit/align and
+# each surface keeps the framing it has always used for its own image.
+static func resolved_background_view(
+	settings: Array, node: Dictionary, line: Dictionary = {}
+) -> Dictionary:
+	var line_image: String = str(line.get("image", ""))
+	if line_image != "":
+		return _plain_view(line_image)
+	var from_line: Dictionary = _setting_background(settings, line)
+	if str(from_line.get("path", "")) != "":
+		return _background_view(from_line)
+	var node_image: String = str(node.get("image", ""))
+	if node_image != "":
+		return _plain_view(node_image)
+	var from_node: Dictionary = _setting_background(settings, node)
+	if str(from_node.get("path", "")) != "":
+		return _background_view(from_node)
+	return _plain_view("")
+
+
+# A node or line's own image: no framing of its own, so every surface keeps its historical default.
+static func _plain_view(path: String) -> Dictionary:
+	return {"path": path, "image_fit": "", "focus_x": 0.5, "focus_y": 0.5, "zoom": 1.0}
+
+
+static func _background_view(background: Dictionary) -> Dictionary:
+	return {
+		"path": str(background.get("path", "")),
+		"image_fit": str(background.get("image_fit", "")),
+		"focus_x": float(background.get("focus_x", 0.5)),
+		"focus_y": float(background.get("focus_y", 0.5)),
+		"zoom": float(background.get("zoom", 1.0)),
+	}
+
+
+# Every media path the settings library references. Used by the pre-save check that a background's
+# source is still where the author left it.
+static func settings_media_sources(settings: Array) -> Array:
+	var out: Array = []
+	for c: Variant in settings:
+		if not (c is Dictionary):
+			continue
+		var setting: Dictionary = c
+		for b: Variant in setting.get("backgrounds", []):
+			if b is Dictionary:
+				var path: String = str((b as Dictionary).get("path", ""))
+				if path != "" and not out.has(path):
+					out.append(path)
+		var bgm: String = str(setting.get("bgm", ""))
+		if bgm != "" and not out.has(bgm):
+			out.append(bgm)
+	return out
+
+
+# How many places in the graph point at `setting_id` — nodes and storyboard LINES both count, because
+# both are a place the author chose and both break the same way if the setting goes.
+#
+# Pure, over the builder's live graph model, so the delete confirmation, the row badge and the audit all
+# read one implementation and can never disagree about whether a setting is in use.
+static func setting_reference_count(nodes: Dictionary, setting_id: String) -> int:
+	if setting_id == "":
+		return 0
+	var total: int = 0
+	for id: Variant in nodes:
+		var node: Variant = nodes[id]
+		if not (node is Dictionary):
+			continue
+		var data: Variant = (node as Dictionary).get("data", {})
+		if not (data is Dictionary):
+			continue
+		if str((data as Dictionary).get("setting", "")) == setting_id:
+			total += 1
+		for line: Variant in (data as Dictionary).get("lines", []):
+			if line is Dictionary and str((line as Dictionary).get("setting", "")) == setting_id:
+				total += 1
+	return total
 
 
 # ── Stage (a line's list of on-stage characters) ────────────────────────────
@@ -1537,10 +1852,22 @@ static func new_item(type: String) -> Dictionary:
 				"node_id": new_node_id()
 			}
 		"shop":
-			return {"type": "shop", "title": "", "node_id": new_node_id()}
+			return {
+				"type": "shop",
+				"title": "",
+				"setting": "",
+				"setting_bg": "",
+				"node_id": new_node_id()
+			}
 		"checkpoint":
 			# A save point between rounds — no media, no gameplay. `name` labels its banner.
-			return {"type": "checkpoint", "name": "", "node_id": new_node_id()}
+			return {
+				"type": "checkpoint",
+				"name": "",
+				"setting": "",
+				"setting_bg": "",
+				"node_id": new_node_id()
+			}
 		"loop_start":
 			# The top marker of a Loop pair — a no-media passthrough that names where the replayed stretch
 			# begins. Its paired Loop End jumps back here (loop_end.loop_to = this node's id).
@@ -1565,6 +1892,9 @@ static func new_item(type: String) -> Dictionary:
 				"coins": 0,
 				"item": "",
 				"image": "",
+				# The scene's default place. A line may name its own; see resolved_background.
+				"setting": "",
+				"setting_bg": "",
 				"lines": [],
 				"node_id": new_node_id()
 			}
@@ -1582,6 +1912,8 @@ static func new_item(type: String) -> Dictionary:
 				"node_id": new_node_id(),
 				"title": "",
 				"description": "",
+				"setting": "",
+				"setting_bg": "",
 				"resolution": "choice",
 				"cond_metric": "score",
 				"default_path": 0,
@@ -1684,6 +2016,8 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 						"coins": sb.get("coins", 0),
 						"item": sb.get("item", ""),
 						"image": sb.get("image", ""),
+						"setting": sb.get("setting", ""),
+						"setting_bg": sb.get("setting_bg", ""),
 						"lines": sb.get("lines", []),
 						"node_id": sb.get("node_id", ""),
 					},
@@ -1755,6 +2089,10 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"redirects": journey.get("redirects", {}),
 		"items": items,
 		"characters": journey.get("characters", []),
+		"settings": journey.get("settings", []),
+		# The journey's own score, under every non-playable node that does not override it.
+		"bgm": journey.get("bgm", []),
+		"bgm_volume": float(journey.get("bgm_volume", DEFAULT_BGM_VOLUME)),
 	}
 
 
@@ -1763,6 +2101,8 @@ static func _build_shop_item(sh: Dictionary) -> Dictionary:
 	return {
 		"type": "shop",
 		"title": sh.get("title", ""),
+		"setting": sh.get("setting", ""),
+		"setting_bg": sh.get("setting_bg", ""),
 		"mode": sh.get("mode", "pool"),
 		"count": int(sh.get("count", 3)),
 		"items": (sh.get("items", []) as Array).duplicate(),
@@ -1793,6 +2133,8 @@ static func _build_fork_item(f: Dictionary) -> Dictionary:
 		"type": "fork",
 		"title": f.get("title", ""),
 		"description": f.get("description", ""),
+		"setting": f.get("setting", ""),
+		"setting_bg": f.get("setting_bg", ""),
 		"resolution": str(f.get("resolution", "choice")),
 		"cond_metric": str(f.get("cond_metric", "score")),
 		"default_path": int(f.get("default_path", 0)),
@@ -1839,6 +2181,8 @@ static func _build_path_items(p: Dictionary) -> Array:
 						"coins": psb.get("coins", 0),
 						"item": psb.get("item", ""),
 						"image": psb.get("image", ""),
+						"setting": psb.get("setting", ""),
+						"setting_bg": psb.get("setting_bg", ""),
 						"lines": psb.get("lines", []),
 						"node_id": psb.get("node_id", ""),
 					},

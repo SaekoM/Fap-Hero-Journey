@@ -627,6 +627,25 @@ func _record_trail_node() -> void:
 	GameState.set_meta("_route_trail", trail)
 
 
+# The score under a non-playable node — a shop, a fork, a checkpoint. Storyboards do this per LINE from
+# inside their own screen, because a line can change the place mid-scene.
+#
+# Safe to call on every such node: SettingMusic answers a request that matches what is already playing
+# by doing nothing, so walking storyboard → shop → storyboard on one setting is one unbroken track.
+func _apply_scene_music(node: Dictionary) -> void:
+	var wanted: Dictionary = JourneyData.resolved_bgm(
+		GameState.Journey.get("settings", []),
+		node,
+		{},
+		GameState.Journey.get("bgm", []),
+		float(GameState.Journey.get("bgm_volume", 0.6))
+	)
+	if wanted.is_empty():
+		SettingMusic.stop()
+		return
+	SettingMusic.play_playlist(wanted.get("playlist", []), float(wanted.get("volume", 0.6)))
+
+
 func _show_storyboard_screen(sb_data: Dictionary) -> void:
 	_is_overlay_open = true
 	_video.paused = true
@@ -679,6 +698,7 @@ func _on_storyboard_completed(coins: int) -> void:
 
 
 func _show_shop_screen(shop_data: Dictionary) -> void:
+	_apply_scene_music(shop_data)
 	_is_overlay_open = true
 	_video.paused = true
 	FunscriptPlayer.Pause()
@@ -714,6 +734,7 @@ func _on_shop_closed() -> void:
 
 
 func _show_fork_screen(fork_data: Dictionary) -> void:
+	_apply_scene_music(fork_data)
 	_is_overlay_open = true
 	_video.paused = true
 	FunscriptPlayer.Pause()
@@ -946,6 +967,10 @@ func _apply_round_label(round: Dictionary) -> void:
 # Loads the round's scripts + video and starts playback. For boss rounds this
 # runs after the intro card's BEGIN; for normal rounds, immediately.
 func _begin_round(round: Dictionary, cover: Control = null) -> void:
+	# The round's own audio owns the space from here. PAUSED rather than stopped, so the journey's score
+	# picks up mid-phrase at the next non-playable node instead of restarting its track every time a
+	# round happens to sit between two scenes.
+	SettingMusic.pause()
 	_round_ended_guard = false  # a fresh round can end once again
 	_cancel_override()  # cut any override still playing from the previous round (cut-at-round-end)
 	_clip_fade_started = false  # a fresh round can run its own tail-of-clip fade once again
@@ -1274,6 +1299,7 @@ func _skip_failed_round() -> void:
 # player who closes the window instead keeps the same resume point. Dispatched from _load_current_item.
 func _show_checkpoint_gate() -> void:
 	var data: Dictionary = GameState.CurrentItem().get("data", {})
+	_apply_scene_music(data)
 	_is_overlay_open = true  # suppress gameplay hotkeys while the banner is up
 	_halt_playback_for_gate()  # freeze any leftover playback so the score can't tick
 
@@ -1281,6 +1307,8 @@ func _show_checkpoint_gate() -> void:
 		"◆  CHECKPOINT REACHED  ◆", UITheme.AMBER, Vector2i(620, 320), 1.0  # opaque — sits over the video
 	)
 	var modal: Control = parts["modal"]
+	# Behind the modal's own dim, which attach drops to a scrim when there is art worth seeing.
+	SettingBackdrop.attach(modal, modal.get_child(0), data)
 	var vbox: VBoxContainer = parts["vbox"]
 	vbox.add_theme_constant_override("separation", 18)
 
@@ -4719,6 +4747,9 @@ func _set_muffle_fx_enabled(master: int, on: bool) -> void:
 # The Master bus is global — strip our effects when the run scene goes away so
 # the menu (or the next run) starts clean. Mirrors SensoryFX's bus hygiene.
 func _exit_tree() -> void:
+	# The journey's score is an autoload and would otherwise follow the player out to the menu, playing
+	# under music that belongs to a different owner. It ends with the run that authored it.
+	SettingMusic.stop()
 	# Input.mouse_mode is global and survives scene changes, so always hand the
 	# cursor back visible when the run scene goes away (menu / end screen / builder),
 	# no matter which exit path got us here.

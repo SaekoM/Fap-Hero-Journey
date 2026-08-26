@@ -1,5 +1,104 @@
 # Changelog
 
+## v0.8.3
+
+Places, and the music that belongs to them. A **setting** is a backdrop and a score defined once and
+used everywhere, and a journey can now carry a score of its own underneath everything that isn't a
+round.
+
+### ◆ Settings — a place, defined once
+
+A **setting** is somewhere the story happens: its backgrounds, and the music that plays while it is
+there. Define The Tavern once and every scene set there points at it, instead of the same image being
+dragged in forty times and the same track attached to forty nodes.
+
+Its **backgrounds are named variants** — "Day", "Night", "After the fire" — chosen per scene, exactly
+the way a character's portraits are expressions. The first is the default, so a setting with one
+background needs no choosing at all.
+
+**Storyboards, shops, checkpoints and forks** can each name a setting. A storyboard names one for the
+whole scene and **any line may switch to another**, which is how a scene moves the story somewhere
+else halfway through.
+
+On a shop, fork or checkpoint the background sits behind that screen's existing layout. Those screens
+dim heavily by design — a fork was all but opaque — because a paused video frame behind them must not
+read as part of the interface. A setting's art does that covering job itself, so where one exists the
+dim drops to a scrim: enough that the text stays legible over arbitrary art, little enough that the art
+was worth authoring. Arranging each screen's UI *around* its backdrop comes later.
+
+Change the tavern's art once and every scene set there follows. That, rather than saved disk space, is
+the point: identical images already deduplicated on save.
+
+### ◆ Music that doesn't restart
+
+The reason a setting is an *identity* and not just a folder of assets: **consecutive scenes on the same
+setting keep the same track playing.** Line to line, node to node, storyboard into shop and out the
+other side — the music is asked for constantly and only ever changes when the answer changes.
+
+Music also **crossfades** when it does change, rather than cutting.
+
+### ◆ A score for the whole journey
+
+A journey can carry its own **music**: several tracks, shuffled, playing under storyboards, shops,
+checkpoints and forks — everything that isn't a round.
+
+It **pauses when a round starts and picks up where it left off**, so the round's own audio owns the
+space without the journey's score restarting its track every time a round happens to sit between two
+scenes.
+
+Anything more specific overrides it: a setting's music, or a storyboard's own. The order throughout is
+**the most specific thing that has an answer wins** — a line, then its setting, then the node, then the
+node's setting, then the journey. An explicit image or track always beats a setting at the same level,
+which is what lets a setting be added above an existing scene without changing what that scene shows or
+plays.
+
+### ◆ Voiced lines
+
+A storyboard line's audio can now **lower the music while it plays** — whichever music that is, the
+journey's, the setting's or the storyboard's own. The score steps back as the line begins and comes
+straight back when it ends.
+
+Off by default, and deliberately so: a thud or a gunshot should land **on** the music, not instead of
+it. It is for speech, where a score at any reasonable level competes with a voice — and where the only
+alternative was turning the whole setting's music down for every line in the scene.
+
+### 🧰 For creators (builder)
+
+- **SETTINGS** and **JOURNEY MUSIC** sit in the journey panel beside the cast. A setting opens into its
+  own editor: name, backgrounds, and its music with a **▶ TEST** button.
+- Every surface that can carry a setting gets the same picker, with **(none)** always available so a
+  node can opt out entirely and keep whatever image it already had.
+- The **background picker only appears when a setting has more than one variant** — choosing between one
+  thing is not a decision worth showing.
+- A setting **deleted while still referenced** is reported by the audit rather than silently falling back
+  to some other place. So is a setting referenced but carrying no background image. Both warn rather
+  than block: deleting a setting shouldn't make a journey unsaveable, it should tell you what pointed at
+  it.
+- Setting backgrounds and music **pool and package** like any other journey media, animated backgrounds
+  included.
+- **Deleting a setting that scenes point at asks first**, and names how many. Those references break
+  silently — the scenes keep playing, just without the backdrop and music they were written around —
+  and the editor has no undo. Deleting an unused one stays instant.
+- Each setting shows **how many places use it**, so a grown library says what is safe to tidy away.
+- Saving **names a setting nothing uses**, and one whose background file has moved since it was dropped
+  in. Both are notes on a successful save rather than refusals: the journey plays either way.
+- **The whole stage dissolves** when a storyboard line moves the story somewhere else — backdrop and
+  cast together, over the same span the music crossfades. Only when the place actually changes; an
+  ordinary line swapping an expression stays instant.
+- The setting editor is **full-screen, built around the art**. A backdrop's framing cannot be judged
+  from a thumbnail, so the preview takes the room: the selected variant is drawn at 16:9, the setting's
+  name and music sit above it (they belong to the place, not to one variant), and the variant list and
+  its own options sit beside it.
+- **Backgrounds carry their own framing**: Crop, Fit or Stretch — and a crop is **framed by hand**.
+  Drag the preview to move the picture inside its frame, scroll to zoom in. The framing is stored as a
+  focal point rather than an offset, so it means the same thing in the 16:9 editor and on whatever
+  window the player has; an offset tuned against one would be wrong on the other. Zoom stops at the
+  size that exactly fills the frame — below that a crop stops covering, which is what Fit is for.
+- The cast's position editor can **preview against a setting and any of its variants**, so a portrait is
+  framed against the room it will stand in — and against the right time of day, which is usually why a
+  second variant exists. It can also **show only the selected position**: a character with six positions
+  stacks into an unreadable pile, and while dragging, one box is the only one that matters.
+
 ## v0.8.2
 
 The crackling is gone — properly this time, in the video decoder itself rather than around it. Alongside
