@@ -745,6 +745,8 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			_fill_default(out, "items", [])
 			_fill_default(out, "guaranteed", [])
 			_fill_default(out, "excluded", [])
+			out["layout"] = normalize_layout_slots(data.get("layout", {}))
+			_carry_scene_override(out, data)
 		"storyboard":
 			# image + lines are overwritten by _save_storyboard_node_media.
 			out["coins"] = int(data.get("coins", 0))
@@ -763,9 +765,15 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["after_order"] = int(data.get("after_order", 0))
 			# Which counter a "counter" conditional fork gates on (blank for other metrics).
 			out["cond_counter"] = str(data.get("cond_counter", ""))
+			# Any arrangement of its choices onto the setting's backdrop.
+			out["layout"] = normalize_layout_slots(data.get("layout", {}))
+			_carry_scene_override(out, data)
 		"checkpoint":
-			# A save point between rounds — its only field is the banner label.
+			# A save point between rounds — its banner label, and any arrangement of its controls onto
+			# the setting's backdrop.
 			out["name"] = str(data.get("name", ""))
+			out["layout"] = normalize_layout_slots(data.get("layout", {}))
+			_carry_scene_override(out, data)
 			# Dropped on the way out, so a journey authored before checkpoints auto-saved stops carrying
 			# it after its first re-save. It rewarded pressing CONTINUE instead of taking the break, and
 			# there is no longer a break to skip: reaching the checkpoint saves either way.
@@ -779,6 +787,31 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 	else:
 		out["set_counters"] = counters
 	return out
+
+
+# A node's own backdrop and music, overriding whatever its setting would have supplied. Kept for the
+# three surfaces that have no other way to say "just this once": a storyboard already has both fields,
+# and a round's picture is its video.
+#
+# The media paths themselves are replaced by pooled rels during the save; this only decides which keys
+# survive. Absent rather than blank when unset, so an untouched node's JSON does not grow four fields
+# saying nothing.
+static func _carry_scene_override(out: Dictionary, data: Dictionary) -> void:
+	var image: String = str(data.get("image", ""))
+	if image != "":
+		out["image"] = image
+		out["image_fit"] = str(data.get("image_fit", ""))
+	else:
+		out.erase("image")
+		out.erase("image_fit")
+
+	var bgm: String = str(data.get("bgm", ""))
+	if bgm != "":
+		out["bgm"] = bgm
+		out["bgm_volume"] = clampf(float(data.get("bgm_volume", DEFAULT_BGM_VOLUME)), 0.0, 1.0)
+	else:
+		out.erase("bgm")
+		out.erase("bgm_volume")
 
 
 # Sets out[key] = default only when key is absent. Used for collection fields whose present
@@ -1125,6 +1158,9 @@ const PLACEMENT_BUILTINS: Dictionary = {
 # Matches the storyboard line BGM default, so a setting's music arrives at the level authors already
 # expect from the field it replaces.
 const DEFAULT_BGM_VOLUME: float = 0.6
+# A placed element can never be smaller than this fraction of the image, so it stays grabbable in the
+# editor and clickable in play. Mirrors PLACEMENT_MIN_SIZE's reasoning for cast boxes.
+const LAYOUT_SLOT_MIN: float = 0.04
 const PLACEMENT_MIN_SIZE: float = 0.05  # a box can't be smaller than this fraction, so it stays grabbable
 
 
@@ -1473,6 +1509,139 @@ static func setting_background(setting: Dictionary, background_id: String) -> Di
 	return list[0]
 
 
+# ── Node layouts (UI arranged onto a setting's backdrop) ────────────────────
+# A node may place its own controls ON its background instead of using the screen's default
+# arrangement: a checkpoint's SAVE and CONTINUE onto a campfire and a doorway, a fork's choices onto
+# painted doors, a shop's slots onto a shelf.
+#
+# Every rect is in the IMAGE's own 0-1 coordinates, NOT the screen's. A background carries crop framing
+# and zoom, so the art shifts and rescales under a fixed screen position on a differently shaped window
+# — a hotspot stored against the screen would drift off the thing it was placed on. JourneyImage owns
+# the conversion both ways (image_to_screen / screen_to_image).
+#
+# `backing` draws a soft plate under the element. On by default: a label at whatever colour over an
+# arbitrary painting is unreadable often enough that the safe answer should be the one nobody has to
+# think about, and art with its own contrast can switch it off.
+
+# A slot the author never moved. Centred and modest, so an un-arranged element is visible and obviously
+# unplaced rather than hidden in a corner.
+const LAYOUT_SLOT_DEFAULT: Dictionary = {"x": 0.35, "y": 0.42, "w": 0.30, "h": 0.16}
+
+
+# Clamps a layout to what the editor and the runtime can both use, and drops anything malformed.
+#
+# ONE function for save and load, and the shape is unchanged by either — node data is stored in
+# snake_case on disk (`setting`, `image`, `lines`), unlike the journey-level PascalCase blocks, so a
+# layout needs no translation in between. Idempotent, so running it twice costs nothing and a
+# hand-edited journey.json is repaired rather than trusted.
+static func normalize_layout_slots(slots: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (slots is Dictionary):
+		return out
+	for key: Variant in slots as Dictionary:
+		var slot: Variant = (slots as Dictionary)[key]
+		if not (slot is Dictionary):
+			continue
+		var d: Dictionary = slot
+		(
+			out
+			. set(
+				str(key),
+				{
+					# Positions may sit slightly outside the art (an element half off the edge is a
+					# legitimate look); sizes may not be smaller than a thing you can hit.
+					"x": clampf(float(d.get("x", LAYOUT_SLOT_DEFAULT["x"])), -1.0, 2.0),
+					"y": clampf(float(d.get("y", LAYOUT_SLOT_DEFAULT["y"])), -1.0, 2.0),
+					"w": clampf(float(d.get("w", LAYOUT_SLOT_DEFAULT["w"])), LAYOUT_SLOT_MIN, 2.0),
+					"h": clampf(float(d.get("h", LAYOUT_SLOT_DEFAULT["h"])), LAYOUT_SLOT_MIN, 2.0),
+					"backing": bool(d.get("backing", true)),
+					# Whether this element's words are drawn at all. Off makes it a pure hotspot over
+					# the art — a door painted in the picture is already labelled, and a caption over it
+					# says twice what the art says. The NAME is kept either way, because the builder,
+					# the graph and the audit all still need something to call this choice.
+					"show_label": bool(d.get("show_label", true)),
+					# A shop slot may name the item that belongs in it — the sword on the wall hook.
+					# Blank means the slot takes whatever the shop drew, which is how every slot behaved
+					# before pinning existed.
+					"item": str(d.get("item", "")),
+					# Hex, or "" for the element's own accent. Stored as text rather than a Color so a
+					# layout stays plain JSON and an unset colour is genuinely absent — a Color has no
+					# "unset", and (0,0,0,0) would read as a deliberate transparent black.
+					"plate": _hex_or_blank(d.get("plate", "")),
+					"outline": _hex_or_blank(d.get("outline", "")),
+					"text": _hex_or_blank(d.get("text", "")),
+				}
+			)
+		)
+	return out
+
+
+static func _hex_or_blank(value: Variant) -> String:
+	var text: String = str(value).strip_edges()
+	return text if Color.html_is_valid(text) else ""
+
+
+# One of a slot's colours, or `fallback` when the author left it alone. The fallback is the element's
+# own accent, so an untouched arrangement looks exactly as it did before colours existed.
+static func slot_color(slot: Dictionary, key: String, fallback: Color) -> Color:
+	var text: String = str(slot.get(key, "")).strip_edges()
+	return Color.html(text) if Color.html_is_valid(text) else fallback
+
+
+# Which item goes in each shop slot this visit, as an array of `slots` ids ("" for an empty slot).
+#
+# PINNED slots are honoured first: an author who put the sword on the wall hook means it, and letting a
+# random draw take that spot first would make the arrangement decorative rather than meaningful.
+# Everything else fills the unpinned slots in the order the shop drew it.
+#
+# A pinned item the shop did not draw this visit leaves its slot EMPTY rather than borrowing another
+# item's spot. The hook was for the sword; putting a health potion there because the sword did not come
+# up is a different shop from the one that was arranged.
+static func assign_shop_slots(node: Dictionary, offered: Array, slots: int) -> Array:
+	var assigned: Array = []
+	assigned.resize(slots)
+	assigned.fill("")
+
+	var taken: Dictionary = {}
+	for i: int in slots:
+		var wanted: String = str(layout_slot(node, "slot_%d" % i).get("item", ""))
+		if wanted == "" or not offered.has(wanted) or taken.has(wanted):
+			continue
+		assigned[i] = wanted
+		taken[wanted] = true
+
+	var spare: Array = []
+	for id: Variant in offered:
+		if not taken.has(str(id)):
+			spare.append(str(id))
+	var next: int = 0
+	for i: int in slots:
+		if assigned[i] != "" or str(layout_slot(node, "slot_%d" % i).get("item", "")) != "":
+			continue  # filled, or reserved for an item that did not come up
+		if next >= spare.size():
+			break
+		assigned[i] = spare[next]
+		next += 1
+	return assigned
+
+
+# The slot a node placed for `key`, or {} when it placed none. An empty answer is the signal to use the
+# screen's own default arrangement, which is what every node authored before layouts has.
+static func layout_slot(node: Dictionary, key: String) -> Dictionary:
+	var layout: Variant = node.get("layout", {})
+	if not (layout is Dictionary):
+		return {}
+	var slot: Variant = (layout as Dictionary).get(key, {})
+	return slot if slot is Dictionary else {}
+
+
+# True when this node has any arrangement of its own at all — cheaper than asking per element, and the
+# thing a screen checks before it abandons its default layout.
+static func has_layout(node: Dictionary) -> bool:
+	var layout: Variant = node.get("layout", {})
+	return layout is Dictionary and not (layout as Dictionary).is_empty()
+
+
 # ── Resolving a scene's backdrop and score ──────────────────────────────────
 # Both follow ONE rule: the most specific source that has an answer wins. For a storyboard that reads
 # line → node → journey; a shop, checkpoint or fork has no lines, so it is node → journey.
@@ -1565,20 +1734,32 @@ static func resolved_background_view(
 ) -> Dictionary:
 	var line_image: String = str(line.get("image", ""))
 	if line_image != "":
-		return _plain_view(line_image)
+		return _own_image_view(line)
 	var from_line: Dictionary = _setting_background(settings, line)
 	if str(from_line.get("path", "")) != "":
 		return _background_view(from_line)
 	var node_image: String = str(node.get("image", ""))
 	if node_image != "":
-		return _plain_view(node_image)
+		return _own_image_view(node)
 	var from_node: Dictionary = _setting_background(settings, node)
 	if str(from_node.get("path", "")) != "":
 		return _background_view(from_node)
 	return _plain_view("")
 
 
-# A node or line's own image: no framing of its own, so every surface keeps its historical default.
+# A node or line's OWN image. It may name a fit — a shop or checkpoint backdrop does — and a blank one
+# leaves the surface on the framing it has always used, which is what every storyboard has.
+static func _own_image_view(holder: Dictionary) -> Dictionary:
+	return {
+		"path": str(holder.get("image", "")),
+		"image_fit": str(holder.get("image_fit", "")),
+		"focus_x": 0.5,
+		"focus_y": 0.5,
+		"zoom": 1.0,
+	}
+
+
+# Nothing to show.
 static func _plain_view(path: String) -> Dictionary:
 	return {"path": path, "image_fit": "", "focus_x": 0.5, "focus_y": 0.5, "zoom": 1.0}
 
@@ -1777,6 +1958,32 @@ static func counter_deltas_to_text(deltas: Dictionary) -> String:
 # `count` (count can never trim a guaranteed item). Stale ids are dropped.
 # Returned in registry order so guaranteed items aren't visually distinguishable
 # from drawn ones. `rng` is injectable for deterministic tests (null = global).
+# The most items this shop can ever put in front of a player, which is how many slots an arrangement
+# needs. A fixed shop offers exactly its list; a pool shop draws `count`, and its guaranteed items are
+# part of that draw rather than extra.
+static func shop_offer_size(shop_data: Dictionary, all_ids: Array) -> int:
+	if str(shop_data.get("mode", "pool")) == "fixed":
+		return shop_fixed_ids(shop_data, all_ids).size()
+	return maxi(int(shop_data.get("count", 3)), shop_guaranteed_ids(shop_data, all_ids).size())
+
+
+# Every item this shop COULD put out, in a stable order — what an author may pin a slot to.
+#
+# Not resolve_shop_offer: that one draws a random sample, so a dropdown built from it would list
+# different items every time the panel was rebuilt and an author's pin would refer to something no
+# longer on offer. The candidate set is the question being asked here, not one night's stock.
+static func shop_stock_candidates(shop_data: Dictionary, all_ids: Array) -> Array:
+	if str(shop_data.get("mode", "pool")) == "fixed":
+		return shop_fixed_ids(shop_data, all_ids)
+	var guaranteed: Array = shop_guaranteed_ids(shop_data, all_ids)
+	var excluded: Array = shop_data.get("excluded", [])
+	var candidates: Array = guaranteed.duplicate()
+	for id: Variant in all_ids:
+		if not candidates.has(str(id)) and not excluded.has(str(id)):
+			candidates.append(str(id))
+	return candidates
+
+
 static func resolve_shop_offer(
 	shop_data: Dictionary, all_ids: Array, rng: RandomNumberGenerator = null
 ) -> Array:
@@ -1866,6 +2073,9 @@ static func new_item(type: String) -> Dictionary:
 				"name": "",
 				"setting": "",
 				"setting_bg": "",
+				# Empty = the card's own arrangement. Filled once an author places SAVE / CONTINUE on
+				# the setting's backdrop.
+				"layout": {},
 				"node_id": new_node_id()
 			}
 		"loop_start":
@@ -2103,6 +2313,11 @@ static func _build_shop_item(sh: Dictionary) -> Dictionary:
 		"title": sh.get("title", ""),
 		"setting": sh.get("setting", ""),
 		"setting_bg": sh.get("setting_bg", ""),
+		"layout": sh.get("layout", {}),
+		"image": sh.get("image", ""),
+		"image_fit": sh.get("image_fit", ""),
+		"bgm": sh.get("bgm", ""),
+		"bgm_volume": sh.get("bgm_volume", DEFAULT_BGM_VOLUME),
 		"mode": sh.get("mode", "pool"),
 		"count": int(sh.get("count", 3)),
 		"items": (sh.get("items", []) as Array).duplicate(),
@@ -2135,6 +2350,10 @@ static func _build_fork_item(f: Dictionary) -> Dictionary:
 		"description": f.get("description", ""),
 		"setting": f.get("setting", ""),
 		"setting_bg": f.get("setting_bg", ""),
+		"image": f.get("image", ""),
+		"image_fit": f.get("image_fit", ""),
+		"bgm": f.get("bgm", ""),
+		"bgm_volume": f.get("bgm_volume", DEFAULT_BGM_VOLUME),
 		"resolution": str(f.get("resolution", "choice")),
 		"cond_metric": str(f.get("cond_metric", "score")),
 		"default_path": int(f.get("default_path", 0)),

@@ -58,6 +58,8 @@ const CAUSE_SETTING_UNUSED: String = "setting_unused"
 # Issues raised by the last presave pass that did NOT block it — reported once the save succeeds.
 var _pending_save_warnings: Array = []
 const CAUSE_SETTING_MEDIA_MISSING: String = "setting_media_missing"
+const CAUSE_SHOP_SLOTS_SHORT: String = "shop_slots_short"
+const CAUSE_LAYOUT_STALE: String = "layout_stale"
 
 const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
@@ -351,6 +353,8 @@ func _compute_node_warnings() -> Dictionary:
 				_check_dead_flag_paths(n, known_flags, issues)
 		# Any node type can carry a setting, so this sits outside the match.
 		_save_check_settings(n, _node_audit_label(n), issues)
+		_save_check_shop_layout(n, _node_audit_label(n), issues)
+		_save_check_stale_layout(n, _node_audit_label(n), issues)
 		if not issues.is_empty():
 			var details: Array = []
 			for it: Dictionary in issues:
@@ -4749,6 +4753,16 @@ func _check_animated_images() -> bool:
 				var p: String = str((por as Dictionary).get("path", ""))
 				if p != "" and MediaPoolService.is_animated_source(p):
 					sources.append(p)
+	# A node's own backdrop override, which the graph scan does not see — it looks for the fields a
+	# round or storyboard uses, and these three carry theirs under different circumstances.
+	for id: String in _graph_model.get("nodes", {}) as Dictionary:
+		var node: Dictionary = (_graph_model["nodes"] as Dictionary)[id]
+		if str(node.get("type", "")) not in ["shop", "fork", "checkpoint"]:
+			continue
+		var own: String = str((node.get("data", {}) as Dictionary).get("image", ""))
+		if own != "" and MediaPoolService.is_animated_source(own):
+			sources.append(own)
+
 	# A setting's backgrounds are journey-level too, and an animated one needs the same bake.
 	for c: Variant in _journey_settings:
 		if c is Dictionary:
@@ -5168,8 +5182,13 @@ func _pool_graph_nodes(paths: Dictionary, modal: Control, skip_ids: Dictionary =
 					saved_data.erase("audio")
 					saved_data.erase("audio_loop")
 					saved_data.erase("audio_volume")
+				saved_data = await _save_scene_override_media(
+					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
+				)
 			"shop", "checkpoint":
-				pass  # no media
+				saved_data = await _save_scene_override_media(
+					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
+				)
 
 		# A non-video copy (funscript / axis / vib / boss / image) failed somewhere above.
 		if _save_aborted:
@@ -5515,6 +5534,34 @@ func _pool_video_into(
 # rewriting saved_data's image fields to journey-root-relative paths. Filenames are keyed by
 # the node id so two storyboards can't collide. Sync (small files); a copy failure sets
 # _save_aborted, surfaced by the caller's checkpoint.
+# Pools a node's own backdrop and music — the per-node override of whatever its setting supplies.
+# Shared by shops, forks and checkpoints, which all say it the same way.
+func _save_scene_override_media(
+	saved_data: Dictionary,
+	data_in: Dictionary,
+	abs_dir: String,
+	abs_media_dir: String,
+	node_id: String,
+	copied_images: Dictionary,
+	modal: Control
+) -> Dictionary:
+	var image_src: String = str(data_in.get("image", ""))
+	if image_src != "":
+		saved_data["image"] = await _store_journey_image(
+			image_src,
+			abs_dir,
+			abs_media_dir,
+			"scene_%s" % node_id,
+			copied_images,
+			JourneyData.ANIM_CAP_STORYBOARD,
+			modal
+		)
+	var bgm_rel: String = _pool_small_file(str(data_in.get("bgm", "")), abs_dir)
+	if bgm_rel != "":
+		saved_data["bgm"] = bgm_rel
+	return saved_data
+
+
 func _save_storyboard_node_media(
 	saved_data: Dictionary,
 	data_in: Dictionary,
@@ -7215,6 +7262,178 @@ func _save_check_pool_source(path: String, kind: String, elabel: String, issues:
 # unsaveable, it should tell you what referenced it.
 func _node_audit_label(node: Dictionary) -> String:
 	return str(node.get("type", "Node")).capitalize()
+
+
+# A shop arranged with fewer slots than it can offer. The stock beyond the last slot is simply never
+# shown — an author decided how many things fit on their shelf, and this reports what that costs rather
+# than second-guessing it.
+#
+# Warns rather than blocks: the shop works, it is just smaller than its configuration suggests, and the
+# fix might be either number.
+# Built-in items plus this journey's live custom ones — the same set the side panel offers, and for the
+# same reason it uses GetBuiltinItemIds rather than GetAllItemIds: a test play leaves this journey's
+# items in InventoryService, and counting both would double them.
+func _all_known_item_ids() -> Array:
+	var ids: Array = []
+	for id: String in InventoryService.GetBuiltinItemIds():
+		ids.append(str(id))
+	for item: Dictionary in _journey_items:
+		ids.append(str(item.get("id", "")))
+	return ids
+
+
+# Slots left behind by an edit elsewhere: a fork arranged with four choices that now has two, or a shop
+# slot pinned to an item the journey no longer has.
+#
+# Harmless at runtime — nothing reads a slot with no element — but invisible, and the placed-count on
+# the ARRANGE button counts them, so the node reports more arranged than it draws. Warns rather than
+# blocks, and never deletes: the choice may be coming back, and an arrangement is work.
+func _save_check_stale_layout(node: Dictionary, ctx: String, issues: Array) -> void:
+	var data: Dictionary = node.get("data", {})
+	if not JourneyData.has_layout(data):
+		return
+
+	var live: Dictionary = {}
+	for key: String in _layout_keys_for(node):
+		live[key] = true
+
+	var stale: Array = []
+	for key: Variant in data.get("layout", {}) as Dictionary:
+		if not live.has(str(key)):
+			stale.append(str(key))
+
+	var orphaned: Array = _orphaned_pins(data)
+	var duplicates: Array = _duplicate_pins(data)
+	if stale.is_empty() and orphaned.is_empty() and duplicates.is_empty():
+		return
+
+	var detail: String = ""
+	if not stale.is_empty():
+		detail = (
+			"%d placed element%s no longer exist%s (%s)."
+			% [
+				stale.size(),
+				"" if stale.size() == 1 else "s",
+				"s" if stale.size() == 1 else "",
+				", ".join(stale),
+			]
+		)
+	if not orphaned.is_empty():
+		if detail != "":
+			detail += " "
+		detail += (
+			"%d slot%s pinned to an item this journey no longer has."
+			% [orphaned.size(), "" if orphaned.size() == 1 else "s"]
+		)
+	if not duplicates.is_empty():
+		if detail != "":
+			detail += " "
+		detail += (
+			"%s pinned to an item another slot already claims — only the first is filled."
+			% ("A slot is" if duplicates.size() == 1 else "%d slots are" % duplicates.size())
+		)
+
+	(
+		issues
+		. append(
+			{
+				"cause": CAUSE_LAYOUT_STALE,
+				"item": ctx,
+				"detail": detail,
+				"hint": "Open ARRANGE and remove them, or leave them for when the element returns.",
+				"warn_only": true,
+			}
+		)
+	)
+
+
+# The element keys a node can currently place.
+#
+# This MIRRORS the element lists in BuilderSidePanel (_checkpoint_layout_elements,
+# _fork_layout_elements, _shop_layout_elements) rather than sharing them: those build labelled
+# dictionaries with art and pinning data for the editor to draw, and only the keys matter here. The two
+# must be changed together — a key added there and not here would be reported as stale the moment it
+# was placed, which is a worse failure than the clutter this catches.
+func _layout_keys_for(node: Dictionary) -> Array:
+	var data: Dictionary = node.get("data", {})
+	match str(node.get("type", "")):
+		"checkpoint":
+			return ["name", "save", "continue"]
+		"fork":
+			var keys: Array = ["title", "description"]
+			for i: int in (node.get("out", []) as Array).size():
+				keys.append("choice_%d" % i)
+			return keys
+		"shop":
+			var shop_keys: Array = ["title", "coins", "leave"]
+			for i: int in JourneyData.shop_offer_size(data, _all_known_item_ids()):
+				shop_keys.append("slot_%d" % i)
+			return shop_keys
+	return []
+
+
+# Slots pinned to an item another slot already claims. One item cannot be in two places, so the second
+# stays empty — which looks like a bug rather than a duplicate pin unless someone says so.
+func _duplicate_pins(data: Dictionary) -> Array:
+	var seen: Dictionary = {}
+	var duplicates: Array = []
+	var layout: Dictionary = data.get("layout", {})
+	# Sorted so the same slots are reported run after run. NOT the runtime's order — that walks slot
+	# indices, and a string sort puts slot_10 before slot_2 — but this only decides which of a duplicate
+	# PAIR gets named, and the pair is the thing worth reporting either way.
+	var keys: Array = layout.keys()
+	keys.sort()
+	for key: Variant in keys:
+		var pinned: String = str((layout[key] as Dictionary).get("item", ""))
+		if pinned == "":
+			continue
+		if seen.has(pinned):
+			duplicates.append(str(key))
+		seen[pinned] = true
+	return duplicates
+
+
+# Shop slots reserved for an item the journey has since dropped. The slot still works — it simply takes
+# whatever the shop drew — but it is not doing what its author asked, and nothing on screen says so.
+func _orphaned_pins(data: Dictionary) -> Array:
+	var known: Array = _all_known_item_ids()
+	var orphaned: Array = []
+	for key: Variant in data.get("layout", {}) as Dictionary:
+		var pinned: String = str(
+			((data["layout"] as Dictionary)[key] as Dictionary).get("item", "")
+		)
+		if pinned != "" and not known.has(pinned):
+			orphaned.append(str(key))
+	return orphaned
+
+
+func _save_check_shop_layout(node: Dictionary, ctx: String, issues: Array) -> void:
+	var data: Dictionary = node.get("data", {})
+	if str(node.get("type", "")) != "shop" or not JourneyData.has_layout(data):
+		return
+	var offer: int = JourneyData.shop_offer_size(data, _all_known_item_ids())
+	var slots: int = 0
+	for i: int in offer:
+		if not JourneyData.layout_slot(data, "slot_%d" % i).is_empty():
+			slots += 1
+	if slots >= offer:
+		return
+	(
+		issues
+		. append(
+			{
+				"cause": CAUSE_SHOP_SLOTS_SHORT,
+				"item": ctx,
+				"detail":
+				(
+					"Can offer %d item%s but only %d slot%s were placed — the rest never appear."
+					% [offer, "" if offer == 1 else "s", slots, "" if slots == 1 else "s"]
+				),
+				"hint": "Place more slots, or lower the shop's item count.",
+				"warn_only": true,
+			}
+		)
+	)
 
 
 func _save_check_settings(node: Dictionary, ctx: String, issues: Array) -> void:

@@ -148,6 +148,55 @@ func _apply_crop_align() -> void:
 	_rect.position = -overflow * focus
 
 
+# Where the picture is ACTUALLY drawn inside this control, in screen pixels.
+#
+# Not the same as the control's own rect for any fit but "stretch": a crop draws bigger than the frame
+# and hangs over the edges, a letterboxed fit draws smaller and sits inside it. Anything that wants to
+# place something ON the picture — a hotspot over a campfire, a shop slot on a shelf — has to ask this
+# rather than assume the two are the same, or it lands on the frame instead of the art.
+func drawn_rect() -> Rect2:
+	if _rect == null or _rect.texture == null:
+		return Rect2(Vector2.ZERO, size)
+	if _manual_crop:
+		return Rect2(_rect.position, _rect.size)  # already sized and placed by _layout_crop
+
+	var tex: Vector2 = _rect.texture.get_size()
+	if tex.x <= 0.0 or tex.y <= 0.0 or size.x <= 0.0 or size.y <= 0.0:
+		return Rect2(Vector2.ZERO, size)
+
+	# The engine's own modes, reproduced: covered takes the larger ratio and overflows, centered takes
+	# the smaller and insets, and both centre what they draw.
+	var ratio: float = 0.0
+	match _rect.stretch_mode:
+		TextureRect.STRETCH_KEEP_ASPECT_COVERED:
+			ratio = maxf(size.x / tex.x, size.y / tex.y)
+		TextureRect.STRETCH_KEEP_ASPECT_CENTERED, TextureRect.STRETCH_KEEP_ASPECT:
+			ratio = minf(size.x / tex.x, size.y / tex.y)
+		_:
+			return Rect2(Vector2.ZERO, size)  # STRETCH_SCALE fills the frame exactly
+	var drawn: Vector2 = tex * ratio
+	return Rect2((size - drawn) * 0.5, drawn)
+
+
+# Converts a rect given in the IMAGE's own 0-1 coordinates into screen pixels within this control.
+#
+# Placements are stored against the image rather than the screen so they ride with the art: a crop
+# framed differently on an ultrawide window moves the picture under a fixed screen position, and a
+# hotspot placed on a campfire would end up on the grass beside it.
+func image_to_screen(area: Rect2) -> Rect2:
+	var drawn: Rect2 = drawn_rect()
+	return Rect2(drawn.position + area.position * drawn.size, area.size * drawn.size)
+
+
+# The inverse: a screen-space point back into the image's own coordinates, for an editor turning a drag
+# into something storable. Outside the drawn art this reads beyond 0-1, which the caller clamps.
+func screen_to_image(point: Vector2) -> Vector2:
+	var drawn: Rect2 = drawn_rect()
+	if drawn.size.x <= 0.0 or drawn.size.y <= 0.0:
+		return Vector2.ZERO
+	return (point - drawn.position) / drawn.size
+
+
 # Sizes the rect and reports how much of it hangs outside the frame, or (-1, -1) when there is nothing
 # to lay out yet. Shared so a caller dragging the image can convert pixels into focus without
 # re-deriving the scale.

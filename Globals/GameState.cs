@@ -380,6 +380,14 @@ public partial class GameState : Node
             // belongs to the journey's settings library, which the screen looks up for itself.
             ["setting"] = data.ContainsKey("setting") ? data["setting"].AsString() : "",
             ["setting_bg"] = data.ContainsKey("setting_bg") ? data["setting_bg"].AsString() : "",
+            // Where the author put this fork's choices on that backdrop. Carried through wholesale —
+            // the screen reads the slots, this only has to not drop them.
+            ["layout"] = data.ContainsKey("layout") ? data["layout"] : new Dictionary(),
+            // This fork's OWN backdrop and music, when it overrides the setting's.
+            ["image"] = data.ContainsKey("image") ? data["image"].AsString() : "",
+            ["image_fit"] = data.ContainsKey("image_fit") ? data["image_fit"].AsString() : "",
+            ["bgm"] = data.ContainsKey("bgm") ? data["bgm"].AsString() : "",
+            ["bgm_volume"] = data.ContainsKey("bgm_volume") ? data["bgm_volume"].AsSingle() : 0.6f,
             ["paths"] = paths,
         };
     }

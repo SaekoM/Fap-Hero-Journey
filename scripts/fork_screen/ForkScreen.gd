@@ -45,7 +45,7 @@ func _ready() -> void:
 
 
 func setup(fork_data: Dictionary) -> void:
-	SettingBackdrop.attach(self, _backdrop, fork_data)
+	var backdrop: JourneyImage = SettingBackdrop.attach(self, _backdrop, fork_data)
 	var title: String = fork_data.get("title", "")
 	if title != "":
 		_fork_title.text = title.to_upper()
@@ -76,6 +76,11 @@ func setup(fork_data: Dictionary) -> void:
 		if auto_advance_secs > 0:
 			_start_countdown()
 
+	# Arranged forks put their choices on the picture instead of in cards. LAST, so every path is built
+	# and _is_selectable can answer for each — a choice the player cannot afford is placed and disabled
+	# rather than missing, which is the same thing its card does.
+	_apply_fork_layout(fork_data, backdrop)
+
 	# Optional audio accent — plays over the BGM the moment the fork opens.
 	var audio_path: String = str(fork_data.get("audio", ""))
 	if audio_path != "":
@@ -86,6 +91,54 @@ func setup(fork_data: Dictionary) -> void:
 			var vol: float = float(fork_data.get("audio_volume", 1.0))
 			_audio.volume_db = linear_to_db(vol) if vol > 0.0 else -80.0
 			_audio.play()
+
+
+# Places this fork's choices onto its backdrop, when the author arranged them.
+#
+# Only for a fork the PLAYER resolves. A random or conditional one plays a reveal on timers with
+# nothing to click, so arranging it would hide the cards that reveal is performed on.
+func _apply_fork_layout(fork_data: Dictionary, backdrop: JourneyImage) -> void:
+	if _is_auto_resolved() or backdrop == null:
+		return
+
+	var elements: Array = []
+	var title: String = str(fork_data.get("title", "")).strip_edges()
+	if title != "":
+		elements.append({"key": "title", "label": title.to_upper(), "optional": true, "run": null})
+	var desc: String = str(fork_data.get("description", "")).strip_edges()
+	if desc != "":
+		elements.append({"key": "description", "label": desc, "optional": true, "run": null})
+
+	for i: int in _paths.size():
+		var path_data: Dictionary = _paths[i]
+		var name: String = str(path_data.get("name", "")).strip_edges()
+		var index: int = i
+		(
+			elements
+			. append(
+				{
+					"key": "choice_%d" % i,
+					"label": name if name != "" else "Path %d" % (i + 1),
+					"sub": str(path_data.get("description", "")).strip_edges(),
+					"image": str(path_data.get("image_path", "")),
+					"image_fit": str(path_data.get("image_fit", "")),
+					"accent": UITheme.MAGENTA,
+					# Bound rather than captured: `i` is the loop's own variable and every lambda would
+					# otherwise share its final value, sending each door to the last branch.
+					"run":
+					Callable(self, "_on_path_chosen").bind(index) if _is_selectable(i) else null,
+					"tooltip": _conditional_req_text(i, path_data),
+				}
+			)
+		)
+
+	if NodeLayout.apply(backdrop, fork_data, elements).is_empty():
+		return
+	# The cards live in a VBoxContainer rather than a panel, so the shared hide has nothing to find —
+	# the fork hides its own. The map button and countdown are children of this screen, not of the box,
+	# so both survive.
+	_center_box.visible = false
+	NodeLayout.hide_card(self)
 
 
 func _make_card(index: int, path_data: Dictionary) -> Control:

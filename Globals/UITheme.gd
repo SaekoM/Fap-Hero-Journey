@@ -246,6 +246,66 @@ func make_audio_test_button(
 	return button
 
 
+# The look of one control placed on a background — a checkpoint's SAVE on a campfire, a fork choice on
+# a door. ONE function so the builder's arrangement preview and the thing a player clicks cannot drift
+# apart: an author arranging against a different appearance than the game draws is the whole class of
+# bug this feature is most exposed to.
+#
+# `backing` on gives it a plate, for a label that has to survive an arbitrary painting behind it. Off
+# still gets an outline and a shadowed label, because "no plate" should mean the art shows through, not
+# that the control becomes invisible over a bright patch.
+func layout_hotspot_style(
+	plate: Color, outline: Color, backing: bool, hovered: bool
+) -> StyleBoxFlat:
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	if backing:
+		# The plate is darkened from whatever colour it was given: a control sits UNDER its own label,
+		# and a fully saturated fill behind white text is where these stop being readable.
+		style.bg_color = Color(
+			plate.r * 0.22, plate.g * 0.22, plate.b * 0.22, 0.88 if hovered else 0.78
+		)
+	else:
+		style.bg_color = Color(0, 0, 0, 0.22 if hovered else 0.0)
+	style.border_color = outline if hovered else Color(outline.r, outline.g, outline.b, 0.72)
+	style.set_border_width_all(3 if hovered else 2)
+	style.set_corner_radius_all(CORNER_RADIUS)
+	style.set_content_margin_all(6)
+	return style
+
+
+# Dresses a Button as a placed control, hover state included. The label keeps an outline whether or not
+# there is a plate — over a photograph, a coloured word on its own is unreadable often enough that the
+# outline costs nothing worth saving.
+func style_layout_hotspot(
+	button: Button, plate: Color, outline: Color, text: Color, backing: bool
+) -> void:
+	button.add_theme_stylebox_override(
+		"normal", layout_hotspot_style(plate, outline, backing, false)
+	)
+	button.add_theme_stylebox_override("hover", layout_hotspot_style(plate, outline, backing, true))
+	button.add_theme_stylebox_override(
+		"pressed", layout_hotspot_style(plate, outline, backing, true)
+	)
+	button.add_theme_stylebox_override("focus", layout_hotspot_style(plate, outline, backing, true))
+	# A placed control that cannot be pressed — an unaffordable shop slot, a choice the player has not
+	# earned — had no disabled style of its own and fell back to the theme's, which looks identical to
+	# the normal one. It read as a button that simply ignored clicks and never lit on hover.
+	var dulled: StyleBoxFlat = layout_hotspot_style(
+		Color(plate.r * 0.5, plate.g * 0.5, plate.b * 0.5, plate.a),
+		outline.darkened(0.45),
+		backing,
+		false
+	)
+	dulled.set_border_width_all(1)
+	button.add_theme_stylebox_override("disabled", dulled)
+	button.add_theme_color_override("font_disabled_color", Color(text.r, text.g, text.b, 0.45))
+	button.add_theme_color_override("font_color", text)
+	button.add_theme_color_override("font_hover_color", text.lightened(0.25))
+	button.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	button.add_theme_constant_override("outline_size", 4)
+	button.add_theme_font_size_override("font_size", 14)
+
+
 func make_icon_btn(icon: String, disabled: bool, accent: Color) -> Button:
 	var btn: Button = Button.new()
 	btn.text = icon

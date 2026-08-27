@@ -163,6 +163,13 @@ static func classify_asset(role: String) -> String:
 	return "free" if role in FREE_ROLES else "paid"
 
 
+# A node's own backdrop and music, when it overrides its setting's. Shared by the three surfaces that
+# can carry one.
+static func _note_scene_override(roles: Dictionary, data: Dictionary) -> void:
+	_note(roles, str(data.get("image", "")), ROLE_IMAGE)
+	_note(roles, str(data.get("bgm", "")), ROLE_AUDIO)
+
+
 # Walks journey.json — every node's media plus the journey-level Items/Characters art — into a deduped
 # [{rel, role, pack}] list. Roles come from the REFERENCE (video_path → scene, boss_image → image, …),
 # so the free/paid line is drawn by intent, not by file type. When one pooled file is referenced under
@@ -187,6 +194,11 @@ static func enumerate_assets(journey_data: Dictionary, cover_rel: String = "") -
 				for edge: Variant in node.get("out", []):
 					if edge is Dictionary:
 						_note(roles, str((edge as Dictionary).get("image_path", "")), ROLE_IMAGE)
+				_note_scene_override(roles, data)
+			"shop", "checkpoint":
+				# Neither carried media until per-node backdrops existed, which is why neither had a
+				# case here at all — an export would have shipped the journey without them.
+				_note_scene_override(roles, data)
 
 	for item: Variant in journey_data.get("Items", []):
 		if item is Dictionary:

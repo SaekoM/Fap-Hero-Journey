@@ -1,6 +1,14 @@
 extends Control
 
 signal closed
+
+# Set when the author arranged this shop onto its backdrop: the cards and footer are hidden and the
+# stock lives in placed slots instead, which have to be kept up to date by hand.
+var _arranged: bool = false
+var _slot_controls: Dictionary = {}
+# Which item ended up in each slot this visit — pinned assignments resolved against what the shop
+# actually drew. Index-aligned with the slot keys.
+var _slot_items: Array = []
 signal map_requested  # player tapped the header "◇ MAP" button (GameLoop owns the map)
 
 @onready var _backdrop: ColorRect = $Backdrop
@@ -80,7 +88,7 @@ func _animate_in() -> void:
 # GameState.CurrentShop() and carries the journey-authored shop config:
 # title, mode ("pool"/"fixed"), count, items[], price_multiplier.
 func setup(shop_data: Dictionary) -> void:
-	SettingBackdrop.attach(self, _backdrop, shop_data)
+	var backdrop: JourneyImage = SettingBackdrop.attach(self, _backdrop, shop_data)
 	var title: String = shop_data.get("title", "")
 	if title != "":
 		_title.text = "// %s //" % title.to_upper()
@@ -100,8 +108,130 @@ func setup(shop_data: Dictionary) -> void:
 		_animate_card_in(card, min(stagger, 12) * 0.04)
 		stagger += 1
 
+	# An arranged shop puts its stock on the shelf instead of in a row of cards. LAST, so the offer is
+	# resolved and every price is known.
+	_apply_shop_layout(shop_data, backdrop)
+
 	if auto_advance_secs > 0:
 		_start_countdown()
+
+
+# Places this shop's stock onto its backdrop, when the author arranged it.
+#
+# The slots are FIXED — the author placed a shelf with room for so many things. An offer with more
+# items than slots leaves the extras unsold, which is why the builder warns about it: a shop is
+# generous or it is not, and one that quietly withholds stock is neither.
+func _apply_shop_layout(shop_data: Dictionary, backdrop: JourneyImage) -> void:
+	if backdrop == null:
+		return
+
+	var elements: Array = []
+	var title: String = str(shop_data.get("title", "")).strip_edges()
+	if title != "":
+		elements.append(
+			{"key": "title", "label": "// %s //" % title.to_upper(), "optional": true, "run": null}
+		)
+	# The purse is optional on an arranged shop: a painted till may already say it, and an author who
+	# wants the number puts it somewhere.
+	elements.append({"key": "coins", "label": _coin_lbl.text, "optional": true, "run": null})
+
+	# Which item sits in which slot — pinned ones first, then the rest of the draw in order.
+	_slot_items = JourneyData.assign_shop_slots(
+		shop_data, _offered_ids, JourneyData.shop_offer_size(shop_data, _offered_ids)
+	)
+	for i: int in _slot_items.size():
+		var element: Dictionary = _slot_element(i, str(_slot_items[i]))
+		if element.is_empty():
+			continue
+		elements.append(element)
+
+	# Leaving is not optional. An arranged shop hides its footer, and a shop with no way out is a trap
+	# — so if the author placed no exit, one appears at the fallback position rather than not at all.
+	elements.append(
+		{
+			"key": "leave",
+			"label": _continue.text,
+			"accent": UITheme.PURPLE_BRIGHT,
+			"run": func() -> void: closed.emit(),
+		}
+	)
+
+	_slot_controls = NodeLayout.apply(backdrop, shop_data, elements)
+	if _slot_controls.is_empty():
+		return
+	_arranged = true
+	# The stock lives on the picture now, so the panel would only be over it.
+	_panel.visible = false
+	NodeLayout.hide_card(self)
+
+
+# One shop slot as NodeLayout draws it: the item's art, its name, and what it costs right now. Rebuilt
+# through _refresh_slot whenever that answer changes.
+func _slot_element(index: int, id: String) -> Dictionary:
+	if id == "":
+		return {}  # a slot reserved for an item this visit did not draw
+	var data: Dictionary = InventoryService.GetItemData(id)
+	if data.is_empty():
+		return {}
+	var price: int = _price_of(data)
+	var sub: String = "✓ OWNED"
+	var accent: Color = UITheme.TOXIC_GREEN
+	if not _purchased.get(id, false):
+		var affordable: bool = CoinService.CanAfford(price)
+		sub = "♦ %d" % price if affordable else "✕ ♦ %d" % price
+		accent = UITheme.AMBER if affordable else UITheme.DANGER
+	return {
+		"key": "slot_%d" % index,
+		"label": str(data.get("name", id)),
+		"sub": sub,
+		"image": str(data.get("image", "")),
+		"accent": accent,
+		# An owned or unaffordable slot is placed and inert rather than missing — the same thing its
+		# card does, and the shelf keeps its shape either way.
+		"run":
+		(
+			Callable(self, "_buy_from_slot").bind(index, id)
+			if not _purchased.get(id, false) and CoinService.CanAfford(price)
+			else null
+		),
+	}
+
+
+func _buy_from_slot(index: int, id: String) -> void:
+	if _purchased.get(id, false):
+		return
+	var data: Dictionary = InventoryService.GetItemData(id)
+	if not CoinService.SpendCoins(_price_of(data)):
+		return
+	InventoryService.AddItem(id)
+	_purchased[id] = true
+	_show_purchase_toast(str(data.get("name", id)))
+	_refresh_slots()  # this one is owned now, and everything else may have become unaffordable
+
+
+# Redraws every placed slot against the current purse. A slot whose buyability changed is rebuilt
+# whole: its label, its colour and whether it responds are one answer, not three.
+func _refresh_slots() -> void:
+	if not _arranged:
+		return
+
+	# The coin readout is placed art like everything else, so it does not update itself — the badge it
+	# was copied from lives inside the hidden panel. Without this a shop showed the balance the player
+	# walked in with, however much they spent.
+	if _slot_controls.has("coins"):
+		NodeLayout.refill(
+			_slot_controls["coins"], {"key": "coins", "label": _coin_lbl.text}, UITheme.WHITE_SOFT
+		)
+	for i: int in _slot_items.size():
+		var key: String = "slot_%d" % i
+		if not _slot_controls.has(key):
+			continue  # more stock than the author placed room for
+		var element: Dictionary = _slot_element(i, str(_slot_items[i]))
+		if element.is_empty():
+			continue
+		var control: Button = _slot_controls[key]
+		NodeLayout.refill(control, element, UITheme.WHITE_SOFT)
+		control.disabled = not (element.get("run", null) is Callable)
 
 
 # Fades + scales a freshly-added card in. Waits one frame so the flow container
@@ -316,6 +446,8 @@ func _on_buy_pressed(id: String, buy: Button, card: PanelContainer) -> void:
 func _on_balance_changed(_balance: int) -> void:
 	_refresh_coins()
 	_pulse_coin_badge()
+	# Placed slots price themselves against the purse, so they answer differently now.
+	_refresh_slots()
 	# Re-evaluate every offered card's affordability.
 	for child: Control in _cards_flow.get_children():
 		var buy: Button = child.find_child("*", true, false) as Button

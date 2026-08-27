@@ -75,6 +75,7 @@ var _custom_items_list: VBoxContainer = null
 var _manage_items_btn: Button = null
 var _characters_list: VBoxContainer = null  # same live-container pattern as _custom_items_list
 var _settings_list: VBoxContainer = null  # journey-level reusable places (backgrounds + music)
+var _shown_node_id: String = ""  # the graph node this panel is currently editing
 var _journey_bgm_list: VBoxContainer = null  # the journey-wide score, one row per track
 
 
@@ -1291,6 +1292,289 @@ func _discard_journey_item(item_idx: int, item: Dictionary) -> void:
 			return
 
 
+# What a checkpoint can place on its backdrop. Its whole interface is two choices, which is why it goes
+# first: the editor, the storage format and the image-anchoring maths get proved on the case with no
+# dynamic content to complicate them.
+func _checkpoint_layout_elements(data: Dictionary) -> Array:
+	# The author's label is OPTIONAL but placeable: arranging hides the card it lived on, so without a
+	# spot of its own it would vanish from a checkpoint that had one. The two actions are essential —
+	# a save point you cannot leave is a trap.
+	var label: String = str(data.get("name", "")).strip_edges()
+	return [
+		{
+			"key": "name",
+			"label": label.to_upper() if label != "" else "(checkpoint label)",
+			"optional": true,
+		},
+		{"key": "save", "label": "💾  SAVE & QUIT", "accent": UITheme.AMBER},
+		{"key": "continue", "label": "▶  CONTINUE", "accent": UITheme.PURPLE_BRIGHT},
+	]
+
+
+# What a shop can place on its backdrop: a slot per item it can ever offer, plus its title, the purse
+# and the way out.
+#
+# The slots are how many items this shop CAN show, not how many it happens to draw — a pool shop picks
+# different stock each visit, so an arrangement has to have room for a full draw or some of it has
+# nowhere to go. The preview names them by position because which item lands in slot 1 is decided at
+# play time and no arrangement can know it.
+func _shop_layout_elements(shop_data: Dictionary) -> Array:
+	var title: String = str(shop_data.get("title", "")).strip_edges()
+	var elements: Array = [
+		{
+			"key": "title",
+			"label": "// %s //" % title.to_upper() if title != "" else "(shop title)",
+			"optional": true,
+		},
+		{"key": "coins", "label": "♦ COINS", "optional": true},
+	]
+	# What this shop can actually stock — the pinning dropdown offers these rather than every item in
+	# the journey, since a slot reserved for something the shop never sells is a slot that stays empty.
+	var stock: Array = []
+	for id: String in JourneyData.shop_stock_candidates(shop_data, _all_item_ids()):
+		stock.append({"value": id, "label": _item_display_name(id)})
+
+	var slots: int = JourneyData.shop_offer_size(shop_data, _all_item_ids())
+	for i: int in slots:
+		var pinned: String = str(JourneyData.layout_slot(shop_data, "slot_%d" % i).get("item", ""))
+		(
+			elements
+			. append(
+				{
+					"key": "slot_%d" % i,
+					# A pinned slot shows what it is reserved for; an open one is named by position,
+					# because which item lands there is decided when the shop is visited.
+					"label": _item_display_name(pinned) if pinned != "" else "ITEM %d" % (i + 1),
+					"sub": "♦ price",
+					"items": stock,
+					# What a pin actually means here depends on how this shop stocks itself, so the
+					# editor is told rather than left to guess. The shop itself rather than a copy of
+					# its guaranteed list: the editor can add to that list, and a snapshot would still
+					# be warning about a pin that had just been made safe.
+					"pool_mode": str(shop_data.get("mode", "pool")) != "fixed",
+					"shop_target": shop_data,
+				}
+			)
+		)
+	elements.append({"key": "leave", "label": "▶ CONTINUE"})
+	return elements
+
+
+# What a fork can place on its backdrop: every choice, plus its title and description.
+#
+# Choices are keyed by INDEX, matching how default_path and timeout_path already refer to them — so
+# reordering choices reassigns their positions, exactly as it reassigns those. Title and description are
+# optional; the choices are not, because an arranged fork hides its card and a choice with nowhere to
+# go would be a branch the player cannot reach.
+func _fork_layout_elements(data: Dictionary, out: Array) -> Array:
+	# The author's OWN words and art, not captions naming the fields. Arranging is a judgement about how
+	# a real screen looks, and a box reading "DESCRIPTION" cannot tell anyone whether their sentence
+	# fits over a door. A field left empty falls back to naming itself, so an unwritten title is still
+	# something to position.
+	var title: String = str(data.get("title", "")).strip_edges()
+	var desc: String = str(data.get("description", "")).strip_edges()
+	var elements: Array = [
+		{"key": "title", "label": title.to_upper() if title != "" else "(title)", "optional": true},
+		{"key": "description", "label": desc if desc != "" else "(description)", "optional": true},
+	]
+	for i: int in out.size():
+		var edge: Dictionary = out[i] if out[i] is Dictionary else {}
+		var name: String = str(edge.get("name", "")).strip_edges()
+		(
+			elements
+			. append(
+				{
+					"key": "choice_%d" % i,
+					"label": name if name != "" else "Path %d" % (i + 1),
+					"sub": str(edge.get("description", "")).strip_edges(),
+					"image": str(edge.get("image_path", "")),
+					"image_fit": str(edge.get("image_fit", "")),
+					# The LIVE edge, so the arrangement editor can change how this choice's art is
+					# framed without the author leaving the picture to go and find the field. It is the
+					# same property the choice's card uses — one image, one fit.
+					"fit_target": edge,
+				}
+			)
+		)
+	return elements
+
+
+# Opens the arrangement editor for a node, against whatever backdrop its setting resolves to. The
+# button says what state the node is in, because "arrange" alone does not tell an author whether this
+# node already has a layout or is still using its default card.
+func _make_arrange_button(node: Dictionary, elements_source: Callable) -> Control:
+	var button: Button = Button.new()
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var placed: int = (
+		(node.get("layout", {}) as Dictionary).size()
+		if node.get("layout", null) is Dictionary
+		else 0
+	)
+	button.text = (
+		"⛶ ARRANGE ON BACKGROUND  (%d placed)" % placed if placed > 0 else "⛶ ARRANGE ON BACKGROUND"
+	)
+	UITheme.style_button(button, UITheme.CYAN if placed > 0 else UITheme.PURPLE_MID)
+	button.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Put this node's controls where they belong in the picture — a campfire to save at, a doorway to carry on through. Anything left unplaced keeps its usual position."
+		)
+	)
+	button.pressed.connect(
+		func() -> void:
+			var editor: NodeLayoutEditor = NodeLayoutEditor.new()
+			_owner.add_child(editor)
+			# Asked for HERE, not when the button was built. A shop's slot count follows its item list,
+			# and a fork's choices follow its edges — both can change while this panel is up, and a list
+			# captured at build time showed the arrangement the node had one edit ago.
+			editor.setup(
+				node.get("layout", {}) if node.get("layout", null) is Dictionary else {},
+				elements_source.call(),
+				_builder_background_view(node)
+			)
+			# Re-show THIS node, not whatever the data happens to name. Reading node_id out of the data
+			# gave "" for every graph node, and show_graph_node_editor("") falls through to the journey
+			# panel — so closing the editor looked like it had deselected the node.
+			var showing: String = _shown_node_id
+			editor.done.connect(
+				func(layout: Dictionary) -> void:
+					node["layout"] = layout
+					_owner._refresh_graph()
+					show_graph_node_editor(showing)  # the button's placed-count changed
+			)
+	)
+	return button
+
+
+# The backdrop a node will actually show, resolved against the BUILDER's settings library rather than
+# GameState's — the journey being edited is not the one loaded for play.
+func _builder_background_view(node: Dictionary) -> Dictionary:
+	return JourneyData.resolved_background_view(_owner._journey_settings, node)
+
+
+# This node's OWN backdrop and music, overriding whatever its setting supplies.
+#
+# For the one-off: a single checkpoint in a place that appears nowhere else does not deserve a whole
+# setting minted for it. A setting is still the right answer for anywhere the story returns to, which is
+# why this sits UNDER the picker rather than replacing it.
+#
+# Both are separate overrides, not a pair — a node may take its setting's music and its own picture, or
+# the reverse. The precedence is already the runtime's: a node's own always wins over its setting's.
+func _make_scene_override_section(node: Dictionary) -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	box.add_child(_side_divider_line())
+
+	var header: Label = Label.new()
+	header.text = "JUST THIS NODE  (OPTIONAL)"
+	header.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	header.add_theme_font_size_override("font_size", 10)
+	header.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Overrides the setting above, for this node only. Leave empty to use the setting's backdrop and music."
+		)
+	)
+	box.add_child(header)
+
+	box.add_child(_make_override_image_row(node))
+	box.add_child(_make_override_music_row(node))
+	return box
+
+
+func _make_override_image_row(node: Dictionary) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("BACKGROUND"))
+
+	var zone: PanelContainer = DropZoneScript.new()
+	zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
+	zone.picker_title = "Select Background Image"
+	zone.picker_filters = [
+		"*.png,*.jpg,*.jpeg,*.webp,*.gif,*.apng,*.mp4,*.m4v,*.webm,*.mkv,*.mov ; Background (image or animation)"
+	]
+	zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(zone)
+	if str(node.get("image", "")) != "":
+		# emit:false — set_file fires file_dropped by default, and this is a restore, not a drop.
+		zone.call_deferred("set_file", str(node.get("image", "")), false)
+
+	var fit: Control = _make_image_fit_field(node, "crop")
+	var clear: Button = Button.new()
+	clear.text = "✕ USE THE SETTING'S BACKGROUND"
+	clear.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button_subtle(clear, UITheme.DARK_TEXT, 9, 4, 10)
+
+	var show_fields: Callable = func() -> void:
+		var has_image: bool = str(node.get("image", "")) != ""
+		fit.visible = has_image
+		clear.visible = has_image
+	show_fields.call()
+
+	zone.file_dropped.connect(
+		func(path: String) -> void:
+			node["image"] = path
+			show_fields.call()
+	)
+	clear.pressed.connect(
+		func() -> void:
+			node["image"] = ""
+			zone.set_file("", false)
+			show_fields.call()
+	)
+	col.add_child(fit)
+	col.add_child(clear)
+	return col
+
+
+func _make_override_music_row(node: Dictionary) -> Control:
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.add_child(_side_field_label("MUSIC"))
+
+	var zone: PanelContainer = DropZoneScript.new()
+	zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
+	zone.picker_title = "Select Music"
+	zone.picker_filters = ["*.ogg,*.mp3,*.wav ; Audio Files"]
+	zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(zone)
+	if str(node.get("bgm", "")) != "":
+		zone.call_deferred("set_file", str(node.get("bgm", "")), false)
+
+	var volume: Control = _make_volume_row(
+		col,
+		node,
+		"bgm_volume",
+		JourneyData.DEFAULT_BGM_VOLUME,
+		func() -> String: return str(node.get("bgm", ""))
+	)
+	var clear: Button = Button.new()
+	clear.text = "✕ USE THE SETTING'S MUSIC"
+	clear.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button_subtle(clear, UITheme.DARK_TEXT, 9, 4, 10)
+
+	var show_fields: Callable = func() -> void:
+		var has_clip: bool = str(node.get("bgm", "")) != ""
+		volume.visible = has_clip
+		clear.visible = has_clip
+	show_fields.call()
+
+	zone.file_dropped.connect(
+		func(path: String) -> void:
+			node["bgm"] = path
+			show_fields.call()
+	)
+	clear.pressed.connect(
+		func() -> void:
+			node["bgm"] = ""
+			zone.set_file("", false)
+			show_fields.call()
+	)
+	col.add_child(volume)
+	col.add_child(clear)
+	return col
+
+
 # A setting reference: which place, and which of its backgrounds. Used by every surface that can carry
 # one — a storyboard node, one of its lines, a shop, a checkpoint, a fork.
 #
@@ -1760,161 +2044,25 @@ func _make_character_row(char_idx: int) -> Control:
 	return card
 
 
-# Full editor for one character in a centered modal: name, their POSITIONS (opens the drag/resize
-# preview), and their PORTRAITS (expressions; first = default). Mutates the live dict in place; the
-# body refills on a structural change (add/remove portrait). Closing re-renders the row.
+# Opens the full-screen editor for one character. Replaces the modal that used to hold these fields,
+# and the separate positions editor with it: a portrait and where it stands are one judgement, and
+# splitting them meant choosing an expression, closing, opening positions, and remembering what you had
+# just seen. The editor edits the live character, so closing needs no save step.
 func _open_character_editor_modal(char_idx: int, is_new: bool = false) -> void:
 	if char_idx < 0 or char_idx >= _owner._journey_characters.size():
 		return
 	var chr: Dictionary = _owner._journey_characters[char_idx]
-
-	var portraits: int = (chr.get("portraits", []) as Array).size()
-	var parts: Dictionary = UITheme.build_centered_modal(
-		"CHARACTER",
-		UITheme.PURPLE_BRIGHT,
-		Vector2i(
-			520, clampi(ITEMS_MODAL_CHROME + portraits * ITEMS_MODAL_ROW, 380, ITEMS_MODAL_MAX)
-		)
-	)
-	var modal: Control = parts["modal"]
-	var vbox: VBoxContainer = parts["vbox"]
-	_owner.add_child(modal)
-
-	var scroll: ScrollContainer = ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vbox.add_child(scroll)
-	var body: VBoxContainer = VBoxContainer.new()
-	body.add_theme_constant_override("separation", 4)
-	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(body)
-	_fill_character_editor_body(body, chr)
-
-	var close_btn: Button = Button.new()
-	close_btn.text = "DONE"
-	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
-	close_btn.pressed.connect(func() -> void: _close_character_editor(modal, char_idx, chr, is_new))
-	vbox.add_child(close_btn)
-
-	var backdrop: Control = modal.get_child(0) as Control
-	if backdrop:
-		backdrop.gui_input.connect(
-			func(event: InputEvent) -> void:
-				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
-					_close_character_editor(modal, char_idx, chr, is_new)
-		)
-
-
-func _fill_character_editor_body(body: VBoxContainer, chr: Dictionary) -> void:
-	var rebuild: Callable = func() -> void: _fill_character_editor_body(body, chr)
-	for c: Node in body.get_children():
-		c.queue_free()
-
-	body.add_child(_side_field_label("NAME  (match a line's speaker to light this character)"))
-	var name_edit: LineEdit = LineEdit.new()
-	name_edit.text = str(chr.get("name", ""))
-	name_edit.placeholder_text = "Character name..."
-	UITheme.style_line_edit(name_edit)
-	name_edit.text_changed.connect(func(v: String) -> void: chr["name"] = v)
-	body.add_child(name_edit)
-
-	body.add_child(_side_divider_line())
-	body.add_child(
-		_side_field_label("POSITIONS  (where this character can stand, tuned to their art)")
-	)
-	var pos_btn: Button = Button.new()
-	pos_btn.text = "✎ EDIT POSITIONS ON A PREVIEW"
-	pos_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button(pos_btn, UITheme.PURPLE_MID)
-	pos_btn.pressed.connect(func() -> void: _open_character_placement_editor(chr))
-	body.add_child(pos_btn)
-
-	body.add_child(_side_divider_line())
-	body.add_child(_side_field_label("PORTRAITS  (expressions; first is the default)"))
-	var portraits: Array = chr.get("portraits", [])
-	for i: int in portraits.size():
-		body.add_child(_make_portrait_row(chr, i, rebuild))
-	var add_btn: Button = Button.new()
-	add_btn.text = "＋ ADD PORTRAIT"
-	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
-	add_btn.pressed.connect(
-		func() -> void:
-			(chr["portraits"] as Array).append(
-				{"id": JourneyData.new_portrait_id(), "name": "", "path": ""}
-			)
-			rebuild.call()
-	)
-	body.add_child(add_btn)
-
-
-# One portrait (expression) row: a name, a drop-zone for the image (still or animated), and remove.
-func _make_portrait_row(chr: Dictionary, idx: int, rebuild: Callable) -> Control:
-	var por: Dictionary = (chr["portraits"] as Array)[idx]
-	var panel: PanelContainer = PanelContainer.new()
-	var ps: StyleBoxFlat = StyleBoxFlat.new()
-	ps.bg_color = UITheme.PANEL_BG
-	ps.set_corner_radius_all(UITheme.CORNER_RADIUS)
-	ps.set_content_margin_all(8)
-	panel.add_theme_stylebox_override("panel", ps)
-	var col: VBoxContainer = panel_col(panel)
-
-	var hdr: HBoxContainer = HBoxContainer.new()
-	var tag: Label = Label.new()
-	tag.text = "PORTRAIT %d%s" % [idx + 1, "  ·  DEFAULT" if idx == 0 else ""]
-	tag.add_theme_color_override("font_color", UITheme.STORYBOARD)
-	tag.add_theme_font_size_override("font_size", 10)
-	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hdr.add_child(tag)
-	var rm: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
-	rm.pressed.connect(
-		func() -> void:
-			_delete_saved_image(str((chr["portraits"] as Array)[idx].get("path", "")))
-			(chr["portraits"] as Array).remove_at(idx)
-			rebuild.call()
-	)
-	hdr.add_child(rm)
-	col.add_child(hdr)
-
-	var name_edit: LineEdit = LineEdit.new()
-	name_edit.text = str(por.get("name", ""))
-	name_edit.placeholder_text = "Expression name (e.g. Happy)..."
-	UITheme.style_line_edit(name_edit)
-	name_edit.text_changed.connect(func(v: String) -> void: por["name"] = v)
-	col.add_child(name_edit)
-
-	var zone: PanelContainer = DropZoneScript.new()
-	zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
-	zone.picker_title = "Select Portrait Image"
-	zone.picker_filters = [
-		"*.png,*.jpg,*.jpeg,*.webp,*.gif,*.apng,*.mp4,*.m4v,*.webm,*.mkv,*.mov ; Portrait (image or animation)"
-	]
-	zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.add_child(zone)
-	if str(por.get("path", "")) != "":
-		zone.call_deferred("set_file", str(por.get("path", "")))
-	zone.file_dropped.connect(func(p: String) -> void: por["path"] = p)
-	return panel
-
-
-# Opens the visual placement editor scoped to ONE character — editing THEIR positions against THEIR
-# own portraits, so the boxes are sized to that character's art.
-func _open_character_placement_editor(chr: Dictionary) -> void:
-	var samples: Array = []
-	for por: Variant in chr.get("portraits", []):
-		if por is Dictionary and str((por as Dictionary).get("path", "")) != "":
-			samples.append(str((por as Dictionary).get("path", "")))
-	var editor: PlacementEditor = PlacementEditor.new()
+	var editor: CharacterEditor = CharacterEditor.new()
 	_owner.add_child(editor)
-	editor.setup(chr.get("placements", []), samples, _owner._journey_settings)
-	editor.done.connect(func(placements: Array) -> void: chr["placements"] = placements)
+	# The settings library so the stage can be dressed: a portrait is judged against the room it will
+	# stand in, not against flat grey.
+	editor.setup(chr, _owner._journey_settings)
+	editor.closed.connect(func() -> void: _close_character_editor(char_idx, chr, is_new))
 
 
 # A NEWLY-ADDED character with no name is discarded on close (Add-then-dismiss = silent cancel), same
 # as the item editor. A named character is kept even without portraits — the author clearly meant it.
-func _close_character_editor(modal: Control, char_idx: int, chr: Dictionary, is_new: bool) -> void:
+func _close_character_editor(char_idx: int, chr: Dictionary, is_new: bool) -> void:
 	if is_new and str(chr.get("name", "")).strip_edges() == "":
 		var chars: Array = _owner._journey_characters
 		if char_idx >= 0 and char_idx < chars.size() and is_same(chars[char_idx], chr):
@@ -1924,7 +2072,6 @@ func _close_character_editor(modal: Control, char_idx: int, chr: Dictionary, is_
 				if is_same(chars[i], chr):
 					chars.remove_at(i)
 					break
-	modal.queue_free()
 	_rebuild_characters_list()
 
 
@@ -2717,6 +2864,10 @@ func _make_graph_add_buttons() -> Control:
 # add-node row and tailed with a delete button. Field edits reflect on the canvas on the next
 # refresh (re-selecting a node, or a structural change).
 func show_graph_node_editor(node_id: String) -> void:
+	# Kept so anything opened FROM this panel can bring it back to the same node afterwards. A node's
+	# data does not carry its own id — the graph's dict key is the id, and coerce_node_save_data strips
+	# it — so a modal handed only the data has no way to ask.
+	_shown_node_id = node_id
 	var side_vbox: VBoxContainer = _owner._side_vbox
 	# Leaving the journey-info panel to edit a node exits backdrop-reposition mode, so its drag-catcher
 	# can never linger and block node editing (the toggles only live in the journey-info panel).
@@ -3483,6 +3634,15 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
 	col.add_child(_make_setting_picker(data))
+	# Only an interactive fork is worth arranging: a random or conditional one resolves itself while the
+	# player watches, so there is nothing on it to put anywhere.
+	if str(data.get("resolution", "choice")) in ["choice", "sacrifice"]:
+		col.add_child(
+			_make_arrange_button(data, func() -> Array: return _fork_layout_elements(data, out))
+		)
+	# Outside the branch above: a random fork still has a backdrop and a score, it just has nothing to
+	# arrange on them.
+	col.add_child(_make_scene_override_section(data))
 
 	col.add_child(_side_field_label("TITLE"))
 	var title_edit: LineEdit = LineEdit.new()
@@ -4064,6 +4224,12 @@ func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
 	col.add_child(_make_setting_picker(arr[idx]))
+	col.add_child(
+		_make_arrange_button(
+			arr[idx], func() -> Array: return _checkpoint_layout_elements(arr[idx])
+		)
+	)
+	col.add_child(_make_scene_override_section(arr[idx]))
 
 	var hint: Label = Label.new()
 	hint.text = "A SAVE POINT BETWEEN ROUNDS. PLAYERS REACHING IT CAN SAVE & QUIT TO RESUME FROM HERE LATER, OR CONTINUE. PLACE IT BEFORE A ROUND YOU WANT TO ACT AS A CHECKPOINT."
@@ -4825,6 +4991,9 @@ func _prompt_save_round_template(arr: Array, idx: int, reselect: Callable) -> vo
 func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	var shop_data: Dictionary = arr[idx]
 	var setting_picker: Control = _make_setting_picker(shop_data)
+	var arrange_button: Control = _make_arrange_button(
+		shop_data, func() -> Array: return _shop_layout_elements(shop_data)
+	)
 	# Backfill config defaults so first-time edits have keys to write to.
 	if not shop_data.has("mode"):
 		shop_data["mode"] = "pool"
@@ -4849,6 +5018,8 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 	col.add_theme_constant_override("separation", 6)
 
 	col.add_child(setting_picker)
+	col.add_child(arrange_button)
+	col.add_child(_make_scene_override_section(shop_data))
 	col.add_child(_side_field_label("SHOP TITLE"))
 	var title_edit: LineEdit = LineEdit.new()
 	title_edit.placeholder_text = "Shop title (optional)..."

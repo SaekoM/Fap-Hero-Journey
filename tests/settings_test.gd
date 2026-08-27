@@ -290,6 +290,172 @@ func test_an_empty_id_never_matches_an_unset_node() -> void:
 	assert_int(JourneyData.setting_reference_count(nodes, "")).is_equal(0)
 
 
+# ── Node layouts ─────────────────────────────────────────────────────────────
+
+
+func test_a_layout_slot_is_clamped_to_something_you_can_hit() -> void:
+	var got: Dictionary = JourneyData.normalize_layout_slots(
+		{"save": {"x": 0.2, "y": 0.3, "w": 0.0001, "h": -5.0}}
+	)
+	assert_float(got["save"]["w"]).is_equal_approx(JourneyData.LAYOUT_SLOT_MIN, 0.0001)
+	assert_float(got["save"]["h"]).is_equal_approx(JourneyData.LAYOUT_SLOT_MIN, 0.0001)
+
+
+func test_a_slot_may_sit_partly_outside_the_art() -> void:
+	# Half off the edge is a legitimate look, so positions are not clamped to 0-1 the way sizes are.
+	var got: Dictionary = JourneyData.normalize_layout_slots({"a": {"x": -0.2, "y": 1.1}})
+	assert_float(got["a"]["x"]).is_equal_approx(-0.2, 0.001)
+	assert_float(got["a"]["y"]).is_equal_approx(1.1, 0.001)
+
+
+func test_backing_defaults_on() -> void:
+	# The safe answer for text over an arbitrary painting should be the one nobody has to think about.
+	var got: Dictionary = JourneyData.normalize_layout_slots({"a": {"x": 0.1, "y": 0.1}})
+	assert_bool(got["a"]["backing"]).is_true()
+
+
+func test_normalizing_a_layout_twice_changes_nothing() -> void:
+	# Save and load both run it, so a round trip must not drift a slot a little further each time.
+	var once: Dictionary = JourneyData.normalize_layout_slots(
+		{"a": {"x": 0.25, "y": 0.5, "w": 0.3, "h": 0.2}}
+	)
+	assert_dict(JourneyData.normalize_layout_slots(once)).is_equal(once)
+
+
+func test_malformed_entries_are_dropped_rather_than_trusted() -> void:
+	var got: Dictionary = JourneyData.normalize_layout_slots({"a": "not a slot", "b": {"x": 0.1}})
+	assert_bool(got.has("a")).is_false()
+	assert_bool(got.has("b")).is_true()
+
+
+func test_a_node_without_a_layout_reports_none() -> void:
+	# The signal a screen checks before abandoning its default arrangement.
+	assert_bool(JourneyData.has_layout({})).is_false()
+	assert_bool(JourneyData.has_layout({"layout": {}})).is_false()
+	assert_bool(JourneyData.has_layout({"layout": {"save": {}}})).is_true()
+	assert_dict(JourneyData.layout_slot({"layout": {}}, "save")).is_empty()
+
+
+func test_a_slot_colour_falls_back_when_unset() -> void:
+	# An untouched element follows the theme, so it still looks right if the theme ever moves.
+	var got: Dictionary = JourneyData.normalize_layout_slots({"a": {"x": 0.1, "y": 0.1}})
+	assert_str(got["a"]["plate"]).is_equal("")
+	assert_object(JourneyData.slot_color(got["a"], "plate", Color.RED)).is_equal(Color.RED)
+
+
+func test_a_chosen_slot_colour_round_trips() -> void:
+	var got: Dictionary = JourneyData.normalize_layout_slots(
+		{"a": {"x": 0.1, "y": 0.1, "plate": "#ff8800"}}
+	)
+	assert_object(JourneyData.slot_color(got["a"], "plate", Color.RED)).is_equal(
+		Color.html("#ff8800")
+	)
+
+
+func test_a_malformed_colour_is_dropped_rather_than_stored() -> void:
+	# Better to fall back to the accent than to persist something that will not parse on load.
+	var got: Dictionary = JourneyData.normalize_layout_slots(
+		{"a": {"x": 0.1, "y": 0.1, "outline": "not a colour"}}
+	)
+	assert_str(got["a"]["outline"]).is_equal("")
+
+
+func test_a_slot_shows_its_label_unless_told_not_to() -> void:
+	# Default on: an author who has not thought about it gets words they can read.
+	var got: Dictionary = JourneyData.normalize_layout_slots({"a": {"x": 0.1, "y": 0.1}})
+	assert_bool(got["a"]["show_label"]).is_true()
+
+
+func test_hiding_a_label_does_not_erase_the_name() -> void:
+	# The choice keeps its name for the graph, the audit and the arrangement list — only the drawing
+	# of it is suppressed, which is what makes a pure hotspot possible without losing the label.
+	var got: Dictionary = JourneyData.normalize_layout_slots(
+		{"choice_0": {"x": 0.1, "y": 0.1, "show_label": false}}
+	)
+	assert_bool(got["choice_0"]["show_label"]).is_false()
+
+
+# ── Shop slot assignment ─────────────────────────────────────────────────────
+
+
+func _pinned(pins: Dictionary) -> Dictionary:
+	var layout: Dictionary = {}
+	for key: Variant in pins:
+		layout[str(key)] = {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "item": str(pins[key])}
+	return {"layout": layout}
+
+
+func test_unpinned_slots_take_the_draw_in_order() -> void:
+	var got: Array = JourneyData.assign_shop_slots({}, ["a", "b", "c"], 3)
+	assert_array(got).contains_exactly(["a", "b", "c"])
+
+
+func test_a_pinned_item_takes_its_own_slot() -> void:
+	# The sword goes on the wall hook even though the draw would have put it elsewhere.
+	var got: Array = JourneyData.assign_shop_slots(_pinned({"slot_2": "a"}), ["a", "b", "c"], 3)
+	assert_array(got).contains_exactly(["b", "c", "a"])
+
+
+func test_a_pinned_item_the_shop_did_not_draw_leaves_its_slot_empty() -> void:
+	# Rather than borrowing another item's spot: the hook was for the sword, and a potion there is a
+	# different shop from the one that was arranged.
+	var got: Array = JourneyData.assign_shop_slots(_pinned({"slot_0": "z"}), ["a", "b"], 3)
+	assert_array(got).contains_exactly(["", "a", "b"])
+
+
+func test_stock_beyond_the_placed_slots_is_dropped() -> void:
+	# The author decided how many things fit on the shelf; the audit warns, the shelf does not grow.
+	var got: Array = JourneyData.assign_shop_slots({}, ["a", "b", "c", "d"], 2)
+	assert_array(got).contains_exactly(["a", "b"])
+
+
+func test_the_same_item_is_never_placed_twice() -> void:
+	# Two slots pinned to one item: the first gets it, and the second stays EMPTY rather than quietly
+	# taking something else. A slot reserved for the sword shows the sword or nothing — the same rule as
+	# a pin the shop did not stock. The builder warns about the duplicate, so it is a mistake an author
+	# is told about rather than one they meet as an unexplained gap.
+	var got: Array = JourneyData.assign_shop_slots(
+		_pinned({"slot_0": "a", "slot_1": "a"}), ["a", "b"], 2
+	)
+	assert_array(got).contains_exactly(["a", ""])
+
+
+# ── Per-node overrides ───────────────────────────────────────────────────────
+
+
+func test_a_nodes_own_background_beats_its_setting() -> void:
+	# The one-off: this checkpoint is somewhere the story never returns to, so it says so itself rather
+	# than a whole setting being minted for it.
+	var node: Dictionary = {"setting": "set_tavern", "image": "res://cliff.png", "image_fit": "fit"}
+	var view: Dictionary = JourneyData.resolved_background_view([_tavern()], node, {})
+	assert_str(view["path"]).is_equal("res://cliff.png")
+	assert_str(view["image_fit"]).is_equal("fit")
+
+
+func test_a_nodes_own_music_beats_its_setting() -> void:
+	var node: Dictionary = {"setting": "set_tavern", "bgm": "res://storm.ogg", "bgm_volume": 0.4}
+	var got: Dictionary = JourneyData.resolved_bgm([_tavern()], node, {}, ["res://j.ogg"], 0.5)
+	assert_str(got["clip"]).is_equal("res://storm.ogg")
+	assert_float(got["volume"]).is_equal_approx(0.4, 0.001)
+
+
+func test_the_two_overrides_are_independent() -> void:
+	# A node may take its setting's music and its own picture, or the reverse — they are separate
+	# decisions, not a pair.
+	var node: Dictionary = {"setting": "set_tavern", "image": "res://cliff.png"}
+	assert_str(JourneyData.resolved_background_view([_tavern()], node, {})["path"]).is_equal(
+		"res://cliff.png"
+	)
+	assert_str(JourneyData.resolved_bgm([_tavern()], node, {})["clip"]).is_equal("res://tavern.ogg")
+
+
+func test_a_node_without_an_override_still_uses_its_setting() -> void:
+	var node: Dictionary = {"setting": "set_tavern"}
+	assert_str(JourneyData.resolved_background_view([_tavern()], node, {})["path"]).is_equal(
+		"res://tavern_day.png"
+	)
+
+
 # ── Media enumeration (pooling + packaging) ──────────────────────────────────
 
 

@@ -1,7 +1,7 @@
 class_name SettingEditor
 extends Control
 
-# Full-screen editor for one setting, modelled on PlacementEditor.
+# Full-screen editor for one setting.
 #
 # A setting is almost entirely about its art, and the question an author is asking — does this framing
 # work — cannot be answered by a thumbnail. So the preview takes the room and the controls sit beside
@@ -22,6 +22,7 @@ signal closed
 # BuilderSidePanel does.
 const DropZoneScript = preload("res://scripts/journey_builder/DropZone.gd")
 const PREVIEW_BG: Color = Color(0.06, 0.06, 0.09, 1.0)
+const VARIANT_PICK_NAME: String = "VariantPick"
 # Past roughly 3x a background is being enlarged well beyond its own resolution and starts to soften;
 # the cap is a nudge rather than a hard rule about what looks right.
 const MAX_ZOOM: float = 3.0
@@ -56,15 +57,30 @@ func _current() -> Dictionary:
 	return list[_selected]
 
 
+# ESC closes. Edits already went straight to the live setting, so this is the same as pressing DONE —
+# there is nothing held back that closing could discard.
+func _unhandled_key_input(event: InputEvent) -> void:
+	if not (event is InputEventKey) or not (event as InputEventKey).pressed:
+		return
+	if (event as InputEventKey).keycode != KEY_ESCAPE:
+		return
+	get_viewport().set_input_as_handled()
+	closed.emit()
+	queue_free()
+
+
 # ── Layout ──────────────────────────────────────────────────────────────────
 
 
 func _build_ui() -> void:
-	# Explicit anchors rather than PRESET_FULL_RECT — the same reason PlacementEditor gives: a preset
-	# here leaves the root zero-sized and the panel collapses to its content minimum.
+	# Explicit anchors rather than PRESET_FULL_RECT: a preset here leaves the root zero-sized and the
+	# panel collapses to its content minimum.
 	anchor_right = 1.0
 	anchor_bottom = 1.0
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	# The builder's own shortcuts stand down while anything in this group is visible — without it, ESC
+	# reached the graph editor behind this instead of closing what is in front of it.
+	add_to_group("ui_modal")
 
 	var backdrop: ColorRect = ColorRect.new()
 	backdrop.color = Color(0, 0, 0, 0.6)
@@ -281,7 +297,7 @@ func _fill_options() -> void:
 	name_edit.text_changed.connect(
 		func(v: String) -> void:
 			bg["name"] = v
-			_rebuild_list()  # the list entry is the only place this name is read back
+			_relabel_variant()  # NOT _rebuild_list: that frees this field mid-keystroke
 	)
 	_options_col.add_child(name_edit)
 
@@ -365,6 +381,31 @@ func _refresh() -> void:
 	_show_preview()
 
 
+# Retitles the SELECTED variant's row in place. The list is rebuilt for anything structural, but not
+# for a name being typed — that would free the field the author is typing into.
+func _relabel_variant() -> void:
+	if _selected < 0 or _selected >= _list_col.get_child_count():
+		return
+	var pick: Node = _list_col.get_child(_selected).get_node_or_null(VARIANT_PICK_NAME)
+	if pick is Button:
+		(pick as Button).text = _variant_row_title(_selected)
+
+
+# The text on a variant's row: its name, or its position when unnamed, plus which one is the default.
+func _variant_row_title(index: int) -> String:
+	var list: Array = _backgrounds()
+	if index < 0 or index >= list.size():
+		return ""
+	var name: String = str((list[index] as Dictionary).get("name", "")).strip_edges()
+	return (
+		"%s%s"
+		% [
+			name if name != "" else "Variant %d" % (index + 1),
+			"  ·  DEFAULT" if index == 0 else "",
+		]
+	)
+
+
 func _rebuild_list() -> void:
 	for c: Node in _list_col.get_children():
 		c.queue_free()
@@ -379,11 +420,10 @@ func _make_list_row(idx: int) -> Control:
 	row.add_theme_constant_override("separation", 4)
 
 	var pick: Button = Button.new()
-	var name: String = str(bg.get("name", "")).strip_edges()
-	pick.text = (
-		"%s%s"
-		% [name if name != "" else "Variant %d" % (idx + 1), "  ·  DEFAULT" if idx == 0 else ""]
-	)
+	# Named so _relabel_variant can find it again — the alternative was matching on button text, which
+	# breaks the moment a variant is called something starting with the delete button's glyph.
+	pick.name = VARIANT_PICK_NAME
+	pick.text = _variant_row_title(idx)
 	pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pick.clip_text = true
 	UITheme.style_button(pick, UITheme.CYAN if idx == _selected else UITheme.PURPLE_MID)

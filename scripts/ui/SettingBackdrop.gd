@@ -15,6 +15,18 @@ extends RefCounted
 # legibility depending on which surface it is looking at. Once the per-screen layout work lands and a
 # shop can be arranged around its art, this is the first thing that should become authorable.
 const SCRIM_ALPHA: float = 0.5
+# What is left over an ARRANGED node's art. The heavy scrim exists to keep a card's text readable, and
+# an arranged node has no card — its controls carry their own backing. Not zero: a letterboxed
+# background leaves bars where the paused video would otherwise show through at full brightness.
+const SCRIM_ARRANGED: float = 0.15
+
+
+# Lifts most of the dim once a node has put its controls on the picture. Called by the screen that did
+# the arranging, because only it knows whether anything was actually placed.
+static func lift_scrim(backdrop: Control) -> void:
+	if backdrop is ColorRect:
+		var rect: ColorRect = backdrop
+		rect.color = Color(rect.color.r, rect.color.g, rect.color.b, SCRIM_ARRANGED)
 
 
 # Puts a JourneyImage behind `backdrop` and shows the setting's background, if the node names one.
@@ -40,13 +52,23 @@ static func attach_view(host: Control, backdrop: Control, view: Dictionary) -> J
 	if str(view.get("path", "")) == "":
 		return null  # nothing authored: the screen keeps the dim it shipped with
 
+	# Solid black UNDER the art, so a backdrop that does not fill the screen sits in darkness rather than
+	# on the paused round. The screen's own dim cannot do this job: it sits ABOVE the art as the scrim,
+	# and lifting it to let the picture through lets the video through in the bars at the same time.
+	var fill: ColorRect = ColorRect.new()
+	fill.color = Color.BLACK
+	fill.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(fill)
+	host.move_child(fill, backdrop.get_index())
+
 	var image: JourneyImage = JourneyImage.new()
 	# NOT set_anchors_preset: that sets anchors alone and re-derives offsets from the node's CURRENT
 	# rect, which is 0x0 for one that has never been laid out — so the image silently never draws.
 	image.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE  # never eats a click meant for the UI above it
 	host.add_child(image)
-	host.move_child(image, backdrop.get_index())  # under the dim, under everything else
+	host.move_child(image, backdrop.get_index())  # under the dim, over the black fill
 	# Covered is the right default here: these screens are full-bleed, and letterboxing a backdrop
 	# behind a UI panel reads as a mistake. An author who wants the whole image says so per background.
 	image.show_background(view, TextureRect.STRETCH_KEEP_ASPECT_COVERED)

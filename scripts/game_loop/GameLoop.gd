@@ -196,6 +196,11 @@ var _round_sensory: Array = []
 # Guards _apply_oneshot_item_effects against the re-entrant ActiveEffectsChanged that ConsumeEffects
 # emits (so a one-shot toll/interest/flag/counter fires exactly once, not once per consume).
 var _applying_oneshots: bool = false
+# An open screen wants the HUD gone — a shop or a fork, whose bar sits over the bottom of the backdrop
+# and whose own controls replace what it offers.
+# Checked by _show_hud, because setting visibility alone loses to anything that reveals the HUD: the
+# idle-fade timer, a hover, or _ready's own _show_hud() right after loading the first node.
+var _hud_suppressed: bool = false
 var _curse_hud_hidden: bool = false  # a "Fog" effect hid the HUD (round OR timed item), reconciled
 var _curse_no_pause: bool = false  # a "Restless" effect disabled pausing this round
 const TOLL_AMOUNT: int = 40  # coins a "Toll" effect takes immediately
@@ -712,12 +717,22 @@ func _show_shop_screen(shop_data: Dictionary) -> void:
 	shop.closed.connect(_on_shop_closed)
 	shop.map_requested.connect(_open_map_viewer)
 	add_child(shop)
+	# The HUD goes away entirely rather than sitting over the shop: its bar occupies the bottom strip of
+	# the screen, which is exactly where a shop's backdrop wants to be. Restored when the shop closes.
+	_hud_suppressed = true
+	_hud.visible = false
 	_current_overlay = shop
 	_overlay_map_allowed = true
 	shop.setup(shop_data)
 
 
 func _on_shop_closed() -> void:
+	# Symmetric with the hide on open. Not left to the round transition: that only restores the HUD when
+	# the NEXT node is a playable round, so a fork or checkpoint straight after a shop would have
+	# inherited the hidden bar. A Fog curse still wins — it hides the HUD for the whole round.
+	_hud_suppressed = false
+	if not _curse_hud_hidden:
+		_hud.visible = true
 	_is_overlay_open = false
 	_overlay_map_allowed = false
 	GameState.ApplyCurrentNodeCounters()  # the shop's own set_counters, bestowed on close
@@ -748,6 +763,11 @@ func _show_fork_screen(fork_data: Dictionary) -> void:
 	fork_screen.path_chosen.connect(_on_fork_path_chosen)
 	fork_screen.map_requested.connect(_open_map_viewer)
 	add_child(fork_screen)
+	# Same as a shop: the bar sits over the bottom of the backdrop, and a fork is a full-bleed screen
+	# with its own map button. Suppressed rather than merely hidden, or the idle-fade timer and any
+	# mouse movement would bring it straight back.
+	_hud_suppressed = true
+	_hud.visible = false
 	_current_overlay = fork_screen
 	fork_screen.setup(fork_data)
 
@@ -850,6 +870,11 @@ func _conditional_caption(fork_data: Dictionary) -> String:
 
 
 func _on_fork_path_chosen(path_index: int) -> void:
+	# Symmetric with the hide on open — the next node may be another gate, which the round transition
+	# would not restore the HUD for. A Fog curse still wins.
+	_hud_suppressed = false
+	if not _curse_hud_hidden:
+		_hud.visible = true
 	_is_overlay_open = false
 	_overlay_map_allowed = false
 	GameState.ResolveFork(path_index)
@@ -1308,7 +1333,7 @@ func _show_checkpoint_gate() -> void:
 	)
 	var modal: Control = parts["modal"]
 	# Behind the modal's own dim, which attach drops to a scrim when there is art worth seeing.
-	SettingBackdrop.attach(modal, modal.get_child(0), data)
+	var backdrop: JourneyImage = SettingBackdrop.attach(modal, modal.get_child(0), data)
 	var vbox: VBoxContainer = parts["vbox"]
 	vbox.add_theme_constant_override("separation", 18)
 
@@ -1333,31 +1358,73 @@ func _show_checkpoint_gate() -> void:
 	btn_row.add_theme_constant_override("separation", 16)
 	vbox.add_child(btn_row)
 
+	var take_save: Callable = func() -> void:
+		modal.queue_free()
+		_is_overlay_open = false
+		_on_save_and_quit()
+	var take_continue: Callable = func() -> void:
+		modal.queue_free()
+		_is_overlay_open = false
+		_advance_from_checkpoint()
+
 	var save_btn: Button = Button.new()
 	save_btn.text = "💾  SAVE & QUIT"
 	save_btn.custom_minimum_size = Vector2(200, 0)
 	UITheme.style_button(save_btn, UITheme.AMBER)
-	save_btn.pressed.connect(
-		func() -> void:
-			modal.queue_free()
-			_is_overlay_open = false
-			_on_save_and_quit()
-	)
+	save_btn.pressed.connect(take_save)
 	btn_row.add_child(save_btn)
 
 	var continue_btn: Button = Button.new()
 	continue_btn.text = "▶  CONTINUE"
 	continue_btn.custom_minimum_size = Vector2(160, 0)
 	UITheme.style_button(continue_btn, UITheme.PURPLE_BRIGHT)
-	continue_btn.pressed.connect(
-		func() -> void:
-			modal.queue_free()
-			_is_overlay_open = false
-			_advance_from_checkpoint()
-	)
+	continue_btn.pressed.connect(take_continue)
 	btn_row.add_child(continue_btn)
 
 	add_child(modal)
+
+	# An arranged checkpoint hides the card entirely and puts its two choices on the picture instead.
+	# Only the ELEMENTS the author actually placed move; anything left unplaced keeps the card, which is
+	# why the card is built first and hidden after rather than skipped.
+	_apply_checkpoint_layout(data, modal, backdrop, take_save, take_continue)
+
+
+# Places a checkpoint's actions onto its backdrop, when the author arranged them. Neither is optional:
+# an arranged checkpoint hides its card, and a player who could save but not continue would be stuck.
+func _apply_checkpoint_layout(
+	data: Dictionary,
+	modal: Control,
+	backdrop: JourneyImage,
+	take_save: Callable,
+	take_continue: Callable
+) -> void:
+	var label: String = str(data.get("name", "")).strip_edges()
+	var elements: Array = [
+		# The author's caption, when they wrote one and gave it a spot. No `run`: it is something to
+		# read, not something to press.
+		{
+			"key": "name",
+			"label": label.to_upper(),
+			"optional": true,
+			"run": null,
+		},
+		{
+			"key": "save",
+			"label": "💾  SAVE & QUIT",
+			"accent": UITheme.AMBER,
+			"run": take_save,
+		},
+		{
+			"key": "continue",
+			"label": "▶  CONTINUE",
+			"accent": UITheme.PURPLE_BRIGHT,
+			"run": take_continue,
+		},
+	]
+	if label == "":
+		elements.remove_at(0)  # nothing written, so nothing to place
+	if not NodeLayout.apply(backdrop, data, elements).is_empty():
+		NodeLayout.hide_card(modal)
 
 
 # Writes the resume point the moment a checkpoint is REACHED, rather than only when the player chooses
@@ -4775,8 +4842,8 @@ func _show_hud(fade: bool = false) -> void:
 	_fade_warmup_skip_button(true)
 	_fade_finish_button(true)  # fades in with the HUD (stays clickable at rest for an in-progress hold)
 	# A "Fog" curse hides the HUD for the whole round — don't let hover / timers
-	# reveal it.
-	if _curse_hud_hidden:
+	# reveal it. A shop does the same for as long as it is open.
+	if _curse_hud_hidden or _hud_suppressed:
 		_hud.visible = false
 		return
 	_hud.visible = true

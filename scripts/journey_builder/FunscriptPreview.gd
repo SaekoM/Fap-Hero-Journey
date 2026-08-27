@@ -127,6 +127,10 @@ func _build_ui(round_name: String) -> void:
 	# Fill the parent and capture input so the builder behind is inert.
 	anchor_right = 1.0
 	anchor_bottom = 1.0
+	# The builder's shortcuts stand down while anything in this group is visible. This editor already
+	# ate ESC in its own _input, which worked only because _input reaches later-added overlays first —
+	# the group makes it a rule rather than an ordering that happens to hold.
+	add_to_group("ui_modal")
 	mouse_filter = Control.MOUSE_FILTER_STOP
 
 	var backdrop: ColorRect = ColorRect.new()

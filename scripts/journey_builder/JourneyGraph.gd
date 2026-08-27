@@ -540,6 +540,18 @@ static func resolve_paths(graph: Dictionary, base: String) -> void:
 				var fd: Dictionary = n.get("data", {})
 				if fd.has("audio"):
 					fd["audio"] = _abs(str(fd.get("audio", "")), base)
+				_resolve_scene_override(fd, base)
+			"shop", "checkpoint":
+				_resolve_scene_override(n.get("data", {}), base)
+
+
+# A node's own backdrop and music, when it overrides its setting's. Shops and checkpoints had no media
+# at all before this, which is why neither appeared in the walk above.
+static func _resolve_scene_override(d: Dictionary, base: String) -> void:
+	if d.has("image"):
+		d["image"] = _abs(str(d.get("image", "")), base)
+	if d.has("bgm"):
+		d["bgm"] = _abs(str(d.get("bgm", "")), base)
 
 
 static func _resolve_round_paths(d: Dictionary, base: String) -> void:

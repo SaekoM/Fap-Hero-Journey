@@ -6,6 +6,10 @@ Places, and the music that belongs to them. A **setting** is a backdrop and a sc
 used everywhere, and a journey can now carry a score of its own underneath everything that isn't a
 round.
 
+And the screens in front of those backdrops stop being cards laid over them. A shop, a fork or a
+checkpoint can put its own controls **into** the picture — items on the shelf they are painted beside,
+choices over doors, a campfire you click to save at.
+
 ### ◆ Settings — a place, defined once
 
 A **setting** is somewhere the story happens: its backgrounds, and the music that plays while it is
@@ -15,6 +19,11 @@ dragged in forty times and the same track attached to forty nodes.
 Its **backgrounds are named variants** — "Day", "Night", "After the fire" — chosen per scene, exactly
 the way a character's portraits are expressions. The first is the default, so a setting with one
 background needs no choosing at all.
+
+Any of them can also **override a setting for one node**: its own background, its own music, or both.
+For somewhere the story visits once, a whole setting is more bookkeeping than the moment deserves — and
+the two are separate, so a node can take its setting's music and its own picture. A setting stays the
+right answer for anywhere the story returns to.
 
 **Storyboards, shops, checkpoints and forks** can each name a setting. A storyboard names one for the
 whole scene and **any line may switch to another**, which is how a scene moves the story somewhere
@@ -62,6 +71,83 @@ Off by default, and deliberately so: a thud or a gunshot should land **on** the 
 it. It is for speech, where a score at any reasonable level competes with a voice — and where the only
 alternative was turning the whole setting's music down for every line in the scene.
 
+### ◆ Arranging the interface onto the picture
+
+A backdrop used to sit *behind* a screen. A shop, a fork or a checkpoint can now put its controls **on**
+one: the items on the shelf they are painted next to, the choices over the doors, SAVE on the campfire
+and CONTINUE on the path out of the clearing.
+
+Each of those nodes gets an **⛶ ARRANGE ON BACKGROUND** button, opening a full-screen editor with the
+real backdrop and the node's real controls on it. Drag to move, pull the corner to resize, and every
+element carries its own **plate**, **outline** and **text** colours plus a **backing** toggle for art
+that already has enough contrast of its own.
+
+A node with no arrangement keeps the card it always had, so nothing already made changes.
+
+**Positions are stored against the picture, not the screen.** A background carries crop framing and
+zoom, so on a differently shaped window the art shifts and rescales underneath — a hotspot pinned to the
+screen would drift off the campfire it was placed on. Arranged controls ride with the art at any window
+shape.
+
+**Nothing essential can be lost.** Arranging hides the card, so a control that lived only there would be
+gone: an author who placed SAVE but not CONTINUE would have stranded the player. Anything essential the
+author never placed appears at a default position instead of vanishing. Titles and descriptions are the
+exception — those are decoration, absent unless placed.
+
+The **dim over the backdrop lifts** for an arranged node. That heavy scrim exists to keep a card's text
+readable, and there is no longer a card; left in place, an author would arrange against a bright picture
+in the editor and meet a murky one in play.
+
+#### Shops
+
+A shop's slots are how many items it *can* offer, not how many it happens to draw — a pool shop picks
+different stock each visit, so a shelf needs room for a full draw.
+
+Each slot can be **pinned to a specific item**: the sword on the wall hook rather than whichever of
+twenty things the draw put there. Left unpinned a slot takes whatever the shop drew, as before.
+
+Pinning does not make a shop stock something. In pool mode a pinned item only appears when that visit's
+draw includes it, and the spot sits empty otherwise — so the editor says exactly that, in amber, and
+offers **✔ ALWAYS STOCK THIS ITEM** to add it to the shop's Guaranteed list. A pin that is already
+certain gets a quiet confirmation instead of a warning.
+
+Placed slots stay live: prices re-evaluate as coins are spent, and a bought item shows as owned without
+the shelf changing shape.
+
+Saving **warns when a shop can offer more items than it has slots**, naming how many will never appear.
+The fix might be either number, so it does not presume which.
+
+#### Forks
+
+Every choice is placeable, with its **name, description and card art** drawn in the slot. A choice that
+cannot be afforded is placed and disabled rather than missing — the same thing its card does.
+
+Only forks the *player* resolves can be arranged. A random or conditional fork plays its reveal on the
+cards themselves, so hiding them would hide the thing being revealed.
+
+
+### ◆ The cast editor, rebuilt around the stage
+
+A character is now edited the way a setting is: full-screen, with the thing you are judging taking the
+room. Their name and a **preview against** picker sit on top, the stage fills the left, and their
+expressions and positions sit beside it.
+
+**Positions are no longer a separate window.** The stage draws the selected expression standing in
+*every* one of the character's positions at once, over a setting's backdrop, draggable and resizable
+where it stands. Choosing a different expression re-dresses the whole character in a single look —
+where before it meant picking an expression, closing, opening positions, and remembering what you had
+just seen.
+
+The backdrop can be any setting and any of its variants, drawn with that background's own framing, so a
+portrait is judged against the room it will actually stand in rather than flat grey. **Only show
+selected** hides the other positions while you work on one, and the dialogue bar's footprint is still
+marked so nobody frames a portrait with its feet behind text.
+
+One thing to know: like the setting editor, this edits the character directly and closes with DONE or
+ESC. The old positions window worked on a copy and had CANCEL; there is no undo here. A newly added
+character closed without a name is still discarded, as before.
+
+
 ### 🧰 For creators (builder)
 
 - **SETTINGS** and **JOURNEY MUSIC** sit in the journey panel beside the cast. A setting opens into its
@@ -76,6 +162,15 @@ alternative was turning the whole setting's music down for every line in the sce
   it.
 - Setting backgrounds and music **pool and package** like any other journey media, animated backgrounds
   included.
+- Each arranged element carries its own **plate, outline and text colours**, and a **Show label** switch
+  for a hotspot over art that already names itself — a painted door, a signposted counter. The name is
+  kept either way; only the drawing of it is suppressed.
+- A shop slot **pinned to an item the shop cannot guarantee** says so, and offers to add it to the
+  Guaranteed list. A pin that is already certain gets a quiet confirmation instead — a warning shown on
+  safe pins is one people learn to scroll past.
+- The audit reports **slots left behind by an edit elsewhere**: elements a node no longer has, a slot
+  pinned to a deleted item, and two slots pinned to the same one. All warn and none delete — a choice
+  may be coming back, and an arrangement is work.
 - **Deleting a setting that scenes point at asks first**, and names how many. Those references break
   silently — the scenes keep playing, just without the backdrop and music they were written around —
   and the editor has no undo. Deleting an unused one stays instant.
@@ -98,6 +193,24 @@ alternative was turning the whole setting's music down for every line in the sce
   framed against the room it will stand in — and against the right time of day, which is usually why a
   second variant exists. It can also **show only the selected position**: a character with six positions
   stacks into an unreadable pile, and while dragging, one box is the only one that matters.
+
+### 🩹 Fixes
+
+- **A shop and a fork hide the play bar.** Its strip sits exactly where their backdrop wants to be, and
+  both screens carry their own controls. It comes back when they close rather than waiting for the next
+  playable round — a gate straight after a shop used to inherit the hidden bar.
+- **A backdrop narrower than the window sits on black.** The dim these screens draw is *above* the art
+  as a scrim, so lifting it to let the picture through let the paused round show in the bars at the same
+  time. There is a solid fill underneath it now.
+- **The coin balance updates while shopping.** On an arranged shop it is placed art like everything
+  else, copied from the badge on the hidden card, so nothing was refreshing it.
+- **A placed control that cannot be pressed now looks like it.** An owned or unaffordable slot had no
+  disabled style of its own and fell back to one identical to normal — a button that silently ignored
+  clicks and never lit on hover.
+- **Typing a name no longer loses the field.** Expression, position and variant names rebuilt their own
+  list on every keystroke, which freed the box being typed into after one character.
+- The shop's exit reads **CONTINUE** rather than JACK OUT.
+
 
 ## v0.8.2
 
