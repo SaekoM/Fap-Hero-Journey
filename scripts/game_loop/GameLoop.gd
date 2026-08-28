@@ -72,6 +72,13 @@ var _timer_lbl: Label = null
 var _session_panel: Control = null
 const STROKE_RANGE_STEP: int = 5
 
+# What the drawer's stroke meter draws. The round's script path is noted at load; both point arrays are
+# built only if the drawer is actually opened (see _stroke_meter_points). The override's is cleared
+# whenever a takeover begins, since the next one plays something else.
+var _round_fs_path: String = ""
+var _round_points: Array = []
+var _override_points: Array = []
+
 # Persistent banner shown at top of screen whenever the *currently selected*
 # output device drops its connection during play. Built dynamically in
 # _apply_layout so the scene file doesn't need a new node. Lives outside the
@@ -1015,6 +1022,9 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	_show_finish_button()
 
 	var fs_path: String = round.get("funscript_path", "")
+	# The stroke meter reads these; cleared here so a round without a script can't show the last one's.
+	_round_fs_path = ""
+	_round_points = []
 	# Prefer a sibling ".alpha" funscript for the main (L0 / position) channel when it exists —
 	# that's the true alpha of an alpha/beta pair. Fall back to the plain funscript otherwise.
 	if fs_path != "":
@@ -1029,6 +1039,7 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 				fs_path = a_cand
 				break
 		FunscriptPlayer.LoadFunscript(fs_path)
+		_round_fs_path = fs_path
 		ScoreService.SetRoundActions(FunscriptPlayer.ActionCount)
 		if _beat_bar != null:
 			_beat_bar.set_beats(FunscriptPlayer.GetBeats())
@@ -3808,6 +3819,7 @@ func _begin_override(
 	_override_immune = immune
 	_override_item_name = display_name  # names the HUD override chip while it runs
 	_override_session.begin(bundle, _override_immune, source)
+	_override_points = []  # the stroke meter rebuilds these from the new bundle on its next frame
 	FunscriptPlayer.BeginOverride(bundle.main, bundle.axes, bundle.vibes, _override_immune)
 	if _handy_ready:
 		HandyService.start_override(bundle.main, _override_immune, _override_ms)
@@ -4895,11 +4907,45 @@ func _on_session_settings_pressed() -> void:
 	_session_panel = SessionSettingsPanel.new()
 	_session_panel.closed.connect(_on_session_settings_closed)
 	add_child(_session_panel)
+	_session_panel.set_stroke_source(_stroke_meter_points, _round_clock_ms)
 	_show_hud()
 
 
 func _on_session_settings_closed() -> void:
 	_session_panel = null
+
+
+# What the device is being driven with right now, as HSP points, for the Quick Settings stroke meter.
+# Read every frame, so a takeover that seizes the device mid-round changes the picture rather than
+# leaving the round's script on screen under a stroke that is no longer playing it.
+#
+# Both are built on first ask rather than at load: most rounds are played without the drawer ever being
+# opened, and this would otherwise re-read a funscript off disk for nobody.
+func _stroke_meter_points() -> Array:
+	if _override_session.is_active() and _override_bundle != null:
+		if _override_points.is_empty():
+			_override_points = HandyPoints.actions_to_points(_override_bundle.main)
+		return _override_points
+	if _round_points.is_empty() and _round_fs_path != "":
+		_round_points = HandyPoints.actions_to_points(
+			JourneyData.read_funscript_actions(_round_fs_path)
+		)
+	return _round_points
+
+
+# The clock those points are stamped against — a takeover runs on its own, starting from zero, which is
+# why this follows the same branch as the points above.
+#
+# Deliberately the RAW clock, not FunscriptPlayer.PositionMs, which already has the delay taken out of
+# it: the meter draws where the script says the device should be, and the delay is what moves the DEVICE
+# against that. Feeding it a delay-compensated clock would move the picture instead, and the slider would
+# appear to do nothing.
+func _round_clock_ms() -> int:
+	if _override_session.is_active():
+		return _override_session.position_ms()
+	if is_instance_valid(_video) and _video.stream != null:
+		return int(_video.stream_position * 1000.0)
+	return int(FunscriptPlayer.PositionMs)  # a funscript-only round runs on the player's own clock
 
 
 # ---------------------------------------------------------------------------

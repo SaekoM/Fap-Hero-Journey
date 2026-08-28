@@ -20,7 +20,22 @@ extends RefCounted
 
 const SERIAL_TARGET: String = "serial"
 const HANDY_TARGET: String = "handy"
+# The Buttplug/Intiface backend has no sentinel target — any actuator id resolves to it — so it needs a
+# name of its own wherever the backend itself is what's being talked about.
+const BP_BACKEND: String = "bp"
 const VIBE_SOURCES: Array = ["vibe1", "vibe2", "stroke"]  # "stroke" = follow the L0 envelope
+
+
+# Which backend a stroke target belongs to, without needing a device catalog to say so. The sync
+# calibration reads this to know which of the three delay settings it is adjusting — the answer is a
+# property of the target string alone, and asking it here keeps that knowledge with the rest of the
+# routing rules. Returns "" when nothing is targeted.
+static func stroke_backend(stroke_target: String) -> String:
+	if stroke_target == SERIAL_TARGET:
+		return SERIAL_TARGET
+	if stroke_target == HANDY_TARGET:
+		return HANDY_TARGET
+	return BP_BACKEND if stroke_target != "" else ""
 
 
 static func make_actuator_id(device_id: String, kind: String, channel: int) -> String:
@@ -59,15 +74,15 @@ static func resolve(
 	# sentinels resolve unconditionally (availability is a runtime concern the
 	# device banner owns, same as serial).
 	if stroke_target == SERIAL_TARGET:
-		plan["stroke"] = {"backend": "serial"}
+		plan["stroke"] = {"backend": SERIAL_TARGET}
 	elif stroke_target == HANDY_TARGET:
-		plan["stroke"] = {"backend": "handy"}
+		plan["stroke"] = {"backend": HANDY_TARGET}
 	elif stroke_target != "":
 		var s: Dictionary = parse_actuator_id(stroke_target)
 		if not s.is_empty() and s["kind"] == "linear" and by_id.has(s["device"]):
 			if bool((by_id[s["device"]] as Dictionary).get("linear", false)):
 				plan["stroke"] = {
-					"backend": "bp", "device": s["device"], "channel": int(s["channel"])
+					"backend": BP_BACKEND, "device": s["device"], "channel": int(s["channel"])
 				}
 
 	# Vibration — each mapped actuator that's present with a valid channel + source.

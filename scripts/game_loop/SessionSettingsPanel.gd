@@ -18,6 +18,7 @@ var _serial_delay_slider: HSlider = null
 var _serial_delay_lbl: Label = null
 var _handy_delay_slider: HSlider = null
 var _handy_delay_lbl: Label = null
+var _meter: StrokeMeter = null
 
 
 func _ready() -> void:
@@ -72,6 +73,18 @@ func _build() -> void:
 	_style_close_button(close_btn)
 	close_btn.pressed.connect(close)
 	header.add_child(close_btn)
+
+	# ── The stroke, as the script has it ──────────────────────────────────────
+	# Above the delays deliberately: it is what those sliders are set against, and a slider with nothing
+	# to judge it by is the reason people gave up on them.
+	vb.add_child(_section_label("STROKE"))
+	_meter = StrokeMeter.new()
+	_meter.custom_minimum_size = Vector2(0, 104)
+	_meter.set_delay_source(_active_delay_ms)
+	vb.add_child(_meter)
+	vb.add_child(
+		_hint_label("Where the script says the device should be. Set the delay until yours agrees.")
+	)
 
 	# ── Stroke range ──────────────────────────────────────────────────────────
 	vb.add_child(_section_label("STROKE RANGE"))
@@ -186,6 +199,28 @@ func _on_handy_delay_changed(v: float) -> void:
 	# so the change takes effect now (no-op unless the Handy is the stroker).
 	if SettingsService.get_stroke_target() == DeviceRouting.HANDY_TARGET:
 		HandyService.resync_timing()
+
+
+# Points the meter at whatever GameLoop is currently driving the device with, and the clock that goes
+# with it. Both are read live rather than snapshotted, so an override item seizing the device mid-round
+# changes the picture instead of leaving a stale one. Without this the meter reads NO SCRIPT, which is
+# the honest answer for a round that has no funscript.
+func set_stroke_source(points_source: Callable, clock: Callable) -> void:
+	if _meter != null:
+		_meter.set_source(points_source, clock)
+
+
+# The delay belonging to whatever is actually driving strokes. Three sliders are shown — a player may
+# have more than one device configured — but only one of them is what the meter's device marker means.
+func _active_delay_ms() -> int:
+	match DeviceRouting.stroke_backend(SettingsService.get_stroke_target()):
+		DeviceRouting.HANDY_TARGET:
+			return SettingsService.get_handy_delay_ms()
+		DeviceRouting.SERIAL_TARGET:
+			return SettingsService.get_serial_delay_ms()
+		DeviceRouting.BP_BACKEND:
+			return SettingsService.get_intiface_delay_ms()
+	return 0
 
 
 # Nudge the stroke range from GameLoop's arrow-key hotkeys (active only while this panel is open).

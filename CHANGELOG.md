@@ -10,6 +10,9 @@ And the screens in front of those backdrops stop being cards laid over them. A s
 checkpoint can put its own controls **into** the picture — items on the shelf they are painted beside,
 choices over doors, a campfire you click to save at.
 
+Separately, and for anyone who has ever guessed at a delay slider: the stroke is now something you can
+**see**, both during play and against a calibration pattern built to be judged by.
+
 ### ◆ Settings — a place, defined once
 
 A **setting** is somewhere the story happens: its backgrounds, and the music that plays while it is
@@ -125,7 +128,6 @@ cannot be afforded is placed and disabled rather than missing — the same thing
 Only forks the *player* resolves can be arranged. A random or conditional fork plays its reveal on the
 cards themselves, so hiding them would hide the thing being revealed.
 
-
 ### ◆ The cast editor, rebuilt around the stage
 
 A character is now edited the way a setting is: full-screen, with the thing you are judging taking the
@@ -147,6 +149,37 @@ One thing to know: like the setting editor, this edits the character directly an
 ESC. The old positions window worked on a copy and had CANCEL; there is no undo here. A newly added
 character closed without a name is still discarded, as before.
 
+### ◆ Seeing the stroke
+
+The delay sliders have been there a long time. What was missing was anything to judge them *by* — you
+moved a number, felt for whether it had helped, and moved it again.
+
+**Quick Settings (S) now shows the stroke.** A bar at the position the script is asking for, and a strip
+of the next few seconds scrolling past a NOW line. Watch it reach the top, feel when your device does,
+and set the delay until the two agree. The strip matters as much as the bar: a bar alone is purely
+reactive, and you can only notice a mismatch after it has happened. Seeing the turn coming is what makes
+the comparison possible at all.
+
+Where a delay is set, a second dashed marker shows where that delay puts the device — so the number is
+visible rather than only felt.
+
+It draws the **script**, at the raw video clock. The delay moves your *device* against that picture; if
+it moved the picture too, the slider would look like it does nothing.
+
+**Options → Device routing gained a CALIBRATE SYNC button** for setting it properly. Real content makes
+a bad ruler: scripts run at two or three strokes a second and rarely use the whole range, and a 150 ms
+error is invisible against that. The calibration plays a slow, full-range stroke that pauses at each
+end — a device that arrives and waits announces itself in a way one tracking a continuous wave never
+does. It goes out over the same path a round uses, which is the only reason a number found there means
+anything during play.
+
+One thing it says on the screen rather than leaving to be found out: **one number can't be right
+everywhere.** A stroker's travel time grows with distance and speed, so a fast full-range section will
+always lag more than a slow short one. Calibrate for a clean starting point, then nudge it in play if
+dense sections still feel late.
+
+All three strokers are covered — the Handy, a serial T-code device, an Intiface toy — and the meter
+tracks the delay belonging to whichever one is actually driving.
 
 ### 🧰 For creators (builder)
 

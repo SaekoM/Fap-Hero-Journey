@@ -132,6 +132,8 @@ var _story_text_value_lbl: Label = null
 var _tooltip_text_slider: HSlider = null
 var _tooltip_text_value_lbl: Label = null
 var _handy_status_lbl: Label = null
+var _handy_delay_slider: HSlider = null
+var _handy_delay_lbl: Label = null
 var _update_check_toggle: Button = null
 var _ui_sound_toggle: Button = null
 var _ui_sound_slider: HSlider = null
@@ -2376,6 +2378,24 @@ func _build_routing_section() -> void:
 	_style_label(_stroker_summary_lbl, UITheme.CYAN, 12, false)
 	section.add_child(_stroker_summary_lbl)
 
+	# The delay sliders below are the only settings on this screen that can't be judged by looking at
+	# them. This opens something to judge them against.
+	var calibrate: Button = Button.new()
+	calibrate.text = "◎  CALIBRATE SYNC"
+	calibrate.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	UITheme.style_button(calibrate, UITheme.CYAN, 14, 8, 12)
+	calibrate.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Plays a slow, full-range stroke on your stroker and draws the same stroke on screen, so "
+				+ "the delay can be set by comparing the two instead of guessing at it."
+			)
+		)
+	)
+	calibrate.pressed.connect(_open_sync_calibration)
+	section.add_child(calibrate)
+
 	var d_intiface: Dictionary = _add_delay_row(
 		section,
 		"Intiface delay",
@@ -2435,6 +2455,27 @@ func _build_routing_section() -> void:
 	_serial_delay_slider.value_changed.connect(_on_serial_delay_changed)
 	_serial_interp_slider.value_changed.connect(_on_serial_interp_changed)
 	_refresh_routing_cards()
+
+
+# Opens the sync calibration over the whole Options screen. Parented here rather than to a tab so it
+# survives a tab switch and can cover everything behind it.
+func _open_sync_calibration() -> void:
+	var screen: SyncCalibrationScreen = SyncCalibrationScreen.new()
+	screen.closed.connect(_reread_delay_sliders)
+	add_child(screen)
+
+
+# The calibration writes the very settings these sliders display, so they have to be re-read when it
+# closes — otherwise Options shows a number that is no longer the one in use. Signal-free, so a
+# refreshed value can't fire the change handlers back at the device.
+func _reread_delay_sliders() -> void:
+	_intiface_delay_slider.set_value_no_signal(SettingsService.get_intiface_delay_ms())
+	_intiface_delay_lbl.text = "%d ms" % SettingsService.get_intiface_delay_ms()
+	_serial_delay_slider.set_value_no_signal(SettingsService.get_serial_delay_ms())
+	_serial_delay_lbl.text = "%d ms" % SettingsService.get_serial_delay_ms()
+	if _handy_delay_slider != null:
+		_handy_delay_slider.set_value_no_signal(SettingsService.get_handy_delay_ms())
+		_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
 
 
 # ── The Handy (direct WiFi) ──────────────────────────────────────────────────
@@ -2518,14 +2559,16 @@ func _build_handy_section() -> void:
 				_set_handy_status("✕ Test failed", UITheme.DANGER)
 	)
 
+	# Kept on the instance, not local: the sync calibration writes this same setting and _reread_delay_sliders
+	# has to be able to put the new value back on the slider when it closes.
 	var d_handy: Dictionary = _add_delay_row(section, "Handy delay")
-	var handy_slider: HSlider = d_handy["slider"]
-	var handy_lbl: Label = d_handy["value"]
-	handy_slider.value = SettingsService.get_handy_delay_ms()
-	handy_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
-	handy_slider.value_changed.connect(
+	_handy_delay_slider = d_handy["slider"]
+	_handy_delay_lbl = d_handy["value"]
+	_handy_delay_slider.value = SettingsService.get_handy_delay_ms()
+	_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
+	_handy_delay_slider.value_changed.connect(
 		func(v: float) -> void:
-			handy_lbl.text = "%d ms" % roundi(v)
+			_handy_delay_lbl.text = "%d ms" % roundi(v)
 			SettingsService.set_handy_delay_ms(roundi(v))
 			SettingsService.save()
 	)
