@@ -32,8 +32,8 @@ const H264_NAMES: Array[String] = ["h264", "avc1", "avc"]
 # defensive reason `avc1` sits beside `h264`.
 #
 # HEVC rides along on the same build (`--enable-decoder=hevc --enable-parser=hevc`). It is commonly
-# 10-bit, as is much AV1 — and 10-bit is admitted too, on measured evidence rather than assumption. See
-# the numbers under SAFE_PIX_FMTS below, including what it costs and why that was judged affordable.
+# 10-bit, as is much AV1 — and 10-bit now costs the same as 8-bit, because both go to the GPU. See the
+# measurements under SAFE_PIX_FMTS below.
 const PLAYABLE_VIDEO_CODECS: Array[String] = [
 	"h264", "avc1", "avc", "vp8", "vp9", "av1", "av01", "hevc", "h265", "hvc1", "hev1"
 ]
@@ -46,28 +46,20 @@ const PLAYABLE_CONTAINERS: Array[String] = ["mp4", "m4v", "mov", "mkv", "webm", 
 # Pixel formats the runtime plays without re-encoding: 8-bit 4:2:0 (standard and full-range JPEG), plus
 # 10-bit 4:2:0, which most AV1 and HEVC in the wild actually uses.
 #
-# 8-bit goes to the GPU as YUV planes. 10-bit does NOT — VideoDecoder converts it to RGBA8 through
-# swscale on the decode thread, per frame, and that is genuinely more expensive. MEASURED 2026-08-31,
-# same source, same round, only bit depth varying (Ryzen 7 9850X3D, 8C/16T):
+# BOTH GO STRAIGHT TO THE GPU. The planes are uploaded as textures and converted by a compute shader —
+# R8 for 8-bit, R16 for 10-bit — so bit depth costs almost nothing. That was not free: 10-bit originally
+# fell back to a per-frame swscale conversion to RGBA on the CPU, and a 10-bit path was built in the
+# EIRTeam.FFmpeg fork to remove it. Measured on the same clip, same round (Ryzen 7 9850X3D):
 #
-#     1080p   8-bit   30.1% of one core (p95 38.8)      4K   8-bit    74.5% (p95  98.7)
-#     1080p  10-bit   51.0% of one core (p95 58.6)      4K  10-bit   125.4% (p95 149.4)
+#                     before the GPU path      after
+#     4K   8-bit           74.5%                74.6%     (unchanged, as it should be)
+#     4K  10-bit          125.4%                77.3%     — 1.68x down to 1.04x
 #
-# So 10-bit costs ~1.7x, consistently, across a 4x change in pixel count. It is admitted anyway because
-# the absolute cost is affordable and the alternative is worse: refusing it means re-encoding the
-# majority of AV1/HEVC sources, which is a certain loss of time and quality for every author, to avoid a
-# speculative one. The reference point that decides it — 4K 8-bit ALREADY ships, at 74.5% with peaks
-# over a full core, and has never been reported as a problem. 10-bit is the same envelope, further along.
-# 4K 10-bit showed no stutter and no crackle when tested.
+# So the split that used to matter — 8-bit kept, 10-bit re-encoded — is gone, and both are simply kept.
 #
-# Two caveats worth keeping. This is one fast machine; a low-end CPU playing 4K 10-bit is the case that
-# could still bite, and 4K sources are rare. And FFmpeg decodes multithreaded (thread_count = 0), which
-# is why >100% of one core is possible and why the swscale stage does not simply serialise everything
-# behind it — an earlier reading of this as single-threaded was wrong.
-#
-# The permanent fix is to stop converting at all: a YUV420P10 frame format plus a 10-bit variant of
-# yuv_to_rgb.glsl in the EIRTeam.FFmpeg fork would put 10-bit on the GPU beside 8-bit and erase the
-# 1.7x. That is now an optimisation to schedule, not a prerequisite for anything.
+# 4:2:2 and 4:4:4 stay out. Not because they are known to be slow: they have never been measured and
+# have no GPU path, so they would take the RGBA fallback this work exists to avoid. Adding one means
+# adding its shader variant first (see yuv_to_rgb_10bit.glsl for the pattern) and then measuring.
 const SAFE_PIX_FMTS: Array[String] = ["yuv420p", "yuvj420p", "yuv420p10le"]
 
 # Scratch file ffmpeg writes -progress lines to; polled to drive the progress bar.

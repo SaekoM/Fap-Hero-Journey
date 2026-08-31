@@ -21,12 +21,11 @@ practical result is that an AV1 or HEVC source is now **copied, not converted**:
 
 Nothing to turn on and nothing to choose — drop the file in and it is kept.
 
-**10-bit is included too**, which matters because most AV1 and HEVC in circulation is 10-bit. It does
-cost more to play — 10-bit takes a different path through the decoder, about 1.7x the processor work of
-the same clip at 8-bit, measured at both 1080p and 4K. That was accepted rather than assumed: 4K 8-bit
-video already shipped at a comparable cost and has never caused trouble, and 4K 10-bit played without a
-stutter or a click on test hardware. If a very old machine ever does struggle with 4K 10-bit, that is
-the case to report — it is the one this was weighed against.
+**10-bit is included too**, which matters because most AV1 and HEVC in circulation is 10-bit — and it
+costs no more to play than 8-bit does. That part took its own piece of work: 10-bit initially fell back
+to converting every frame on the processor, roughly 1.7x the work of the same clip at 8-bit. The player
+now hands 10-bit video to the graphics card exactly as it does 8-bit, and the difference all but
+vanishes — on a 4K clip, from 1.68x down to 1.04x.
 
 Still converted: anything the player genuinely cannot read — 4:2:2 and 4:4:4 video, older codecs, and
 any file in a container the player has no reader for.
