@@ -15,6 +15,14 @@ addons/ffmpeg/**/~*.dll
 addons/ffmpeg/**/~*.dll~*
 addons/ffmpeg/**/~*.TMP
 addons/ffmpeg/**/~*.tmp
+
+# Rollback copies of the vendored FFmpeg / GDExtension binaries, kept beside the live ones whenever they
+# are swapped (see the AV1 rebuild in STATE.md). Sixteen large files that duplicate whatever the previous
+# release shipped — worth having on disk, never worth committing.
+addons/ffmpeg/**/_backup-*/
+
+# Bytecode from ad-hoc Python run inside the project tree.
+__pycache__/
 Thumbs.db
 ehthumbs.db
 Desktop.ini

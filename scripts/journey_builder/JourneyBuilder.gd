@@ -209,6 +209,14 @@ var _save_abort_error: Dictionary = {}
 var _round_folder_counter: int = 0
 
 # Save-wide map of non-H.264 video source paths → {codec, duration}. Built once by
+# True when the last _build_transcode_plan decided to KEEP a video that isn't H.264 — the journey then
+# needs a newer app floor (JourneyData.JOURNEY_MIN_APP_VERSION_WIDE_CODECS). Only the full-journey save
+# sets it; a rendition takes the standing floor, since its own stamp runs through JourneyRendition.
+#
+# With auto-transcode OFF nothing is probed at all, so this stays false and the floor stays put — the
+# same "the author takes responsibility" bargain that switch has always been.
+var _kept_wide_codec: bool = false
+
 # _build_transcode_plan (walking the graph's round nodes), then consulted per round in
 # _save_round_node_media.
 var _transcode_plan: Dictionary = {}
@@ -4836,6 +4844,7 @@ func _build_transcode_plan() -> bool:
 		return false
 
 	var auto_transcode: bool = SettingsService.get_auto_transcode()
+	_kept_wide_codec = false
 	var src_info: Dictionary = {}  # src → {codec, pix_fmt}; probed once per source
 	var src_duration: Dictionary = {}  # src → full duration (s); probed once
 	for key: String in combos:
@@ -4850,9 +4859,13 @@ func _build_transcode_plan() -> bool:
 			src_info[src] = MediaPoolService.probe_stream_info(src)
 		var info: Dictionary = src_info[src]
 		var reason: String = MediaPoolService.classify_transcode(
-			str(info["codec"]), str(info["pix_fmt"]), is_trim
+			str(info["codec"]), str(info["pix_fmt"]), is_trim, src.get_extension()
 		)
 		if reason == "":
+			# Kept exactly as it is. If it isn't H.264, this journey now needs a build whose decoder
+			# can play it — which is what raises its MinVersion floor when journey.json is stamped.
+			if not (str(info["codec"]) in MediaPoolService.H264_NAMES):
+				_kept_wide_codec = true
 			continue
 
 		if not src_duration.has(src):
@@ -5104,7 +5117,11 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	}
 	# Identity + version stamps. _journey_id is empty for a new journey (minted here) and carries
 	# the loaded id for an existing one, so re-saving — or renaming — never changes it.
-	JourneyData.stamp_journey_identity(result, _journey_id)
+	JourneyData.stamp_journey_identity(
+		result,
+		_journey_id,
+		JourneyData.JOURNEY_MIN_APP_VERSION_WIDE_CODECS if _kept_wide_codec else ""
+	)
 	_journey_id = str(result["JourneyId"])
 	result.merge(node_block)  # adds Format, Start, Nodes
 	result["Comments"] = _serialize_comments(_graph_model.get("comments", []))

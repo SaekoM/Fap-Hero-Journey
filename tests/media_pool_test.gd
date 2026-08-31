@@ -201,3 +201,134 @@ func test_try_hardlink_shares_data() -> void:
 		assert_str(FileAccess.get_file_as_string(dst)).is_equal("pooled-bytes")
 		# Won't overwrite an existing destination.
 		assert_bool(MediaPoolService.try_hardlink(src, dst)).is_false()
+
+
+# ── The transcode gate ───────────────────────────────────────────────────────
+#
+# transcode_reason is the pure half of classify_transcode: given what a probe found and what this build
+# can play, does the file need re-encoding and why. The reason string is shown to the author, so the
+# cases below pin the wording as much as the yes/no.
+
+# The real set the gate uses, so these cases move if the shipped decoders ever do.
+const PLAYABLE: Array[String] = MediaPoolService.PLAYABLE_VIDEO_CODECS
+
+
+func test_a_playable_source_needs_no_encode() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("h264", "yuv420p", false, "mp4", PLAYABLE))
+		. is_equal("")
+	)
+
+
+# VP9 decodes in the shipped build, so a webm is kept rather than re-encoded. This is the case the
+# old H.264-only gate got wrong — it re-encoded every VP9 file for nothing.
+func test_vp9_is_kept() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("vp9", "yuv420p", false, "webm", PLAYABLE))
+		. is_equal("")
+	)
+
+
+func test_an_undecodable_codec_is_named_as_the_reason() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p", false, "mp4", PLAYABLE))
+		. is_equal("hevc")
+	)
+
+
+# AV1 is kept, not re-encoded — the decoders now ship with it. This is the case the whole FFmpeg
+# rebuild existed to change, so it is worth asserting against the REAL codec list rather than a literal.
+func test_av1_is_kept() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("av1", "yuv420p", false, "mp4", PLAYABLE))
+		. is_equal("")
+	)
+
+
+# 8-bit HEVC is kept — the build that gained dav1d also enabled the hevc decoder.
+func test_hevc_is_kept_when_8_bit() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p", false, "mp4", PLAYABLE))
+		. is_equal("")
+	)
+
+
+# ...but 10-bit HEVC still re-encodes, on PIXEL FORMAT rather than codec. HEVC is commonly 10-bit, so
+# this is the case that actually decides whether a given HEVC file is copied or converted.
+func test_hevc_10_bit_still_re_encodes() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p10le", false, "mp4", PLAYABLE))
+		. is_equal("hevc yuv420p10le")
+	)
+
+
+# The same split applies to AV1, which is also often 10-bit.
+func test_av1_10_bit_still_re_encodes() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("av1", "yuv420p10le", false, "mp4", PLAYABLE))
+		. is_equal("av1 yuv420p10le")
+	)
+
+
+# A pixel format outside the GPU-friendly set still decodes, but only through a per-frame CPU
+# conversion — so it is re-encoded, and the reason names both halves.
+func test_a_costly_pixel_format_is_re_encoded() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("h264", "yuv420p10le", false, "mp4", PLAYABLE))
+		. is_equal("h264 yuv420p10le")
+	)
+
+
+# The bug the container gate exists for: a perfectly playable H.264 stream in a container the runtime
+# has no demuxer for. Before the gate this passed and pooled verbatim, then failed to open at play time.
+func test_an_undemuxable_container_is_remuxed() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("h264", "yuv420p", false, "ts", PLAYABLE))
+		. is_equal("h264 in .ts")
+	)
+
+
+func test_the_container_check_is_case_insensitive() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("h264", "yuv420p", false, "MP4", PLAYABLE))
+		. is_equal("")
+	)
+
+
+# A caller with no container to offer (the builder's preview probe) must not be told to re-encode.
+func test_an_unknown_container_is_not_a_reason() -> void:
+	assert_str(MediaPoolService.transcode_reason("h264", "yuv420p", false, "", PLAYABLE)).is_equal(
+		""
+	)
+
+
+# An unreadable probe re-encodes rather than gambling.
+func test_an_unreadable_codec_re_encodes() -> void:
+	assert_str(MediaPoolService.transcode_reason("", "", false, "mp4", PLAYABLE)).is_equal(
+		"unverifiable"
+	)
+
+
+# The codec is reported ahead of the pixel format and the container: the first true thing about a file
+# is the useful one, and an undecodable codec makes the rest moot.
+func test_the_codec_reason_wins_over_the_others() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p10le", false, "ts", PLAYABLE))
+		. is_equal("hevc")
+	)
+
+
+# A cut forces an encode even on a source that needed nothing — a frame-accurate trim can't be a copy.
+func test_a_trim_forces_an_encode_on_a_clean_source() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("h264", "yuv420p", true, "mp4", PLAYABLE))
+		. is_equal("trim")
+	)
+
+
+# ...but a real problem still outranks it, so the modal names the actual fault.
+func test_a_real_reason_outranks_trim() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p", true, "mp4", PLAYABLE))
+		. is_equal("hevc")
+	)

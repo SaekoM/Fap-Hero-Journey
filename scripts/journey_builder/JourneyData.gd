@@ -933,6 +933,12 @@ static func _note_animated(out: Dictionary, path: String, animated_exts: Array) 
 # read, so a plain re-save doesn't inflate the requirement.
 const JOURNEY_MIN_APP_VERSION: String = "0.6.0"
 
+# The floor a journey needs once it KEEPS video that older builds would have re-encoded to H.264. Those
+# builds decode H.264 only, so they would install such a journey happily, show its card, start the round,
+# and display nothing — the failure has to land at LOAD, where JourneySelect can explain it, rather than
+# in the middle of play where it reads as a broken journey.
+const JOURNEY_MIN_APP_VERSION_WIDE_CODECS: String = "0.8.4"
+
 
 # A stable, globally-unique id for a journey, minted ONCE and preserved across every later save
 # (see stamp_journey_identity). Journeys travel between users, so this is 128 bits of randomness
@@ -954,14 +960,20 @@ static func new_journey_id() -> String:
 # `existing_id` carries the id forward: it MUST be stable for the life of the journey, so it is
 # minted only when absent. Renaming a journey keeps its id (same journey); a fresh save mints a
 # new one.
-static func stamp_journey_identity(meta: Dictionary, existing_id: String = "") -> void:
+#
+# `min_version` raises the floor above the standing one for a journey whose CONTENT needs a newer app —
+# today that means keeping video an older decoder can't play. Blank means "nothing special", which is
+# the normal case and the only thing renditions ever pass.
+static func stamp_journey_identity(
+	meta: Dictionary, existing_id: String = "", min_version: String = ""
+) -> void:
 	var id: String = existing_id.strip_edges()
 	if id == "":
 		id = new_journey_id()
 	meta["JourneyId"] = id
 	# The exact build that wrote the file (informational) + the floor needed to open it.
 	meta["CreatedWith"] = str(ProjectSettings.get_setting("application/config/version", ""))
-	meta["MinVersion"] = JOURNEY_MIN_APP_VERSION
+	meta["MinVersion"] = min_version if min_version != "" else JOURNEY_MIN_APP_VERSION
 
 
 # ── Item templates ───────────────────────────────────────────────────────────

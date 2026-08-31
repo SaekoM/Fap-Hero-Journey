@@ -2,21 +2,57 @@ extends Node
 ## Graph-agnostic media operations shared by the journey builder's save pipeline
 ## and the randomizer library. Resolves the ffmpeg / ffprobe binaries, probes a
 ## source video (codec / pixel format / duration), decides whether a source needs
-## re-encoding for the runtime decoder (EIRTeam.FFmpeg decodes H.264 only), and
-## runs the actual transcode.
+## re-encoding for the runtime decoder (see PLAYABLE_VIDEO_CODECS — the vendored
+## avcodec is a trimmed build, NOT the full ffmpeg CLI beside it), and runs the
+## actual transcode.
 ##
 ## Pure I/O + process control: it owns no journey / graph / UI state. Progress and
 ## cancellation are injected as Callables, so any caller wires its own modal — the
 ## builder feeds its save-progress modal, the randomizer its library-add modal.
 ## Extracted from JourneyBuilder so both paths share one implementation.
 
-# Codecs the runtime decoder treats as H.264 (ffprobe codec_name variants).
+# Codecs the runtime decoder treats as H.264 (ffprobe codec_name variants). Still its own list because
+# is_baked_animation needs "is this exactly an H.264 bake", which is a narrower question than "can this
+# play" — see the STRICT ON PURPOSE note there.
 const H264_NAMES: Array[String] = ["h264", "avc1", "avc"]
 
-# Pixel formats EIRTeam.FFmpeg handles: 8-bit 4:2:0, both the standard (yuv420p)
-# and full-range JPEG (yuvj420p) variants. Anything else (10-bit, 4:2:2, 4:4:4) is
-# re-encoded even when the codec is already H.264 — the "it's h264 but still won't
-# play" cases. Kept broad to avoid needless re-encodes.
+# Everything THE RUNTIME can decode without a re-encode — EIRTeam.FFmpeg's vendored avcodec, which is a
+# deliberately trimmed build (`--disable-decoders`, then a short re-enable list). NOT the ffmpeg CLI
+# sitting beside it: that one is a full build that decodes nearly everything, and confusing the two is
+# exactly how an unplayable file would clear the save gate and then fail at a round's first frame.
+#
+# This list mirrors the addon build's own `--enable-decoder=` set. Widen it only alongside the binaries.
+#
+# AV1 joined it once the binaries could actually play it — the vendored avcodec is now built with
+# `--enable-decoder=libdav1d --enable-parser=av1`, verified by the decoder name appearing in the DLL
+# rather than only in its configure string. An AV1 source is therefore KEPT AS IT IS: no re-encode, no
+# generation loss, and a journey a third smaller than the H.264 copy it used to be turned into.
+#
+# `av01` and `hvc1`/`hev1` are MP4 fourccs rather than codec_names ffprobe emits, listed for the same
+# defensive reason `avc1` sits beside `h264`.
+#
+# HEVC rides along on the same build (`--enable-decoder=hevc --enable-parser=hevc`). Note it is COMMONLY
+# 10-BIT, and 10-bit is not in SAFE_PIX_FMTS — so a 10-bit HEVC source still re-encodes, on pixel format
+# rather than on codec. That is deliberate: a format outside SAFE_PIX_FMTS decodes only through a
+# per-frame swscale conversion on the CPU, the cost class that starved the audio buffer in 0.8.2. The
+# effect is that 8-bit HEVC is kept and 10-bit is converted, which is the right split until somebody
+# measures the 10-bit path on real hardware.
+const PLAYABLE_VIDEO_CODECS: Array[String] = [
+	"h264", "avc1", "avc", "vp8", "vp9", "av1", "av01", "hevc", "h265", "hvc1", "hev1"
+]
+
+# Containers the runtime can DEMUX. The addon build enables mov, matroska, avi and flv only, so a file
+# outside this list needs remuxing even when its codec is perfectly playable — an H.264 .ts clears every
+# codec check today, pools verbatim, and then cannot be opened at play time.
+const PLAYABLE_CONTAINERS: Array[String] = ["mp4", "m4v", "mov", "mkv", "webm", "avi", "flv"]
+
+# Pixel formats EIRTeam.FFmpeg can hand to the GPU as YUV planes: 8-bit 4:2:0, both the standard
+# (yuv420p) and full-range JPEG (yuvj420p) variants.
+#
+# Anything else (10-bit, 4:2:2, 4:4:4) still DECODES — VideoDecoder falls back to an RGBA8 conversion
+# through swscale — but that conversion runs on the CPU for every frame, which is the same cost class
+# that starved the audio ring buffer and caused the 0.8.2 crackle. So an unlisted format is a reason to
+# re-encode, not a reason to refuse. Kept narrow deliberately; widening it trades disk for frame time.
 const SAFE_PIX_FMTS: Array[String] = ["yuv420p", "yuvj420p"]
 
 # Scratch file ffmpeg writes -progress lines to; polled to drive the progress bar.
@@ -336,22 +372,42 @@ func probe_duration_seconds(path: String) -> float:
 	return (out[0] as String).strip_edges().to_float()
 
 
-# Decides whether a probed source needs re-encoding, and why. Returns the reason
-# string used for the plan key / modal ("" = no encode needed). A source is
-# planned when its codec can't be read (re-encode to be safe), isn't H.264, or is
-# H.264 with an undecodable pixel format (10-bit, 4:2:2, …). `is_trim` forces an
-# encode even on a clean source — a frame-accurate cut can't ship as a copy.
-func classify_transcode(codec: String, pix_fmt: String, is_trim: bool) -> String:
+# The pure decision behind classify_transcode, split out so the gate can be unit-tested without an
+# autoload, a probe or a settings file — the ForkResolver / DeviceRouting pattern. `playable` is the
+# caller's codec set, which is the only part that varies by build or setting.
+#
+# Order matters: the reason string is shown to the author, and the FIRST true thing about a file is the
+# most useful one to tell them. An unplayable codec makes its pixel format irrelevant.
+static func transcode_reason(
+	codec: String, pix_fmt: String, is_trim: bool, container: String, playable: Array
+) -> String:
 	var reason: String = ""
 	if codec == "":
 		reason = "unverifiable"  # couldn't read — re-encode to be safe
-	elif not (codec in H264_NAMES):
-		reason = codec  # wrong codec (HEVC/AV1/VP9/…)
+	elif not (codec in playable):
+		reason = codec  # nothing in this build decodes it
 	elif pix_fmt != "" and not (pix_fmt in SAFE_PIX_FMTS):
-		reason = "%s %s" % [codec, pix_fmt]  # h264 but undecodable profile
+		reason = "%s %s" % [codec, pix_fmt]  # decodes, but only down the per-frame CPU path
+	elif container != "" and not (container.to_lower() in PLAYABLE_CONTAINERS):
+		reason = "%s in .%s" % [codec, container.to_lower()]  # playable stream, unreadable wrapper
 	if is_trim and reason == "":
-		reason = "trim"  # fine codec, but the cut itself demands the encode
+		reason = "trim"  # fine source, but the cut itself demands the encode
 	return reason
+
+
+# Decides whether a probed source needs re-encoding, and why. Returns the reason string used for the plan
+# key / modal ("" = no encode needed). A source is planned when its codec can't be read (re-encode to be
+# safe), when nothing in this build decodes it, when its pixel format would cost a per-frame CPU
+# conversion, or when its container can't be demuxed. `is_trim` forces an encode even on a clean source —
+# a frame-accurate cut can't ship as a copy.
+#
+# `container` is the source's extension. It defaults to unchecked so a caller that only has a codec (the
+# builder's preview probe) keeps working; the save paths pass it, because they are the ones whose output
+# has to survive being opened again later.
+func classify_transcode(
+	codec: String, pix_fmt: String, is_trim: bool, container: String = ""
+) -> String:
+	return transcode_reason(codec, pix_fmt, is_trim, container, PLAYABLE_VIDEO_CODECS)
 
 
 # ── Animated images ──────────────────────────────────────────────────────────

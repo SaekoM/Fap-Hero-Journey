@@ -1919,7 +1919,7 @@ func _build_transcode_section() -> void:
 	auto_row.add_child(_auto_transcode_toggle)
 
 	var hint: Label = Label.new()
-	hint.text = "On (recommended): videos are converted on save so they'll play — non-H.264 is transcoded, and H.264 in formats the player can't decode (10-bit, 4:2:2) is re-encoded. Off: videos are copied as-is and ffmpeg isn't needed — only use this if you prepare H.264 videos yourself. Leave FFmpeg Folder empty to use the bundled copy; set it only if the bundled ffmpeg won't run (e.g. under Wine)."
+	hint.text = "On (recommended): videos are converted on save so they'll play — a codec the player can't decode is transcoded, H.264 in a format it can't sample cheaply (10-bit, 4:2:2) is re-encoded, and a playable stream in a container it can't open (.ts, .ogv, .wmv) is remuxed. Off: videos are copied as-is and ffmpeg isn't needed — only use this if you prepare compatible videos yourself. Leave FFmpeg Folder empty to use the bundled copy; set it only if the bundled ffmpeg won't run (e.g. under Wine)."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(hint, UITheme.SEPARATOR, 11, false)
 	section.add_child(hint)

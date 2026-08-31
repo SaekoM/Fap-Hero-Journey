@@ -318,7 +318,7 @@ func add_clip(
 	# Probe only (metadata) — decides the re-encode need + the predicted pooled ext.
 	var info: Dictionary = MediaPoolService.probe_stream_info(video_src)
 	var reason: String = MediaPoolService.classify_transcode(
-		str(info["codec"]), str(info["pix_fmt"]), false
+		str(info["codec"]), str(info["pix_fmt"]), false, video_src.get_extension()
 	)
 	# When the probe couldn't run (no ffprobe), assume a re-encode is needed so the
 	# predicted .mp4 rel is safe; prepare_entry_media re-checks ffmpeg availability.

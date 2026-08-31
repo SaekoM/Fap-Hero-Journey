@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.8.4
+
+The player learns three new video codecs. **AV1** and **HEVC** now play as they are, and **VP9** — which
+could always play — stops being converted for no reason.
+
+### ◆ Video that isn't converted any more
+
+Until now the player understood exactly one video codec: H.264. Everything else was re-encoded when a
+journey was saved. That cost time on every save, threw away quality the source already had, and usually
+produced a *larger* file than the one it replaced.
+
+The video player has been rebuilt on a current FFmpeg carrying **dav1d**, the fast AV1 decoder. The
+practical result is that an AV1 or HEVC source is now **copied, not converted**:
+
+- **No waiting.** A long clip used to mean a long encode before the journey would save.
+- **No generation loss.** The file that plays is the file you gave it.
+- **Smaller journeys.** An AV1 source re-encoded to H.264 typically came out bigger than it started.
+  Keeping it makes a journey substantially smaller to store and to share.
+
+Nothing to turn on and nothing to choose — drop the file in and it is kept.
+
+**One exception, on purpose: 10-bit.** A 10-bit video decodes only through a conversion that runs on the
+processor for every single frame, and that is the same cost that caused the audio crackle fixed in
+0.8.2. AV1 and HEVC are both commonly 10-bit, so those files are still converted, while their 8-bit
+equivalents are kept. This is a deliberately cautious line, not a limitation of the format, and it can
+move once there is real measurement behind it rather than a guess.
+
+**A journey that keeps one of these codecs asks for v0.8.4** when opened. Older versions genuinely
+cannot play the video, so they say so on the journey card instead of starting a round and showing black.
+
+### 🩹 Fixes
+
+- **A playable video in a container the player can't open is now remuxed.** Codec and container are
+  separate questions, and only the codec was ever checked — so an H.264 file in a `.ts` or `.wmv`
+  wrapper passed every test, was copied into the journey untouched, and then failed to open at play
+  time. Longstanding; it simply had no way to be noticed before.
+- **VP9 is no longer re-encoded.** It always played; the save gate just didn't know that.
+
 ## v0.8.3
 
 Places, and the music that belongs to them. A **setting** is a backdrop and a score defined once and
