@@ -21,11 +21,15 @@ practical result is that an AV1 or HEVC source is now **copied, not converted**:
 
 Nothing to turn on and nothing to choose — drop the file in and it is kept.
 
-**One exception, on purpose: 10-bit.** A 10-bit video decodes only through a conversion that runs on the
-processor for every single frame, and that is the same cost that caused the audio crackle fixed in
-0.8.2. AV1 and HEVC are both commonly 10-bit, so those files are still converted, while their 8-bit
-equivalents are kept. This is a deliberately cautious line, not a limitation of the format, and it can
-move once there is real measurement behind it rather than a guess.
+**10-bit is included too**, which matters because most AV1 and HEVC in circulation is 10-bit. It does
+cost more to play — 10-bit takes a different path through the decoder, about 1.7x the processor work of
+the same clip at 8-bit, measured at both 1080p and 4K. That was accepted rather than assumed: 4K 8-bit
+video already shipped at a comparable cost and has never caused trouble, and 4K 10-bit played without a
+stutter or a click on test hardware. If a very old machine ever does struggle with 4K 10-bit, that is
+the case to report — it is the one this was weighed against.
+
+Still converted: anything the player genuinely cannot read — 4:2:2 and 4:4:4 video, older codecs, and
+any file in a container the player has no reader for.
 
 **A journey that keeps one of these codecs asks for v0.8.4** when opened. Older versions genuinely
 cannot play the video, so they say so on the journey card instead of starting a round and showing black.

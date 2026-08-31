@@ -31,12 +31,9 @@ const H264_NAMES: Array[String] = ["h264", "avc1", "avc"]
 # `av01` and `hvc1`/`hev1` are MP4 fourccs rather than codec_names ffprobe emits, listed for the same
 # defensive reason `avc1` sits beside `h264`.
 #
-# HEVC rides along on the same build (`--enable-decoder=hevc --enable-parser=hevc`). Note it is COMMONLY
-# 10-BIT, and 10-bit is not in SAFE_PIX_FMTS — so a 10-bit HEVC source still re-encodes, on pixel format
-# rather than on codec. That is deliberate: a format outside SAFE_PIX_FMTS decodes only through a
-# per-frame swscale conversion on the CPU, the cost class that starved the audio buffer in 0.8.2. The
-# effect is that 8-bit HEVC is kept and 10-bit is converted, which is the right split until somebody
-# measures the 10-bit path on real hardware.
+# HEVC rides along on the same build (`--enable-decoder=hevc --enable-parser=hevc`). It is commonly
+# 10-bit, as is much AV1 — and 10-bit is admitted too, on measured evidence rather than assumption. See
+# the numbers under SAFE_PIX_FMTS below, including what it costs and why that was judged affordable.
 const PLAYABLE_VIDEO_CODECS: Array[String] = [
 	"h264", "avc1", "avc", "vp8", "vp9", "av1", "av01", "hevc", "h265", "hvc1", "hev1"
 ]
@@ -46,14 +43,32 @@ const PLAYABLE_VIDEO_CODECS: Array[String] = [
 # codec check today, pools verbatim, and then cannot be opened at play time.
 const PLAYABLE_CONTAINERS: Array[String] = ["mp4", "m4v", "mov", "mkv", "webm", "avi", "flv"]
 
-# Pixel formats EIRTeam.FFmpeg can hand to the GPU as YUV planes: 8-bit 4:2:0, both the standard
-# (yuv420p) and full-range JPEG (yuvj420p) variants.
+# Pixel formats the runtime plays without re-encoding: 8-bit 4:2:0 (standard and full-range JPEG), plus
+# 10-bit 4:2:0, which most AV1 and HEVC in the wild actually uses.
 #
-# Anything else (10-bit, 4:2:2, 4:4:4) still DECODES — VideoDecoder falls back to an RGBA8 conversion
-# through swscale — but that conversion runs on the CPU for every frame, which is the same cost class
-# that starved the audio ring buffer and caused the 0.8.2 crackle. So an unlisted format is a reason to
-# re-encode, not a reason to refuse. Kept narrow deliberately; widening it trades disk for frame time.
-const SAFE_PIX_FMTS: Array[String] = ["yuv420p", "yuvj420p"]
+# 8-bit goes to the GPU as YUV planes. 10-bit does NOT — VideoDecoder converts it to RGBA8 through
+# swscale on the decode thread, per frame, and that is genuinely more expensive. MEASURED 2026-08-31,
+# same source, same round, only bit depth varying (Ryzen 7 9850X3D, 8C/16T):
+#
+#     1080p   8-bit   30.1% of one core (p95 38.8)      4K   8-bit    74.5% (p95  98.7)
+#     1080p  10-bit   51.0% of one core (p95 58.6)      4K  10-bit   125.4% (p95 149.4)
+#
+# So 10-bit costs ~1.7x, consistently, across a 4x change in pixel count. It is admitted anyway because
+# the absolute cost is affordable and the alternative is worse: refusing it means re-encoding the
+# majority of AV1/HEVC sources, which is a certain loss of time and quality for every author, to avoid a
+# speculative one. The reference point that decides it — 4K 8-bit ALREADY ships, at 74.5% with peaks
+# over a full core, and has never been reported as a problem. 10-bit is the same envelope, further along.
+# 4K 10-bit showed no stutter and no crackle when tested.
+#
+# Two caveats worth keeping. This is one fast machine; a low-end CPU playing 4K 10-bit is the case that
+# could still bite, and 4K sources are rare. And FFmpeg decodes multithreaded (thread_count = 0), which
+# is why >100% of one core is possible and why the swscale stage does not simply serialise everything
+# behind it — an earlier reading of this as single-threaded was wrong.
+#
+# The permanent fix is to stop converting at all: a YUV420P10 frame format plus a 10-bit variant of
+# yuv_to_rgb.glsl in the EIRTeam.FFmpeg fork would put 10-bit on the GPU beside 8-bit and erase the
+# 1.7x. That is now an optimisation to schedule, not a prerequisite for anything.
+const SAFE_PIX_FMTS: Array[String] = ["yuv420p", "yuvj420p", "yuv420p10le"]
 
 # Scratch file ffmpeg writes -progress lines to; polled to drive the progress bar.
 const PROGRESS_FILE: String = "user://transcode_progress.txt"

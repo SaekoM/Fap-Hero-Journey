@@ -231,8 +231,10 @@ func test_vp9_is_kept() -> void:
 
 func test_an_undecodable_codec_is_named_as_the_reason() -> void:
 	(
-		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p", false, "mp4", PLAYABLE))
-		. is_equal("hevc")
+		assert_str(
+			MediaPoolService.transcode_reason("mpeg2video", "yuv420p", false, "mp4", PLAYABLE)
+		)
+		. is_equal("mpeg2video")
 	)
 
 
@@ -253,29 +255,36 @@ func test_hevc_is_kept_when_8_bit() -> void:
 	)
 
 
-# ...but 10-bit HEVC still re-encodes, on PIXEL FORMAT rather than codec. HEVC is commonly 10-bit, so
-# this is the case that actually decides whether a given HEVC file is copied or converted.
-func test_hevc_10_bit_still_re_encodes() -> void:
+# ...and 10-bit is kept too. HEVC and AV1 are commonly 10-bit, so this is the case that decides whether
+# most real files are copied or converted. It costs ~1.7x the CPU of 8-bit (measured; see SAFE_PIX_FMTS)
+# and was judged affordable — this test is what will fail if somebody narrows that list again.
+func test_hevc_10_bit_is_kept() -> void:
 	(
 		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p10le", false, "mp4", PLAYABLE))
-		. is_equal("hevc yuv420p10le")
+		. is_equal("")
 	)
 
 
-# The same split applies to AV1, which is also often 10-bit.
-func test_av1_10_bit_still_re_encodes() -> void:
+func test_av1_10_bit_is_kept() -> void:
 	(
 		assert_str(MediaPoolService.transcode_reason("av1", "yuv420p10le", false, "mp4", PLAYABLE))
-		. is_equal("av1 yuv420p10le")
+		. is_equal("")
 	)
 
 
-# A pixel format outside the GPU-friendly set still decodes, but only through a per-frame CPU
-# conversion — so it is re-encoded, and the reason names both halves.
-func test_a_costly_pixel_format_is_re_encoded() -> void:
+# 4:2:2 stays out: it is not in SAFE_PIX_FMTS and was never measured, so it still re-encodes.
+func test_an_unmeasured_pixel_format_still_re_encodes() -> void:
+	(
+		assert_str(MediaPoolService.transcode_reason("h264", "yuv422p", false, "mp4", PLAYABLE))
+		. is_equal("h264 yuv422p")
+	)
+
+
+# 10-bit H.264 is kept for the same reason 10-bit AV1 is: the cost was measured and accepted.
+func test_10_bit_h264_is_kept() -> void:
 	(
 		assert_str(MediaPoolService.transcode_reason("h264", "yuv420p10le", false, "mp4", PLAYABLE))
-		. is_equal("h264 yuv420p10le")
+		. is_equal("")
 	)
 
 
@@ -313,8 +322,10 @@ func test_an_unreadable_codec_re_encodes() -> void:
 # is the useful one, and an undecodable codec makes the rest moot.
 func test_the_codec_reason_wins_over_the_others() -> void:
 	(
-		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p10le", false, "ts", PLAYABLE))
-		. is_equal("hevc")
+		assert_str(
+			MediaPoolService.transcode_reason("mpeg2video", "yuv422p", false, "ts", PLAYABLE)
+		)
+		. is_equal("mpeg2video")
 	)
 
 
@@ -329,6 +340,8 @@ func test_a_trim_forces_an_encode_on_a_clean_source() -> void:
 # ...but a real problem still outranks it, so the modal names the actual fault.
 func test_a_real_reason_outranks_trim() -> void:
 	(
-		assert_str(MediaPoolService.transcode_reason("hevc", "yuv420p", true, "mp4", PLAYABLE))
-		. is_equal("hevc")
+		assert_str(
+			MediaPoolService.transcode_reason("mpeg2video", "yuv420p", true, "mp4", PLAYABLE)
+		)
+		. is_equal("mpeg2video")
 	)
