@@ -11,9 +11,10 @@ extends Node
 ## builder feeds its save-progress modal, the randomizer its library-add modal.
 ## Extracted from JourneyBuilder so both paths share one implementation.
 
-# Codecs the runtime decoder treats as H.264 (ffprobe codec_name variants). Still its own list because
-# is_baked_animation needs "is this exactly an H.264 bake", which is a narrower question than "can this
-# play" — see the STRICT ON PURPOSE note there.
+# Codecs the runtime decoder treats as H.264 (ffprobe codec_name variants). Kept separate from
+# PLAYABLE_VIDEO_CODECS because one caller still needs the narrow question rather than "can this play":
+# JourneyBuilder decides whether a KEPT video raises a journey's MinVersion floor, and only H.264 is
+# playable by every older build.
 const H264_NAMES: Array[String] = ["h264", "avc1", "avc"]
 
 # Everything THE RUNTIME can decode without a re-encode — EIRTeam.FFmpeg's vendored avcodec, which is a
@@ -347,9 +348,19 @@ func probe_has_audio(path: String) -> bool:
 # STRICT ON PURPOSE. This was once just "is it H.264 8-bit?", which is also true of any clip an
 # author drops in as an animated image — and those copied through with their audio and their
 # untruncated length. Don't loosen it back to a codec check.
+#
+# The CODEC clause is the one that widened: it accepts anything the runtime plays, not H.264 alone. The
+# strictness that note is really about lives in the other clauses — pixel format, the size cap, the
+# duration cap and the no-audio rule — and those are untouched, so an author's clip still cannot slip
+# through with its audio and its full length.
+#
+# Why widen it: a journey whose videos are re-encoded to AV1 or HEVC for distribution would otherwise
+# fail here on its animated images and re-bake them back to H.264 on the next save, quietly undoing part
+# of the conversion. bake_animation still PRODUCES H.264; this only stops already-converted files being
+# needlessly re-encoded.
 func is_baked_animation(path: String, cap: Vector2i) -> bool:
 	var info: Dictionary = probe_stream_info(path)
-	if not (str(info.get("codec", "")) in H264_NAMES):
+	if not (str(info.get("codec", "")) in PLAYABLE_VIDEO_CODECS):
 		return false
 	if not (str(info.get("pix_fmt", "")) in SAFE_PIX_FMTS):
 		return false
