@@ -345,3 +345,123 @@ func test_a_real_reason_outranks_trim() -> void:
 		)
 		. is_equal("mpeg2video")
 	)
+
+
+# ── Trim output codec ────────────────────────────────────────────────────────
+# A trim always re-encodes, and the output codec has to match the source's family so the encode can't
+# move the journey's MinVersion floor. These pin that mapping and the missing-encoder fallback.
+
+const ALL_ENCODERS: Array = ["libx264", "libx265", "libsvtav1"]
+
+
+# Container tags and canonical names land on the same family.
+func test_codec_family_aliases() -> void:
+	for name: String in ["h264", "avc1", "avc"]:
+		assert_str(MediaPoolService.codec_family(name)).is_equal("h264")
+	for name: String in ["hevc", "h265", "hvc1", "hev1"]:
+		assert_str(MediaPoolService.codec_family(name)).is_equal("hevc")
+	for name: String in ["av1", "av01"]:
+		assert_str(MediaPoolService.codec_family(name)).is_equal("av1")
+
+
+# VP8/VP9 deliberately map to AV1 rather than back to libvpx: same MinVersion floor, far faster encoder.
+func test_codec_family_vpx_maps_to_av1() -> void:
+	assert_str(MediaPoolService.codec_family("vp9")).is_equal("av1")
+	assert_str(MediaPoolService.codec_family("vp8")).is_equal("av1")
+
+
+# An unreadable or unknown codec re-encodes as H.264 — the widest compatible guess when we can't tell.
+func test_codec_family_unknown_falls_back() -> void:
+	assert_str(MediaPoolService.codec_family("")).is_equal("h264")
+	assert_str(MediaPoolService.codec_family("theora")).is_equal("h264")
+
+
+# Probed names arrive lowercase, but the mapping shouldn't depend on that.
+func test_codec_family_is_case_insensitive() -> void:
+	assert_str(MediaPoolService.codec_family("AV1")).is_equal("av1")
+	assert_str(MediaPoolService.codec_family(" HEVC ")).is_equal("hevc")
+
+
+# 10-bit survives a trim; yuvj420p is NOT passed through (encoders reject the deprecated full-range
+# variant as an output format) and everything else normalises to 8-bit 4:2:0.
+func test_output_pix_fmt() -> void:
+	assert_str(MediaPoolService.output_pix_fmt("yuv420p10le")).is_equal("yuv420p10le")
+	assert_str(MediaPoolService.output_pix_fmt("yuvj420p")).is_equal("yuv420p")
+	assert_str(MediaPoolService.output_pix_fmt("yuv420p")).is_equal("yuv420p")
+	assert_str(MediaPoolService.output_pix_fmt("")).is_equal("yuv420p")
+
+
+# With every encoder present, each family gets its own — and reports no fallback.
+func test_resolve_encode_profile_matches_family() -> void:
+	var av1: Dictionary = MediaPoolService.resolve_encode_profile("av1", ALL_ENCODERS)
+	assert_str(str(av1["encoder"])).is_equal("libsvtav1")
+	assert_str(str(av1["fell_back_from"])).is_equal("")
+
+	var hevc: Dictionary = MediaPoolService.resolve_encode_profile("hvc1", ALL_ENCODERS)
+	assert_str(str(hevc["encoder"])).is_equal("libx265")
+	assert_str(str(hevc["fell_back_from"])).is_equal("")
+
+
+# The quality target is per-encoder: crf 22 on x264 is not the same target as crf 22 on SVT-AV1, so
+# the profiles must not share one.
+func test_resolve_encode_profile_quality_is_per_family() -> void:
+	var h264: Dictionary = MediaPoolService.resolve_encode_profile("h264", ALL_ENCODERS)
+	var hevc: Dictionary = MediaPoolService.resolve_encode_profile("hevc", ALL_ENCODERS)
+	var av1: Dictionary = MediaPoolService.resolve_encode_profile("av1", ALL_ENCODERS)
+	# x265 needs a LOWER crf than x264 to reach the same measured VMAF, so the numbers themselves
+	# must differ — not merely the presets around them.
+	assert_array(h264["args"] as Array).is_not_equal(hevc["args"] as Array)
+	assert_array(av1["args"] as Array).is_not_equal(hevc["args"] as Array)
+
+
+# Missing encoder → H.264, and the family we WANTED is reported so the author can be told. A silent
+# downgrade is the exact bug this table exists to prevent.
+func test_resolve_encode_profile_reports_fallback() -> void:
+	var av1: Dictionary = MediaPoolService.resolve_encode_profile("av1", ["libx264"])
+	assert_str(str(av1["encoder"])).is_equal("libx264")
+	assert_str(str(av1["family"])).is_equal("h264")
+	assert_str(str(av1["fell_back_from"])).is_equal("av1")
+
+
+# An H.264 source landing on H.264 is not a fallback, even when the probe found nothing at all — there
+# is nothing to tell the author about.
+func test_resolve_encode_profile_h264_never_reports_fallback() -> void:
+	var h264: Dictionary = MediaPoolService.resolve_encode_profile("h264", [])
+	assert_str(str(h264["encoder"])).is_equal("libx264")
+	assert_str(str(h264["fell_back_from"])).is_equal("")
+
+
+# The pure resolver above is covered, but the seam that actually broke was the PROBE: the encoder list
+# is ~15 KB and OS.execute can split a capture across several array entries, so reading only the first
+# one truncated the list mid-alphabet and silently downgraded every AV1 trim to H.264.
+#
+# Deliberately NOT asserting libx264/libsvtav1/libx265: which encoders exist is a property of whichever
+# ffmpeg is resolved, and CI runs on Linux with no bundled binary at all (the repo only ever carried
+# Windows .exe, and those are no longer tracked). Asserting the bundled set would fail on any machine
+# but a developer's.
+#
+# What IS environment-independent is the shape of the answer. `png` and `mjpeg` are native encoders
+# present in every FFmpeg build, and both sort AFTER the `lib*` block — so if the listing parses at all
+# and still contains them, it was not truncated part-way through.
+func test_available_encoders_reads_the_whole_listing() -> void:
+	if not MediaPoolService.is_available():
+		return  # no ffmpeg resolvable here; there is no listing to test
+	var found: PackedStringArray = MediaPoolService.available_encoders()
+	(
+		assert_bool(found.is_empty())
+		. override_failure_message(
+			"ffmpeg answered -version but -encoders parsed to nothing — the probe is broken"
+		)
+		. is_false()
+	)
+	for encoder: String in ["png", "mjpeg"]:
+		(
+			assert_bool(encoder in found)
+			. override_failure_message(
+				(
+					"%s missing — the listing looks truncated (%d encoders parsed)"
+					% [encoder, found.size()]
+				)
+			)
+			. is_true()
+		)

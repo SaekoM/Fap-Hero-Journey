@@ -4845,6 +4845,9 @@ func _build_transcode_plan() -> bool:
 
 	var auto_transcode: bool = SettingsService.get_auto_transcode()
 	_kept_wide_codec = false
+	# Families whose own encoder is missing from this ffmpeg, so their trims fall back to H.264.
+	# Collected as a set: one note per family is useful, one per file is noise.
+	var fallback_families: Dictionary = {}
 	var src_info: Dictionary = {}  # src → {codec, pix_fmt}; probed once per source
 	var src_duration: Dictionary = {}  # src → full duration (s); probed once
 	for key: String in combos:
@@ -4875,8 +4878,37 @@ func _build_transcode_plan() -> bool:
 			# Progress-bar duration = the baked length (only single-segment combos reach here;
 			# multi-segment rounds bake through _pool_video_into with their own progress).
 			duration = JourneyData.segments_total_ms(segs, roundi(duration * 1000.0)) / 1000.0
-		_transcode_plan[key] = {"codec": reason, "duration": duration, "segments": segs}
+		# A trim re-encodes back to the source codec family. Where this ffmpeg has no encoder for that
+		# family the encode falls back to H.264, which changes how the journey distributes — so say so,
+		# at plan time rather than after the author has already waited out the encode.
+		var profile: Dictionary = MediaPoolService.video_encode_profile(str(info["codec"]))
+		if str(profile["fell_back_from"]) != "":
+			fallback_families[str(profile["fell_back_from"])] = true
+		# `target` is the codec family the encode will actually produce. Stored rather than
+		# recomputed at display time, so the progress label and the failure message can never
+		# disagree with what ffmpeg was actually told to do.
+		_transcode_plan[key] = {
+			"codec": reason,
+			"duration": duration,
+			"segments": segs,
+			"target": str(profile["family"]),
+		}
 
+	# An empty encoder list means the probe itself failed, which is a different problem with a
+	# different fix than an ffmpeg that simply lacks the encoder — so the two are never reported
+	# with the same sentence.
+	var probe_failed: bool = MediaPoolService.available_encoders().is_empty()
+	for family: String in fallback_families:
+		var detail: String = (
+			"no %s encoder in this ffmpeg — those rounds were re-encoded as H.264"
+			% family.to_upper()
+		)
+		if probe_failed:
+			detail = (
+				"couldn't ask ffmpeg what it can encode, so %s rounds fell back to H.264 — check Options → Transcoding"
+				% family.to_upper()
+			)
+		_pending_save_warnings.append({"item": family.to_upper(), "detail": detail})
 	return true
 
 
@@ -5493,7 +5525,9 @@ func _pool_video_into(
 			return {"rel": rel, "ok": false}
 	elif is_transcode:
 		var info: Dictionary = _transcode_plan[plan_key]
-		_update_modal_round(modal, rorder, total, display, info["codec"])
+		_update_modal_round(
+			modal, rorder, total, display, info["codec"], str(info.get("target", "h264"))
+		)
 		_transcode_cancel = false
 		var ok: bool = await MediaPoolService.transcode_video(
 			vid_src,
@@ -5520,8 +5554,8 @@ func _pool_video_into(
 					CAUSE_TRANSCODE_FAILED,
 					subject,
 					(
-						'ffmpeg failed to transcode video "%s" (codec %s → h264).'
-						% [vid_src.get_file(), info["codec"]]
+						'ffmpeg failed to transcode video "%s" (%s → %s).'
+						% [vid_src.get_file(), info["codec"], str(info.get("target", "h264"))]
 					),
 					"The source video may be corrupt or use an unsupported variant. Try re-encoding it to H.264 .mp4 outside the editor, then re-drag it into this round."
 				)
@@ -5809,7 +5843,7 @@ func _finalize_save_success() -> void:
 		var notes: Array = []
 		for issue: Dictionary in _pending_save_warnings:
 			notes.append("%s — %s" % [str(issue.get("item", "")), str(issue.get("detail", ""))])
-		message += "%s" % "".join(notes)
+		message += "  " + "  ·  ".join(notes)
 		hold = maxf(hold, 3.0 + 0.8 * float(notes.size()))
 		_pending_save_warnings = []
 
@@ -5877,7 +5911,7 @@ func _create_transcode_modal() -> Control:
 
 
 func _update_modal_round(
-	modal: Control, round_num: int, total: int, round_name: String, codec: String
+	modal: Control, round_num: int, total: int, round_name: String, codec: String, target: String
 ) -> void:
 	if modal == null:
 		return
@@ -5887,7 +5921,8 @@ func _update_modal_round(
 		lbl = modal.find_child("RoundLabel", true, false) as Label
 	if lbl:
 		lbl.text = (
-			"Round %d / %d — %s  (%s → h264)" % [round_num, total, round_name, codec.to_upper()]
+			"Round %d / %d — %s  (%s → %s)"
+			% [round_num, total, round_name, codec.to_upper(), target]
 		)
 
 

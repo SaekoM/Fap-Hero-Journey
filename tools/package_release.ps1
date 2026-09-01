@@ -10,18 +10,35 @@
     bundled path that resolves at runtime is <game dir>/bin/, which has to be copied in when
     packaging - a manual step with no CI build behind it.
 
-    v0.6.0 shipped without it: every Windows user without a system ffmpeg on PATH hit
-    "ffmpeg / ffprobe could not be run" on save, because the save gate only skips the ffmpeg
-    check when Auto-Transcode is off AND nothing is trimmed.
+    The Windows zip now deliberately ships WITHOUT bin/. The full ffmpeg build needed for
+    AV1/HEVC encoding is ~429 MB, which would more than double the download on every release
+    for every player - including the majority who only play distributed journeys and never
+    invoke ffmpeg at all. It is published as a separate one-time download instead, and the app
+    points at it from Options -> Transcoding ("GET FFMPEG" / "INSTALL FOLDER").
 
-    This script removes the human step, and REFUSES to produce a Windows zip missing the
-    binaries - the exact check that would have caught v0.6.0.
+    Users install it to user://bin, which resolve_ffmpeg_binary checks BEFORE <game dir>/bin and
+    which survives game updates - so it is fetched once, not once per release.
 
-    Linux deliberately gets no bin/: the repo only carries Windows .exe binaries, and the
+    HISTORY, so this is not mistaken for the v0.6.0 regression: v0.6.0 shipped without bin/ by
+    ACCIDENT, and every Windows user without a system ffmpeg on PATH hit "ffmpeg / ffprobe could
+    not be run" on save, with no explanation and no way to fix it. This script used to copy bin/
+    in and REFUSE to package without it. That guard has been removed ON PURPOSE. What makes the
+    omission safe now is the recovery path v0.6.0 lacked: Options -> Transcoding reports whether
+    ffmpeg is installed, links to the download, and opens the install folder - and the users who
+    actually need it (journey authors and randomizer players) are told so in plain words.
+
+    Linux gets no bin/ either, as before: the repo only carries Windows .exe binaries, and the
     Linux build resolves ffmpeg from the system PATH by design.
 
     NOTE: this file is deliberately pure ASCII. Windows PowerShell 5.1 reads .ps1 as ANSI
     unless the file has a UTF-8 BOM, so non-ASCII punctuation breaks parsing.
+
+.PARAMETER FfmpegPack
+    Also build ffmpeg-tools-win64.zip from bin/ - the separate one-time download the game links
+    to from Options -> Transcoding. OFF by default: it is a ~200 MB archive that changes only
+    when ffmpeg itself is replaced, so rebuilding it on every game release is wasted minutes.
+    Pass it when you are publishing a new ffmpeg build, then upload the result to the permanent
+    'ffmpeg-tools' tag (NOT to the version release - the link would rot on the next release).
 
 .PARAMETER Export
     Run Godot's headless exporter for both presets first, then package the result. This is the
@@ -72,6 +89,7 @@
 [CmdletBinding()]
 param(
     [switch]$Export,
+    [switch]$FfmpegPack,
     [string]$GodotExe,
     [string]$WindowsExport,
     [string]$LinuxExport,
@@ -84,7 +102,6 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 
 # Binaries the Windows build must ship beside the exe (see .DESCRIPTION).
-$RequiredWinBins = @('ffmpeg.exe', 'ffprobe.exe')
 
 # Preset names as they appear in export_presets.cfg. Must match exactly.
 $WindowsPreset = 'Windows Desktop'
@@ -278,8 +295,8 @@ if ($Export) {
         -OutFile (Join-Path $LinuxExport 'Fap Hero Journey.x86_64')
 }
 
-if (-not $WindowsExport -and -not $LinuxExport) {
-    throw "Nothing to do - pass -Export, or -WindowsExport / -LinuxExport."
+if (-not $WindowsExport -and -not $LinuxExport -and -not $FfmpegPack) {
+    throw "Nothing to do - pass -Export, -WindowsExport / -LinuxExport, or -FfmpegPack."
 }
 
 $stageRoot = Join-Path $OutDir '.stage'
@@ -294,23 +311,15 @@ if ($WindowsExport) {
     $stage = Join-Path $stageRoot 'windows'
     New-Stage -ExportDir $WindowsExport -StageDir $stage -ExpectedExe 'Fap Hero Journey.exe'
 
-    # The whole point: bundle the ffmpeg CLI beside the exe.
-    $binSrc = Join-Path $RepoRoot 'bin'
-    $binDst = Join-Path $stage 'bin'
-    New-Item -ItemType Directory -Force -Path $binDst | Out-Null
-    foreach ($b in $RequiredWinBins) {
-        $src = Join-Path $binSrc $b
-        if (-not (Test-Path -LiteralPath $src)) { throw "Bundled binary missing from repo: $src" }
-        Copy-Item -LiteralPath $src -Destination $binDst -Force
-        Write-Host "    + bin/$b"
+    # No bin/ on purpose - see HISTORY in .DESCRIPTION before reinstating this. ffmpeg is a
+    # separate one-time download now, which is what keeps this zip near 88 MB rather than ~400 MB.
+    # Asserted rather than assumed: a stray bin/ left in the export folder would silently undo it.
+    $strayBin = Join-Path $stage 'bin'
+    if (Test-Path -LiteralPath $strayBin) {
+        Remove-Item -LiteralPath $strayBin -Recurse -Force
+        Write-Host "    - removed stray bin/ from the staged build"
     }
-
-    # Guard: refuse to ship the v0.6.0 bug again.
-    foreach ($b in $RequiredWinBins) {
-        if (-not (Test-Path -LiteralPath (Join-Path $binDst $b))) {
-            throw "REFUSING TO PACKAGE: bin/$b missing from the staged Windows build."
-        }
-    }
+    Write-Host "    (no bin/ - ffmpeg is a separate download; see Options -> Transcoding)"
 
     $zip = Join-Path $OutDir "$name.zip"
     Assert-UpdaterWillMatch -ZipName "$name.zip" -PlatformKeyword 'windows'
@@ -334,6 +343,31 @@ if ($LinuxExport) {
     Write-Host "==> Zipping $name.zip"
     New-ReleaseZip -StageDir $stage -ZipPath $zip
     $built += $zip
+}
+
+# ---- ffmpeg pack (opt-in) --------------------------------------------------
+# The two exes sit at the ARCHIVE ROOT, not under bin/. Options -> Transcoding tells the user to
+# unzip this into the install folder, so the layout has to match that sentence exactly; a bin/
+# prefix here would land them in <install folder>/bin/ where nothing looks for them.
+if ($FfmpegPack) {
+    Write-Host "==> Staging ffmpeg pack" -ForegroundColor Cyan
+    $packBins = @('ffmpeg.exe', 'ffprobe.exe')
+    $binSrc   = Join-Path $RepoRoot 'bin'
+    $packStage = Join-Path $stageRoot 'ffmpeg'
+    New-Item -ItemType Directory -Force -Path $packStage | Out-Null
+    foreach ($b in $packBins) {
+        $src = Join-Path $binSrc $b
+        if (-not (Test-Path -LiteralPath $src)) {
+            throw "Cannot build the ffmpeg pack: $src is missing. bin/*.exe is gitignored, so a fresh clone has no copy - fetch it from the ffmpeg-tools release first."
+        }
+        Copy-Item -LiteralPath $src -Destination $packStage -Force
+        Write-Host ("    + {0}  ({1} MB)" -f $b, [math]::Round((Get-Item -LiteralPath $src).Length / 1MB, 1))
+    }
+
+    $packZip = Join-Path $OutDir 'ffmpeg-tools-win64.zip'
+    Write-Host "==> Zipping ffmpeg-tools-win64.zip (this one is large; expect a wait)"
+    New-ReleaseZip -StageDir $packStage -ZipPath $packZip
+    $built += $packZip
 }
 
 # ---- checksums.txt ---------------------------------------------------------
@@ -373,3 +407,8 @@ Write-Host "  1. Tag v$Version  (clean 'v' + dotted - 'v.$Version' mis-parses in
 Write-Host "  2. Paste the CHANGELOG.md section for this version as the Release body (any length; Discord truncates its embed and links back)"
 Write-Host "  3. Attach the zips above AND checksums.txt (it lists each asset under both the"
 Write-Host "     spaced and dotted spellings, so verification works however GitHub names them)"
+if ($FfmpegPack) {
+    Write-Host "  4. Upload ffmpeg-tools-win64.zip to the PERMANENT 'ffmpeg-tools' tag, not to this"
+    Write-Host "     version's release - Options -> Transcoding links to that fixed tag so the link"
+    Write-Host "     keeps working after the next release ships"
+}

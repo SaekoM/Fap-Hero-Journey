@@ -208,6 +208,11 @@ var _applying_oneshots: bool = false
 # Checked by _show_hud, because setting visibility alone loses to anything that reveals the HUD: the
 # idle-fade timer, a hover, or _ready's own _show_hud() right after loading the first node.
 var _hud_suppressed: bool = false
+# Held from round teardown until the transition has the screen covered. _exit_boss_mode clears
+# the Fog effect (and so un-hides the HUD) BEFORE _transition_swap starts its fade, so without
+# this a fogged round showed its HUD again for the whole fade-out — the round ends by revealing
+# exactly what it spent the round hiding. Cleared in _load_current_item, which runs under black.
+var _hud_held_for_transition: bool = false
 var _curse_hud_hidden: bool = false  # a "Fog" effect hid the HUD (round OR timed item), reconciled
 var _curse_no_pause: bool = false  # a "Restless" effect disabled pausing this round
 const TOLL_AMOUNT: int = 40  # coins a "Toll" effect takes immediately
@@ -596,6 +601,9 @@ func _update_clip_end_fade() -> void:
 
 
 func _load_current_item() -> void:
+	# Any HUD hold from the previous round's teardown ends here: this runs inside the
+	# transition's swap callback, with black fully covering the screen.
+	_hud_held_for_transition = false
 	_record_trail_node()
 	# Cleared on the FIRST item after a resume (whatever its type), so it only ever affects the
 	# node the save landed on — a checkpoint there is skipped; later checkpoints show normally.
@@ -2183,6 +2191,9 @@ func _finish_journey() -> void:
 	_end_timer.stop()
 	FunscriptPlayer.Stop()
 	ScoreService.DiscardRound()  # the in-progress round banks nothing (same as a skip)
+	# Same hold as the natural round end: this clears a Fog effect, and the restore belongs
+	# under the transition rather than in front of the player.
+	_hud_held_for_transition = true
 	_exit_boss_mode()  # drop any active round effects / frames before leaving
 	if _finish_node_id != "" and GameState.JumpToFinish(_finish_node_id):
 		await _transition_swap(_load_current_item)  # fade into the aftercare node
@@ -2793,7 +2804,10 @@ func _on_round_ended(skipped: bool = false) -> void:
 	if _effect_resolvable and not _effect_resolved:
 		var nr: Dictionary = JourneyData.normalize_effect_round(GameState.CurrentRound())
 		endure_reward = int(nr.get("endure_reward", 0))
-	# Tear down boss / effect state (modifiers, lockout, frames) if active.
+	# Tear down boss / effect state (modifiers, lockout, frames) if active. Hold the HUD first:
+	# this clears a Fog effect, and the restore must land under the transition rather than in
+	# front of the player.
+	_hud_held_for_transition = true
 	_exit_boss_mode()
 
 	var coins: int = GameState.CurrentRound().get("coins", 0)
@@ -4854,8 +4868,9 @@ func _show_hud(fade: bool = false) -> void:
 	_fade_warmup_skip_button(true)
 	_fade_finish_button(true)  # fades in with the HUD (stays clickable at rest for an in-progress hold)
 	# A "Fog" curse hides the HUD for the whole round — don't let hover / timers
-	# reveal it. A shop does the same for as long as it is open.
-	if _curse_hud_hidden or _hud_suppressed:
+	# reveal it. A shop does the same for as long as it is open, and round teardown does
+	# until the transition is opaque.
+	if _curse_hud_hidden or _hud_suppressed or _hud_held_for_transition:
 		_hud.visible = false
 		return
 	_hud.visible = true

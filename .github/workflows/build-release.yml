@@ -10,10 +10,14 @@ name: Build Release
 # binaries, the tag, the zip names and the notes are all built from one commit and cannot drift.
 #
 # The packaging itself is deliberately NOT reimplemented here - this calls tools/package_release.ps1,
-# the same script used locally. That script is where the hard-won details live (bundle bin/ beside
-# the exe, flat zips with forward-slash entries, BOM-free checksums using GitHub's dotted asset
-# names, and a hard refusal to package a Windows build without ffmpeg). Two implementations would
-# drift silently - which is exactly how v0.6.0 shipped without the ffmpeg binaries.
+# the same script used locally. That script is where the hard-won details live (flat zips with
+# forward-slash entries, BOM-free checksums using GitHub's dotted asset names, and the assertion that
+# no stray bin/ rides along). Two implementations would drift silently.
+#
+# Note the zips no longer contain ffmpeg: it is published separately on the permanent 'ffmpeg-tools'
+# tag and the app links to it from Options -> Transcoding. See the HISTORY note in that script for why
+# this is not a repeat of v0.6.0, which shipped without ffmpeg by accident and gave the player no way
+# to recover.
 on:
   workflow_dispatch:
     inputs:

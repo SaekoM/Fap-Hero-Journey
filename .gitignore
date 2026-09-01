@@ -44,3 +44,10 @@ export_presets.cfg
 *.md
 !CHANGELOG.md
 !README.md
+
+# ffmpeg/ffprobe are build inputs, not source. At 214 MiB each they exceed GitHub's 100 MiB
+# per-file limit, and every future swap would add its full weight to clone size permanently.
+# Published as a GitHub Release asset instead; see README for where to put them.
+bin/*.exe
+bin/ffmpeg.exe
+bin/ffprobe.exe

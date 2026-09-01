@@ -12,6 +12,11 @@ const PANEL_HALF_W: int = 480
 const PANEL_PAD_V: int = 24
 const BORDER_WIDTH: int = 3
 const ROW_LABEL_W: int = 260
+
+# The ffmpeg pack lives on its own permanent tag rather than riding each release.
+# UpdateService.release_url() resolves to the LATEST game release, so a pack attached to one
+# version's release would become unreachable the moment the next version ships.
+const FFMPEG_PACK_URL: String = "https://github.com/%s/releases/tag/ffmpeg-tools"
 const SLIDER_MIN_W: int = 260
 const VALUE_LABEL_W: int = 64
 
@@ -69,6 +74,7 @@ var _journeys_reset_btn: Button = null
 # Built dynamically in _build_transcode_section().
 var _ffmpeg_path_label: Label = null
 var _ffmpeg_status_label: Label = null
+var _ffmpeg_available_label: Label = null
 var _auto_transcode_toggle: Button = null
 
 @onready
@@ -1893,6 +1899,45 @@ func _build_transcode_section() -> void:
 	_style_label(_ffmpeg_status_label, UITheme.SEPARATOR, 11, false)
 	section.add_child(_ffmpeg_status_label)
 
+	# Whether ffmpeg is actually present, stated up front rather than only after pressing TEST.
+	# A missing ffmpeg is the reason a save fails, and an author shouldn't have to discover that
+	# from a failed save.
+	var get_row: HBoxContainer = HBoxContainer.new()
+	get_row.add_theme_constant_override("separation", 12)
+	section.add_child(get_row)
+
+	var avail_lbl: Label = Label.new()
+	avail_lbl.text = "FFMPEG"
+	avail_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(avail_lbl, UITheme.WHITE_SOFT, 14, false)
+	get_row.add_child(avail_lbl)
+
+	_ffmpeg_available_label = Label.new()
+	_ffmpeg_available_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ffmpeg_available_label.clip_text = true
+	_style_label(_ffmpeg_available_label, UITheme.WHITE_SOFT, 12, false)
+	get_row.add_child(_ffmpeg_available_label)
+
+	var get_btn: Button = Button.new()
+	get_btn.text = "⭳ GET FFMPEG"
+	_style_button(get_btn, UITheme.PURPLE_MID)
+	get_btn.pressed.connect(func() -> void: OS.shell_open(FFMPEG_PACK_URL % UpdateService.REPO))
+	get_row.add_child(get_btn)
+
+	var install_btn: Button = Button.new()
+	install_btn.text = "📁 INSTALL FOLDER"
+	_style_button(install_btn, UITheme.PURPLE_MID)
+	install_btn.pressed.connect(_on_open_ffmpeg_install_folder)
+	get_row.add_child(install_btn)
+
+	_refresh_ffmpeg_available_label()
+
+	var get_hint: Label = Label.new()
+	get_hint.text = "Needed to build journeys and to play randomizer runs — playing a downloaded journey doesn't need it. Unzip the download into the install folder above: that folder lives in your user data and survives game updates, whereas a copy placed beside the game's .exe is replaced by every new build."
+	get_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(get_hint, UITheme.SEPARATOR, 11, false)
+	section.add_child(get_hint)
+
 	# Auto-transcode master toggle.
 	var auto_row: HBoxContainer = HBoxContainer.new()
 	auto_row.add_theme_constant_override("separation", 16)
@@ -1977,6 +2022,38 @@ func _run_ffmpeg_test() -> void:
 	else:
 		_ffmpeg_status_label.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
 		_ffmpeg_status_label.text = "✗ Could not run ffprobe from this location. Pick the folder that contains ffmpeg and ffprobe (or install ffmpeg on your PATH)."
+	_refresh_ffmpeg_available_label()
+
+
+# Reports whether ffmpeg can actually be run, reusing MediaPoolService's cached probe so opening
+# Options doesn't spawn a process every time.
+func _refresh_ffmpeg_available_label() -> void:
+	if _ffmpeg_available_label == null:
+		return
+	if MediaPoolService.is_available():
+		_ffmpeg_available_label.add_theme_color_override("font_color", UITheme.SUCCESS)
+		_ffmpeg_available_label.text = (
+			"✓ Installed  ·  %s" % SettingsService.resolve_ffmpeg_binary("ffmpeg")
+		)
+	else:
+		_ffmpeg_available_label.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
+		_ffmpeg_available_label.text = "✗ Not installed — journeys can't be saved and randomizer runs can't bake"
+
+
+# Where a shipped build looks first for a user-supplied copy: resolve_ffmpeg_binary checks
+# user://bin BEFORE the folder beside the executable, and user:// survives game updates. The
+# editor uses the bundled res://bin instead, so point there rather than opening a folder this
+# build would never read.
+func _ffmpeg_install_dir() -> String:
+	if OS.has_feature("editor"):
+		return ProjectSettings.globalize_path("res://bin")
+	return ProjectSettings.globalize_path("user://bin")
+
+
+func _on_open_ffmpeg_install_folder() -> void:
+	var dir: String = _ffmpeg_install_dir()
+	DirAccess.make_dir_recursive_absolute(dir)  # first run: it doesn't exist yet
+	OS.shell_open(dir)
 
 
 func _build_journey_location_row() -> void:

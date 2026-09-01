@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.8.5
+
+Cutting a video no longer undoes v0.8.4. And FFmpeg — which was most of what you were downloading —
+becomes a separate one-time install.
+
+### ◆ Cuts keep the codec they started with
+
+v0.8.4 stopped converting video you keep. It did nothing for video you **cut**, and cutting has always
+forced a re-encode — a straight copy can only slice at a keyframe, and your cut point is wherever you
+put it. So every trimmed round came out H.264, however it arrived.
+
+Which meant an AV1 source you trimmed lost exactly what v0.8.4 had just saved: the size, the 10-bit, and
+the journey's claim to needing a modern player.
+
+A cut now re-encodes back to the codec the source already used — AV1 stays AV1, HEVC stays HEVC — and
+**10-bit survives the cut** instead of being flattened to 8-bit. VP8 and VP9 come out as AV1, which asks
+exactly as much of the player and encodes far faster than re-encoding them as themselves.
+
+The quality target for each codec was **measured rather than guessed**, with VMAF against real journeys,
+and set so a cut round is never perceptibly worse than the same cut used to be on H.264. One honest
+consequence of choosing that end of the range: a re-cut AV1 round comes out about the same size as the
+H.264 one it replaces — sometimes smaller, sometimes larger. The size win from AV1 comes from the
+sources you *don't* cut, which are still copied untouched.
+
+### ◆ FFmpeg is now a separate one-time download
+
+The Windows build no longer bundles FFmpeg, which takes the download from about 185 MB to about 88 MB.
+Most people only play journeys and never invoke it at all.
+
+You need it if you **build journeys** or play **randomizer** runs. Options → Transcoding now tells you
+whether it's installed, links straight to the download, and opens the folder to unzip it into.
+
+Put it in that folder and it survives every future update — it is fetched once, not once per release.
+
+**Updating from an earlier version:** updates extract into a new folder, so your existing copy stays
+behind in the old one and the new build won't see it. Fetch it once and you're done for good.
+
+### 🩹 Fixes
+
+- **A Fog round revealed the HUD as it ended.** Clearing the round's effects un-hides the HUD, and
+  that ran before the fade to the next round started — so the HUD sat in plain view for the whole
+  fade-out, showing exactly what the round had spent its length hiding. It now stays hidden until
+  the screen is covered. Holding FINISH out of a fogged round did the same thing.
+- **The save progress said "→ h264" whatever it was really encoding.** The label was hardcoded, so a
+  round being cut to AV1 reported H.264 while correctly producing AV1. The file was always right; the
+  message was lying about it.
+- **Save warnings ran into each other.** Several notes were joined with no separator, so they arrived as
+  one unreadable line stuck onto the end of the success message.
+
 ## v0.8.4
 
 The player learns three new video codecs. **AV1** and **HEVC** now play as they are, and **VP9** — which
@@ -40,6 +89,10 @@ cannot play the video, so they say so on the journey card instead of starting a 
   wrapper passed every test, was copied into the journey untouched, and then failed to open at play
   time. Longstanding; it simply had no way to be noticed before.
 - **VP9 is no longer re-encoded.** It always played; the save gate just didn't know that.
+- **Animated images keep their codec.** A GIF or short clip used as an animated image is converted to
+  video on import, and the test for "this is already converted" only recognised H.264. On a journey
+  whose video had been re-encoded to AV1 or HEVC, that meant the animations were quietly converted back
+  to H.264 on the next save. It now accepts anything the player can read.
 
 ## v0.8.3
 
