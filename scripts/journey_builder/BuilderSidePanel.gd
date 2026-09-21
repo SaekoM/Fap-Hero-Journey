@@ -4884,15 +4884,15 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	return col
 
 
-# Save-as-template + apply/delete for the current round. A template captures the whole round
-# definition (media, type config, pool entries), so authors can reuse it instead of rebuilding
-# — especially multi-entry pool rounds. See RoundTemplates.
+# Save-as-template + apply/delete for the current round. A template captures the round's SETUP
+# (type, effects, modifiers, rewards, cards) and never its content — the clip, a pool's entries,
+# the name — so it can be dropped on any round without touching what it plays. See RoundTemplates.
 func _make_round_templates_section(arr: Array, idx: int, reselect: Callable) -> Control:
 	var box: VBoxContainer = VBoxContainer.new()
 	box.add_theme_constant_override("separation", 6)
 
 	var hint: Label = Label.new()
-	hint.text = "Save this round's full definition (media, type, pool entries) to reuse on other rounds. Applying overwrites this round. Media files must still exist on disk when you save the journey."
+	hint.text = "Save this round's setup — type, effects, modifiers, rewards, cards — to reuse on other rounds. Applying replaces a round's setup and never its video, scripts, pool entries or name."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -4932,8 +4932,13 @@ func _make_round_templates_section(arr: Array, idx: int, reselect: Callable) -> 
 			if dd.selected <= 0:
 				return
 			var tname: String = str(tmpl_names[dd.selected - 1])
+			# One undo step: the node's data is part of the graph snapshot, so Ctrl+Z puts the
+			# round's whole setup back (and the restore re-selects it, rebuilding this panel).
+			_owner._push_undo()
 			RoundTemplates.apply_to(arr[idx], RoundTemplates.get_data(tname))
-			_owner._show_status('Applied template "%s".' % tname, false)
+			_owner._show_status(
+				'Applied template "%s" — this round keeps its own clip and name.' % tname, false
+			)
 			reselect.call(idx)
 	)
 	btn_row.add_child(apply_btn)

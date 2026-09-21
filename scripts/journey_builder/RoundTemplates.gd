@@ -1,26 +1,34 @@
 class_name RoundTemplates
 extends RefCounted
-## Named, reusable round definitions ("My 3-clip encounter", "Greed boss", …) so an author
-## doesn't re-enter the same round from scratch — especially pool rounds with several
-## entries. A template is the round's `data` blob (media paths + type config + pool_entries)
-## minus node-level keys; applying one overwrites a round node's data while the graph keeps
-## the node's id and edges. Persisted as a small JSON list; the list logic is pure (unit-
+## Named, reusable round SETUPS ("Temptation", "Greed boss", …) so an author doesn't re-enter
+## the same effects, modifiers, rewards, cards and type config on every round. A template is the
+## round's `data` blob minus its node-level keys and minus its CONTENT — the clip (video, scripts,
+## pending cuts), a pool's entry list, and the round's own name. Applying one replaces the target's
+## setup and leaves its content exactly as it was, whether or not the round has any yet; the graph
+## keeps the node's id and edges. Persisted as a small JSON list; the list logic is pure (unit-
 ## tested), load/save wrap it with disk I/O — same shape as RandomizerPresets.
 ##
-## Media paths inside a template are absolute source paths; applying + saving copies those
-## files into the target journey's content/ pool (like any imported round). Within one
-## journey (the common "reuse this definition" case) the paths point at the journey's own
-## pooled files, so it just works; across journeys the source must still exist on disk.
+## Templates used to carry the clip too, and applying one silently replaced a round's video and
+## funscript — the opposite of what they were being used for ("this round's video, with the
+## Temptation setup"). Authored ART (boss image, cards) is part of the look and does come across;
+## those are the only paths a template holds, and saving pools them like any imported image.
 
 const PATH: String = "user://round_templates.json"
 
-# Node-level keys that must NOT ride along in a template: the id + edges belong to the graph
-# node, and "type" is re-stamped on apply. (Pending segments are an editor-only op describing
-# one specific clip, never part of a reusable definition — the legacy trim / section-loop keys
-# they replaced are stripped too, so pre-segments templates stay clean on apply.)
-const _STRIP_KEYS: Array = [
-	"node_id",
-	"type",
+# The round's CONTENT: what it plays and what it's called. Never stored in a template and never
+# touched by applying one. The clip and everything derived from it (folder, length, action count),
+# the pending cuts to THAT clip (and the legacy trim / section-loop keys they replaced), a pool's
+# entry list, and the name the author gave the round.
+const CONTENT_KEYS: Array = [
+	"name",
+	"video_path",
+	"funscript_path",
+	"axis_scripts",
+	"vib_scripts",
+	"folder",
+	"length_ms",
+	"actions",
+	"pool_entries",
 	"segments",
 	"trim_start_ms",
 	"trim_end_ms",
@@ -28,6 +36,9 @@ const _STRIP_KEYS: Array = [
 	"loop_out_ms",
 	"loop_count",
 ]
+# Node-level keys that must NOT ride along either: the id + edges belong to the graph node, and
+# "type" is re-stamped on apply.
+const _NODE_KEYS: Array = ["node_id", "type"]
 
 # ── Persistence ──────────────────────────────────────────────────────────────
 
@@ -97,24 +108,38 @@ static func names() -> Array:
 # ── Pure logic (unit-tested) ──────────────────────────────────────────────────
 
 
-# A deep copy of `round_data` with node-level keys removed — the form stored as a template.
+# A deep copy of `round_data` with node-level and content keys removed — the form stored as a
+# template.
 static func strip_for_template(round_data: Dictionary) -> Dictionary:
 	var out: Dictionary = round_data.duplicate(true)
-	for k: String in _STRIP_KEYS:
+	for k: String in _NODE_KEYS + CONTENT_KEYS:
 		out.erase(k)
 	return out
 
 
-# Overlays `template_data` onto a round node's live `data` dict in place: clears the round's
-# fields and copies the template's, then restores the node's own id (edges key off the graph
-# node, not this, so wiring is unaffected) and re-stamps type "round". Mutates `data`.
+# Replaces a round node's SETUP with `template_data`'s, in place: every non-content field is cleared
+# and the template's copied, while the node's id (edges key off the graph node, not this, so wiring
+# is unaffected) and its CONTENT_KEYS survive untouched. Type is re-stamped "round". Content keys
+# in the template itself (one saved before content was excluded) are ignored. Mutates `data`.
+#
+# `round_type` is configuration — a "Temptation" template makes the round an effect round — except
+# that "pool" names content (a list of clips), not behaviour: a pool target stays a pool, and a pool
+# template can't turn a round into one, because the entries it would need don't come across.
 static func apply_to(data: Dictionary, template_data: Dictionary) -> void:
-	var keep_id: Variant = data.get("node_id", null)
+	var kept: Dictionary = {}
+	for k: String in ["node_id"] + CONTENT_KEYS:
+		if data.has(k):
+			kept[k] = data[k]
+	var target_type: String = str(data.get("round_type", "normal"))
+	var template_type: String = str(template_data.get("round_type", "normal"))
 	data.clear()
 	data.merge(template_data.duplicate(true), true)
+	for k: String in CONTENT_KEYS:
+		data.erase(k)
+	data.merge(kept, true)
+	if target_type == "pool" or template_type == "pool":
+		data["round_type"] = target_type
 	data["type"] = "round"
-	if keep_id != null:
-		data["node_id"] = keep_id
 
 
 # Replaces the template named `name` in place (preserving order), or appends if new.

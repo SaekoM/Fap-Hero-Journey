@@ -22,6 +22,16 @@ tuner, and boss-timeline windows. Defaults are exactly the cadence each always h
 authored changes. The player’s Sensory Strength setting scales intensity as before and leaves rate
 alone: slower isn’t softer.
 
+### ◆ Round templates are setups, not clips
+
+Applying a template used to replace the whole round — video and funscript included — which made
+templates useless for the thing they’re actually good for: the same effects, modifiers, rewards and
+cards on a *variety* of videos. A template now holds only a round’s **setup** and applying one never
+touches what the round plays or what it’s called: its video, scripts, pending cuts, pool entries and
+name stay exactly as they were, whether or not the round has any yet. Authored art (a boss image,
+cards) is part of the setup and does come across. Templates saved before this still work — the clip
+they carry is simply ignored.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on

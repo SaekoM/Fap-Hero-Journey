@@ -1982,10 +1982,18 @@ func _process(delta: float) -> void:
 		_apply_transform()
 
 
-# True when a text-entry control has focus — pan/keys must yield to typing.
+# True when a text-entry control has focus — pan/keys must yield to typing. A dialog is its own
+# Window, i.e. its own viewport: a LineEdit inside it holds focus THERE, so our viewport reports no
+# focus owner and typing a template name used to pan the canvas behind the dialog. Any open dialog
+# stands the pan down, whatever is focused inside it — nothing typed at a dialog is meant for us.
+# Likewise when the app itself isn't the focused window.
 func _text_focused() -> bool:
 	var f: Control = get_viewport().gui_get_focus_owner()
-	return f is LineEdit or f is TextEdit
+	if f is LineEdit or f is TextEdit:
+		return true
+	if not get_window().has_focus():
+		return true
+	return not get_viewport().get_embedded_subwindows().is_empty()
 
 
 func _gui_input(event: InputEvent) -> void:
