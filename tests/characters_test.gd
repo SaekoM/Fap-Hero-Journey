@@ -146,3 +146,31 @@ func test_resolve_placement_empty_falls_back_to_center() -> void:
 	assert_float(float(box["x"])).is_equal_approx(
 		float(JourneyData.PLACEMENT_BUILTINS["center"]["x"]), 0.001
 	)
+
+
+# ── Uniform box scaling (the corner drag) ────────────────────────────────────
+# One diagonal pull makes the box bigger or smaller and it keeps its shape; a clamp on one axis is
+# applied to both so hitting a limit never reshapes it.
+
+
+func test_uniform_scale_keeps_the_aspect() -> void:
+	var out: Vector2 = JourneyData.scale_placement_uniform(0.2, 0.4, 0.02, 0.04)  # 10% on both axes
+	assert_float(out.x).is_equal_approx(0.22, 0.0001)
+	assert_float(out.y).is_equal_approx(0.44, 0.0001)
+
+
+func test_uniform_scale_follows_the_dominant_axis() -> void:
+	var out: Vector2 = JourneyData.scale_placement_uniform(0.2, 0.4, 0.0, 0.04)  # vertical-only pull, +10%
+	assert_float(out.x).is_equal_approx(0.22, 0.0001)
+	assert_float(out.y).is_equal_approx(0.44, 0.0001)
+
+
+func test_uniform_scale_clamps_both_axes_together() -> void:
+	# Height would pass 1.0 first: the whole scale is capped there, and the width follows the SAME factor.
+	var out: Vector2 = JourneyData.scale_placement_uniform(0.2, 0.8, 0.0, 0.4)  # asks for +50%
+	assert_float(out.y).is_equal_approx(1.0, 0.0001)
+	assert_float(out.x).is_equal_approx(0.25, 0.0001)  # 0.2 * 1.25, not 0.2 * 1.5
+	# And shrinking stops at the minimum on the small axis, with the other following.
+	var small: Vector2 = JourneyData.scale_placement_uniform(0.1, 0.4, -0.08, 0.0)  # asks for -80%
+	assert_float(small.x).is_equal_approx(JourneyData.PLACEMENT_MIN_SIZE, 0.0001)
+	assert_float(small.y).is_equal_approx(0.4 * (JourneyData.PLACEMENT_MIN_SIZE / 0.1), 0.0001)

@@ -1206,7 +1206,9 @@ static func _parse_override_scripts(raw: Dictionary) -> Dictionary:
 # Journey-level cast, each carrying its OWN portraits (expressions) and placements (position/size boxes
 # tuned to that character's art). A storyboard line's `stage` is a LIST of {character, portrait,
 # placement} — position and expression chosen independently. Durable `chr_…` / `por_…` ids (blank-id
-# heal on read). Portraits pool like any in-game image; placements are pure fraction boxes.
+# heal on read). Portraits pool like any in-game image; placements are pure fraction boxes that a
+# portrait fills by HEIGHT (JourneyImage.STRETCH_FIT_HEIGHT), so every expression of a character
+# stands the same height in the same box whatever its own crop.
 
 # Seed ids for the three positions every character starts with (draggable/tunable afterward).
 const CHARACTER_SIDES: Array = ["left", "center", "right"]
@@ -1225,6 +1227,22 @@ const DEFAULT_BGM_VOLUME: float = 0.6
 # editor and clickable in play. Mirrors PLACEMENT_MIN_SIZE's reasoning for cast boxes.
 const LAYOUT_SLOT_MIN: float = 0.04
 const PLACEMENT_MIN_SIZE: float = 0.05  # a box can't be smaller than this fraction, so it stays grabbable
+
+
+# A placement box (w, h as screen fractions) scaled UNIFORMLY by a corner drag of (dw, dh): the
+# box keeps its shape, driven by whichever axis the hand moved more in relative terms so a mostly-
+# vertical and a mostly-horizontal pull both read as intended. A clamp on one axis is applied to
+# both, so hitting a limit never reshapes the box on the way. Returns the new (w, h).
+static func scale_placement_uniform(w: float, h: float, dw: float, dh: float) -> Vector2:
+	w = maxf(w, PLACEMENT_MIN_SIZE)
+	h = maxf(h, PLACEMENT_MIN_SIZE)
+	var k: float = 1.0 + (dh / h if absf(dh / h) >= absf(dw / w) else dw / w)
+	var kw: float = clampf(w * k, PLACEMENT_MIN_SIZE, 1.0) / w
+	var kh: float = clampf(h * k, PLACEMENT_MIN_SIZE, 1.0) / h
+	var applied: float = minf(kw, kh) if k >= 1.0 else maxf(kw, kh)
+	return Vector2(
+		clampf(w * applied, PLACEMENT_MIN_SIZE, 1.0), clampf(h * applied, PLACEMENT_MIN_SIZE, 1.0)
+	)
 
 
 static func new_character_id() -> String:

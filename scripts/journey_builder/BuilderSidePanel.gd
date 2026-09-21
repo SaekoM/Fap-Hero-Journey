@@ -2054,12 +2054,13 @@ func _open_character_editor_modal(char_idx: int, is_new: bool = false) -> void:
 	_owner.add_child(editor)
 	# The settings library so the stage can be dressed: a portrait is judged against the room it will
 	# stand in, not against flat grey.
-	editor.setup(chr, _owner._journey_settings)
+	editor.setup(chr, _owner._journey_settings, is_new)
 	editor.closed.connect(func() -> void: _close_character_editor(char_idx, chr, is_new))
 
 
-# A NEWLY-ADDED character with no name is discarded on close (Add-then-dismiss = silent cancel), same
-# as the item editor. A named character is kept even without portraits — the author clearly meant it.
+# A NEWLY-ADDED character with no name is discarded on close — the editor has already asked, so this
+# is the author's answer, and the status line records it. A named character is kept even without
+# portraits — the author clearly meant it.
 func _close_character_editor(char_idx: int, chr: Dictionary, is_new: bool) -> void:
 	if is_new and str(chr.get("name", "")).strip_edges() == "":
 		var chars: Array = _owner._journey_characters
@@ -2070,6 +2071,7 @@ func _close_character_editor(char_idx: int, chr: Dictionary, is_new: bool) -> vo
 				if is_same(chars[i], chr):
 					chars.remove_at(i)
 					break
+		_owner._show_status("Discarded the unnamed character — characters need a name.", true)
 	_rebuild_characters_list()
 
 

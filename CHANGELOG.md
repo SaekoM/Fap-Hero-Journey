@@ -40,6 +40,22 @@ the full-dark point moves inward, so the top of the slider is a genuine tunnel �
 a small clear circle. Everything at or below the default is unchanged, so existing rounds look as
 they did.
 
+### ◆ Cast portraits stand one height
+
+A character’s positions — Left, Centre, Right — are shared by every expression, and until now each
+expression was fitted into that box by whichever of its edges reached first. Two expressions cropped
+differently therefore drew at visibly different sizes in the *same* position, which read as portrait
+scale being lost when you switched expression, or bleeding from one expression into another. It was
+neither; it was the fit.
+
+Portraits now fill the **height** of their box and stand on its bottom edge, so one character is one
+height whatever an expression’s framing — the way visual novels have always done it. A much wider
+expression is cut at the sides rather than shrunk. The character editor’s stage shows exactly what
+will play.
+
+Dragging a position’s corner now **scales the box uniformly**, so “a little bigger” is one motion and
+the box keeps its shape. Hold Alt to reshape it freely.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
@@ -50,6 +66,9 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Closing a new cast member without a name now asks before discarding it.** An unnamed new
+  character was silently dropped on DONE or Esc, which read as “it didn’t save”. The editor now says a
+  name is needed and offers NAME IT (back to the field) or DISCARD; the status line records a discard.
 - **A boss opening gated to one attempt no longer flashes on the others.** A region at the very
   start of the clip was decided on arrival — one tick in, by which point its first frame was already
   on screen, then faded out, then skipped. The landing is now decided the instant the clip opens,

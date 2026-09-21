@@ -18,6 +18,15 @@ extends Control
 
 # Extension the builder bakes animations to. The path itself is the signal — no schema flag.
 const ANIMATED_EXT: String = "mp4"
+## A fit of our own, not a TextureRect mode: the image fills the frame's HEIGHT, keeps its aspect,
+## is centred horizontally, and is clipped where it overflows the sides. Pass it as `stretch_mode`.
+##
+## Made for cast portraits. A character's position box is shared by every expression, and each
+## expression is its own image with its own crop — so fit-centred sized each one by whichever axis
+## happened to bind, and a wide Happy drew visibly shorter than a narrow Sad in the very same box.
+## Authors read that as portrait scale being lost or bleeding between expressions. The visual-novel
+## rule is one character, one height, whatever the expression's framing; this is that rule.
+const STRETCH_FIT_HEIGHT: int = -1
 
 ## Emitted when a NON-looping animation reaches its end. Nothing to listen for on the looping default.
 signal animation_finished
@@ -51,6 +60,8 @@ var _rect: TextureRect = null
 # stretch mode, and _apply_crop_align must keep its hands off those — sizing the rect by hand turns a
 # letterboxed "fit" into a crop.
 var _manual_crop: bool = false
+var _fit_height: bool = false
+var _fit_height_tex: Vector2 = Vector2.ZERO  # texture size the last height-fit was laid out for
 var _player: VideoStreamPlayer = null
 
 
@@ -109,10 +120,20 @@ func show_path(path: String, expand_mode: int, stretch_mode: int) -> bool:
 func _make_rect(expand_mode: int, stretch_mode: int) -> TextureRect:
 	var r: TextureRect = TextureRect.new()
 	r.expand_mode = expand_mode
-	r.stretch_mode = stretch_mode
+	_fit_height = stretch_mode == STRETCH_FIT_HEIGHT
+	# Our sentinel is not a TextureRect value; the rect is sized by hand in that mode.
+	r.stretch_mode = TextureRect.STRETCH_SCALE if _fit_height else stretch_mode
 	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	r.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(r)
+	if _fit_height:
+		clip_contents = true  # a wide expression overflows the sides and is cut there, not shrunk
+		r.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		# Guarded: the storyboard reuses one JourneyImage per character across expression changes.
+		if not resized.is_connected(_apply_fit_height):
+			resized.connect(_apply_fit_height)
+		_fit_height_tex = Vector2.ZERO
+		return r
 	_manual_crop = _wants_manual_crop(stretch_mode)
 	if _manual_crop:
 		# Our own clipping, since the rect will be deliberately bigger than this control.
@@ -148,6 +169,22 @@ func _apply_crop_align() -> void:
 	_rect.position = -overflow * focus
 
 
+# Fills the frame's height at the image's own aspect and centres it; height == frame height means
+# the bottom edge is the frame's bottom edge, which is where a standing figure belongs. Re-run on
+# resize and when an animation's first frame finally reports a size.
+func _apply_fit_height() -> void:
+	if not _fit_height or _rect == null or _rect.texture == null:
+		return
+	var frame: Vector2 = size
+	var tex: Vector2 = _rect.texture.get_size()
+	if frame.y <= 0.0 or tex.x <= 0.0 or tex.y <= 0.0:
+		return
+	var drawn: Vector2 = tex * (frame.y / tex.y)
+	_rect.size = drawn
+	_rect.position = Vector2((frame.x - drawn.x) * 0.5, 0.0)
+	_fit_height_tex = tex
+
+
 # Where the picture is ACTUALLY drawn inside this control, in screen pixels.
 #
 # Not the same as the control's own rect for any fit but "stretch": a crop draws bigger than the frame
@@ -157,8 +194,8 @@ func _apply_crop_align() -> void:
 func drawn_rect() -> Rect2:
 	if _rect == null or _rect.texture == null:
 		return Rect2(Vector2.ZERO, size)
-	if _manual_crop:
-		return Rect2(_rect.position, _rect.size)  # already sized and placed by _layout_crop
+	if _manual_crop or _fit_height:
+		return Rect2(_rect.position, _rect.size)  # already sized and placed by hand
 
 	var tex: Vector2 = _rect.texture.get_size()
 	if tex.x <= 0.0 or tex.y <= 0.0 or size.x <= 0.0 or size.y <= 0.0:
@@ -237,6 +274,7 @@ func _show_still(path: String, expand_mode: int, stretch_mode: int) -> bool:
 	_rect = _make_rect(expand_mode, stretch_mode)
 	_rect.texture = ImageTexture.create_from_image(img)
 	_apply_crop_align()  # the texture is known now, so the first layout can be exact
+	_apply_fit_height()
 	return true
 
 
@@ -280,6 +318,8 @@ func _process(_delta: float) -> void:
 	# correct if it ever hands back a different instance (e.g. across a loop restart).
 	if _player != null and _rect != null:
 		_rect.texture = _player.get_video_texture()
+		if _fit_height and _rect.texture != null and _rect.texture.get_size() != _fit_height_tex:
+			_apply_fit_height()  # first frame, or a new size — not every frame
 
 
 func _clear() -> void:

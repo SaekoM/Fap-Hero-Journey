@@ -10,7 +10,9 @@ const BG_FADE_SECS: float = 0.4
 
 # Cast portraits (the VN "stage") are drawn over the background and under the VN bar. Each is placed by
 # a PLACEMENT box (screen-fraction x/y/w/h) resolved from the line's stage id via JourneyData —
-# the three built-ins (left/center/right) plus any custom placements. A portrait aspect-fits its box.
+# the three built-ins (left/center/right) plus any custom placements. A portrait fills its box's
+# HEIGHT and stands on its bottom edge (JourneyImage.STRETCH_FIT_HEIGHT), so every expression of a
+# character is one height whatever its own crop; a wider one is clipped at the sides, not shrunk.
 # Speaker is full brightness; anyone else on stage is dimmed (the standard VN "who's talking" cue).
 const PORTRAIT_LIT: Color = Color(1, 1, 1, 1)
 const PORTRAIT_DIM: Color = Color(0.5, 0.5, 0.58, 1)
@@ -345,7 +347,7 @@ func _update_stage(line: Dictionary) -> void:
 		if portrait != str(_portrait_paths.get(cid, "")):
 			_portrait_paths[cid] = portrait
 			view.show_path(
-				portrait, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+				portrait, TextureRect.EXPAND_IGNORE_SIZE, JourneyImage.STRETCH_FIT_HEIGHT
 			)
 		view.visible = true
 		var is_speaker: bool = (

@@ -23,6 +23,12 @@ const PREVIEW_BG: Color = Color(0.06, 0.06, 0.09, 1.0)
 
 var _character: Dictionary = {}
 var _settings: Array = []
+# A just-added character is only kept if it leaves with a name (BuilderSidePanel discards an unnamed
+# one on close). Closing such a character unnamed therefore asks first, instead of silently dropping
+# whatever was set up in here.
+var _is_new: bool = false
+var _name_edit: LineEdit = null
+var _confirming: bool = false
 var _portrait_idx: int = 0
 var _placement_idx: int = 0
 # Show only the selected position. A character with six of them stacks into an unreadable pile, and
@@ -37,9 +43,10 @@ var _preview_setting: Dictionary = {}
 var _variant_holder: VBoxContainer = null
 
 
-func setup(character: Dictionary, settings: Array) -> void:
+func setup(character: Dictionary, settings: Array, is_new: bool = false) -> void:
 	_character = character
 	_settings = settings
+	_is_new = is_new
 	_build_ui()
 	_refresh()
 
@@ -123,6 +130,7 @@ func _build_top_strip() -> Control:
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(v: String) -> void: _character["name"] = v)
 	name_col.add_child(name_edit)
+	_name_edit = name_edit
 	strip.add_child(name_col)
 
 	var against: VBoxContainer = VBoxContainer.new()
@@ -202,11 +210,7 @@ func _build_side() -> Control:
 	done.text = "DONE"
 	done.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(done, UITheme.PURPLE_BRIGHT)
-	done.pressed.connect(
-		func() -> void:
-			closed.emit()
-			queue_free()
-	)
+	done.pressed.connect(_request_close)
 	side.add_child(done)
 	return side
 
@@ -406,9 +410,7 @@ func _make_box(index: int) -> Control:
 		view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(view)
-		view.show_path(
-			portrait, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		)
+		view.show_path(portrait, TextureRect.EXPAND_IGNORE_SIZE, JourneyImage.STRETCH_FIT_HEIGHT)
 
 	var name_lbl: Label = Label.new()
 	name_lbl.text = str(placement.get("name", ""))
@@ -515,12 +517,20 @@ func _on_handle_input(index: int, box: Panel, event: InputEvent) -> void:
 	if stage.x <= 0.0 or stage.y <= 0.0:
 		return
 	var placement: Dictionary = _placements()[index]
-	placement["w"] = clampf(
-		float(placement["w"]) + motion.relative.x / stage.x, JourneyData.PLACEMENT_MIN_SIZE, 1.0
-	)
-	placement["h"] = clampf(
-		float(placement["h"]) + motion.relative.y / stage.y, JourneyData.PLACEMENT_MIN_SIZE, 1.0
-	)
+	var w: float = float(placement["w"])
+	var h: float = float(placement["h"])
+	var dw: float = motion.relative.x / stage.x
+	var dh: float = motion.relative.y / stage.y
+	if Input.is_key_pressed(KEY_ALT):
+		# Free reshape, on request. The portrait fills the box's height whatever its shape, so
+		# reshaping is about the hit-area and the clipping width, not about the picture.
+		placement["w"] = clampf(w + dw, JourneyData.PLACEMENT_MIN_SIZE, 1.0)
+		placement["h"] = clampf(h + dh, JourneyData.PLACEMENT_MIN_SIZE, 1.0)
+	else:
+		# Uniform by default: "a bit bigger" is one diagonal pull, and the box keeps its shape.
+		var scaled: Vector2 = JourneyData.scale_placement_uniform(w, h, dw, dh)
+		placement["w"] = scaled.x
+		placement["h"] = scaled.y
 	_apply_box_rect(box, placement)
 
 
@@ -645,8 +655,71 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if (event as InputEventKey).keycode != KEY_ESCAPE:
 		return
 	get_viewport().set_input_as_handled()
+	_request_close()
+
+
+# DONE and ESC both land here. A new character leaving without a name is about to be discarded, so
+# it asks; everything else closes at once, since every edit is already on the live character.
+func _request_close() -> void:
+	if _confirming:
+		return
+	if _is_new and str(_character.get("name", "")).strip_edges() == "":
+		_confirm_discard_unnamed()
+		return
+	_close()
+
+
+func _close() -> void:
 	closed.emit()
 	queue_free()
+
+
+# Keep-editing leads and puts the cursor in the name field, since a name is the one thing missing;
+# DISCARD is the explicit way to say the add was a mistake. Same shape as the encounter editor's.
+func _confirm_discard_unnamed() -> void:
+	_confirming = true
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"NO NAME YET", UITheme.DANGER, Vector2i(520, 240)
+	)
+	var confirm: Control = parts["modal"]
+	var column: VBoxContainer = parts["vbox"]
+
+	var message: Label = Label.new()
+	message.text = "A character needs a name to be kept — it's how a line's speaker finds them. Name this one, or discard it?"
+	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	message.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(message, UITheme.WHITE_SOFT, 13)
+	column.add_child(message)
+
+	var buttons: HBoxContainer = HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 12)
+
+	var keep: Button = Button.new()
+	keep.text = "NAME IT"
+	UITheme.style_button(keep, UITheme.PURPLE_BRIGHT)
+	keep.pressed.connect(
+		func() -> void:
+			_confirming = false
+			confirm.queue_free()
+			if is_instance_valid(_name_edit):
+				_name_edit.grab_focus()
+	)
+	buttons.add_child(keep)
+
+	var discard: Button = Button.new()
+	discard.text = "DISCARD"
+	UITheme.style_button(discard, UITheme.DANGER)
+	discard.pressed.connect(
+		func() -> void:
+			_confirming = false
+			confirm.queue_free()
+			_close()
+	)
+	buttons.add_child(discard)
+	column.add_child(buttons)
+	add_child(confirm)
 
 
 func _label(text: String) -> Label:
