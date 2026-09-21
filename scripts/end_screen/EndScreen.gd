@@ -103,9 +103,13 @@ func _populate() -> void:
 
 
 # Renders the journey graph with this run's path glowing (roads not taken
-# ghosted) and the ending marked. FULL reveal by design — the run is over, so
-# map-disabled / fogged journeys show their whole structure here and nowhere
-# else. Hides the section for empty trails (defensive) or single-node journeys.
+# ghosted) and the ending marked. A fogged journey stays fogged here: the
+# author hid the structure on purpose, and a full reveal at the end handed
+# the whole map to anyone who finished once. What shows is everything the
+# player has EVER reached in this journey (the catalogue's reveal set) plus
+# the usual ghost ring — so a repeat player sees the map grow run by run.
+# Map-disabled journeys still reveal in full; the map is off, not fogged.
+# Hides the section for empty trails (defensive) or single-node journeys.
 func _populate_route() -> void:
 	var trail: Array = GameState.get_meta("_route_trail", [])
 	var nodes: Dictionary = GameState.Journey.get("nodes", {}) as Dictionary
@@ -123,10 +127,28 @@ func _populate_route() -> void:
 			GraphLayout.seed_positions(map_graph)
 			break
 	_route_view.set_graph(map_graph)
+	if bool(GameState.Journey.get("map_fog", false)):
+		_route_view.set_fog(
+			true, _all_time_discovered(), int(GameState.Journey.get("map_fog_reveal", 1))
+		)
 	_route_view.set_route(trail)
 	_route_view.set_marker_at(str(trail[-1]))
 	# Frame the whole structure once the pane has its size.
 	_route_view.call_deferred("fit_to_view")
+
+
+# The persisted discovered set for this journey, unioned with this run's — the run's
+# nodes are merged into the scoreboard on the way here, but the union costs nothing
+# and doesn't depend on that ordering.
+func _all_time_discovered() -> Array:
+	var seen: Dictionary = {}
+	var folder: String = str(GameState.Journey.get("folder_name", ""))
+	if folder != "":
+		for nid: Variant in ScoreboardService.read_discovered(folder):
+			seen[str(nid)] = true
+	for nid: Variant in GameState.DiscoveredNodes():
+		seen[str(nid)] = true
+	return seen.keys()
 
 
 # Wraps `row` in a MarginContainer with `depth * LOG_INDENT_PX` of left padding.

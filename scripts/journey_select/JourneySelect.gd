@@ -577,13 +577,14 @@ func _on_edit_pressed() -> void:
 	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
 
 
-# The soft edit-lock stops a buyer opening a paid import in the builder. It's a courtesy lock, not
-# copy protection — journey.json is plaintext — so the message says what happened without overpromising.
+# The soft edit-lock stops the recipient of a locked export (or a paid split's scripts half) opening it
+# in the builder. It's a courtesy lock, not copy protection — journey.json is plaintext — so the
+# message says what happened without overpromising.
 func _show_locked_message(kind: String) -> void:
 	_show_message(
 		"Locked",
 		(
-			"This %s was installed from a paid pack and is locked for editing — it belongs to its creator.\n\nYou can still play it and build renditions on top of it."
+			"This %s is locked — its creator locked it when they shared it. It can be played, but not opened in the builder, exported, or built on with a rendition."
 			% kind
 		)
 	)
@@ -680,6 +681,11 @@ func _build_rendition_button() -> void:
 func _on_rendition_pressed() -> void:
 	if _current_journey.is_empty():
 		return
+	# A locked base is play-only. A rendition is authored against the base's structure, so letting one
+	# be built here would hand back most of what the lock withholds.
+	if bool(_current_journey.get("locked", false)):
+		_show_locked_message("journey")
+		return
 	if str(_current_journey.get("journey_id", "")) == "":
 		_show_message(
 			"Can't Add a Rendition",
@@ -723,12 +729,12 @@ func _on_export_pressed() -> void:
 	# overlay (e.g. a multi-axis rendition) has none, so a split would just emit an empty video pack: offer
 	# self-contained only, with a note. `_export_folder`/`_export_default_name` target whichever is selected.
 	var has_scene: bool = _export_has_scene_assets()
-	var body: String = "Choose an export format:\n\n•  Self-contained — everything in one .fhj file."
+	var body: String = "Choose an export format:\n\n•  Self-contained — everything in one .fhj file, with the option to lock it for editing."
 	var buttons: Array = [
 		{
 			"text": "SELF-CONTAINED",
 			"accent": UITheme.PURPLE_BRIGHT,
-			"on_press": _pick_selfcontained_location
+			"on_press": _ask_selfcontained_lock
 		},
 	]
 	if has_scene:
@@ -774,7 +780,34 @@ func _export_default_name() -> String:
 	return JourneyData.sanitize_folder_name(title) + ".fhj"
 
 
-func _pick_selfcontained_location() -> void:
+# Lock is an author's choice per export, not a property of the journey: the local copy stays editable
+# whatever is chosen, and only the .fhj carries the stamp. Asked here rather than as a toggle on the
+# format modal so the consequence is spelled out at the moment it matters.
+func _ask_selfcontained_lock() -> void:
+	var what: String = "rendition" if not _selected_rendition.is_empty() else "journey"
+	_themed_modal(
+		"Lock for Editing?",
+		(
+			"Whoever installs a locked %s can play it, but can't open it in the builder, export it again, or build a rendition on it.\n\nYour own copy stays editable either way."
+			% what
+		),
+		[
+			{
+				"text": "EXPORT UNLOCKED",
+				"accent": UITheme.PURPLE_BRIGHT,
+				"on_press": _pick_selfcontained_location.bind(false)
+			},
+			{
+				"text": "🔒 EXPORT LOCKED",
+				"accent": UITheme.CYAN,
+				"on_press": _pick_selfcontained_location.bind(true)
+			},
+			{"text": "CANCEL", "accent": UITheme.PURPLE_MID},
+		]
+	)
+
+
+func _pick_selfcontained_location(lock: bool) -> void:
 	var default_name: String = _export_default_name()
 	var dialog: FileDialog = FileDialog.new()
 	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
@@ -786,25 +819,33 @@ func _pick_selfcontained_location() -> void:
 	dialog.file_selected.connect(
 		func(path: String) -> void:
 			dialog.queue_free()
-			_run_export(path)
+			_run_export(path, lock)
 	)
 	dialog.canceled.connect(dialog.queue_free)
 	add_child(dialog)
 	dialog.popup_centered_ratio(0.6)
 
 
-func _run_export(out_path: String) -> void:
+func _run_export(out_path: String, lock: bool = false) -> void:
 	if not out_path.to_lower().ends_with(".fhj"):
 		out_path += ".fhj"
 	var folder: String = _export_folder()
 	var progress: Dictionary = _show_progress_overlay("Exporting journey…")
 	var bar: ProgressBar = progress["bar"]
 	var result: Dictionary = await JourneyPackager.export_journey(
-		folder, out_path, "embedded", func(frac: float) -> void: bar.value = frac * 100.0
+		folder,
+		out_path,
+		"embedded",
+		func(frac: float) -> void: bar.value = frac * 100.0,
+		Callable(),
+		lock
 	)
 	(progress["overlay"] as Node).queue_free()
 	if bool(result.get("ok", false)):
-		_show_message("Journey Exported", "Saved to:\n%s" % out_path)
+		_show_message(
+			"Journey Exported",
+			"Saved to:\n%s%s" % [out_path, "\n\nLocked for editing." if lock else ""]
+		)
 	else:
 		_show_message("Export Failed", str(result.get("error", "Unknown error.")))
 
@@ -1971,7 +2012,14 @@ func _rendition_name_by_id(journey_id: String) -> String:
 func _refresh_edit_lock() -> void:
 	var locked: bool = _selection_locked()
 	_edit_btn.text = "🔒 LOCKED" if locked else _edit_btn_base_text
-	_edit_btn.tooltip_text = "🔒 Installed from a paid pack — locked for editing" if locked else ""
+	_edit_btn.tooltip_text = "🔒 Locked by its creator — can't be edited" if locked else ""
+	# New renditions key off the BASE's lock, whatever VERSION is selected (see _on_rendition_pressed).
+	if _rendition_btn != null:
+		var base_locked: bool = bool(_current_journey.get("locked", false))
+		_rendition_btn.text = "🔒 RENDITION" if base_locked else "＋  RENDITION"
+		_rendition_btn.tooltip_text = (
+			"🔒 Locked by its creator — renditions can't be built on it" if base_locked else ""
+		)
 
 
 func _update_node_view_for_selection() -> void:

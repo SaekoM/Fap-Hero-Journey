@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.8.6
+
+### ◆ The end-of-run map respects fog of war
+
+A fogged journey revealed its whole structure on the end screen — every branch, whether or not
+the player had ever been near it — so one finish undid what the fog was for. The end-of-run map is
+now fogged the same way the in-game map is. It shows everything the player has *ever* reached in that
+journey (the same reveal the catalogue uses) plus the usual ghost ring, so the map grows run by run
+rather than all at once. Journeys with the map disabled outright are unchanged: that is off, not
+fogged, and they still show in full at the end.
+
+### ◆ Lock any export for editing
+
+Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
+install, and nothing else was. A self-contained export of a base journey (or a rendition) now asks
+whether to lock it. Whoever installs a locked journey can play it, but can’t open it in the builder,
+export it again, or build a rendition on it. The lock lives only in the exported file — your own
+copy stays editable whatever you choose.
+
 ## v0.8.5
 
 Cutting a video no longer undoes v0.8.4. And FFmpeg — which was most of what you were downloading —

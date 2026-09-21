@@ -28,12 +28,16 @@ const COVER_EXTS: Array[String] = ["png", "jpg", "jpeg", "webp"]
 # Packs `journey_folder` (a user:// journey dir) into a single .fhj at `out_abs`. Writes journey.json
 # from the parsed dict (so a minted JourneyId lands in it) plus every file under content/ and media/.
 # Nothing is re-encoded. Returns {ok, error}.
+# `lock` stamps the soft edit-lock into the PACKAGED journey.json (the source folder is untouched, so
+# the author's own copy stays editable): the recipient can play it and build renditions on it, not
+# open it in the builder or re-export it. The same lock a split's paid half gets at install.
 static func export_journey(
 	journey_folder: String,
 	out_abs: String,
 	mode: String = "embedded",
 	on_progress: Callable = Callable(),
-	should_cancel: Callable = Callable()
+	should_cancel: Callable = Callable(),
+	lock: bool = false
 ) -> Dictionary:
 	var folder_abs: String = ProjectSettings.globalize_path(journey_folder)
 	var journey_json_abs: String = folder_abs.path_join("journey.json")
@@ -48,6 +52,8 @@ static func export_journey(
 	# own id on its next builder save).
 	if str(journey_data.get("JourneyId", "")).strip_edges() == "":
 		journey_data["JourneyId"] = JourneyData.new_journey_id()
+	if lock:
+		journey_data["Locked"] = true
 
 	var cover_rel: String = _find_cover_rel(folder_abs)
 	var assets: Array = JourneyPackage.enumerate_assets(journey_data, cover_rel)
