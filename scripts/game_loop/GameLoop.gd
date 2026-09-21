@@ -36,6 +36,9 @@ const TRANSITION_HOLD_TIME: float = 0.30
 # the next clip's head (as the black lifts) — independent of TRANSITION_FADE_TIME above, which
 # only owns the opaque ColorRect. This one only ever touches _video.volume_db / _video.modulate.
 const CLIP_FADE_TIME: float = 0.4
+# Process frames the transition keeps the black up after the video reports a texture — see
+# _await_video_ready for why the texture alone isn't proof of a presented frame.
+const VIDEO_READY_SETTLE_FRAMES: int = 4
 
 # Boss rounds: the red frame pulses during the round's final stretch.
 const BOSS_CLIMAX_SECS: float = 30.0
@@ -1123,6 +1126,10 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	if video_path == "":
 		video_path = _find_video(round.get("folder", ""))
 	_load_video(video_path)
+	# _load_video returns at its first await — stream assigned, play() called, no frame consumed
+	# yet. That is the one window in which a start-of-clip region can be skipped WITHOUT frame 0 ever
+	# reaching the screen, so the landing is decided here rather than by the on-arrival gate.
+	_settle_timeline_start()
 
 	# The Handy (direct WiFi) plays the script itself — fire-and-forget the setup/synced-play chain. MUST run
 	# AFTER _load_video (so the anchor reads THIS clip's position, not the previous round's stale one) and
@@ -2898,6 +2905,11 @@ func _transition_swap(swap_action: Callable) -> void:
 	# Safety net for round-end paths that never ran their own tail fade (skipped, FINISHed,
 	# routed off by a checkpoint): silence the outgoing clip's audio by the time black is opaque.
 	tween_in.tween_property(_video, "volume_db", -40.0, TRANSITION_FADE_TIME)
+	# And the picture with it. The kill above stops any tail fade mid-way, which used to leave the
+	# last frame sitting half-lit beneath the incoming black — visibly frozen for the whole fade.
+	# Fading the clip to black in step with the overlay is indistinguishable from the overlay alone,
+	# and guarantees nothing but black is underneath by the time it is opaque.
+	tween_in.tween_property(_video, "modulate", Color.BLACK, TRANSITION_FADE_TIME)
 	await tween_in.finished
 
 	# Black now fully covers the screen — including any overlay we're leaving.
@@ -2952,13 +2964,23 @@ func _transition_swap(swap_action: Callable) -> void:
 # Waits until the video player has produced a frame (or a short cap elapses), so
 # a round transition doesn't reveal the background before the video renders.
 # Returns immediately when no video is playing (no-video rounds / overlays).
+#
+# The texture size is a weak signal for the FFmpeg decoder: its output texture is allocated (and
+# cleared) at load, before any frame exists, so the check passes at once and the black used to lift
+# onto an empty or not-yet-current picture — the stale-frame moment on a boss retry. GDScript can't
+# see the decoder's frame count, so once the texture reports a size the hold continues for a few
+# process frames: enough for the decode threads to present the first frame at the (possibly just
+# seeked) position on any clip that isn't stalled. The head-of-clip fade then rises from black over
+# it, so anything still catching up is hidden under the ramp rather than shown.
 func _await_video_ready() -> void:
 	if not _video.is_playing():
 		return
 	for _i in 90:  # ~1.5s cap so a stalled or failed decode never hangs the fade
 		var tex: Texture2D = _video.get_video_texture()
 		if tex != null and tex.get_size().x > 0.0:
-			return
+			break
+		await get_tree().process_frame
+	for _i in VIDEO_READY_SETTLE_FRAMES:
 		await get_tree().process_frame
 
 
@@ -4194,6 +4216,14 @@ func _jump_playhead_to(target: int) -> void:
 	# The fade back up is queued but abandoned by _move_playhead_to when the jump ended the round —
 	# there is nothing to come back to, and lifting the black would show the frames the region existed
 	# to hide. The clip then stays dark until the next one starts, where _load_video lifts it.
+	#
+	# Nothing to fade when nothing is visible: under an opaque transition, or with the clip already
+	# black, the 0.4 s fade-down is pure delay — and at round start it was a window in which the
+	# transition could clear and show the frame this jump exists to skip. Move immediately instead;
+	# the transition's own head-of-clip fade puts the picture back. A skip mid-scene keeps the dip.
+	if _transition.modulate.a >= 1.0 or _video.modulate == Color.BLACK:
+		_move_playhead_to(target)
+		return
 	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
 		_clip_fade_tween.kill()
 	_clip_fade_tween = create_tween()
@@ -4616,6 +4646,53 @@ func _begin_timeline_window(event: Dictionary) -> void:
 	_window_fades.begin(source_id, event)
 	_apply_window_factor(source_id, _window_fades.factor(source_id))
 	_reconcile_sensory()
+
+
+# Front-runs _gate_region for regions that begin at the very start of the clip. The gate decides on
+# ARRIVAL, one tick in — by which time frame 0 has been presented, and a region at 0 ms exists
+# precisely to keep that frame off the screen ("play this opening on attempt 1 only"). Called
+# synchronously after play(): the decoder has opened the file (so the length is known) but no frame
+# has been consumed, and a seek here empties the decoder's queue — so frame 0 is never shown at all.
+#
+# Chains: a skipped region can land exactly on the start of another, which is then asked in turn.
+# Verdicts are recorded the same way the gate records them, so the scheduler's first tick (which
+# baselines just behind the landed position) finds them already answered and treats everything
+# skipped as past. The funscript needs no seek of its own: Play() has not run yet and its first sync
+# snaps to the video position.
+func _settle_timeline_start() -> void:
+	if _timeline_data.is_empty() or _video == null or _video.stream == null:
+		return
+	var length_ms: int = int(_video.get_stream_length() * 1000.0)
+	if length_ms <= 0:
+		return  # length not known this early for this format; the on-arrival gate still covers it
+	var state: Dictionary = _round_player_state()
+	var regions: Array = []
+	for e: Dictionary in RoundTimeline.resolved_events(_timeline_data, length_ms):
+		if str(e.get("track", "")) == RoundTimeline.TRACK_REGION:
+			regions.append(e)
+	var landing: int = 0
+	var moved: bool = true
+	while moved:
+		moved = false
+		for region: Dictionary in regions:
+			if int(region.get("resolved_at_ms", RoundTimeline.NO_TIME)) != landing:
+				continue
+			var id: String = str(region.get("id", ""))
+			if not _region_verdicts.has(id):
+				_region_verdicts[id] = RoundTimeline.evaluate_condition(
+					region.get("condition", []), state
+				)
+			if bool(_region_verdicts[id]):
+				continue
+			var dur: int = int(region.get("duration_ms", 0))
+			if dur <= 0:
+				continue  # a zero-length region skips nothing, and would otherwise loop forever here
+			landing += dur
+			moved = true
+			break
+	if landing <= 0 or landing >= length_ms:
+		return  # nothing skipped, or the skip would swallow the whole clip — let the round run
+	_video.stream_position = landing / 1000.0
 
 
 # The playhead reached a gated stretch of the clip. If its rule holds the region simply plays; if not,

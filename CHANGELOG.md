@@ -42,6 +42,17 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **A boss opening gated to one attempt no longer flashes on the others.** A region at the very
+  start of the clip was decided on arrival — one tick in, by which point its first frame was already
+  on screen, then faded out, then skipped. The landing is now decided the instant the clip opens,
+  before a single frame is decoded, so a skipped opening is simply never seen. Skips that happen
+  while the screen is already black no longer wait out a fade either; a skip mid-scene keeps its dip.
+- **No more frozen frame between attempts.** Two causes: the round-end transition cancelled any
+  in-flight clip fade and could leave the last frame half-lit beneath the incoming black (it now
+  takes the picture down with it), and the black lifted as soon as the decoder had *allocated* a
+  picture rather than *presented* one (it now holds a few frames longer, and the clip fades up from
+  black over whatever is still catching up). Every round transition is a few frames longer as a
+  result — about 70 ms.
 - **Removing an image from a node no longer deletes it out from under other nodes.** Images
   dropped into a journey are stored once and shared by content, so “remove image” was deleting a
   file that other storyboards and forks still pointed at, breaking them on the next load. Removing
