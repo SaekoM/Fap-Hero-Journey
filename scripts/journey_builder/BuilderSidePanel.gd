@@ -1780,6 +1780,11 @@ func _make_settings_section() -> Control:
 		"Reusable places: a background and the music that belongs to it, defined once and "
 		+ "picked per node or per storyboard line. Consecutive scenes sharing a setting keep "
 		+ "the same track playing instead of restarting it."
+		+ (
+			" In a rendition the base's settings are locked — add your own alongside them."
+			if _owner._rendition_mode
+			else ""
+		)
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
@@ -1868,6 +1873,15 @@ func _make_setting_row(setting_idx: int) -> Control:
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
 
+	# The base's setting while authoring a rendition: scenes can use it, but a rendition only adds its
+	# own (JourneyRendition) — so no edit and no delete, and the row says whose it is.
+	if (
+		_owner._rendition_mode
+		and _owner._rendition_parent_setting_ids.has(str(setting.get("id", "")))
+	):
+		row.add_child(_locked_base_badge())
+		return card
+
 	var edit_btn: Button = Button.new()
 	edit_btn.text = "✎ EDIT"
 	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
@@ -1878,6 +1892,18 @@ func _make_setting_row(setting_idx: int) -> Control:
 	del_btn.pressed.connect(func() -> void: _confirm_delete_setting(setting_idx))
 	row.add_child(del_btn)
 	return card
+
+
+# The "this belongs to the base" marker on a locked settings / cast row in rendition mode.
+func _locked_base_badge() -> Label:
+	var lbl: Label = Label.new()
+	lbl.text = "🔒 BASE"
+	lbl.tooltip_text = "Defined by the base journey. A rendition can use it, not change it."
+	lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return lbl
 
 
 func _setting_uses(setting_id: String) -> int:
@@ -1941,6 +1967,11 @@ func _make_characters_section() -> Control:
 	hint.text = (
 		"Characters for storyboards: define a portrait once, then pick it per line. "
 		+ "Portraits show ~half-screen over the background; two can share the stage (left + right)."
+		+ (
+			" In a rendition the base's cast is locked — add your own alongside them."
+			if _owner._rendition_mode
+			else ""
+		)
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
@@ -2025,6 +2056,14 @@ func _make_character_row(char_idx: int) -> Control:
 	)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
+
+	# Same lock as a base setting: usable in a rendition's scenes, never edited or removed there.
+	if (
+		_owner._rendition_mode
+		and _owner._rendition_parent_character_ids.has(str(chr.get("id", "")))
+	):
+		row.add_child(_locked_base_badge())
+		return card
 
 	var edit_btn: Button = Button.new()
 	edit_btn.text = "✎ EDIT"

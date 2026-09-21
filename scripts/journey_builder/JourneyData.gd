@@ -1898,6 +1898,63 @@ static func setting_reference_count(nodes: Dictionary, setting_id: String) -> in
 	return total
 
 
+# How many storyboard lines put `character_id` on stage — the cast's counterpart of
+# setting_reference_count, read by the same three places for the same reason.
+static func character_reference_count(nodes: Dictionary, character_id: String) -> int:
+	if character_id == "":
+		return 0
+	var total: int = 0
+	for id: Variant in nodes:
+		var node: Variant = nodes[id]
+		if not (node is Dictionary):
+			continue
+		var data: Variant = (node as Dictionary).get("data", {})
+		if not (data is Dictionary):
+			continue
+		for line: Variant in (data as Dictionary).get("lines", []):
+			if not (line is Dictionary):
+				continue
+			for e: Variant in (line as Dictionary).get("stage", []):
+				if e is Dictionary and str((e as Dictionary).get("character", "")) == character_id:
+					total += 1
+	return total
+
+
+# `base` followed by every entry of `extra` whose id it doesn't already have — the additive rule a
+# rendition's settings and cast compose by (first id wins, so the base's entry is never shadowed).
+# Returns a fresh list; neither input is touched. Entries without an id are appended as-is.
+static func merge_by_id(base: Array, extra: Array, key: String = "id") -> Array:
+	var out: Array = base.duplicate()
+	var seen: Dictionary = {}
+	for e: Variant in base:
+		if e is Dictionary and str((e as Dictionary).get(key, "")) != "":
+			seen[str((e as Dictionary).get(key, ""))] = true
+	for e: Variant in extra:
+		if not (e is Dictionary):
+			continue
+		var id: String = str((e as Dictionary).get(key, ""))
+		if id != "" and seen.has(id):
+			continue
+		if id != "":
+			seen[id] = true
+		out.append(e)
+	return out
+
+
+# `list` without the entries whose id is in `ids`. `key` is "id" for the runtime shape and "Id" for
+# the on-disk one, so a journey.json block can be trimmed without a parse/coerce round trip.
+static func without_ids(list: Array, ids: Array, key: String = "id") -> Array:
+	var drop: Dictionary = {}
+	for i: Variant in ids:
+		drop[str(i)] = true
+	var out: Array = []
+	for e: Variant in list:
+		if e is Dictionary and drop.has(str((e as Dictionary).get(key, ""))):
+			continue
+		out.append(e)
+	return out
+
+
 # ── Stage (a line's list of on-stage characters) ────────────────────────────
 # A LIST of {character, portrait?, placement?}. portrait/placement omitted → the character's default
 # (first) of each. Entries with no character are dropped; ids are NOT validated here (a stale id just

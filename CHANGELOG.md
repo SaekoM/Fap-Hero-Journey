@@ -56,6 +56,39 @@ will play.
 Dragging a position’s corner now **scales the box uniformly**, so “a little bigger” is one motion and
 the box keeps its shape. Hold Alt to reshape it freely.
 
+### ◆ Renditions can bring their own settings and cast
+
+A background or character defined while editing a rendition was silently dropped on save — the
+rendition format simply had nowhere to keep it — which is what “backgrounds don’t save in
+renditions” was. A rendition now carries its **own** settings and characters, pooled in its own
+folder, and a played rendition sees the base’s followed by its own (and an ancestor’s, when it
+stacks on another rendition).
+
+The rule is *additive*: a rendition adds places and people, it never edits or removes the base’s.
+In the rendition editor the base’s settings and cast are shown with a 🔒 BASE badge — usable in
+your scenes, not editable — and your own sit alongside them. Merging a branch back into the base
+brings the settings and characters it uses along with it.
+
+### ◆ Notes and frames travel with the nodes they annotate
+
+Extracting a branch to a rendition left its sticky notes and group frames behind on the base canvas,
+pointing at nothing, and a rendition had no way to keep notes of its own. Renditions now save their
+notes and frames like any journey. On extract — and on merge back — a note pinned to a moved node
+goes with it, and a frame goes when everything inside it moved, taking the loose notes inside its
+rect along; a frame that also wraps nodes that stayed, stays.
+
+One deliberate change alongside this: while editing a rendition, the **base’s** notes and frames are
+no longer shown. They were editable there, and every edit vanished on save; a rendition now shows
+only what it can keep.
+
+### ◆ Extract to rendition from inside a rendition
+
+Extraction used to be a base-only tool. Selecting some of a rendition’s own nodes and choosing
+EXTRACT TO RENDITION now pulls them into a new rendition that overlays *this* one — the same flow as
+from a base: the child is written at once, this rendition drops the nodes on screen, and you Save to
+finalize (Ctrl+Z restores them and removes the child). Notes and frames travel as they do from a
+base. Only the rendition’s own nodes can leave; the dimmed parent nodes stay where they are.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
@@ -66,6 +99,23 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Merging a branch back, then discarding, no longer loses it.** The merge cut the branch out of
+  the child rendition on disk straight away, then handed it to the parent editor unsaved — so Back →
+  Discard in that window threw away the only copy. The child is now left alone until the parent is
+  actually saved. Discarding means the merge never happened, and the status line says so.
+- **“Test from here” works inside a rendition.** It used to save the rendition and drop you back at
+  the catalogue, which left no way to test one at all. It now plays the rendition composed onto its
+  base (and any renditions it stacks on) — exactly what a player gets, anchors and channel overlays
+  included — and returns you to editing the rendition, not the base.
+- **A branch merges back into its immediate parent.** Merging from a rendition that overlays another
+  rendition used to land the branch in the base, where any anchor onto the middle rendition’s nodes
+  had nothing to attach to. It now lands in the parent — base or rendition — and the menu says which.
+  Merge again from there to climb further.
+- **Cuts made in a rendition now actually cut the video.** The rendition save never built the encode
+  plan, so a single trim’s funscript was cut but its video was copied at full length — which is why
+  the same clip worked the moment it was in the base. Not an AV1 problem, though AV1 is where it was
+  noticed: it did the same to H.264 (cuts with two or more segments always baked, and so looked fine).
+  Renditions now go through the same encode planning and animated-image checks the base save does.
 - **Closing a new cast member without a name now asks before discarding it.** An unnamed new
   character was silently dropped on DONE or Esc, which read as “it didn’t save”. The editor now says a
   name is needed and offers NAME IT (back to the field) or DISCARD; the status line records a discard.

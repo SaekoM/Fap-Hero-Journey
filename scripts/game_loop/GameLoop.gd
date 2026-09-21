@@ -329,6 +329,9 @@ var _beat_bar: Control = null
 # return journey is the catalogue-model dict the builder reloads on the way back.
 var _test_mode: bool = false
 var _test_return_journey: Dictionary = {}
+# Set when the test play came from a RENDITION editor: {rendition_parent, rendition_over,
+# edit_rendition} — the builder's own handoff, so exiting lands back in that rendition, not the base.
+var _test_return_rendition: Dictionary = {}
 # Seeds applied before the first node loads in a test play, so Conditional /
 # Sacrifice forks can be exercised from a chosen starting point.
 var _test_seed_score: int = 0
@@ -377,6 +380,7 @@ func _ready() -> void:
 	_test_mode = bool(GameState.get_meta("_test_mode", false))
 	if _test_mode:
 		_test_return_journey = GameState.get_meta("_test_return_journey", {})
+		_test_return_rendition = GameState.get_meta("_test_return_rendition", {})
 		_test_seed_score = int(GameState.get_meta("_test_seed_score", 0))
 		_test_seed_coins = int(GameState.get_meta("_test_seed_coins", 0))
 		_test_seed_flags = GameState.get_meta("_test_seed_flags", [])
@@ -384,6 +388,8 @@ func _ready() -> void:
 		_test_seed_counters = GameState.get_meta("_test_seed_counters", {})
 		GameState.remove_meta("_test_mode")
 		GameState.remove_meta("_test_return_journey")
+		if GameState.has_meta("_test_return_rendition"):
+			GameState.remove_meta("_test_return_rendition")
 		GameState.remove_meta("_test_seed_score")
 		GameState.remove_meta("_test_seed_coins")
 		GameState.remove_meta("_test_seed_flags")
@@ -3294,6 +3300,13 @@ func _record_run(completed: bool) -> void:
 func _exit_test_to_builder() -> void:
 	_video.stop()
 	FunscriptPlayer.Stop()
+	if not _test_return_rendition.is_empty():
+		# Back into the rendition that launched the test — the plain return would open the base.
+		JourneyBuilder.rendition_parent = _test_return_rendition.get("rendition_parent", {})
+		JourneyBuilder.rendition_over = _test_return_rendition.get("rendition_over", {})
+		JourneyBuilder.edit_rendition = _test_return_rendition.get("edit_rendition", {})
+		Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
+		return
 	JourneyBuilder.edit_journey = _test_return_journey
 	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
 

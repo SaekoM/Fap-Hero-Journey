@@ -244,3 +244,80 @@ func test_group_renditions_drops_a_cyclic_chain() -> void:
 	]
 	JourneyScanner.group_renditions(journeys, renditions)
 	assert_int((journeys[0]["renditions"] as Array).size()).is_equal(0)
+
+
+# ── A rendition's own places and people (0.8.6, additive) ─────────────────────
+# "Backgrounds don't save in renditions": the envelope had no Settings/Characters at all, so a place
+# authored in a rendition was silently dropped on save. Now it rides along, pooled in the rendition's
+# own folder, and composes AFTER the base's — first id wins, so the base is never shadowed.
+
+
+func _rendition_with_own_places() -> Dictionary:
+	var r := _runtime_rendition()
+	r["settings"] = [
+		{
+			"id": "set_r",
+			"name": "Attic",
+			"backgrounds": [{"id": "bg_1", "name": "Dusk", "path": "media/attic.png"}],
+			"bgm": "content/attic.ogg",
+			"bgm_volume": 0.5,
+		}
+	]
+	r["characters"] = [
+		{
+			"id": "chr_r",
+			"name": "Stranger",
+			"portraits": [{"id": "por_1", "name": "Neutral", "path": "media/stranger.png"}],
+			"placements": [],
+		}
+	]
+	return r
+
+
+func test_round_trip_carries_the_renditions_own_settings_and_cast() -> void:
+	var json := JourneyRendition.coerce_rendition(_rendition_with_own_places())
+	assert_int((json["Settings"] as Array).size()).is_equal(1)
+	assert_int((json["Characters"] as Array).size()).is_equal(1)
+	var rt := JourneyRendition.parse_rendition(json)
+	assert_str(str((rt["settings"][0] as Dictionary)["name"])).is_equal("Attic")
+	assert_str(str((rt["characters"][0] as Dictionary)["name"])).is_equal("Stranger")
+
+
+func test_a_rendition_without_places_of_its_own_writes_empty_blocks() -> void:
+	var json := JourneyRendition.coerce_rendition(_runtime_rendition())
+	assert_int((json["Settings"] as Array).size()).is_equal(0)
+	assert_int((json["Characters"] as Array).size()).is_equal(0)
+
+
+func test_resolve_delta_paths_covers_settings_and_cast() -> void:
+	var delta := JourneyRendition.parse_rendition(
+		JourneyRendition.coerce_rendition(_rendition_with_own_places())
+	)
+	JourneyRendition.resolve_delta_paths(delta, "user://journeys/Rend")
+	var setting: Dictionary = delta["settings"][0]
+	assert_str(str((setting["backgrounds"][0] as Dictionary)["path"])).is_equal(
+		"user://journeys/Rend/media/attic.png"
+	)
+	assert_str(str(setting["bgm"])).is_equal("user://journeys/Rend/content/attic.ogg")
+	var chr: Dictionary = delta["characters"][0]
+	assert_str(str((chr["portraits"][0] as Dictionary)["path"])).is_equal(
+		"user://journeys/Rend/media/stranger.png"
+	)
+
+
+# The compose rule for places and people: base first, then the rendition's, first id wins.
+func test_merge_by_id_is_additive_and_the_base_wins_a_collision() -> void:
+	var base := [{"id": "a", "name": "Base A"}, {"id": "b", "name": "Base B"}]
+	var extra := [{"id": "b", "name": "Rend B"}, {"id": "c", "name": "Rend C"}]
+	var merged := JourneyData.merge_by_id(base, extra)
+	assert_int(merged.size()).is_equal(3)
+	assert_str(str((merged[1] as Dictionary)["name"])).is_equal("Base B")
+	assert_str(str((merged[2] as Dictionary)["name"])).is_equal("Rend C")
+	assert_int(base.size()).is_equal(2)  # inputs untouched
+
+
+func test_without_ids_trims_the_on_disk_shape_too() -> void:
+	var raw := [{"Id": "a"}, {"Id": "b"}, {"Id": "c"}]
+	var kept := JourneyData.without_ids(raw, ["b"], "Id")
+	assert_int(kept.size()).is_equal(2)
+	assert_str(str((kept[1] as Dictionary)["Id"])).is_equal("c")

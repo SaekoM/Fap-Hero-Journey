@@ -697,23 +697,15 @@ func _on_rendition_pressed() -> void:
 	# With a rendition SELECTED in VERSION, the new overlay targets IT (sibling-dependency) rather than the
 	# base: compose base ⊕ its chain as the ghosted parent, and stamp its id as the new overlay's ParentId.
 	if not _selected_rendition.is_empty():
-		var composed: Dictionary = JourneyScanner.compose_play_journey(
-			_current_journey.get("folder", ""),
-			_current_journey.get("folder_name", ""),
-			_selected_chain()
+		JourneyBuilder.rendition_over = JourneyScanner.rendition_over_handoff(
+			_current_journey, _selected_chain(), _selected_rendition
 		)
-		if composed.is_empty() or not (composed.get("compose_errors", []) as Array).is_empty():
+		if JourneyBuilder.rendition_over.is_empty():
 			_show_message(
 				"Can't Overlay That",
 				"The selected rendition didn't compose cleanly, so it can't be a parent. Fix it first."
 			)
 			return
-		JourneyBuilder.rendition_over = {
-			"start": composed.get("start", ""),
-			"nodes": composed.get("nodes", {}),
-			"parent_id": str(_selected_rendition.get("journey_id", "")),
-			"parent_name": str(_selected_rendition.get("name", "")),
-		}
 	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
 
 
@@ -1978,33 +1970,24 @@ func _setup_rendition_ancestors_for_edit() -> bool:
 		JourneyBuilder.rendition_over = {}  # parent is the base — nothing to compose
 		return true
 	var ancestors: Array = chain.slice(0, chain.size() - 1)
-	var composed: Dictionary = JourneyScanner.compose_play_journey(
-		str(_current_journey.get("folder", "")),
-		str(_current_journey.get("folder_name", "")),
-		ancestors
+	JourneyBuilder.rendition_over = JourneyScanner.rendition_over_handoff(
+		_current_journey, ancestors, _rendition_by_id(str(_selected_rendition.get("parent_id", "")))
 	)
-	if composed.is_empty() or not (composed.get("compose_errors", []) as Array).is_empty():
+	if JourneyBuilder.rendition_over.is_empty():
 		_show_message(
 			"Can't Edit That",
 			"This rendition builds on another rendition that didn't compose cleanly. Fix the parent rendition first."
 		)
 		return false
-	var parent_id: String = str(_selected_rendition.get("parent_id", ""))
-	JourneyBuilder.rendition_over = {
-		"start": composed.get("start", ""),
-		"nodes": composed.get("nodes", {}),
-		"parent_id": parent_id,
-		"parent_name": _rendition_name_by_id(parent_id),
-	}
 	return true
 
 
-# The display name of an installed rendition of the current base, by its JourneyId (for the overlay banner).
-func _rendition_name_by_id(journey_id: String) -> String:
+# An installed rendition of the current base, by its JourneyId ({} if none).
+func _rendition_by_id(journey_id: String) -> Dictionary:
 	for r: Dictionary in _current_journey.get("renditions", []):
 		if str(r.get("journey_id", "")) == journey_id:
-			return str(r.get("name", "a rendition"))
-	return "a rendition"
+			return r
+	return {}
 
 
 # Reflect the soft edit-lock on the EDIT button for whatever's selected (base or a rendition): swap in a

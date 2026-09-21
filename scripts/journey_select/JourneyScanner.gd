@@ -151,7 +151,38 @@ static func load_rendition_delta(rendition_folder: String) -> Dictionary:
 	var delta: Dictionary = JourneyRendition.parse_rendition(data)
 	JourneyRendition.resolve_delta_paths(delta, rendition_folder)
 	delta["map_backdrops"] = _parse_map_backdrops(data.get("MapBackdrops", []), rendition_folder)
+	# The rendition's own notes and frames — editor-only, exactly as a base journey's.
+	delta["comments"] = _parse_comments(data)
+	delta["groups"] = _parse_groups(data)
 	return delta
+
+
+# The builder's `rendition_over` handoff for editing (or creating) a rendition whose parent is itself a
+# rendition: base ⊕ `ancestors` composed into the ghosted graph, plus what the builder needs to test-
+# play, extract and merge from inside it — the chain's folders, its composed places and people, and
+# the immediate parent's summary. `parent` is that parent's catalogue entry. Returns {} when the chain
+# doesn't compose cleanly (the caller says so); {} is also the right handoff for a parent that is the
+# base itself, which needs nothing composed.
+static func rendition_over_handoff(
+	base: Dictionary, ancestors: Array, parent: Dictionary
+) -> Dictionary:
+	if ancestors.is_empty():
+		return {}
+	var composed: Dictionary = compose_play_journey(
+		str(base.get("folder", "")), str(base.get("folder_name", "")), ancestors
+	)
+	if composed.is_empty() or not (composed.get("compose_errors", []) as Array).is_empty():
+		return {}
+	return {
+		"start": composed.get("start", ""),
+		"nodes": composed.get("nodes", {}),
+		"parent_id": str(parent.get("journey_id", "")),
+		"parent_name": str(parent.get("name", "a rendition")),
+		"parent_summary": parent.duplicate(true),
+		"chain_folders": ancestors.duplicate(),
+		"settings": composed.get("settings", []),
+		"characters": composed.get("characters", []),
+	}
 
 
 # Produces a play-ready journey dict = the BASE journey (its meta, paths resolved against the base folder)
@@ -168,13 +199,22 @@ static func compose_play_journey(
 		return {}
 	var graph: Dictionary = {"start": base.get("start", ""), "nodes": base.get("nodes", {})}
 	var errors: Array = []
+	# Settings and cast are ADDITIVE through the chain: the base's first, then each rendition's own,
+	# first id wins — a rendition brings its own places and people but never replaces the base's
+	# (JourneyRendition's contract), and every scene in the merged graph finds what it references.
+	var settings: Array = base.get("settings", [])
+	var characters: Array = base.get("characters", [])
 	for rf: Variant in chain_folders:
 		var delta: Dictionary = load_rendition_delta(str(rf))
 		var composed: Dictionary = JourneyCompose.compose_graph(graph, delta)
 		graph = composed["graph"]
 		errors.append_array(composed["errors"] as Array)
+		settings = JourneyData.merge_by_id(settings, delta.get("settings", []))
+		characters = JourneyData.merge_by_id(characters, delta.get("characters", []))
 	base["start"] = graph["start"]
 	base["nodes"] = graph["nodes"]
+	base["settings"] = settings
+	base["characters"] = characters
 	base["compose_errors"] = errors
 	base["active_rendition"] = str(chain_folders[-1]) if not chain_folders.is_empty() else ""
 	# Rebuild the catalogue preview (round/fork/shop/storyboard lists + totals) from the MERGED graph so

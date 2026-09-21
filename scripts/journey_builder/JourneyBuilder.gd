@@ -57,6 +57,11 @@ const CAUSE_SETTING_EMPTY: String = "setting_empty"
 const CAUSE_SETTING_UNUSED: String = "setting_unused"
 # Issues raised by the last presave pass that did NOT block it — reported once the save succeeds.
 var _pending_save_warnings: Array = []
+# A merge-back waiting for this editor's save to land: {folder, branch, remainder}. The child
+# rendition on disk still holds the branch until then, so discarding here loses nothing. Consumed —
+# and only then cleared — by _commit_pending_rendition_rewrite once the staging swap has succeeded;
+# a failed save keeps it, so a retry still commits it.
+var _pending_rendition_rewrite: Dictionary = {}
 const CAUSE_SETTING_MEDIA_MISSING: String = "setting_media_missing"
 const CAUSE_SHOP_SLOTS_SHORT: String = "shop_slots_short"
 const CAUSE_LAYOUT_STALE: String = "layout_stale"
@@ -161,6 +166,21 @@ var _rendition_parent_folder: String = ""
 var _rendition_parent_journey: Dictionary = {}  # the base's scanner dict — reloaded by "merge into base"
 var _rendition_parent_ids: Dictionary = {}  # base node id -> true
 var _rendition_slot_fills: Array = []  # [{node, field, channel, path}] — axis/vibe overlays on base rounds
+# Folders of the ancestor renditions this overlay composes over ([] when the parent is the base). A
+# test play recomposes base ⊕ ancestors ⊕ this rendition FROM DISK; the builder otherwise only holds
+# the composed graph, not where its layers came from.
+var _rendition_ancestor_folders: Array = []
+# The rendition_over handoff as received, so a test play can hand it straight back on exit and land
+# the author in this same editing session.
+var _rendition_over_snapshot: Dictionary = {}
+# The immediate parent's catalogue entry when that parent is itself a rendition ({} when it is the
+# base). A merge-back lands in the immediate parent, whichever kind it is.
+var _rendition_parent_summary: Dictionary = {}
+# Ids of the settings / characters that belong to the base (or the composed ancestor chain) while
+# authoring a rendition. Scenes can use them, but they are locked: a rendition only ADDS its own
+# (JourneyRendition's additive contract), and only those are written on save.
+var _rendition_parent_setting_ids: Dictionary = {}  # setting id -> true
+var _rendition_parent_character_ids: Dictionary = {}  # character id -> true
 
 var _selected_graph_node_id: String = ""  # the lone selected node id, or "" when 0 or 2+ are selected
 var _selected_graph_node_ids: Array = []  # the full selection set (mirrors GraphView; drives group ops)
@@ -283,6 +303,9 @@ func _ready() -> void:
 			edit_rendition = {}
 		rendition_parent = {}
 		rendition_over = {}
+		if not merge_inject.is_empty():
+			_apply_merge_inject(merge_inject)  # a child's branch merging into THIS rendition
+			merge_inject = {}
 	elif not edit_journey.is_empty():
 		_original_journey_folder = edit_journey.get("folder", "")
 		_load_graph(edit_journey)
@@ -724,14 +747,9 @@ func _on_arrange_pressed() -> void:
 	_push_undo()
 	# Capture each frame's current members BEFORE the relayout, so the frame can re-wrap them after.
 	var groups: Array = _graph_model.get("groups", [])
-	var members: Array = []
+	var members: Array = _frame_members()
 	var frame_comments: Array = []  # note indices inside each frame — so the re-fit wraps them too
 	for g: Dictionary in groups:
-		# A collapsed frame's members are frozen; an expanded one wraps whatever's currently inside.
-		if g.get("collapsed", false):
-			members.append((g.get("members", []) as Array).duplicate())
-		else:
-			members.append(_nodes_in_rect(g.get("rect", Rect2())))
 		frame_comments.append(_comments_in_rect(g.get("rect", Rect2())))
 	# Snapshot node positions so pinned notes can follow their node through the relayout.
 	var nodes: Dictionary = _graph_model.get("nodes", {})
@@ -1396,10 +1414,13 @@ func _show_node_context_menu(node_id: String) -> void:
 		)
 		vbox.add_child(finish_b)
 
-	# Extract → rendition (base journeys, non-start node); Merge → base (an overlay node in rendition mode).
-	if not _rendition_mode and not already_start:
+	# Extract → rendition: from a base (any non-start node), or from a rendition (its OWN nodes, into a
+	# child that overlays this one). Merge → parent: an overlay node in rendition mode. A rendition's
+	# own node therefore offers both.
+	var own_node: bool = not _rendition_mode or not _rendition_parent_ids.has(node_id)
+	if own_node and not already_start:
 		var extract_b: Button = _ctx_menu_button(
-			"⑂ EXTRACT TO RENDITION",
+			"⑂ EXTRACT TO CHILD RENDITION" if _rendition_mode else "⑂ EXTRACT TO RENDITION",
 			UITheme.CYAN,
 			func() -> void:
 				popup.queue_free()
@@ -1408,9 +1429,13 @@ func _show_node_context_menu(node_id: String) -> void:
 				_begin_extract_to_rendition()
 		)
 		vbox.add_child(extract_b)
-	elif _rendition_mode and not _rendition_parent_ids.has(node_id):
+	if _rendition_mode and not _rendition_parent_ids.has(node_id):
 		var merge_b: Button = _ctx_menu_button(
-			"⤺ MERGE INTO BASE",
+			(
+				"⤺ MERGE INTO PARENT RENDITION"
+				if not _rendition_parent_summary.is_empty()
+				else "⤺ MERGE INTO BASE"
+			),
 			UITheme.CYAN,
 			func() -> void:
 				popup.queue_free()
@@ -1626,6 +1651,26 @@ func _content_bounds(node_ids: Array, comment_indices: Array) -> Rect2:
 			rect = cr if first else rect.merge(cr)
 			first = false
 	return rect
+
+
+# The node ids each frame wraps, in frame order: a collapsed frame's members are frozen, an expanded
+# one wraps whatever is currently inside it.
+func _frame_members() -> Array:
+	var members: Array = []
+	for g: Dictionary in _graph_model.get("groups", []):
+		if g.get("collapsed", false):
+			members.append((g.get("members", []) as Array).duplicate())
+		else:
+			members.append(_nodes_in_rect(g.get("rect", Rect2())))
+	return members
+
+
+# Which of the canvas's notes and frames go with `moved` ({node id: true}) when those nodes leave for
+# a rendition or come back to the base — JourneyExtract's rule over what the canvas shows.
+func _split_annotations(moved: Dictionary) -> Dictionary:
+	return JourneyExtract.split_annotations(
+		_graph_model.get("comments", []), _graph_model.get("groups", []), moved, _frame_members()
+	)
 
 
 # Node ids whose centre is inside `rect` — frame membership (mirrors GraphView._nodes_in_frame_rect).
@@ -2799,16 +2844,36 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 		_graph_model.clear()
 		_graph_model["start"] = str(rendition_over.get("start", ""))
 		_graph_model["nodes"] = (rendition_over.get("nodes", {}) as Dictionary).duplicate(true)
+		# The chain's composed settings and cast, so a rendition-on-rendition can dress its scenes with
+		# an ancestor's places and people as well as the base's.
+		_journey_settings = (rendition_over.get("settings", _journey_settings) as Array).duplicate(
+			true
+		)
+		_journey_characters = (
+			(rendition_over.get("characters", _journey_characters) as Array).duplicate(true)
+		)
 		_rendition_parent_id = str(rendition_over.get("parent_id", ""))
 		parent_title = str(rendition_over.get("parent_name", parent_title))
 	else:
 		_rendition_parent_id = _journey_id  # the base's id becomes the overlay's ParentId
 	_rendition_parent_folder = str(base.get("folder", ""))
-	_rendition_parent_journey = base.duplicate(true)  # kept so "merge into base" can reload it
+	_rendition_parent_journey = base.duplicate(true)  # kept so a merge-back can reload it
+	_rendition_ancestor_folders = (rendition_over.get("chain_folders", []) as Array).duplicate()
+	_rendition_over_snapshot = rendition_over.duplicate(true)
+	_rendition_parent_summary = (rendition_over.get("parent_summary", {}) as Dictionary).duplicate(
+		true
+	)
 	_rendition_parent_ids = {}
 	_rendition_slot_fills = []
 	for id: String in _graph_model.get("nodes", {}):
 		_rendition_parent_ids[id] = true
+	# Every setting and character shown so far is the base's (or an ancestor's): usable, locked.
+	_rendition_parent_setting_ids = _ids_of(_journey_settings)
+	_rendition_parent_character_ids = _ids_of(_journey_characters)
+	# The base's notes and frames are the base author's. A rendition can't save them, so it doesn't
+	# show them — its own arrive with its delta (_load_rendition_delta).
+	_graph_model.erase("comments")
+	_graph_model.erase("groups")
 	# The overlay is a NEW artifact — never adopt the base's identity, description, cover, or save location.
 	_journey_id = ""
 	_journey_name = ""
@@ -2865,6 +2930,13 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 			anchor_out.append(edge)
 	# Channel overlays — paths are absolute after the resolve; the dialog edits them, save re-pools them.
 	_rendition_slot_fills = (delta.get("slot_fills", []) as Array).duplicate(true)
+	# The rendition's OWN places and people, after the locked base set it was shown with. Skipping an
+	# id the base already has is the compose rule (first wins), so a stale copy can never shadow it.
+	_journey_settings = JourneyData.merge_by_id(_journey_settings, delta.get("settings", []))
+	_journey_characters = JourneyData.merge_by_id(_journey_characters, delta.get("characters", []))
+	# Its own notes and frames (the base's were dropped on entry — see _enter_rendition_mode).
+	_graph_model["comments"] = (delta.get("comments", []) as Array).duplicate(true)
+	_graph_model["groups"] = (delta.get("groups", []) as Array).duplicate(true)
 	# Adopt the rendition's own identity + folder so a re-save overwrites it in place.
 	_journey_id = str(summary.get("journey_id", ""))
 	_journey_name = str(summary.get("name", ""))
@@ -3850,6 +3922,54 @@ func _launch_test_play(paths: Dictionary) -> void:
 		_save_btn.disabled = false
 		return
 
+	_start_test_play(journey, seek_node, {})
+
+
+# Test-plays a RENDITION after its save. Composes base ⊕ ancestor chain ⊕ this rendition into one
+# play-ready journey — the same path the catalogue uses to play it — so the test exercises exactly
+# what a player would get, anchors and slot-fills included. The return payload re-enters RENDITION
+# editing on exit; the plain journey return would land the author on the base instead.
+func _launch_rendition_test_play(paths: Dictionary) -> void:
+	var seek_node: String = str(_pending_test_location.get("node_id", ""))
+	_pending_test_location = {}
+	var folder_name: String = (paths["final_abs_dir"] as String).get_file()
+	var rendition_folder: String = SettingsService.get_journeys_dir() + "/" + folder_name
+	var chain: Array = _rendition_ancestor_folders.duplicate()
+	chain.append(rendition_folder)
+	var base_name: String = str(
+		_rendition_parent_journey.get("folder_name", _rendition_parent_folder.get_file())
+	)
+	var journey: Dictionary = JourneyScanner.compose_play_journey(
+		_rendition_parent_folder, base_name, chain
+	)
+	if journey.is_empty() or not (journey.get("compose_errors", []) as Array).is_empty():
+		_show_status("Test play failed: the rendition didn't compose cleanly onto its base.", true)
+		_save_btn.disabled = false
+		return
+	_start_test_play(
+		journey,
+		seek_node,
+		{
+			"rendition_parent": _rendition_parent_journey,
+			"rendition_over": _rendition_over_snapshot,
+			# What _load_rendition_delta restores on the way back in, so the rendition's identity and
+			# name survive the round trip instead of coming back blank.
+			"edit_rendition":
+			{
+				"folder": rendition_folder,
+				"journey_id": _journey_id,
+				"name": _journey_name,
+				"author": _journey_author,
+				"description": _journey_desc,
+				"cover_path": _cover_path,
+			},
+		}
+	)
+
+
+# Starts `journey` in GameState, seeks to `seek_node`, and hands off to GameLoop in test mode.
+# `return_rendition` (may be {}) is the rendition-editing handoff GameLoop gives back on exit.
+func _start_test_play(journey: Dictionary, seek_node: String, return_rendition: Dictionary) -> void:
 	GameState.StartJourney(journey)
 	# Seek the walker to the selected node (no-op fallback to the start if its id
 	# isn't in the graph). The DAG lets us jump without replaying fork decisions.
@@ -3861,6 +3981,7 @@ func _launch_test_play(paths: Dictionary) -> void:
 	# catalogue model for legacy journeys, which _load_graph migrates on reload.
 	GameState.set_meta("_test_mode", true)
 	GameState.set_meta("_test_return_journey", journey)
+	GameState.set_meta("_test_return_rendition", return_rendition)
 	GameState.set_meta("_test_seed_score", _test_seed_score)
 	GameState.set_meta("_test_seed_coins", _test_seed_coins)
 	GameState.set_meta("_test_seed_flags", _test_seed_flags)
@@ -3905,6 +4026,7 @@ func _do_save() -> bool:
 
 	_swap_staging_into_place(paths)
 	_invalidate_existing_run_saves(paths)
+	_commit_pending_rendition_rewrite()
 	if not _pending_test_location.is_empty():
 		_launch_test_play(paths)
 	else:
@@ -3919,13 +4041,23 @@ func _do_save() -> bool:
 # split. Extraction only makes sense on a SAVED base journey — the overlay needs the base's JourneyId as
 # its parent, and the base folder on disk to pool the extracted media from.
 func _begin_extract_to_rendition() -> void:
+	# From inside a rendition the child overlays THIS rendition: only its own nodes can leave — the
+	# ghosted parent's aren't this rendition's to give away.
 	if _rendition_mode:
-		_show_status("You're editing a rendition — extraction works on a base journey.", true)
-		return
+		for id: String in _selected_graph_node_ids:
+			if _rendition_parent_ids.has(id):
+				_show_status(
+					"Only this rendition's own nodes can be extracted — deselect the dimmed base nodes.",
+					true
+				)
+				return
 	if _journey_id.strip_edges() == "" or _original_journey_folder.strip_edges() == "":
 		_show_builder_message(
 			"SAVE FIRST",
-			"Extraction pulls the selected nodes into a SEPARATE rendition that overlays this journey — so the journey must be saved first (it becomes the rendition's parent). Save, then extract."
+			(
+				"Extraction pulls the selected nodes into a SEPARATE rendition that overlays this %s — so it must be saved first (it becomes the new rendition's parent). Save, then extract."
+				% ("rendition" if _rendition_mode else "journey")
+			)
 		)
 		return
 	var result: Dictionary = JourneyExtract.extract_rendition(
@@ -4044,13 +4176,29 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	var base_graph: Dictionary = result["base"]
 	var delta: Dictionary = result["rendition"]
 	var extracted_count: int = (delta["nodes"] as Dictionary).size()
+	# Notes and frames go with the nodes they annotate (JourneyExtract.split_annotations); the rest stay
+	# with the base. Decided against the FULL canvas, before it's swapped for the transient one below.
+	var moved_ids: Dictionary = {}
+	for id: String in delta["nodes"] as Dictionary:
+		moved_ids[id] = true
+	var notes: Dictionary = _split_annotations(moved_ids)
 
-	# The pristine base graph (JourneyExtract deep-copies, so _graph_model is untouched) — for undo + the
-	# state we restore afterwards.
+	# The pristine graph (JourneyExtract deep-copies, so _graph_model is untouched) — for undo + the
+	# state we restore afterwards. Extracting from INSIDE a rendition borrows the same machinery: the
+	# child's parent is this rendition, and this rendition's own state comes back untouched below.
 	var snap_graph: Dictionary = _graph_model
 	var snap_id: String = _journey_id
 	var snap_name: String = _journey_name
 	var snap_folder: String = _original_journey_folder
+	var snap_rendition: Dictionary = {
+		"mode": _rendition_mode,
+		"parent_id": _rendition_parent_id,
+		"parent_folder": _rendition_parent_folder,
+		"parent_ids": _rendition_parent_ids,
+		"setting_ids": _rendition_parent_setting_ids,
+		"character_ids": _rendition_parent_character_ids,
+		"slot_fills": _rendition_slot_fills,
+	}
 
 	# Transient rendition-authoring graph: the final base (ghosted parent) + extracted nodes, with the
 	# anchors injected onto the base nodes so _extract_anchors picks them up.
@@ -4068,29 +4216,48 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 			an["out"] = []
 		var edge: Dictionary = (a.get("edge", {}) as Dictionary).duplicate(true)
 		edge["_anchor"] = true
-		(an["out"] as Array).append(edge)
+		var slot: int = int(a.get("slot", -1))
+		if slot >= 0 and slot < (an["out"] as Array).size():
+			# A base fork's open slot this rendition had filled: the child fills the same slot.
+			var choice: Dictionary = (an["out"] as Array)[slot]
+			choice["to"] = str(edge.get("to", ""))
+			choice["_anchor"] = true
+			choice["_slot"] = slot
+		else:
+			(an["out"] as Array).append(edge)
 
 	_reset_save_state()
-	_graph_model = {"start": str(base_graph.get("start", "")), "nodes": authoring}
+	_graph_model = {
+		"start": str(base_graph.get("start", "")),
+		"nodes": authoring,
+		"comments": notes["moved"]["comments"],
+		"groups": notes["moved"]["groups"],
+	}
 	_rendition_mode = true
 	_rendition_parent_id = snap_id
 	_rendition_parent_folder = snap_folder
 	_rendition_parent_ids = {}
 	for id: String in base_graph["nodes"] as Dictionary:
 		_rendition_parent_ids[id] = true
+	# The extracted scenes keep using the base's places and people through the compose union, so none
+	# move: lock them all and the pack writes no Settings / Characters of its own.
+	_rendition_parent_setting_ids = _ids_of(_journey_settings)
+	_rendition_parent_character_ids = _ids_of(_journey_characters)
 	_rendition_slot_fills = []
 	_journey_id = ""
 	_journey_name = rend_name
 	_original_journey_folder = ""
 
-	var ok: bool = await _write_rendition_pack()
+	var ok: bool = not (await _write_rendition_pack()).is_empty()
 
-	# Restore base editing regardless of outcome.
-	_rendition_mode = false
-	_rendition_parent_ids = {}
-	_rendition_parent_id = ""
-	_rendition_parent_folder = ""
-	_rendition_slot_fills = []
+	# Restore the editor's own state regardless of outcome — base editing, or this rendition's.
+	_rendition_mode = bool(snap_rendition["mode"])
+	_rendition_parent_ids = snap_rendition["parent_ids"]
+	_rendition_parent_setting_ids = snap_rendition["setting_ids"]
+	_rendition_parent_character_ids = snap_rendition["character_ids"]
+	_rendition_parent_id = str(snap_rendition["parent_id"])
+	_rendition_parent_folder = str(snap_rendition["parent_folder"])
+	_rendition_slot_fills = snap_rendition["slot_fills"]
 	_journey_id = snap_id
 	_journey_name = snap_name
 	_original_journey_folder = snap_folder
@@ -4105,19 +4272,24 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	_push_undo()
 	if not _undo_stack.is_empty():
 		(_undo_stack[-1] as Dictionary)["_extract_folder"] = rend_name
-	# Reduced base — keep the base's comments/groups (only its nodes/start changed).
+	# Reduced base — with the notes and frames that stayed (the others left with the rendition).
 	_graph_model = {
 		"start": str(base_graph.get("start", "")),
 		"nodes": base_graph["nodes"],
-		"comments": snap_graph.get("comments", []),
-		"groups": snap_graph.get("groups", []),
+		"comments": notes["kept"]["comments"],
+		"groups": notes["kept"]["groups"],
 	}
 	_graph.clear_graph_selection()
 	_refresh_graph()
 	_show_status(
 		(
-			'Extracted %d node%s into rendition "%s". Save this journey to finalize the base.'
-			% [extracted_count, "s" if extracted_count != 1 else "", rend_name]
+			'Extracted %d node%s into rendition "%s". Save this %s to finalize.'
+			% [
+				extracted_count,
+				"s" if extracted_count != 1 else "",
+				rend_name,
+				"rendition" if _rendition_mode else "journey",
+			]
 		),
 		false
 	)
@@ -4152,16 +4324,22 @@ func _begin_merge_to_base(node_id: String) -> void:
 		return
 	var branch: Dictionary = _collect_overlay_subtree(node_id)
 	var count: int = branch.size()
+	var target: String = (
+		"the parent rendition" if not _rendition_parent_summary.is_empty() else "the base"
+	)
 	var body: String = (
-		"Move this node back into the base?"
+		"Move this node back into %s?" % target
 		if count <= 1
-		else "Move this node and its whole branch (%d nodes) back into the base?" % count
+		else "Move this node and its whole branch (%d nodes) back into %s?" % [count, target]
 	)
 	_show_builder_confirm(
-		"MERGE INTO BASE",
+		"MERGE INTO PARENT",
 		(
 			body
-			+ "\n\nThe rendition is re-saved without them, then the base opens with the branch re-added for you to Save."
+			+ (
+				"\n\n%s opens with the branch re-added for you to Save. This rendition keeps the branch until that save lands, so discarding loses nothing."
+				% target.capitalize()
+			)
 		),
 		"⤺ MERGE",
 		func() -> void: _do_merge_to_base(node_id)
@@ -4233,18 +4411,71 @@ func _do_merge_to_base(node_id: String) -> void:
 				be.erase("_slot")
 				edge_injections.append({"anchor": bid, "edge": be, "slot": slot})
 
-	# 3) Rewrite the rendition on disk WITHOUT the branch — in-place JSON surgery, no re-pool, so the nodes'
-	#    media stays in the rendition folder for the base Save to pool from.
-	if not _rewrite_rendition_without_subtree(branch):
-		_show_builder_message(
-			"MERGE FAILED", "Couldn't update the rendition on disk. Nothing was changed."
-		)
-		return
+	# 3) What the branch brings along. Settings and characters the rendition added and the branch uses
+	#    move to the base — it would otherwise reference places and people it doesn't have. One that
+	#    another rendition node still uses stays in the rendition as well; the compose union tolerates
+	#    the duplicate (base first). Notes and frames split by the extraction rule.
+	var branch_nodes: Dictionary = {}
+	var rest_nodes: Dictionary = {}
+	for nid: String in nodes:
+		if branch.has(nid):
+			branch_nodes[nid] = nodes[nid]
+		elif not _rendition_parent_ids.has(nid):
+			rest_nodes[nid] = nodes[nid]
+	var settings_move: Dictionary = _entries_moving_with(
+		_rendition_owned_settings(), branch_nodes, rest_nodes, JourneyData.setting_reference_count
+	)
+	var cast_move: Dictionary = _entries_moving_with(
+		_rendition_owned_characters(),
+		branch_nodes,
+		rest_nodes,
+		JourneyData.character_reference_count
+	)
+	var notes: Dictionary = _split_annotations(branch)
+	var remainder: Dictionary = {
+		"drop_setting_ids": settings_move["drop_ids"],
+		"drop_character_ids": cast_move["drop_ids"],
+		"comments": _serialize_comments(notes["kept"]["comments"]),
+		"groups": _serialize_groups(notes["kept"]["groups"]),
+	}
 
-	# 4) Reload the builder editing the BASE, injecting the branch + its now-real edges (fresh scene, so all
-	#    rendition chrome resets cleanly). The author lands on the base, branch re-added, ready to Save.
-	edit_journey = _rendition_parent_journey
-	merge_inject = {"nodes": node_injections, "edges": edge_injections}
+	# 4) The rendition is deliberately NOT rewritten here. It used to be: the branch was cut from the
+	#    rendition's journey.json at this point and then lived only in the parent editor's memory until
+	#    the author saved — so Back → Discard in that window threw away the only copy. The rewrite now
+	#    rides along with the injection and is committed by the parent's save AFTER the parent is
+	#    durably on disk (_commit_pending_rendition_rewrite). Until then the rendition is untouched,
+	#    and discarding the parent genuinely means the merge never happened.
+
+	# 5) Reload the builder editing the IMMEDIATE PARENT — the base, or the rendition this one overlays —
+	#    injecting the branch + its now-real edges (fresh scene, so all rendition chrome resets cleanly).
+	#    The parent is the one ancestor every anchor is guaranteed to reach; merging again from there
+	#    climbs further in safe steps.
+	if _rendition_parent_summary.is_empty():
+		edit_journey = _rendition_parent_journey
+	else:
+		var chain: Array = _rendition_ancestor_folders.duplicate()
+		chain.pop_back()  # the parent's OWN ancestors — it is the last entry of ours
+		var grand: Dictionary = {}
+		for r: Dictionary in _rendition_parent_journey.get("renditions", []):
+			if str(r.get("journey_id", "")) == str(_rendition_parent_summary.get("parent_id", "")):
+				grand = r
+		rendition_parent = _rendition_parent_journey
+		rendition_over = JourneyScanner.rendition_over_handoff(
+			_rendition_parent_journey, chain, grand
+		)
+		edit_rendition = _rendition_parent_summary
+	merge_inject = {
+		"nodes": node_injections,
+		"edges": edge_injections,
+		"settings": settings_move["entries"],
+		"characters": cast_move["entries"],
+		"comments": notes["moved"]["comments"],
+		"groups": notes["moved"]["groups"],
+		# What the parent's save cuts from this rendition once it has landed (see above).
+		"rendition_folder": _original_journey_folder,
+		"rendition_branch": branch,
+		"rendition_remainder": remainder,
+	}
 	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
 
 
@@ -4275,11 +4506,45 @@ func _apply_merge_inject(inj: Dictionary) -> void:
 			true
 		)
 		var slot: int = int((attach as Dictionary).get("slot", -1))
-		if slot >= 0 and slot < out_arr.size():
+		if _rendition_mode and _rendition_parent_ids.has(src):
+			# Landing in a parent RENDITION whose ghosted node this attaches to: it stays an anchor of
+			# that rendition, marked the way _load_rendition_delta marks them so its save extracts it.
+			if slot >= 0 and slot < out_arr.size():
+				var choice: Dictionary = out_arr[slot]  # the base's own blank slot — keep its label/art
+				choice["to"] = str(edge.get("to", ""))
+				choice["_anchor"] = true
+				choice["_slot"] = slot
+			else:
+				edge["_anchor"] = true
+				out_arr.append(edge)
+		elif slot >= 0 and slot < out_arr.size():
 			out_arr[slot] = edge  # fill the base fork's open slot in place
 		else:
 			out_arr.append(edge)
-	_show_status("Merged from rendition — Save this journey to finalize.", false)
+	# The branch's own places, people, notes and frames come with it (see _do_merge_to_base). A setting
+	# or character the base already has by id is the base's — the rendition's copy is dropped.
+	_journey_settings = JourneyData.merge_by_id(_journey_settings, inj.get("settings", []))
+	_journey_characters = JourneyData.merge_by_id(_journey_characters, inj.get("characters", []))
+	if not _graph_model.has("comments"):
+		_graph_model["comments"] = []
+	(_graph_model["comments"] as Array).append_array(inj.get("comments", []))
+	if not _graph_model.has("groups"):
+		_graph_model["groups"] = []
+	(_graph_model["groups"] as Array).append_array(inj.get("groups", []))
+	# The child rendition still holds this branch on disk. Remember what to cut from it once this
+	# editor's save lands.
+	_pending_rendition_rewrite = {
+		"folder": str(inj.get("rendition_folder", "")),
+		"branch": inj.get("rendition_branch", {}),
+		"remainder": inj.get("rendition_remainder", {}),
+	}
+	_show_status(
+		(
+			"Merged from rendition — Save this %s to finalize. The rendition keeps the branch until then, so discarding loses nothing."
+			% ("rendition" if _rendition_mode else "journey")
+		),
+		false
+	)
 
 
 # Rewrites the rendition's journey.json (at its own folder) without the merged branch — a structural edit
@@ -4287,8 +4552,14 @@ func _apply_merge_inject(inj: Dictionary) -> void:
 # every anchor that attached one; nothing needs re-anchoring because the whole branch moves together. Never
 # deletes the folder even if it empties, so those files survive; an empty rendition can be removed from the
 # catalogue. Returns false on read/parse/write failure (caller leaves everything unchanged).
-func _rewrite_rendition_without_subtree(branch: Dictionary) -> bool:
-	var folder: String = _original_journey_folder  # the rendition's own folder while editing it
+# `remainder` (from _do_merge_to_base) is what the rendition keeps of its own settings, cast, notes
+# and frames once the branch has left.
+#
+# `folder` is passed in rather than read from _original_journey_folder because this runs from the
+# PARENT's save, after the builder stopped editing the child.
+func _rewrite_rendition_without_subtree(
+	branch: Dictionary, remainder: Dictionary, folder: String
+) -> bool:
 	if folder == "":
 		return false
 	var json_path: String = folder + "/journey.json"
@@ -4319,12 +4590,56 @@ func _rewrite_rendition_without_subtree(branch: Dictionary) -> bool:
 		if not drop:
 			new_anchors.append(a)
 	data["Anchors"] = new_anchors
+	# The branch's own places / people left with it unless another rendition node still uses them; its
+	# notes and frames are replaced by the ones that stayed (decided on the full canvas at merge time).
+	if not remainder.is_empty():
+		data["Settings"] = JourneyData.without_ids(
+			data.get("Settings", []), remainder.get("drop_setting_ids", []), "Id"
+		)
+		data["Characters"] = JourneyData.without_ids(
+			data.get("Characters", []), remainder.get("drop_character_ids", []), "Id"
+		)
+		data["Comments"] = remainder.get("comments", [])
+		data["Groups"] = remainder.get("groups", [])
 	var wf: FileAccess = FileAccess.open(json_path, FileAccess.WRITE)
 	if wf == null:
 		return false
 	wf.store_string(JSON.stringify(data, "\t"))
 	wf.close()
 	return true
+
+
+# Second half of a merge-back, run only once the parent is durably on disk: cuts the merged branch
+# out of the child rendition's journey.json. Ordered AFTER the staging swap on purpose — if this step
+# fails, the branch exists in both parent and child, which an author can tidy by hand. The other
+# order could lose it, which is the bug this replaces.
+func _commit_pending_rendition_rewrite() -> void:
+	if _pending_rendition_rewrite.is_empty():
+		return
+	var folder: String = str(_pending_rendition_rewrite.get("folder", ""))
+	var branch: Dictionary = _pending_rendition_rewrite.get("branch", {})
+	var remainder: Dictionary = _pending_rendition_rewrite.get("remainder", {})
+	_pending_rendition_rewrite = {}
+	if _rewrite_rendition_without_subtree(branch, remainder, folder):
+		return
+	# Not fatal — the parent is saved and holds the branch — but the author has to know the child
+	# still has it too, or the next play of the child shows the branch twice.
+	push_warning(
+		(
+			"JourneyBuilder: merged branch saved, but it could not be removed from the rendition at %s"
+			% folder
+		)
+	)
+	(
+		_pending_save_warnings
+		. append(
+			{
+				"item": "Rendition",
+				"detail":
+				"the merged branch is saved here but couldn't be removed from the rendition, so it now exists in both — delete it from the rendition by hand",
+			}
+		)
+	)
 
 
 # A plain confirm modal (OK / Cancel), built dynamically like the other builder dialogs.
@@ -4364,10 +4679,17 @@ func _show_builder_confirm(title: String, body: String, ok_text: String, on_ok: 
 # A manual rendition Save: write the overlay to disk, then finalize (return to the catalogue) like any
 # other save. Extraction instead calls _write_rendition_pack directly and STAYS in the builder.
 func _save_rendition() -> bool:
-	var ok: bool = await _write_rendition_pack()
-	if ok:
+	var paths: Dictionary = await _write_rendition_pack()
+	if paths.is_empty():
+		return false
+	_commit_pending_rendition_rewrite()  # a child's branch merged into this rendition
+	# The same fork the base save takes. This used to finalize unconditionally, so "test from here"
+	# on a rendition saved it and returned to the catalogue — there was no way to test one at all.
+	if not _pending_test_location.is_empty():
+		_launch_rendition_test_play(paths)
+	else:
 		_finalize_save_success()
-	return ok
+	return true
 
 
 # Writes the rendition overlay to disk: pools ONLY the new nodes' media into a fresh rendition folder,
@@ -4375,9 +4697,17 @@ func _save_rendition() -> bool:
 # Type:"rendition" journey.json (the delta). The base is never touched — its nodes are skipped in pooling
 # and it's never re-written. Mirrors _do_save's staging → write → swap, but assembles a rendition. Does
 # NOT navigate away, so both the manual Save and the extract flow can reuse it.
-func _write_rendition_pack() -> bool:
+func _write_rendition_pack() -> Dictionary:
 	if not _validate_rendition_presave():
-		return false
+		return {}
+	# The two pre-staging gates the base save runs, which this path never did. Without the transcode
+	# plan no single-segment cut is ever scheduled, so a trimmed round's video was copied at full
+	# length while its funscript was cut — the "renditions don't clip video" reports. Codec-
+	# independent: multi-segment cuts always bake and so looked fine, single trims never did.
+	if not _check_animated_images():
+		return {}
+	if not _build_transcode_plan():
+		return {}
 	var paths: Dictionary = _setup_save_folders()  # folder named after the rendition (_journey_name)
 	var modal: Control = _create_save_progress_modal_if_needed()
 	var pooled: Dictionary = await _pool_graph_nodes(paths, modal, _rendition_parent_ids)  # skip the base
@@ -4385,15 +4715,21 @@ func _write_rendition_pack() -> bool:
 		if modal:
 			modal.queue_free()
 		JourneyData.delete_dir_recursive(paths["abs_dir"])
-		return false
+		return {}
 	# Overlay anchors: extract them off the ghosted base nodes, then pool any fork-choice card image they
 	# carry — the base fork is skipped by the pool above, so its overlay edges' images are pooled here.
 	var anchors: Array = await _pool_anchor_images(_extract_anchors(), paths, modal)
+	# Only the rendition's OWN places and people are written — the base's it was shown with stay the
+	# base's (additive only). Their media pools into this folder exactly as a base save pools them.
+	var settings: Array = await _pool_settings_for_save(_rendition_owned_settings(), paths, modal)
+	var characters: Array = await _pool_characters_for_save(
+		_rendition_owned_characters(), paths, modal
+	)
 	if modal:
 		modal.queue_free()
 	if _save_aborted:
 		JourneyData.delete_dir_recursive(paths["abs_dir"])
-		return false
+		return {}
 
 	var rendition: Dictionary = {
 		"journey_id": _journey_id,  # "" → coerce_rendition mints the overlay's own id
@@ -4405,17 +4741,73 @@ func _write_rendition_pack() -> bool:
 		"nodes": pooled["nodes"],
 		"anchors": anchors,
 		"slot_fills": _pool_slot_fills(paths["abs_dir"]),  # channel scripts pooled after the nodes above
+		"settings": settings,
+		"characters": characters,
 	}
 	var data: Dictionary = JourneyRendition.coerce_rendition(rendition)
 	# The rendition's OWN backdrop layers (pooled into its media/) — the base's stay in the base and are
 	# NOT re-saved here; compose stacks them at play time.
 	data["MapBackdrops"] = _save_map_backdrops(paths["abs_media_dir"], paths["copied_images"])
+	# Its own notes and frames, editor-only like the base's; the base's are never on this canvas.
+	data["Comments"] = _serialize_comments(_graph_model.get("comments", []))
+	data["Groups"] = _serialize_groups(_graph_model.get("groups", []))
 	_journey_id = str(data.get("JourneyId", ""))  # remember the minted id for a re-save
 	if not _write_journey_json(paths, data):
 		JourneyData.delete_dir_recursive(paths["abs_dir"])
-		return false
+		return {}
 	_swap_staging_into_place(paths)
-	return true
+	return paths
+
+
+# {id: true} over a list of id-bearing dicts (settings, characters).
+func _ids_of(list: Array) -> Dictionary:
+	var ids: Dictionary = {}
+	for e: Variant in list:
+		if e is Dictionary and str((e as Dictionary).get("id", "")) != "":
+			ids[str((e as Dictionary).get("id", ""))] = true
+	return ids
+
+
+# The settings a rendition added itself — everything outside the locked base set. While editing a
+# base the lock set is empty, so this is simply every setting.
+func _rendition_owned_settings() -> Array:
+	var out: Array = []
+	for s: Variant in _journey_settings:
+		if (
+			s is Dictionary
+			and not _rendition_parent_setting_ids.has(str((s as Dictionary).get("id", "")))
+		):
+			out.append(s)
+	return out
+
+
+func _rendition_owned_characters() -> Array:
+	var out: Array = []
+	for c: Variant in _journey_characters:
+		if (
+			c is Dictionary
+			and not _rendition_parent_character_ids.has(str((c as Dictionary).get("id", "")))
+		):
+			out.append(c)
+	return out
+
+
+# Of the rendition's own `entries` (settings or characters), those a moving branch uses, and which of
+# them the rendition can let go of because nothing left in it (`rest_nodes`) still uses them.
+# `count_refs` is the matching JourneyData.*_reference_count. Returns {entries: [...], drop_ids: [...]}.
+func _entries_moving_with(
+	entries: Array, branch_nodes: Dictionary, rest_nodes: Dictionary, count_refs: Callable
+) -> Dictionary:
+	var moving: Array = []
+	var drop_ids: Array = []
+	for e: Dictionary in entries:
+		var id: String = str(e.get("id", ""))
+		if int(count_refs.call(branch_nodes, id)) == 0:
+			continue
+		moving.append(e.duplicate(true))
+		if int(count_refs.call(rest_nodes, id)) == 0:
+			drop_ids.append(id)
+	return {"entries": moving, "drop_ids": drop_ids}
 
 
 # The anchors an overlay adds: every `_anchor`-marked out-edge on a ghosted base node, as
@@ -4808,6 +5200,10 @@ func _build_transcode_plan() -> bool:
 		var node: Dictionary = _graph_model["nodes"][nid]
 		if str(node.get("type", "")) != "round":
 			continue
+		# A rendition pools only its own nodes; probing the ghosted base's videos as well would cost the
+		# author a wait for encodes that never run.
+		if _rendition_mode and _rendition_parent_ids.has(nid):
+			continue
 		var data: Dictionary = node.get("data", {})
 		var src: String = str(data.get("video_path", ""))
 		if src != "":
@@ -5064,55 +5460,11 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 			saved_item["scripts"] = _pool_override_scripts(saved_item.get("scripts", {}), abs_dir)
 		items_for_save.append(saved_item)
 
-	# Store each cast portrait through the same image path as boss/storyboard art — a still is deduped
-	# into media/, an animated source (gif/apng/mp4/…) is baked to looping H.264 in content/ and played
-	# by JourneyImage at runtime. Keyed by character id + portrait id so nothing collides. A character's
-	# placements are pure fraction boxes, so they persist verbatim (no media).
-	var characters_for_save: Array = []
-	for c: Dictionary in _journey_characters:
-		var saved_char: Dictionary = (c as Dictionary).duplicate(true)
-		var portraits_out: Array = []
-		for por: Variant in saved_char.get("portraits", []):
-			var por_copy: Dictionary = (por as Dictionary).duplicate(true)
-			var src: String = str(por_copy.get("path", ""))
-			if src != "":
-				por_copy["path"] = await _store_journey_image(
-					src,
-					abs_dir,
-					abs_media_dir,
-					"char_%s_%s" % [str(saved_char.get("id", "x")), str(por_copy.get("id", "p"))],
-					copied_images,
-					JourneyData.ANIM_CAP_PORTRAIT,
-					modal
-				)
-			portraits_out.append(por_copy)
-		saved_char["portraits"] = portraits_out
-		characters_for_save.append(saved_char)
-
-	# Settings carry the same two kinds of media as everything else: backgrounds go through the image
-	# path (deduped as stills, baked when animated) and the theme through the small-file pool, exactly
-	# as a storyboard's own BGM does. Keyed by setting id + background id so nothing collides.
-	var settings_for_save: Array = []
-	for c: Dictionary in _journey_settings:
-		var saved_setting: Dictionary = (c as Dictionary).duplicate(true)
-		var backgrounds_out: Array = []
-		for bg: Variant in saved_setting.get("backgrounds", []):
-			var bg_copy: Dictionary = (bg as Dictionary).duplicate(true)
-			var bg_src: String = str(bg_copy.get("path", ""))
-			if bg_src != "":
-				bg_copy["path"] = await _store_journey_image(
-					bg_src,
-					abs_dir,
-					abs_media_dir,
-					"set_%s_%s" % [str(saved_setting.get("id", "x")), str(bg_copy.get("id", "b"))],
-					copied_images,
-					JourneyData.ANIM_CAP_STORYBOARD,
-					modal
-				)
-			backgrounds_out.append(bg_copy)
-		saved_setting["backgrounds"] = backgrounds_out
-		saved_setting["bgm"] = _pool_small_file(str(saved_setting.get("bgm", "")), abs_dir)
-		settings_for_save.append(saved_setting)
+	# Cast and settings pool through the helpers a rendition save shares (it writes only its own).
+	var characters_for_save: Array = await _pool_characters_for_save(
+		_journey_characters, paths, modal
+	)
+	var settings_for_save: Array = await _pool_settings_for_save(_journey_settings, paths, modal)
 
 	# The journey's own score — several tracks, shuffled at runtime.
 	var journey_bgm_out: Array = []
@@ -5165,6 +5517,64 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	var audit_dur: Dictionary = (audit.get("stats", {}) as Dictionary).get("duration_ms", {})
 	result["EstimatedDurationMs"] = int(audit_dur.get("avg", 0))
 	return result
+
+
+# Stores each cast portrait through the same image path as boss/storyboard art — a still is deduped
+# into media/, an animated source (gif/apng/mp4/…) is baked to looping H.264 in content/ and played
+# by JourneyImage at runtime. Keyed by character id + portrait id so nothing collides. A character's
+# placements are pure fraction boxes, so they persist verbatim (no media). Returns the pooled copies;
+# `characters` is untouched.
+func _pool_characters_for_save(characters: Array, paths: Dictionary, modal: Control) -> Array:
+	var out: Array = []
+	for c: Dictionary in characters:
+		var saved_char: Dictionary = (c as Dictionary).duplicate(true)
+		var portraits_out: Array = []
+		for por: Variant in saved_char.get("portraits", []):
+			var por_copy: Dictionary = (por as Dictionary).duplicate(true)
+			var src: String = str(por_copy.get("path", ""))
+			if src != "":
+				por_copy["path"] = await _store_journey_image(
+					src,
+					paths["abs_dir"],
+					paths["abs_media_dir"],
+					"char_%s_%s" % [str(saved_char.get("id", "x")), str(por_copy.get("id", "p"))],
+					paths["copied_images"],
+					JourneyData.ANIM_CAP_PORTRAIT,
+					modal
+				)
+			portraits_out.append(por_copy)
+		saved_char["portraits"] = portraits_out
+		out.append(saved_char)
+	return out
+
+
+# Settings carry the same two kinds of media as everything else: backgrounds go through the image
+# path (deduped as stills, baked when animated) and the theme through the small-file pool, exactly
+# as a storyboard's own BGM does. Keyed by setting id + background id so nothing collides. Returns
+# the pooled copies; `settings` is untouched.
+func _pool_settings_for_save(settings: Array, paths: Dictionary, modal: Control) -> Array:
+	var out: Array = []
+	for c: Dictionary in settings:
+		var saved_setting: Dictionary = (c as Dictionary).duplicate(true)
+		var backgrounds_out: Array = []
+		for bg: Variant in saved_setting.get("backgrounds", []):
+			var bg_copy: Dictionary = (bg as Dictionary).duplicate(true)
+			var bg_src: String = str(bg_copy.get("path", ""))
+			if bg_src != "":
+				bg_copy["path"] = await _store_journey_image(
+					bg_src,
+					paths["abs_dir"],
+					paths["abs_media_dir"],
+					"set_%s_%s" % [str(saved_setting.get("id", "x")), str(bg_copy.get("id", "b"))],
+					paths["copied_images"],
+					JourneyData.ANIM_CAP_STORYBOARD,
+					modal
+				)
+			backgrounds_out.append(bg_copy)
+		saved_setting["backgrounds"] = backgrounds_out
+		saved_setting["bgm"] = _pool_small_file(str(saved_setting.get("bgm", "")), paths["abs_dir"])
+		out.append(saved_setting)
+	return out
 
 
 # Pools every non-skipped node's media into the staging content/media dirs, returning

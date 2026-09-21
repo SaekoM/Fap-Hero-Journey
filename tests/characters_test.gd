@@ -174,3 +174,28 @@ func test_uniform_scale_clamps_both_axes_together() -> void:
 	var small: Vector2 = JourneyData.scale_placement_uniform(0.1, 0.4, -0.08, 0.0)  # asks for -80%
 	assert_float(small.x).is_equal_approx(JourneyData.PLACEMENT_MIN_SIZE, 0.0001)
 	assert_float(small.y).is_equal_approx(0.4 * (JourneyData.PLACEMENT_MIN_SIZE / 0.1), 0.0001)
+
+
+# ── Who is on stage where (the cast's reference counter) ─────────────────────
+
+
+func test_character_reference_count_counts_stage_entries_across_lines() -> void:
+	var nodes := {
+		"sb1":
+		{
+			"type": "storyboard",
+			"data":
+			{
+				"lines":
+				[
+					{"text": "hi", "stage": [{"character": "chr_a"}, {"character": "chr_b"}]},
+					{"text": "again", "stage": [{"character": "chr_a"}]},
+				]
+			},
+		},
+		"r1": {"type": "round", "data": {}},
+	}
+	assert_int(JourneyData.character_reference_count(nodes, "chr_a")).is_equal(2)
+	assert_int(JourneyData.character_reference_count(nodes, "chr_b")).is_equal(1)
+	assert_int(JourneyData.character_reference_count(nodes, "chr_zzz")).is_equal(0)
+	assert_int(JourneyData.character_reference_count(nodes, "")).is_equal(0)

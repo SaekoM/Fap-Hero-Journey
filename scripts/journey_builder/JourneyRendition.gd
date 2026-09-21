@@ -14,9 +14,17 @@ extends RefCounted
 ##     "Format": 2, "Start": "", "Nodes": [ …new nodes… ],   # reuses the journey Nodes format
 ##     "Anchors": [ {"Anchor": <existing node id>, "Edge": {to, …}, "Slot"?: <fork choice idx>} ],
 ##     "SlotFills": [ {"Node", "Field", "Channel"?, "Path"} ],
+##     "Settings": [ …the rendition's OWN places… ], "Characters": [ …its OWN cast… ],
 ##   }
 ## Envelope keys are PascalCase (journey.json convention); node data + out-edges stay lowercase, exactly
 ## as a normal journey stores them — so Anchors' `Edge` is a plain out-edge dict.
+##
+## Settings and Characters are ADDITIVE (0.8.6): a rendition brings its own places and people, pooled
+## in its own folder, and the composed journey is the base's list followed by each rendition's, first
+## id wins (JourneyData.merge_by_id). A rendition never edits or removes the base's — the same contract
+## as nodes — so it can be discarded, merged or stacked without the base changing underneath another
+## rendition. The builder writes three more editor-only overlay keys beside this envelope, parsed by
+## the scanner rather than here: MapBackdrops, Comments and Groups (its own map art, notes and frames).
 
 const RENDITION_TYPE: String = "rendition"
 
@@ -42,6 +50,8 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 		"nodes": graph["nodes"],
 		"anchors": _parse_anchors(data.get("Anchors", [])),
 		"slot_fills": _parse_slot_fills(data.get("SlotFills", [])),
+		"settings": JourneyData.parse_journey_settings(data.get("Settings", [])),
+		"characters": JourneyData.parse_journey_characters(data.get("Characters", [])),
 	}
 
 
@@ -49,7 +59,8 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 # the Nodes block and stamps the rendition's OWN identity (its JourneyId, distinct from ParentId), so a
 # rendition is itself dedupe-able and distributable.
 #   rendition: {journey_id?, name, author, description, parent_id, parent_min_version,
-#               nodes:{id:node}, anchors:[{anchor, edge}], slot_fills:[{node, field, channel, path}]}
+#               nodes:{id:node}, anchors:[{anchor, edge}], slot_fills:[{node, field, channel, path}],
+#               settings?:[…runtime settings…], characters?:[…runtime characters…]}
 static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 	var node_block: Dictionary = JourneyGraph.to_json(
 		{"start": "", "nodes": rendition.get("nodes", {})}
@@ -66,15 +77,18 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 		"Nodes": node_block["Nodes"],
 		"Anchors": _coerce_anchors(rendition.get("anchors", [])),
 		"SlotFills": _coerce_slot_fills(rendition.get("slot_fills", [])),
+		"Settings": JourneyData.coerce_journey_settings(rendition.get("settings", [])),
+		"Characters": JourneyData.coerce_journey_characters(rendition.get("characters", [])),
 	}
 	JourneyData.stamp_journey_identity(out, str(rendition.get("journey_id", "")))
 	return out
 
 
 # Resolves a parsed delta's relative media paths to absolute, against the RENDITION's OWN base folder —
-# its new nodes' media, any anchor-edge (fork choice) images, and the slot-fill script/video paths. This
-# is the per-origin half of the two-origin resolution: the base graph is resolved against ITS folder
-# separately, and only then are the two composed. Mutates `delta` in place.
+# its new nodes' media, any anchor-edge (fork choice) images, the slot-fill script/video paths, and its
+# own settings' backgrounds / music and characters' portraits. This is the per-origin half of the
+# two-origin resolution: the base graph is resolved against ITS folder separately, and only then are
+# the two composed. Mutates `delta` in place.
 static func resolve_delta_paths(delta: Dictionary, base: String) -> void:
 	JourneyGraph.resolve_paths({"start": "", "nodes": delta.get("nodes", {})}, base)
 	for a: Variant in delta.get("anchors", []):
@@ -87,6 +101,33 @@ static func resolve_delta_paths(delta: Dictionary, base: String) -> void:
 		if sf is Dictionary and str((sf as Dictionary).get("path", "")) != "":
 			var f: Dictionary = sf
 			f["path"] = base + "/" + str(f["path"])
+	for s: Variant in delta.get("settings", []):
+		if not (s is Dictionary):
+			continue
+		for bg: Variant in (s as Dictionary).get("backgrounds", []):
+			if bg is Dictionary:
+				(bg as Dictionary)["path"] = _resolved_media(
+					str((bg as Dictionary).get("path", "")), base
+				)
+		(s as Dictionary)["bgm"] = _resolved_media(str((s as Dictionary).get("bgm", "")), base)
+	for c: Variant in delta.get("characters", []):
+		if not (c is Dictionary):
+			continue
+		for por: Variant in (c as Dictionary).get("portraits", []):
+			if por is Dictionary:
+				(por as Dictionary)["path"] = _resolved_media(
+					str((por as Dictionary).get("path", "")), base
+				)
+
+
+# A pooled relative path made absolute against the rendition folder; blank stays blank and an
+# already-absolute or engine path is left alone (JourneyScanner._resolved_media's rule).
+static func _resolved_media(path: String, base: String) -> String:
+	if path == "":
+		return ""
+	if path.begins_with("res://") or path.begins_with("user://") or path.is_absolute_path():
+		return path
+	return base.path_join(path)
 
 
 # Part-1 → Part-2 resume (feature #5): the rendition entry node a completed base run jumps INTO, given the
