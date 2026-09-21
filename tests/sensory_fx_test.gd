@@ -116,3 +116,40 @@ func _engine_in_tree() -> SensoryFX:
 	add_child(fx)
 	fx.setup(video, parent)
 	return fx
+
+
+# ── Tunnel darkness curve ────────────────────────────────────────────────────
+# Anchored at the catalog default: an untouched round looks exactly as it did, while the top of the
+# slider now closes to a real tunnel instead of a slightly darker vignette.
+
+
+func test_tunnel_ramp_is_unchanged_at_and_below_the_default() -> void:
+	var fx: SensoryFX = auto_free(SensoryFX.new())
+	var at_default: Dictionary = fx._tunnel_ramp(SensoryFX.TUNNEL_DEFAULT_INTENSITY)
+	assert_float(float(at_default["mid_alpha"])).is_equal_approx(lerpf(0.12, 0.40, 0.38), EPS)
+	assert_float(float(at_default["edge_alpha"])).is_equal_approx(lerpf(0.30, 0.99, 0.38), EPS)
+	assert_float(float(at_default["edge_offset"])).is_equal_approx(1.0, EPS)
+	var low: Dictionary = fx._tunnel_ramp(0.1)
+	assert_float(float(low["mid_alpha"])).is_equal_approx(lerpf(0.12, 0.40, 0.1), EPS)
+	assert_float(float(low["edge_offset"])).is_equal_approx(1.0, EPS)
+
+
+func test_tunnel_ramp_closes_to_a_real_tunnel_at_full() -> void:
+	var fx: SensoryFX = auto_free(SensoryFX.new())
+	var top: Dictionary = fx._tunnel_ramp(1.0)
+	assert_float(float(top["mid_alpha"])).is_equal_approx(SensoryFX.TUNNEL_MAX_MID_ALPHA, EPS)
+	assert_float(float(top["edge_alpha"])).is_equal_approx(1.0, EPS)
+	assert_float(float(top["edge_offset"])).is_equal_approx(SensoryFX.TUNNEL_MAX_EDGE_OFFSET, EPS)
+
+
+func test_tunnel_ramp_is_monotonic_and_continuous_at_the_join() -> void:
+	var fx: SensoryFX = auto_free(SensoryFX.new())
+	var prev: Dictionary = fx._tunnel_ramp(0.0)
+	for i: int in range(1, 101):
+		var cur: Dictionary = fx._tunnel_ramp(i / 100.0)
+		assert_bool(float(cur["mid_alpha"]) >= float(prev["mid_alpha"]) - EPS).is_true()
+		assert_bool(float(cur["edge_alpha"]) >= float(prev["edge_alpha"]) - EPS).is_true()
+		assert_bool(float(cur["edge_offset"]) <= float(prev["edge_offset"]) + EPS).is_true()
+		# No visible step where the two pieces meet.
+		assert_float(absf(float(cur["mid_alpha"]) - float(prev["mid_alpha"]))).is_less(0.02)
+		prev = cur

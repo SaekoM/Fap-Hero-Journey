@@ -150,6 +150,12 @@ var _pre_mute_volume_db: float = 0.0  # restored when a "Silence" hex ends
 # --- Reconcile / fade state (drives timed item sensory alongside round sensory) ---
 const FADE_SECS: float = 1.5  # how long a departing effect eases out on reconcile
 
+# Tunnel's darkness curve is anchored at the catalog default (SENSORY_CATALOG tunnel idef) — the
+# same look below it as always, real headroom above it. See _tunnel_ramp.
+const TUNNEL_DEFAULT_INTENSITY: float = 0.38
+const TUNNEL_MAX_MID_ALPHA: float = 0.82  # alpha at the ramp point at 100%
+const TUNNEL_MAX_EDGE_OFFSET: float = 0.55  # where full dark sits at 100% (1.0 = screen edge)
+
 # The cadence each beating effect always had — the catalog's rdef maps to exactly these, so a round
 # that never touched RATE plays as it did before rates existed.
 const BLOODSHOT_BASE_PERIOD: float = 1.8  # seconds per pulse (0.9 up, 0.9 down)
@@ -487,9 +493,33 @@ func _set_tunnel_intensity(mid_offset: float, strength: float) -> void:
 	# faint tunnel and a high one crushes to near-black. Without this only the ramp moved, so 1% and 100%
 	# both read as "dark-edged vignette" and felt identical. Baked into the gradient, independent of
 	# modulate.a (which the fade-out owns), so fades still work.
+	var ramp: Dictionary = _tunnel_ramp(strength)
+	_tunnel_grad.set_color(1, Color(0, 0, 0, float(ramp["mid_alpha"])))  # mid ramp point
+	_tunnel_grad.set_offset(2, float(ramp["edge_offset"]))
+	_tunnel_grad.set_color(2, Color(0, 0, 0, float(ramp["edge_alpha"])))  # dark edge
+
+
+# The darkness side of the tunnel for a 0–1 intensity: the alpha at the ramp point, and where the
+# full-dark edge sits (1.0 = the screen's top/bottom edge) with its alpha. Two pieces, joined at the
+# catalog default so an untouched round looks exactly as it did:
+#   • below the default, the original gentle lerps — a faint vignette;
+#   • above it, a steeper climb AND the full-dark point pulled inward, so 100% is a genuine tunnel:
+#     near-black outside a small clear circle. The old top end reached 0.99 only at the very edge
+#     with the ramp point at 0.40 alpha, which read as "a slightly darker vignette" at any setting.
+func _tunnel_ramp(strength: float) -> Dictionary:
 	var s: float = clampf(strength, 0.0, 1.0)
-	_tunnel_grad.set_color(1, Color(0, 0, 0, lerpf(0.12, 0.40, s)))  # mid ramp point
-	_tunnel_grad.set_color(2, Color(0, 0, 0, lerpf(0.30, 0.99, s)))  # dark edge
+	if s <= TUNNEL_DEFAULT_INTENSITY:
+		return {
+			"mid_alpha": lerpf(0.12, 0.40, s),
+			"edge_alpha": lerpf(0.30, 0.99, s),
+			"edge_offset": 1.0,
+		}
+	var t: float = (s - TUNNEL_DEFAULT_INTENSITY) / (1.0 - TUNNEL_DEFAULT_INTENSITY)
+	return {
+		"mid_alpha": lerpf(lerpf(0.12, 0.40, TUNNEL_DEFAULT_INTENSITY), TUNNEL_MAX_MID_ALPHA, t),
+		"edge_alpha": lerpf(lerpf(0.30, 0.99, TUNNEL_DEFAULT_INTENSITY), 1.0, t),
+		"edge_offset": lerpf(1.0, TUNNEL_MAX_EDGE_OFFSET, t),
+	}
 
 
 # ---------------------------------------------------------------------------

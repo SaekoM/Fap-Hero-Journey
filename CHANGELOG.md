@@ -32,6 +32,14 @@ name stay exactly as they were, whether or not the round has any yet. Authored a
 cards) is part of the setup and does come across. Templates saved before this still work — the clip
 they carry is simply ignored.
 
+### ◆ Tunnel closes properly at the top of its slider
+
+Tunnel’s full-dark edge always sat at the very edge of the screen with the ramp point at 40% alpha,
+so even 100% read as a slightly darker vignette. Above the default the curve now climbs faster and
+the full-dark point moves inward, so the top of the slider is a genuine tunnel — near-black outside
+a small clear circle. Everything at or below the default is unchanged, so existing rounds look as
+they did.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
