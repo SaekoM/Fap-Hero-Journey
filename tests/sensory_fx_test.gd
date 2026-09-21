@@ -70,3 +70,49 @@ func test_intensity_for_clamps_override() -> void:
 		assert_float(SensoryFX.intensity_for({"sensory_intensity": {"Murk": -2.0}}, entry))
 		. is_equal_approx(0.0, EPS)
 	)
+
+
+# ── Rate (the beat of Bloodshot / Flicker / Tremor) ──────────────────────────
+
+
+# rate_for mirrors intensity_for: the round's override when set, else the catalog default.
+func test_rate_for_override_and_default() -> void:
+	var entry := {"name": "Bloodshot", "rdef": 0.162}
+	assert_float(SensoryFX.rate_for({}, entry)).is_equal_approx(0.162, EPS)
+	assert_float(SensoryFX.rate_for({"sensory_rate": {"Bloodshot": 0.9}}, entry)).is_equal_approx(
+		0.9, EPS
+	)
+	assert_float(SensoryFX.rate_for({"sensory_rate": {"Bloodshot": 3.0}}, entry)).is_equal_approx(
+		1.0, EPS
+	)
+
+
+# _rval maps 0–1 through rmin/rmax in real units.
+func test_rval_maps_through_the_rate_range() -> void:
+	var fx: SensoryFX = auto_free(SensoryFX.new())
+	var roll := {"rmin": 0.6, "rmax": 8.0}
+	assert_float(fx._rval(roll, 0.0)).is_equal_approx(0.6, EPS)
+	assert_float(fx._rval(roll, 1.0)).is_equal_approx(8.0, EPS)
+
+
+# A window (or item) that says nothing about rate gets the catalog default, so nothing authored
+# before rates existed changes cadence.
+func test_reconcile_defaults_a_missing_rate_and_reapplies_on_change() -> void:
+	var fx: SensoryFX = _engine_in_tree()
+	var roll: Dictionary = JourneyData.sensory_entry_by_kind("tremor")
+	fx.reconcile([{"roll": roll, "intensity": 1.0}])
+	assert_float(fx._tremor_hz).is_equal_approx(SensoryFX.TREMOR_BASE_HZ, 0.02)
+	fx.reconcile([{"roll": roll, "intensity": 1.0, "rate": 0.0}])
+	assert_float(fx._tremor_hz).is_equal_approx(2.0, EPS)  # rmin — re-applied although intensity held
+
+
+# Stands the engine up over a throwaway player + parent inside the tree, as the runtime does.
+func _engine_in_tree() -> SensoryFX:
+	var parent: Control = auto_free(Control.new())
+	add_child(parent)
+	var video: VideoStreamPlayer = auto_free(VideoStreamPlayer.new())
+	parent.add_child(video)
+	var fx: SensoryFX = auto_free(SensoryFX.new())
+	add_child(fx)
+	fx.setup(video, parent)
+	return fx

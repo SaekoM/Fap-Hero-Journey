@@ -206,3 +206,16 @@ func test_sensory_intensity_survives_rename() -> void:
 	var resolved := JD.resolved_effect("Murk", {"Murk": {"name": "The Haze"}})
 	assert_str(str(resolved["name"])).is_equal("The Haze")  # renamed
 	assert_float(SensoryFX.intensity_for(round, resolved)).is_equal_approx(0.9, 0.0001)
+
+
+# A renamed sensory effect keeps its rate too — same _ref lookup as intensity.
+func test_sensory_rate_survives_rename() -> void:
+	var round := {"sensory_rate": {"Bloodshot": 0.8}}
+	var resolved := JD.resolved_effect("Bloodshot", {"Bloodshot": {"name": "Red Mist"}})
+	assert_float(SensoryFX.rate_for(round, resolved)).is_equal_approx(0.8, 0.0001)
+
+
+# The per-round rate map survives normalization alongside intensity.
+func test_normalize_effect_round_keeps_sensory_rate() -> void:
+	var out := JD.normalize_effect_round({"sensory_rate": {"Flicker": 0.5}})
+	assert_float(float((out["sensory_rate"] as Dictionary)["Flicker"])).is_equal_approx(0.5, 0.0001)

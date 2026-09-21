@@ -5207,7 +5207,9 @@ func _open_funscript_editor(arr: Array, idx: int, reselect: Callable) -> void:
 			JourneyData.normalize_effect_round(arr[idx]).get("sensory", [])
 		),
 		arr[idx].get("sensory_intensity", {}),
-		func(sname: String, value: float) -> void: _set_sensory_intensity(arr, idx, sname, value)
+		func(sname: String, value: float) -> void: _set_sensory_intensity(arr, idx, sname, value),
+		arr[idx].get("sensory_rate", {}),
+		func(sname: String, value: float) -> void: _set_sensory_rate(arr, idx, sname, value)
 	)
 
 
@@ -7535,11 +7537,62 @@ func _make_sensory_row(
 			slider.set_value_no_signal(v)
 			_set_sensory_intensity(arr, idx, sname, v / 100.0)
 	)
+	# Rate line, for the effects with a beat of their own — same shape, real units on the spin box.
+	var rate_slider: HSlider = null
+	var rate_spin: SpinBox = null
+	if JourneyData.sensory_has_rate(entry):
+		var rate_indent: MarginContainer = MarginContainer.new()
+		rate_indent.add_theme_constant_override("margin_left", 28)
+		col.add_child(rate_indent)
+		var rate_row: HBoxContainer = HBoxContainer.new()
+		rate_row.add_theme_constant_override("separation", 6)
+		rate_indent.add_child(rate_row)
+		var unit: String = str(entry.get("runit", "s"))
+
+		rate_slider = HSlider.new()
+		rate_slider.min_value = 0.0
+		rate_slider.max_value = 100.0
+		rate_slider.step = 1.0
+		rate_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		rate_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		rate_slider.tooltip_text = UITheme.wrap_tip("Rate — " + str(entry.get("rdesc", "")))
+		rate_row.add_child(rate_slider)
+
+		rate_spin = SpinBox.new()
+		rate_spin.min_value = float(entry.get("rmin", 0.0))
+		rate_spin.max_value = float(entry.get("rmax", 1.0))
+		rate_spin.step = 1.0 if unit == "Hz" else 0.1
+		rate_spin.suffix = " " + unit
+		rate_spin.custom_minimum_size = Vector2(68, 0)
+		rate_spin.tooltip_text = rate_slider.tooltip_text
+		UITheme.style_spin_box(rate_spin)
+		rate_row.add_child(rate_spin)
+
+		var rate01: float = _sensory_rate(arr, idx, entry)
+		rate_slider.set_value_no_signal(rate01 * 100.0)
+		rate_spin.set_value_no_signal(JourneyData.sensory_rate_value(entry, rate01))
+		rate_slider.editable = cb.button_pressed
+		rate_spin.editable = cb.button_pressed
+		rate_slider.value_changed.connect(
+			func(v: float) -> void:
+				rate_spin.set_value_no_signal(JourneyData.sensory_rate_value(entry, v / 100.0))
+				_set_sensory_rate(arr, idx, sname, v / 100.0)
+		)
+		rate_spin.value_changed.connect(
+			func(v: float) -> void:
+				var r: float = JourneyData.sensory_rate_from_value(entry, v)
+				rate_slider.set_value_no_signal(r * 100.0)
+				_set_sensory_rate(arr, idx, sname, r)
+		)
+
 	cb.toggled.connect(
 		func(on: bool) -> void:
 			_toggle_sensory(arr, idx, sname, on)
 			slider.editable = on
 			spin.editable = on
+			if rate_slider != null:
+				rate_slider.editable = on
+				rate_spin.editable = on
 			if rename_indent != null:
 				rename_indent.visible = on
 	)
@@ -7560,6 +7613,20 @@ func _set_sensory_intensity(arr: Array, idx: int, sensory_name: String, value: f
 	if not arr[idx].has("sensory_intensity"):
 		arr[idx]["sensory_intensity"] = {}
 	(arr[idx]["sensory_intensity"] as Dictionary)[sensory_name] = clampf(value, 0.0, 1.0)
+
+
+# The stored rate for a modifier, normalized 0–1 (author override, or the catalog default when unset).
+func _sensory_rate(arr: Array, idx: int, entry: Dictionary) -> float:
+	var nm: String = str(entry.get("name", ""))
+	var overrides: Dictionary = arr[idx].get("sensory_rate", {})
+	return float(overrides[nm]) if overrides.has(nm) else float(entry.get("rdef", 0.5))
+
+
+# Stores a modifier's rate override (normalized 0–1) on the round, beside its intensity.
+func _set_sensory_rate(arr: Array, idx: int, sensory_name: String, value: float) -> void:
+	if not arr[idx].has("sensory_rate"):
+		arr[idx]["sensory_rate"] = {}
+	(arr[idx]["sensory_rate"] as Dictionary)[sensory_name] = clampf(value, 0.0, 1.0)
 
 
 # Back-compat: older journeys could carry visual/audio kinds (e.g. BLACKOUT) as

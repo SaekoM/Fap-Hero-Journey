@@ -3632,10 +3632,17 @@ static func _default_effect(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 50}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
-	# Sensory kinds carry an intensity when their catalogue entry defines a default for one.
+	# Sensory kinds carry an intensity when their catalogue entry defines a default for one, and a
+	# rate when they have a beat of their own (both 0–1, as the round stores them).
 	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
-		if str(entry.get("kind", "")) == kind and entry.has("idef"):
-			return {"kind": kind, "intensity": float(entry["idef"])}
+		if str(entry.get("kind", "")) != kind:
+			continue
+		var effect: Dictionary = {"kind": kind}
+		if entry.has("idef"):
+			effect["intensity"] = float(entry["idef"])
+		if JourneyData.sensory_has_rate(entry):
+			effect["rate"] = float(entry["rdef"])
+		return effect
 	return {"kind": kind}
 
 
@@ -3668,6 +3675,19 @@ func _make_effect_row(event: Dictionary, index: int) -> Control:
 		UITheme.style_label(intensity_label, UITheme.DARK_TEXT, 10, true)
 		row.add_child(intensity_label)
 		row.add_child(_make_float_spin(effect, "intensity", 0.0, 1.0, 0.05))
+	# A window authored before rates existed has no `rate`: it shows the control at the catalog default
+	# and only stores one once touched, so it keeps playing as it did.
+	var catalog_entry: Dictionary = JourneyData.sensory_entry_by_kind(kind)
+	if JourneyData.sensory_has_rate(catalog_entry):
+		var rate_label: Label = Label.new()
+		rate_label.text = "RATE"
+		rate_label.tooltip_text = str(catalog_entry.get("rdesc", ""))
+		rate_label.mouse_filter = Control.MOUSE_FILTER_PASS
+		UITheme.style_label(rate_label, UITheme.DARK_TEXT, 10, true)
+		row.add_child(rate_label)
+		var rate_spin: SpinBox = _make_rate_spin(effect, catalog_entry)
+		rate_spin.tooltip_text = rate_label.tooltip_text
+		row.add_child(rate_spin)
 
 	var remove: Button = Button.new()
 	remove.text = "✕"
@@ -3680,6 +3700,28 @@ func _make_effect_row(event: Dictionary, index: int) -> Control:
 	)
 	row.add_child(remove)
 	return row
+
+
+# The rate in its real units (seconds per cycle, or Hz) — stored normalized, like intensity, so the
+# round and the engine never see units.
+func _make_rate_spin(effect: Dictionary, entry: Dictionary) -> SpinBox:
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = float(entry.get("rmin", 0.0))
+	spin.max_value = float(entry.get("rmax", 1.0))
+	var unit: String = str(entry.get("runit", "s"))
+	spin.step = 1.0 if unit == "Hz" else 0.1
+	spin.suffix = " " + unit
+	spin.value = JourneyData.sensory_rate_value(
+		entry, float(effect.get("rate", entry.get("rdef", 0.5)))
+	)
+	UITheme.style_spin_box(spin)
+	spin.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:rate")
+			effect["rate"] = JourneyData.sensory_rate_from_value(entry, value)
+			_refresh_derived()
+	)
+	return spin
 
 
 func _make_float_spin(

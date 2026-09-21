@@ -81,6 +81,8 @@ var _sensory: SensoryFX = null
 var _sensory_rolls: Array = []
 var _sensory_intensity: Dictionary = {}  # catalog name → 0–1, the live edit
 var _on_sensory_tune: Callable = Callable()
+var _sensory_rate: Dictionary = {}  # catalog name → 0–1, the live edit of the beat
+var _on_sensory_rate_tune: Callable = Callable()
 
 
 # Builds and shows the overlay over `parent`. `modifiers` are stroke-affecting effect dicts
@@ -99,7 +101,9 @@ func open(
 	on_tune: Callable = Callable(),
 	sensory_rolls: Array = [],
 	sensory_intensity: Dictionary = {},
-	on_sensory_tune: Callable = Callable()
+	on_sensory_tune: Callable = Callable(),
+	sensory_rate: Dictionary = {},
+	on_sensory_rate_tune: Callable = Callable()
 ) -> void:
 	_modifiers = modifiers
 	_mod_label = mod_label
@@ -107,6 +111,8 @@ func open(
 	_sensory_rolls = sensory_rolls
 	_sensory_intensity = sensory_intensity.duplicate()
 	_on_sensory_tune = on_sensory_tune
+	_sensory_rate = sensory_rate.duplicate()
+	_on_sensory_rate_tune = on_sensory_rate_tune
 	_edit_mode = on_segments_applied.is_valid()
 	_segments = segments.duplicate(true)  # edit a copy; APPLY is what commits
 	_on_segments_applied = on_segments_applied
@@ -562,6 +568,39 @@ func _sensory_slider_row(roll: Dictionary) -> Control:
 	)
 	row.add_child(slider)
 	row.add_child(value_lbl)
+	if not JourneyData.sensory_has_rate(roll):
+		return row
+
+	# The beat, for the effects that have one: a second slider showing real units.
+	var rate_lbl: Label = Label.new()
+	rate_lbl.text = "RATE"
+	rate_lbl.tooltip_text = str(roll.get("rdesc", ""))
+	rate_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	rate_lbl.add_theme_font_size_override("font_size", 11)
+	rate_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	row.add_child(rate_lbl)
+	var rate01: float = float(_sensory_rate.get(nm, roll.get("rdef", 0.5)))
+	var rate_value_lbl: Label = Label.new()
+	rate_value_lbl.text = JourneyData.sensory_rate_text(roll, rate01)
+	rate_value_lbl.add_theme_font_size_override("font_size", 11)
+	rate_value_lbl.custom_minimum_size = Vector2(48, 0)
+	var rate_slider: HSlider = HSlider.new()
+	rate_slider.min_value = 0.0
+	rate_slider.max_value = 100.0
+	rate_slider.step = 1.0
+	rate_slider.custom_minimum_size = Vector2(120, 0)
+	rate_slider.tooltip_text = str(roll.get("rdesc", ""))
+	rate_slider.set_value_no_signal(rate01 * 100.0)
+	rate_slider.value_changed.connect(
+		func(v: float) -> void:
+			rate_value_lbl.text = JourneyData.sensory_rate_text(roll, v / 100.0)
+			_sensory_rate[nm] = v / 100.0
+			_refresh_sensory()
+			if _on_sensory_rate_tune.is_valid():
+				_on_sensory_rate_tune.call(nm, v / 100.0)
+	)
+	row.add_child(rate_slider)
+	row.add_child(rate_value_lbl)
 	return row
 
 
@@ -932,7 +971,8 @@ func _refresh_sensory() -> void:
 	for roll: Dictionary in _sensory_rolls:
 		var nm: String = str(roll.get("name", ""))
 		var intensity: float = float(_sensory_intensity.get(nm, roll.get("idef", 0.5)))
-		_sensory.apply(roll, intensity, false)
+		var rate: float = float(_sensory_rate.get(nm, roll.get("rdef", 0.5)))
+		_sensory.apply(roll, intensity, false, rate)
 
 
 # Sets the letterbox aspect from the real video dimensions once a frame exists.

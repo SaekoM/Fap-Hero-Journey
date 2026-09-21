@@ -530,6 +530,7 @@ func _reconcile_fx() -> void:
 								float((raw as Dictionary).get("intensity", 1.0))
 								* _fades.factor(str(id))
 							),
+							"rate": float((raw as Dictionary).get("rate", -1.0)),
 						}
 					)
 				)

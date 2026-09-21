@@ -1155,6 +1155,7 @@ static func _read_effect_fields(raw: Dictionary, rtype: String) -> Dictionary:
 		"sensory": raw.get("Sensory", raw.get("BossHexes", raw.get("sensory", []))),
 		"sensory_in_pool": bool(raw.get("SensoryInPool", raw.get("sensory_in_pool", false))),
 		"sensory_intensity": raw.get("SensoryIntensity", raw.get("sensory_intensity", {})),
+		"sensory_rate": raw.get("SensoryRate", raw.get("sensory_rate", {})),
 		"show_reveal": bool(raw.get("ShowReveal", raw.get("show_reveal", true))),
 	}
 

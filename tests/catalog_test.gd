@@ -74,3 +74,50 @@ func test_entries_have_kind_and_name() -> void:
 		for e: Dictionary in cat:
 			assert_str(String(e.get("kind", ""))).is_not_empty()
 			assert_str(String(e.get("name", ""))).is_not_empty()
+
+
+# The effects with a beat of their own carry the rate triple in real units, and the default lands on
+# exactly the cadence each had before rates existed — an untouched round must not change.
+const RATED_SENSORY := {"bloodshot": 1.8, "flicker": 1.67, "tremor": 15.44}
+
+
+func test_sensory_rate_fields_and_defaults() -> void:
+	for e: Dictionary in JD.SENSORY_CATALOG:
+		var kind: String = String(e.get("kind", ""))
+		var nm: String = String(e.get("name", "?"))
+		if not RATED_SENSORY.has(kind):
+			(
+				assert_bool(JD.sensory_has_rate(e))
+				. override_failure_message("%s has no beat, should carry no rate" % nm)
+				. is_false()
+			)
+			continue
+		(
+			assert_bool(
+				(
+					e.has("rmin")
+					and e.has("rmax")
+					and e.has("rdef")
+					and e.has("runit")
+					and e.has("rdesc")
+				)
+			)
+			. override_failure_message("%s missing rmin/rmax/rdef/runit/rdesc" % nm)
+			. is_true()
+		)
+		(
+			assert_float(JD.sensory_rate_value(e, float(e["rdef"])))
+			. override_failure_message("%s default rate is not its historical cadence" % nm)
+			. is_equal_approx(float(RATED_SENSORY[kind]), 0.02)
+		)
+
+
+func test_sensory_rate_value_round_trips_and_reads() -> void:
+	var e: Dictionary = JD.sensory_entry_by_kind("bloodshot")
+	assert_float(JD.sensory_rate_value(e, 0.0)).is_equal_approx(0.6, 0.0001)
+	assert_float(JD.sensory_rate_value(e, 1.0)).is_equal_approx(8.0, 0.0001)
+	assert_float(JD.sensory_rate_from_value(e, JD.sensory_rate_value(e, 0.37))).is_equal_approx(
+		0.37, 0.0001
+	)
+	assert_str(JD.sensory_rate_text(e, 1.0)).is_equal("8.0 s")
+	assert_str(JD.sensory_rate_text(JD.sensory_entry_by_kind("tremor"), 1.0)).is_equal("25 Hz")

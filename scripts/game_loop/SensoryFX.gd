@@ -143,11 +143,20 @@ var _volwobble_tween: Tween = null
 
 var _tremor: bool = false  # "Tremor" — shakes the video each frame
 var _tremor_amp: float = 9.0  # shake amplitude (set from intensity)
+var _tremor_hz: float = TREMOR_BASE_HZ  # shake speed (set from rate)
 var _muted: bool = false  # a "Silence" hex muted the video
 var _pre_mute_volume_db: float = 0.0  # restored when a "Silence" hex ends
 
 # --- Reconcile / fade state (drives timed item sensory alongside round sensory) ---
 const FADE_SECS: float = 1.5  # how long a departing effect eases out on reconcile
+
+# The cadence each beating effect always had — the catalog's rdef maps to exactly these, so a round
+# that never touched RATE plays as it did before rates existed.
+const BLOODSHOT_BASE_PERIOD: float = 1.8  # seconds per pulse (0.9 up, 0.9 down)
+const FLICKER_BASE_PERIOD: float = 1.67  # seconds per three-burst cycle
+const FLICKER_DIPS_SECS: float = 0.25  # the six dip tweens' fixed lengths, summed
+const FLICKER_BASE_REST: float = 1.42  # the three rests (0.8 + 0.12 + 0.5) that the period stretches
+const TREMOR_BASE_HZ: float = 15.44  # the dominant term, sin(t * 97), in Hz
 # Per-pixel shader effects → [uniform name, identity/off value]. Also the set used to decide when the
 # shader material can be dropped (no shader kind applied or fading).
 const _SHADER_OFF: Dictionary = {
@@ -162,6 +171,7 @@ const _SHADER_OFF: Dictionary = {
 	"wave": ["wave", 0.0],
 }
 var _applied: Dictionary = {}  # kind → applied intensity (ON, not fading); skips no-op re-applies
+var _applied_rate: Dictionary = {}  # kind → applied rate (0–1), for the same no-op check
 var _fading: Dictionary = {}  # kind → the Tween easing it off; a re-request cancels it
 var _audio_fx: Dictionary = {}  # audio kind → its AudioEffect on the bus (targeted fade + removal)
 
@@ -266,6 +276,23 @@ static func intensity_for(round: Dictionary, entry: Dictionary) -> float:
 	return float(entry.get("idef", 0.5))
 
 
+# This round's RATE (0–1) for a sensory modifier with a beat of its own — the author's per-round
+# override if set, else the catalog default (which is the cadence it always had). Same lookup rule
+# as intensity_for. Entries without a rate return their default; apply() ignores it for them.
+static func rate_for(round: Dictionary, entry: Dictionary) -> float:
+	var overrides: Dictionary = round.get("sensory_rate", {})
+	var nm: String = str(entry.get("_ref", entry.get("name", "")))
+	if overrides.has(nm):
+		return clampf(float(overrides[nm]), 0.0, 1.0)
+	return float(entry.get("rdef", 0.5))
+
+
+# The real rate (seconds per cycle, or Hz) for a sensory hex at the given rate (0–1), mapped
+# through the catalog entry's rmin/rmax.
+func _rval(roll: Dictionary, rate: float) -> float:
+	return JourneyData.sensory_rate_value(roll, rate)
+
+
 # The real effect value for a sensory hex at the given intensity (0–1), mapped
 # through the catalog entry's imin/imax. imin may exceed imax (inverted effects).
 func _ival(roll: Dictionary, intensity: float) -> float:
@@ -289,10 +316,17 @@ func _ival(roll: Dictionary, intensity: float) -> float:
 # `player_scaled` folds in the player's SENSORY STRENGTH comfort setting. The builder's preview
 # passes false: the author is tuning the round's own intensity, and showing it pre-scaled would
 # have them compensate for a setting only their own install has.
-func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true) -> bool:
+# `rate` (0–1, mapped through rmin/rmax) sets the beat of the effects that have one; negative means
+# the catalog default. It is deliberately NOT scaled by the comfort setting — that softens, and a
+# slower or faster beat is neither softer nor harsher.
+func apply(
+	roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true, rate: float = -1.0
+) -> bool:
 	if player_scaled:
 		intensity *= SettingsService.get_sensory_strength()
 	intensity = clampf(intensity, 0.0, 1.0)
+	if rate < 0.0:
+		rate = float(roll.get("rdef", 0.5))
 	match String(roll.get("kind", "")):
 		"mute":
 			_muted = true
@@ -329,7 +363,7 @@ func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true)
 		# Overlay-node visual hexes.
 		"bloodshot":
 			_bloodshot.visible = true
-			_start_bloodshot(_ival(roll, intensity))
+			_start_bloodshot(_ival(roll, intensity), _rval(roll, rate))
 		"static":
 			if _static.material != null:
 				(_static.material as ShaderMaterial).set_shader_parameter(
@@ -338,9 +372,10 @@ func apply(roll: Dictionary, intensity: float = 1.0, player_scaled: bool = true)
 			_static.visible = true
 		"flicker":
 			_flicker.visible = true
-			_start_flicker(_ival(roll, intensity))
+			_start_flicker(_ival(roll, intensity), _rval(roll, rate))
 		"tremor":
 			_tremor_amp = _ival(roll, intensity)
+			_tremor_hz = _rval(roll, rate)
 			_tremor = true
 		# Audio hexes — bus effects (Faltering wobbles the bus level).
 		"lowpass":
@@ -398,7 +433,9 @@ func clear_all() -> void:
 func tremor_offset() -> Vector2:
 	if not _tremor:
 		return Vector2.ZERO
-	var ts: float = Time.get_ticks_msec() / 1000.0
+	# The four mixed frequencies keep their ratios; the rate scales time itself, so the dominant
+	# term runs at _tremor_hz and the shake reads the same, only slower or faster.
+	var ts: float = Time.get_ticks_msec() / 1000.0 * (_tremor_hz / TREMOR_BASE_HZ)
 	return (
 		Vector2(sin(ts * 97.0) + sin(ts * 61.0), cos(ts * 89.0) + sin(ts * 53.0))
 		* (_tremor_amp * 0.5)
@@ -519,13 +556,15 @@ func _stop_strobe() -> void:
 		_strobe.modulate.a = 0.0
 
 
-func _start_bloodshot(peak: float = 1.0) -> void:
+# `period` is one full pulse — up and back down — in seconds.
+func _start_bloodshot(peak: float = 1.0, period: float = BLOODSHOT_BASE_PERIOD) -> void:
 	_stop_bloodshot()
 	# Pulse between a faint floor and the intensity-driven peak alpha.
+	var half: float = maxf(period, 0.1) * 0.5
 	_bloodshot.modulate.a = 0.0
 	_bloodshot_tween = create_tween().set_loops()
-	_bloodshot_tween.tween_property(_bloodshot, "modulate:a", clampf(peak, 0.0, 1.0), 0.9)
-	_bloodshot_tween.tween_property(_bloodshot, "modulate:a", clampf(peak * 0.3, 0.0, 1.0), 0.9)
+	_bloodshot_tween.tween_property(_bloodshot, "modulate:a", clampf(peak, 0.0, 1.0), half)
+	_bloodshot_tween.tween_property(_bloodshot, "modulate:a", clampf(peak * 0.3, 0.0, 1.0), half)
 
 
 func _stop_bloodshot() -> void:
@@ -537,21 +576,24 @@ func _stop_bloodshot() -> void:
 
 
 # Quick erratic black dips — a jittered cadence so it reads as a faulty signal
-# rather than the slow, regular Strobe fade.
-func _start_flicker(scale: float = 1.0) -> void:
+# rather than the slow, regular Strobe fade. `period` is one cycle of three bursts,
+# in seconds: the rests between bursts stretch or shrink to fit it, the dips keep
+# their few-frame lengths — that snap is what makes it a flicker and not a fade.
+func _start_flicker(scale: float = 1.0, period: float = FLICKER_BASE_PERIOD) -> void:
 	_stop_flicker()
-	# Intensity scales the dip darkness (cadence stays fixed). clampf keeps the
-	# scaled peaks valid even when the catalog range pushes above 1.0.
+	# Intensity scales the dip darkness. clampf keeps the scaled peaks valid even
+	# when the catalog range pushes above 1.0.
 	var s: float = clampf(scale, 0.0, 1.0 / 0.85)  # 0.85 is the tallest dip below
+	var rest: float = maxf(period - FLICKER_DIPS_SECS, 0.05) / FLICKER_BASE_REST
 	_flicker.modulate.a = 0.0
 	_flicker_tween = create_tween().set_loops()
-	_flicker_tween.tween_interval(0.8)
+	_flicker_tween.tween_interval(0.8 * rest)
 	_flicker_tween.tween_property(_flicker, "modulate:a", 0.7 * s, 0.04)
 	_flicker_tween.tween_property(_flicker, "modulate:a", 0.0, 0.04)
-	_flicker_tween.tween_interval(0.12)
+	_flicker_tween.tween_interval(0.12 * rest)
 	_flicker_tween.tween_property(_flicker, "modulate:a", 0.45 * s, 0.03)
 	_flicker_tween.tween_property(_flicker, "modulate:a", 0.0, 0.06)
-	_flicker_tween.tween_interval(0.5)
+	_flicker_tween.tween_interval(0.5 * rest)
 	_flicker_tween.tween_property(_flicker, "modulate:a", 0.85 * s, 0.03)
 	_flicker_tween.tween_property(_flicker, "modulate:a", 0.0, 0.05)
 
@@ -594,7 +636,7 @@ func _stop_volwobble() -> void:
 # left the set ease out over FADE_SECS. One engine state reflects everything active, and an expiring
 # item effect fades instead of snapping. No-op re-applies are skipped so animated effects don't restart.
 func reconcile(requests: Array) -> void:
-	var desired: Dictionary = {}  # kind → {roll, intensity}
+	var desired: Dictionary = {}  # kind → {roll, intensity, rate}
 	for req: Dictionary in requests:
 		var roll: Dictionary = req.get("roll", {})
 		var kind: String = str(roll.get("kind", ""))
@@ -602,15 +644,25 @@ func reconcile(requests: Array) -> void:
 			continue
 		var intensity: float = float(req.get("intensity", 1.0))
 		if not desired.has(kind) or intensity > float((desired[kind] as Dictionary)["intensity"]):
-			desired[kind] = {"roll": roll, "intensity": intensity}
+			# The strongest request's rate wins with it (a request without one → catalog default).
+			var rate: float = float(req.get("rate", -1.0))
+			if rate < 0.0:
+				rate = float(roll.get("rdef", 0.5))
+			desired[kind] = {"roll": roll, "intensity": intensity, "rate": rate}
 
 	for kind: String in desired:
 		var intensity: float = float((desired[kind] as Dictionary)["intensity"])
+		var rate: float = float((desired[kind] as Dictionary)["rate"])
 		_cancel_fade(kind)
-		if _applied.has(kind) and is_equal_approx(float(_applied[kind]), intensity):
+		if (
+			_applied.has(kind)
+			and is_equal_approx(float(_applied[kind]), intensity)
+			and is_equal_approx(float(_applied_rate.get(kind, rate)), rate)
+		):
 			continue
-		apply((desired[kind] as Dictionary)["roll"], intensity)
+		apply((desired[kind] as Dictionary)["roll"], intensity, true, rate)
 		_applied[kind] = intensity
+		_applied_rate[kind] = rate
 
 	for kind: String in _applied.keys():
 		if not desired.has(kind) and not _fading.has(kind):
@@ -620,6 +672,7 @@ func reconcile(requests: Array) -> void:
 # Starts (or immediately finishes) the ease-out for a kind that left the desired set.
 func _begin_fade(kind: String) -> void:
 	_applied.erase(kind)
+	_applied_rate.erase(kind)
 	var tween: Tween = _make_fade_tween(kind)
 	if tween == null:
 		_finalize_off(kind)  # nothing to animate (binary/unknown) — hard off

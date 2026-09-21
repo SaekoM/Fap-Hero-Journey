@@ -1657,7 +1657,7 @@ func _enter_boss_mode(round: Dictionary) -> void:
 		var hx: Dictionary = _make_boss_effect(roll)
 		hx["name"] = roll.get("name", hx["name"])
 		InventoryService.AddBossEffects([hx])
-		_apply_hex(roll, SensoryFX.intensity_for(round, roll))
+		_apply_hex(roll, SensoryFX.intensity_for(round, roll), SensoryFX.rate_for(round, roll))
 
 	_reconcile_sensory()  # apply the round's collected sensory (plus any surviving item sensory)
 	_reconcile_hud_hide()  # round Fog (or a surviving item Fog) → HUD hidden
@@ -1761,7 +1761,7 @@ func _apply_effect(roll: Dictionary, round: Dictionary) -> void:
 	if String(roll.get("kind", "")) in ["gift", "interest", "lingering"]:
 		_apply_boon(roll, round)
 	else:
-		_apply_hex(roll, SensoryFX.intensity_for(round, roll))
+		_apply_hex(roll, SensoryFX.intensity_for(round, roll), SensoryFX.rate_for(round, roll))
 
 
 # GameLoop-side boon behaviours (the ones not handled by an existing effect kind).
@@ -2340,13 +2340,14 @@ func _clear_curse_hexes() -> void:
 # do). Sensory (visual/audio) kinds are handled by SensoryFX, with `intensity`
 # (0–1) mapped through the catalog's imin/imax; the gameplay kinds are handled
 # here. coin_penalty is read at round end, not applied here.
-func _apply_hex(roll: Dictionary, intensity: float = 1.0) -> void:
+func _apply_hex(roll: Dictionary, intensity: float = 1.0, rate: float = -1.0) -> void:
 	var kind: String = String(roll.get("kind", ""))
 	# Sensory (visual/audio) kinds are collected for the reconcile pass, not applied here — so the
 	# round's sensory shares one engine state with any active item sensory. "blackout" (Blinded) is a
 	# sensory catalog entry SensoryFX does NOT own (the HUD hides the video for it), so it's excluded.
+	# `rate` (< 0 = catalog default) is the beat of the effects that have one.
 	if kind != "blackout" and JourneyData.is_sensory_kind(kind):
-		_round_sensory.append({"roll": roll, "intensity": intensity})
+		_round_sensory.append({"roll": roll, "intensity": intensity, "rate": rate})
 		return
 	# hud_hide (Fog) is reconciled from the active list in _reconcile_hud_hide (so round + item Fog share
 	# one state), not applied here.
@@ -4605,6 +4606,7 @@ func _begin_timeline_window(event: Dictionary) -> void:
 						# factor each frame; `_base_intensity` is the authored value it ramps toward.
 						"intensity": float(roll.get("intensity", 1.0)),
 						"_base_intensity": float(roll.get("intensity", 1.0)),
+						"rate": float(roll.get("rate", -1.0)),  # the window's beat; absent → default
 						"_source_id": source_id,
 					}
 				)

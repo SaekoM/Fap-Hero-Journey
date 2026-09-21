@@ -148,6 +148,13 @@ const CURSE_CATALOG: Array = [
 # a stronger result is a lower number (pixelate blocks, strobe interval, low-pass
 # cutoff, tunnel ramp). idef reproduces the current default value. Binary effects
 # (Blinded, Silence) carry no intensity fields → no slider.
+# Effects with a beat of their own (a pulse, a burst, a shake) also carry rmin/rmax/rdef
+# — a RATE in real units (`runit`: seconds per cycle, or Hz), edited by a second slider
+# and stored per round like intensity (`sensory_rate`); `rdesc` says what one unit of it
+# means for that effect, since a Flicker "cycle" is three bursts and a Bloodshot's is one
+# pulse. Intensity never touches timing:
+# a Bloodshot at 1% is as faint as it gets but throbs at whatever rate the author set.
+# rdef reproduces the cadence these always had, so an untouched round doesn't change.
 const SENSORY_CATALOG: Array = [
 	# Visibility / audio deniers.
 	{
@@ -260,7 +267,12 @@ const SENSORY_CATALOG: Array = [
 		"desc": "A red haze pulses over the screen.",
 		"imin": 0.50,
 		"imax": 1.00,
-		"idef": 1.00
+		"idef": 1.00,
+		"rmin": 0.6,
+		"rmax": 8.0,
+		"rdef": 0.162,
+		"runit": "s",
+		"rdesc": "Seconds per pulse"
 	},
 	{
 		"kind": "static",
@@ -276,7 +288,12 @@ const SENSORY_CATALOG: Array = [
 		"desc": "The screen flickers erratically.",
 		"imin": 0.50,
 		"imax": 1.20,
-		"idef": 0.71
+		"idef": 0.71,
+		"rmin": 0.6,
+		"rmax": 8.0,
+		"rdef": 0.145,
+		"runit": "s",
+		"rdesc": "Seconds per cycle — each cycle is a burst of three flickers"
 	},
 	{
 		"kind": "tremor",
@@ -284,7 +301,12 @@ const SENSORY_CATALOG: Array = [
 		"desc": "The screen shakes.",
 		"imin": 3.0,
 		"imax": 18.0,
-		"idef": 0.40
+		"idef": 0.40,
+		"rmin": 2.0,
+		"rmax": 25.0,
+		"rdef": 0.584,
+		"runit": "Hz",
+		"rdesc": "Shakes per second"
 	},
 	# Audio-bus effects.
 	{
@@ -400,6 +422,34 @@ static func effect_entry(name: String) -> Dictionary:
 # reconciled by their own consumers.
 static func is_sensory_kind(kind: String) -> bool:
 	return not sensory_entry_by_kind(kind).is_empty()
+
+
+# True when a catalog entry has a rate of its own (a pulse, a burst, a shake) — see SENSORY_CATALOG.
+static func sensory_has_rate(entry: Dictionary) -> bool:
+	return entry.has("rmin") and entry.has("rmax")
+
+
+# A normalized rate (0–1) in the entry's real units — seconds per cycle or Hz, per `runit`.
+static func sensory_rate_value(entry: Dictionary, rate: float) -> float:
+	return lerpf(
+		float(entry.get("rmin", 0.0)), float(entry.get("rmax", 1.0)), clampf(rate, 0.0, 1.0)
+	)
+
+
+# The inverse: a real-unit value back to the 0–1 the round stores.
+static func sensory_rate_from_value(entry: Dictionary, value: float) -> float:
+	var lo: float = float(entry.get("rmin", 0.0))
+	var hi: float = float(entry.get("rmax", 1.0))
+	if is_equal_approx(lo, hi):
+		return 0.0
+	return clampf(inverse_lerp(lo, hi, value), 0.0, 1.0)
+
+
+# The rate as the author reads it: "1.8 s" or "15 Hz".
+static func sensory_rate_text(entry: Dictionary, rate: float) -> String:
+	var v: float = sensory_rate_value(entry, rate)
+	var unit: String = str(entry.get("runit", "s"))
+	return ("%d %s" if unit == "Hz" else "%.1f %s") % [v, unit]
 
 
 # The SENSORY_CATALOG entry for a kind (carries name + imin/imax/idef intensity range). {} if none.
@@ -649,6 +699,7 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 		"sensory": (src.get("sensory", []) as Array).duplicate(),
 		"sensory_in_pool": bool(src.get("sensory_in_pool", false)),
 		"sensory_intensity": (src.get("sensory_intensity", {}) as Dictionary).duplicate(),
+		"sensory_rate": (src.get("sensory_rate", {}) as Dictionary).duplicate(),
 		"gift_item": str(src.get("gift_item", "")),
 		"show_reveal": bool(src.get("show_reveal", true)),
 	}

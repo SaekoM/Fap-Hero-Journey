@@ -11,6 +11,17 @@ journey (the same reveal the catalogue uses) plus the usual ghost ring, so the m
 rather than all at once. Journeys with the map disabled outright are unchanged: that is off, not
 fogged, and they still show in full at the end.
 
+### ◆ Bloodshot, Flicker and Tremor have a rate of their own
+
+Intensity never touched timing: a Bloodshot at 1% was as faint as it gets and still throbbed at the
+same fixed 1.8 s, which is why it felt unusable at any setting. The three effects with a beat now
+carry a **Rate** beside intensity — seconds per pulse for Bloodshot (0.6–8 s), seconds per cycle for
+Flicker (a cycle being its burst of three), shakes per second for Tremor (2–25 Hz) — wherever
+intensity is set: the round’s effect list, the live preview
+tuner, and boss-timeline windows. Defaults are exactly the cadence each always had, so nothing already
+authored changes. The player’s Sensory Strength setting scales intensity as before and leaves rate
+alone: slower isn’t softer.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
