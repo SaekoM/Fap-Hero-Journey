@@ -148,7 +148,6 @@ func show_journey_info_panel() -> void:
 		UITheme.style_button(cover_rm_btn, UITheme.MAGENTA)
 		cover_rm_btn.pressed.connect(
 			func() -> void:
-				_delete_saved_image(_owner._cover_path)
 				_owner._cover_path = ""
 				_owner._cover_texture = null
 				show_journey_info_panel()
@@ -582,7 +581,6 @@ func _make_backdrop_row(i: int) -> Control:
 	rm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	rm.pressed.connect(
 		func() -> void:
-			_delete_saved_image(str((_owner._map_backdrops[i] as Dictionary).get("path", "")))
 			_owner._map_backdrops.remove_at(i)
 			_owner._backdrop_reposition_idx = -1
 			if is_instance_valid(_owner._graph):
@@ -3581,7 +3579,7 @@ func _make_overlay_choice_block(
 	UITheme.style_button(img_rm_btn, UITheme.CYAN)
 	img_rm_btn.pressed.connect(
 		func() -> void:
-			_delete_saved_image(str(out[ei].get("image_path", "")))
+			_owner._push_undo()
 			out[ei]["image_path"] = ""
 			img_zone.call_deferred("set_file", "")
 			img_rm_btn.visible = false
@@ -3961,7 +3959,7 @@ func _make_graph_choice_block(
 	UITheme.style_button(img_rm_btn, UITheme.MAGENTA)
 	img_rm_btn.pressed.connect(
 		func() -> void:
-			_delete_saved_image(out[ei].get("image_path", ""))
+			_owner._push_undo()
 			out[ei]["image_path"] = ""
 			img_zone.call_deferred("set_file", "")
 			img_rm_btn.visible = false
@@ -5443,7 +5441,7 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	UITheme.style_button(sb_rm_btn, UITheme.MAGENTA)
 	sb_rm_btn.pressed.connect(
 		func() -> void:
-			_delete_saved_image(arr[idx].get("image", ""))
+			_owner._push_undo()
 			arr[idx]["image"] = ""
 			img_zone.call_deferred("set_file", "")
 			sb_rm_btn.visible = false
@@ -5703,7 +5701,7 @@ func _make_side_storyboard_line_block(
 	UITheme.style_button(line_rm_btn, UITheme.MAGENTA)
 	line_rm_btn.pressed.connect(
 		func() -> void:
-			_delete_saved_image(lines_arr[line_idx].get("image", ""))
+			_owner._push_undo()
 			lines_arr[line_idx]["image"] = ""
 			img_zone.call_deferred("set_file", "")
 			line_rm_btn.visible = false
@@ -7861,15 +7859,9 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 
 	return panel
 
-
-# Deletes an image file only if it lives inside the app's user data directory
-# (i.e. it has already been saved into a journey folder). Staging paths that
-# point to the user's own filesystem are left untouched — only the reference
-# in the data dict is cleared by the caller.
-func _delete_saved_image(path: String) -> void:
-	if path == "":
-		return
-	var abs_path: String = ProjectSettings.globalize_path(path)
-	var user_data: String = ProjectSettings.globalize_path("user://")
-	if abs_path.begins_with(user_data) and FileAccess.file_exists(abs_path):
-		DirAccess.remove_absolute(abs_path)
+# Clearing an image is a MODEL change only — nothing on disk is touched here. A helper used to
+# delete the pooled file the moment the reference was cleared, and that was a data-loss bug:
+# pooled images are deduplicated by content hash, so one file backs every node using the same
+# picture, and deleting it for one "remove image" broke the rest on the next load. Orphan cleanup
+# is the SAVE's job (it stages a fresh folder holding only what is still referenced), and
+# keeping the file until then is also what makes the removal undoable.

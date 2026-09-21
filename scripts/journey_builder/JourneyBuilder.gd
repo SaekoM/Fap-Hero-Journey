@@ -3439,8 +3439,7 @@ func _remove_overlay_fork_choice(fork_id: String, edge_idx: int) -> void:
 	if not bool(edge.get("_anchor", false)) or edge.has("_slot"):
 		return  # a base choice or a filled base slot — not an overlay choice
 	_push_undo()
-	_side_renderer._delete_saved_image(str(edge.get("image_path", "")))
-	out.remove_at(edge_idx)
+	out.remove_at(edge_idx)  # the choice's image stays pooled until Save prunes it (see the side panel)
 	_refresh_graph()
 	_side_renderer.show_graph_node_editor(fork_id)
 	_show_status("Overlay choice removed.", false)
@@ -5239,13 +5238,17 @@ func _pool_graph_nodes(paths: Dictionary, modal: Control, skip_ids: Dictionary =
 					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
 				)
 
-		# A non-video copy (funscript / axis / vib / boss / image) failed somewhere above.
+		# A non-video copy (funscript / axis / vib / boss / image) failed somewhere above. The copy
+		# primitives don't know which node they serve, so the node is named here — the row then
+		# jumps to it instead of leaving the author to guess which of fifty nodes "File copy" meant.
 		if _save_aborted:
 			var sr: Dictionary = _save_abort_error.get(
 				"result", {"reason": CAUSE_UNKNOWN_COPY_ERROR}
 			)
 			var si: String = _save_abort_error.get("item", "File copy")
-			_show_copy_failure_modal(sr, si)
+			if si == "File copy":
+				si = "%s — file copy" % _node_audit_label(node)
+			_show_copy_failure_modal(sr, si, id)
 			return {"ok": false, "nodes": {}}
 
 		var saved_node: Dictionary = {"type": node_type, "data": saved_data, "out": saved_out}
@@ -6537,6 +6540,54 @@ func _collect_journey_meta_issues(issues: Array) -> void:
 				}
 			)
 		)
+	# Map backdrops are copied by the save with no check of their own, so a moved file used to
+	# abort it mid-way with a generic "File copy" error. Blocks, like the cover.
+	for i: int in _map_backdrops.size():
+		var bd_src: String = str((_map_backdrops[i] as Dictionary).get("path", ""))
+		if bd_src != "" and not _save_source_exists(bd_src):
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_MISSING_SOURCE,
+						"item": "Map backdrop %d" % [i + 1],
+						"detail": "Backdrop image no longer exists at: %s" % bd_src,
+						"hint":
+						"Re-drag the backdrop in the Journey Info panel, or remove that layer.",
+					}
+				)
+			)
+	# A portrait that has gone missing renders as nothing at play time — a warning, like a setting's
+	# background, since the scene still plays.
+	for c: Variant in _journey_characters:
+		if not (c is Dictionary):
+			continue
+		var cname: String = str((c as Dictionary).get("name", "")).strip_edges()
+		for por: Variant in (c as Dictionary).get("portraits", []):
+			if not (por is Dictionary):
+				continue
+			var por_src: String = str((por as Dictionary).get("path", ""))
+			if por_src == "" or _save_source_exists(por_src):
+				continue
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_MISSING_SOURCE,
+						"item":
+						(
+							'Character "%s" → %s'
+							% [
+								cname if cname != "" else "(unnamed)",
+								str((por as Dictionary).get("name", "portrait"))
+							]
+						),
+						"detail": "Portrait no longer exists at: %s" % por_src,
+						"hint": "Drop the portrait in again in the character editor, or remove it.",
+						"warn_only": true,
+					}
+				)
+			)
 	_collect_custom_item_issues(issues)
 
 
@@ -7055,6 +7106,22 @@ func _save_check_fork_graph(node: Dictionary, ctx: String, issues: Array) -> voi
 				)
 			)
 	for ei in edges.size():
+		# A missing choice image used to slip through presave and fail deep inside the save instead,
+		# as a file-copy abort carrying no node — so the error row couldn't navigate to the fork.
+		# Checked up front like storyboard images are, so it lands in the modal as a clickable row.
+		var choice_img: String = str((edges[ei] as Dictionary).get("image_path", ""))
+		if choice_img != "" and not _save_source_exists(choice_img):
+			(
+				issues
+				. append(
+					{
+						"cause": CAUSE_MISSING_SOURCE,
+						"item": "%s → Choice %d" % [ctx, ei + 1],
+						"detail": "Choice image no longer exists at: %s" % choice_img,
+						"hint": "Re-drag the choice image in the fork editor, or remove it.",
+					}
+				)
+			)
 		if str((edges[ei] as Dictionary).get("name", "")).strip_edges() == "":
 			(
 				issues
@@ -7778,28 +7845,21 @@ func _save_errors_to_text(title: String, errors: Array) -> String:
 # Builds a one-off SaveError list and shows the modal. Used by mid-save
 # failures that produce a single specific error (copy failed, transcode
 # failed, journey.json write failed, etc.).
+# `node_id`, when known, makes the row clickable — it lands on that node like a presave error.
 func _show_save_error_single(
-	title: String, cause: String, item: String, detail: String, hint: String
+	title: String, cause: String, item: String, detail: String, hint: String, node_id: String = ""
 ) -> void:
-	_show_save_error_modal(
-		title,
-		"Save failed.",
-		[
-			{
-				"cause": cause,
-				"item": item,
-				"detail": detail,
-				"hint": hint,
-			}
-		]
-	)
+	var err: Dictionary = {"cause": cause, "item": item, "detail": detail, "hint": hint}
+	if node_id != "":
+		err["node_id"] = node_id
+	_show_save_error_modal(title, "Save failed.", [err])
 
 
 # Maps a _copy_file_chunked result dict to the right save-error modal call.
 # `item` is the user-facing label (e.g. 'Round 4 "Boss Fight"' or
 # 'Fork → Path A → Round 2 "Reward"'). Files the modal and is otherwise silent
 # on success.
-func _show_copy_failure_modal(copy_result: Dictionary, item: String) -> void:
+func _show_copy_failure_modal(copy_result: Dictionary, item: String, node_id: String = "") -> void:
 	match copy_result.get("reason", ""):
 		CAUSE_CANCELLED:
 			_show_save_error_single(
@@ -7807,7 +7867,8 @@ func _show_copy_failure_modal(copy_result: Dictionary, item: String) -> void:
 				CAUSE_CANCELLED,
 				item,
 				"You cancelled the copy while %s was being processed." % item,
-				"Press Save again to retry. Nothing on disk was changed."
+				"Press Save again to retry. Nothing on disk was changed.",
+				node_id
 			)
 		CAUSE_SRC_UNREADABLE:
 			_show_save_error_single(
@@ -7815,7 +7876,8 @@ func _show_copy_failure_modal(copy_result: Dictionary, item: String) -> void:
 				CAUSE_SRC_UNREADABLE,
 				item,
 				"Source file became unreadable: %s" % copy_result.get("detail", "?"),
-				"The file may have been moved, deleted, or its drive disconnected since you opened the editor. Re-drag it into this round and try again."
+				"The file may have been moved, deleted, or its drive disconnected since you opened the editor. Re-drag it into this round and try again.",
+				node_id
 			)
 		CAUSE_DST_UNWRITABLE:
 			_show_save_error_single(
@@ -7823,7 +7885,8 @@ func _show_copy_failure_modal(copy_result: Dictionary, item: String) -> void:
 				CAUSE_DST_UNWRITABLE,
 				item,
 				"Could not create the destination file: %s" % copy_result.get("detail", "?"),
-				"Check that the journeys folder drive isn't full or write-protected, and that no antivirus is blocking the editor. You can change the journeys folder in Options → Storage Location."
+				"Check that the journeys folder drive isn't full or write-protected, and that no antivirus is blocking the editor. You can change the journeys folder in Options → Storage Location.",
+				node_id
 			)
 		_:
 			_show_save_error_single(
@@ -7831,7 +7894,8 @@ func _show_copy_failure_modal(copy_result: Dictionary, item: String) -> void:
 				CAUSE_UNKNOWN_COPY_ERROR,
 				item,
 				"An unexpected copy failure occurred while processing %s." % item,
-				"Try saving again. If the problem persists, check the Godot debug output for details."
+				"Try saving again. If the problem persists, check the Godot debug output for details.",
+				node_id
 			)
 
 

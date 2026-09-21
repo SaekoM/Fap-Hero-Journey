@@ -40,6 +40,19 @@ whether to lock it. Whoever installs a locked journey can play it, but can’t o
 export it again, or build a rendition on it. The lock lives only in the exported file — your own
 copy stays editable whatever you choose.
 
+### 🩹 Fixes
+
+- **Removing an image from a node no longer deletes it out from under other nodes.** Images
+  dropped into a journey are stored once and shared by content, so “remove image” was deleting a
+  file that other storyboards and forks still pointed at, breaking them on the next load. Removing
+  an image now only clears that one reference — and is undoable with Ctrl+Z. Files nothing uses any
+  more are dropped on Save, as they always were.
+- **Every missing image is caught before the save starts, and the error row jumps to the node.**
+  A fork choice, map backdrop or cast portrait pointing at a file that had gone used to fail deep
+  inside the save as a bare “File copy” error with no way to tell which node it meant. All three
+  are now checked up front like storyboard images are; and if a copy does still fail mid-save, the
+  error names the node and clicking it lands there.
+
 ## v0.8.5
 
 Cutting a video no longer undoes v0.8.4. And FFmpeg — which was most of what you were downloading —
