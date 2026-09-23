@@ -106,6 +106,32 @@ cover slot and the art fills it edge to edge, so a landscape banner has room to 
 without a cover of its own shows the base’s, muted, so it still reads as that journey without
 pretending to be identical. Journeys with no renditions keep the plain cover.
 
+### ◆ A tidier storyboard editor
+
+A storyboard’s five reward fields — coins, item, the flags it raises or clears, the counters it moves,
+and any items it takes back — now sit together in one collapsible **REWARDS** section instead of running
+down the panel between the setting picker and the dialogue lines. Most scenes hand out nothing, so most
+of the time that’s one line rather than a screenful of empty controls; a tick on the header says when
+something is set, and the section remembers whether you left it open.
+
+### ◆ A storyboard can set its own device stroke
+
+A storyboard has no funscript, so the device idles through it unless the player switched on their own
+Storyboard Filler — a comfort setting that can’t know this scene is a slow build and the next is a
+frenzy. A storyboard node can now carry a filler of its own: the same plain up/down stroke, at the
+author’s range and speed, used in place of the player’s. Enough to pace a set of images without baking
+them into a video and scripting it.
+
+It’s a collapsible DEVICE FILLER section in the storyboard’s side panel — the same shape as a round’s
+EFFECT ROUND block, so a scene that doesn’t drive the device costs one line rather than a screenful.
+Inside is a **TEST ON DEVICE** button that runs the
+stroke right there — the numbers move it live while it’s running, so it can be dialled in against what
+you’re actually feeling. It stops when you stop it, and whenever you leave the builder.
+
+This overrides the player’s **values**, never their consent. Options → Storyboard Filler gains **Let
+Journeys Set It** (on by default): switch it off and no journey can touch the device’s stroke — your own
+range and speed decide, exactly as before.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
@@ -116,6 +142,10 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Storyboard filler now reaches a Handy on WiFi.** The filler drives serial and Bluetooth devices
+  with one command per half-stroke, and a Handy on direct WiFi takes a streamed script instead — so it
+  was simply never sent anything and sat still through every storyboard. It now gets the same stroke as
+  a short looping script, in storyboards and in the builder's test button alike.
 - **Connector lines no longer vanish on a wide or tall journey.** Godot culls a drawing surface by
   its own rectangle, and the builder's edges are drawn on one surface: once a journey's nodes ran far
   enough in any direction — or into the negative coordinates the auto-layout normally produces — the

@@ -2956,11 +2956,11 @@ func show_graph_node_editor(node_id: String) -> void:
 			_owner._refresh_graph()  # structural change → re-render the canvas
 			show_graph_node_editor(node_id)
 		_build_side_panel_editor(side_vbox, display, arr, 0, reselect)
-		# Round nodes group SETS FLAGS / COUNTERS with Coins inside their editor (Rewards group); shop /
-		# storyboard editors aren't grouped, so both are appended here. Loop markers are pure control nodes
-		# (no rewards) and checkpoints carry their rewards in the ON-CONTINUE block instead — so only shop /
-		# storyboard get the generic fields (elsewhere they'd be dead or duplicate the on-continue ones).
-		if node_type == "shop" or node_type == "storyboard":
+		# Round and storyboard nodes group SETS FLAGS / COUNTERS with Coins inside their own editor
+		# (a Rewards group); a shop's editor isn't grouped, so its fields are appended here. Loop markers
+		# are pure control nodes (no rewards) and checkpoints carry theirs in the ON-CONTINUE block
+		# instead — so only the shop gets the generic fields (elsewhere they'd be dead or duplicate).
+		if node_type == "shop":
 			side_vbox.add_child(_make_set_flags_field(data))
 			side_vbox.add_child(_make_set_counters_field(data))
 			side_vbox.add_child(_make_remove_items_field(data))
@@ -5416,6 +5416,199 @@ func _shop_item_price(item_id: String) -> int:
 	return 0
 
 
+# Everything a storyboard HANDS OUT when it ends, in one collapsible block: coins, an item, the flags
+# it raises or clears, the counters it moves, and any items it takes back. Five fields that a scene
+# usually doesn't use at all — inline they were a screenful of empty controls between the setting
+# picker and the dialogue lines, which is what an author is actually there to edit.
+#
+# Unlike EFFECT ROUND and DEVICE FILLER the header is NOT a switch: rewards have no off state, so it
+# only opens and closes. The tick says whether anything is set, so a closed section still tells the
+# truth about the node. Open/closed lives on the builder (_rewards_expanded), not on the button — the
+# panel is rebuilt on every selection change, and a group that snapped shut each time would be worse
+# than no group at all.
+func _make_rewards_expander(arr: Array, idx: int, reselect: Callable) -> Control:
+	var data: Dictionary = arr[idx]
+	var has_any: bool = (
+		int(data.get("coins", 0)) != 0
+		or str(data.get("item", "")) != ""
+		or not (data.get("set_flags", []) as Array).is_empty()
+		or not (data.get("clear_flags", []) as Array).is_empty()
+		or not (data.get("set_counters", {}) as Dictionary).is_empty()
+		or not (data.get("remove_items", []) as Array).is_empty()
+	)
+	var open: bool = bool(_owner._rewards_expanded)
+
+	var wrapper: VBoxContainer = VBoxContainer.new()
+	wrapper.add_theme_constant_override("separation", 6)
+
+	var header: Button = Button.new()
+	header.text = ("▾  REWARDS" if open else "▸  REWARDS") + ("  ✓" if has_any else "")
+	header.toggle_mode = true
+	header.button_pressed = open
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Coins, an item, flags and counters this scene awards when it ends — and any items it takes back."
+		)
+	)
+	UITheme.style_button(header, UITheme.PURPLE_MID)
+	header.toggled.connect(
+		func(pressed: bool) -> void:
+			_owner._rewards_expanded = pressed
+			reselect.call(idx)
+	)
+	wrapper.add_child(header)
+
+	if not open:
+		return wrapper
+
+	wrapper.add_child(_side_field_label("COINS AWARDED"))
+	var coins_spin: SpinBox = SpinBox.new()
+	coins_spin.min_value = 0
+	coins_spin.max_value = 999999
+	coins_spin.step = 1
+	coins_spin.value = data.get("coins", 0)
+	coins_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(coins_spin)
+	coins_spin.value_changed.connect(func(v: float) -> void: arr[idx]["coins"] = int(v))
+	wrapper.add_child(coins_spin)
+
+	# Optional item reward — granted (alongside coins) when the storyboard ends.
+	wrapper.add_child(_side_field_label("ITEM REWARD  (OPTIONAL)"))
+	var item_values: Array = [""]
+	var item_dd: OptionButton = OptionButton.new()
+	item_dd.add_item("None")
+	for k: String in _all_item_ids():
+		item_values.append(k)
+		item_dd.add_item(_item_display_name(k))
+	item_dd.selected = max(0, item_values.find(str(data.get("item", ""))))
+	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(item_dd)
+	_apply_item_tooltips(item_dd, item_values)
+	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["item"] = item_values[i])
+	wrapper.add_child(item_dd)
+
+	# The same three fields every other rewarding node uses, so they behave identically here.
+	wrapper.add_child(_make_set_flags_field(data))
+	wrapper.add_child(_make_set_counters_field(data))
+	wrapper.add_child(_make_remove_items_field(data))
+	return wrapper
+
+
+# A storyboard has no funscript, so the device idles through it unless the player switched on their own
+# Storyboard Filler. This is the scene's own version of that stroke — the author's range and tempo, used
+# in place of the player's — for a storyboard meant to be paced rather than read: a slow build over a
+# set of images, without having to bake them into a video and script it.
+#
+# Collapsible, and the header IS the switch, exactly as EFFECT ROUND is on a round: a storyboard that
+# doesn't drive the device costs one line in the panel rather than a screenful of controls to scroll
+# past. TEST drives the real device from here, because a stroke range is not something anyone can judge
+# from two numbers.
+func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
+	var filler: Dictionary = JourneyData.normalize_storyboard_filler(arr[idx].get("filler", {}))
+	arr[idx]["filler"] = filler  # edited in place from here; the save drops it if it stays off
+	var is_on: bool = bool(filler["enabled"])
+
+	var wrapper: VBoxContainer = VBoxContainer.new()
+	wrapper.add_theme_constant_override("separation", 6)
+
+	var toggle_btn: Button = Button.new()
+	toggle_btn.text = "◍  DEVICE FILLER  ✓" if is_on else "◍  DEVICE FILLER"
+	toggle_btn.toggle_mode = true
+	toggle_btn.button_pressed = is_on
+	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toggle_btn.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Give this scene its own device stroke, overriding the player's filler range and speed. Players who switch off 'let journeys set it' in Options keep their own."
+		)
+	)
+	UITheme.style_button(toggle_btn, UITheme.PURPLE_MID)
+	toggle_btn.toggled.connect(
+		func(pressed: bool) -> void:
+			filler["enabled"] = pressed
+			if not pressed:
+				_owner.stop_filler_test()  # collapsing must never leave a device stroking
+			reselect.call(idx)
+	)
+	wrapper.add_child(toggle_btn)
+
+	if not is_on:
+		return wrapper
+
+	var hint: Label = Label.new()
+	hint.text = "A plain up/down stroke while this storyboard is on screen, at your range and speed instead of the player's."
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.uppercase = true
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	wrapper.add_child(hint)
+
+	wrapper.add_child(_side_field_label("STROKE RANGE"))
+	var range_row: HBoxContainer = HBoxContainer.new()
+	range_row.add_theme_constant_override("separation", 6)
+	wrapper.add_child(range_row)
+	var lo_spin: SpinBox = SpinBox.new()
+	var hi_spin: SpinBox = SpinBox.new()
+	for spin: SpinBox in [lo_spin, hi_spin]:
+		spin.min_value = 0
+		spin.max_value = 100
+		spin.step = 1
+		spin.suffix = "%"
+		spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_spin_box(spin)
+	lo_spin.value = int(filler["lo"])
+	hi_spin.value = int(filler["hi"])
+	lo_spin.tooltip_text = UITheme.wrap_tip("Bottom of the stroke")
+	hi_spin.tooltip_text = UITheme.wrap_tip("Top of the stroke")
+	range_row.add_child(lo_spin)
+	range_row.add_child(hi_spin)
+
+	wrapper.add_child(_side_field_label("HALF-STROKE (MS)"))
+	var speed_spin: SpinBox = SpinBox.new()
+	speed_spin.min_value = JourneyData.FILLER_MIN_HALF_CYCLE
+	speed_spin.max_value = JourneyData.FILLER_MAX_HALF_CYCLE
+	speed_spin.step = 50
+	speed_spin.value = int(filler["half_cycle_ms"])
+	speed_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	speed_spin.tooltip_text = UITheme.wrap_tip(
+		"One stroke in one direction. Bigger is slower — 2000 is a slow goon, 400 is frantic."
+	)
+	UITheme.style_spin_box(speed_spin)
+	wrapper.add_child(speed_spin)
+
+	var test_btn: Button = Button.new()
+	test_btn.text = "■ STOP TEST" if _owner.filler_test_active() else "▶ TEST ON DEVICE"
+	test_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(test_btn, UITheme.CYAN)
+	wrapper.add_child(test_btn)
+
+	# Live while testing: a change to any field re-seeds the running stroke, so the numbers can be
+	# dialled in against what is actually being felt rather than by stopping and starting.
+	var push: Callable = func() -> void:
+		var lo: int = mini(int(lo_spin.value), int(hi_spin.value))
+		var hi: int = maxi(int(lo_spin.value), int(hi_spin.value))
+		filler["lo"] = lo
+		filler["hi"] = hi
+		filler["half_cycle_ms"] = int(speed_spin.value)
+		if _owner.filler_test_active():
+			DeviceFiller.set_params(lo, hi, int(speed_spin.value))
+	lo_spin.value_changed.connect(func(_v: float) -> void: push.call())
+	hi_spin.value_changed.connect(func(_v: float) -> void: push.call())
+	speed_spin.value_changed.connect(func(_v: float) -> void: push.call())
+
+	test_btn.pressed.connect(
+		func() -> void:
+			push.call()
+			var running: bool = _owner.toggle_filler_test(
+				int(filler["lo"]), int(filler["hi"]), int(filler["half_cycle_ms"])
+			)
+			test_btn.text = "■ STOP TEST" if running else "▶ TEST ON DEVICE"
+	)
+	return wrapper
+
+
 func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> Control:
 	var sb_data: Dictionary = arr[idx]
 	var col: VBoxContainer = VBoxContainer.new()
@@ -5436,34 +5629,13 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 	)
 	col.add_child(name_edit)
 
+	# The two collapsible groups lead, so what an author comes here to edit — the place and the lines —
+	# isn't pushed down the panel by settings most scenes never touch.
+	col.add_child(_make_rewards_expander(arr, idx, reselect))
+	col.add_child(_make_filler_expander(arr, idx, reselect))
+
 	# The scene's default place. Any line may name a different one; see the per-line picker.
 	col.add_child(_make_setting_picker(sb_data))
-
-	col.add_child(_side_field_label("COINS AWARDED"))
-	var coins_spin: SpinBox = SpinBox.new()
-	coins_spin.min_value = 0
-	coins_spin.max_value = 999999
-	coins_spin.step = 1
-	coins_spin.value = sb_data.get("coins", 0)
-	coins_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_spin_box(coins_spin)
-	coins_spin.value_changed.connect(func(v: float) -> void: arr[idx]["coins"] = int(v))
-	col.add_child(coins_spin)
-
-	# Optional item reward — granted (alongside coins) when the storyboard ends.
-	col.add_child(_side_field_label("ITEM REWARD  (OPTIONAL)"))
-	var item_values: Array = [""]
-	var item_dd: OptionButton = OptionButton.new()
-	item_dd.add_item("None")
-	for k: String in _all_item_ids():
-		item_values.append(k)
-		item_dd.add_item(_item_display_name(k))
-	item_dd.selected = max(0, item_values.find(str(sb_data.get("item", ""))))
-	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_option_button(item_dd)
-	_apply_item_tooltips(item_dd, item_values)
-	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["item"] = item_values[i])
-	col.add_child(item_dd)
 
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("DEFAULT IMAGE"))

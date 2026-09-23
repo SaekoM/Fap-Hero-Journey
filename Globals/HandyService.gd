@@ -424,6 +424,81 @@ func stop() -> void:
 		await _api_put("/hsp/stop", {})
 
 
+# ── Storyboard filler ─────────────────────────────────────────────────────────
+# The plain up/down stroke that keeps a device alive through a storyboard. FunscriptPlayer drives
+# serial and Buttplug devices for this by sending one "go to X over N ms" command per half-stroke,
+# and a Handy on direct WiFi has no such path — it takes a streamed POINT SCRIPT — so the filler
+# never reached one at all, in a storyboard or in the builder's test. The same stroke is expressed
+# here as the smallest script that can say it: two points, played on loop by the device itself. No
+# feeding, so nothing has to keep ticking it, and it survives the app being busy.
+
+var _filler_active: bool = false
+# Bumped by every start and every stop. A start is two round trips long, so a stop can land while one
+# is still in flight: the start checks this on the way back and, if it has been superseded, stops the
+# device instead of claiming it. Without it a stop could be swallowed and leave the device looping.
+var _filler_gen: int = 0
+
+
+func is_filler_active() -> bool:
+	return _filler_active
+
+
+## Starts (or re-aims) the looping filler stroke. `lo`/`hi` are 0-100 positions, `half_cycle_ms` one
+## stroke in one direction. Returns false when there's no Handy to drive, or a round owns it.
+func start_filler(lo: int, hi: int, half_cycle_ms: int) -> bool:
+	if not _connected or _playing or _override_active:
+		return false
+	var half: int = maxi(50, half_cycle_ms)
+	var bottom: int = clampi(mini(lo, hi), 0, 100)
+	var top: int = clampi(maxi(lo, hi), 0, 100)
+	# Claimed BEFORE the round trips below, not after: a stop pressed while this is still setting up
+	# has to find something to cancel, or it returns having done nothing and the play lands behind it.
+	_filler_gen += 1
+	var gen: int = _filler_gen
+	_filler_active = true
+	var setup: Dictionary = await _api_put("/hsp/setup", {})
+	if gen != _filler_gen:
+		return false  # superseded by a stop (or a re-aim) while we waited
+	if setup.is_empty():
+		_filler_active = false
+		return false
+	# One full cycle: at the bottom, at the top a half-stroke later, back at the bottom a half-stroke
+	# after that. Looping this is an endless alternating stroke.
+	var pts: Array = [
+		{"t": 0, "x": bottom},
+		{"t": half, "x": top},
+		{"t": half * 2, "x": bottom},
+	]
+	var res: Dictionary = await _api_put(
+		"/hsp/play",
+		{
+			"start_time": 0,
+			"playback_rate": 1.0,
+			"pause_on_starving": true,
+			"loop": true,
+			"add": {"points": pts, "flush": true, "tail_point_stream_index": pts.size()},
+		}
+	)
+	if gen != _filler_gen:
+		# A stop landed while the play was in flight. Its /hsp/stop went out BEFORE this play, so the
+		# device would be left looping — send another rather than trust the ordering.
+		await _api_put("/hsp/stop", {})
+		return false
+	_filler_active = not res.is_empty()
+	return _filler_active
+
+
+## Stops the filler loop. Sends the stop UNCONDITIONALLY — it is one cheap idempotent call, and the
+## cost of skipping one that was actually needed (a device left stroking after the app moved on) is far
+## worse than the cost of one too many. A round's own playback is never at risk: start_filler refuses
+## while one owns the device, so there is never a round to interrupt when this runs.
+func stop_filler() -> void:
+	_filler_gen += 1  # cancels any start still in flight
+	_filler_active = false
+	_session_ready = false  # that session is spent; the next round prewarms a fresh one
+	await _api_put("/hsp/stop", {})
+
+
 # ── Override takeover ──────────────────────────────────────────────────────────
 # The Handy half of the source-agnostic override (see OVERRIDE_ITEMS_DESIGN.md). Handy is stroke-only, so
 # only the override's MAIN points stream (axes/vibes are ignored here). The override runs on its OWN clock

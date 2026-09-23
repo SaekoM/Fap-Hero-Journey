@@ -682,7 +682,7 @@ func _show_storyboard_screen(sb_data: Dictionary) -> void:
 	# An overlay can open with no prior input (e.g. a shop right after a round), so
 	# actively restore the cursor — it may have been hidden mid-playback.
 	_set_cursor_hidden(false)
-	_start_storyboard_filler()
+	_start_storyboard_filler(sb_data)
 	var storyboard: Control = StoryboardScene.instantiate()
 	storyboard.show_map_button = _map_enabled
 	storyboard.auto_advance_secs = _auto_advance_storyboard_secs if _auto_advance_enabled else 0
@@ -694,10 +694,23 @@ func _show_storyboard_screen(sb_data: Dictionary) -> void:
 	storyboard.setup(sb_data)
 
 
-func _start_storyboard_filler() -> void:
+# The plain up/down stroke that keeps a device alive through a storyboard, which has no funscript of
+# its own. The node's own filler wins when it has one: an author who tuned a scene knows what it is
+# for in a way a global comfort setting cannot. It overrides the player's VALUES, not their
+# consent — one switch refuses journey-set filler entirely, and then their own settings decide.
+func _start_storyboard_filler(sb_data: Dictionary) -> void:
+	var authored: Dictionary = sb_data.get("filler", {})
+	if (
+		authored is Dictionary
+		and not JourneyData.storyboard_filler_is_empty(authored)
+		and SettingsService.get_allow_journey_filler()
+	):
+		var f: Dictionary = JourneyData.normalize_storyboard_filler(authored)
+		DeviceFiller.start(int(f["lo"]), int(f["hi"]), int(f["half_cycle_ms"]))
+		return
 	if not SettingsService.get_filler_enabled():
 		return
-	FunscriptPlayer.StartFiller(
+	DeviceFiller.start(
 		SettingsService.get_filler_lo(),
 		SettingsService.get_filler_hi(),
 		SettingsService.get_filler_half_cycle_ms()
@@ -705,7 +718,7 @@ func _start_storyboard_filler() -> void:
 
 
 func _on_storyboard_completed(coins: int) -> void:
-	FunscriptPlayer.StopFiller()
+	DeviceFiller.stop()
 	_is_overlay_open = false
 	_overlay_map_allowed = false
 	# Bestow the storyboard's counters at completion — the pop now fires as the overlay closes, so it

@@ -146,6 +146,7 @@ var _ui_sound_slider: HSlider = null
 var _ui_sound_value_lbl: Label = null
 
 var _filler_toggle: Button = null
+var _allow_journey_filler_toggle: Button = null
 var _filler_speed_input: LineEdit = null
 var _filler_range_slider: RangeSlider = null
 var _filler_range_min_lbl: Label = null
@@ -1080,6 +1081,30 @@ func _apply_layout() -> void:
 	_style_toggle(_filler_toggle, false)
 	filler_enable_row.add_child(_filler_toggle)
 
+	# Journeys may set the filler's range and tempo for one of their storyboards, which is the point
+	# of the authored version — but a player who wants nothing deciding for their device gets one
+	# switch that refuses all of it, and their own settings above decide instead.
+	var allow_row: HBoxContainer = HBoxContainer.new()
+	allow_row.add_theme_constant_override("separation", 16)
+	filler_section.add_child(allow_row)
+
+	var allow_lbl: Label = Label.new()
+	allow_lbl.text = "Let Journeys Set It"
+	allow_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(allow_lbl, UITheme.WHITE_SOFT, 14, false)
+	allow_row.add_child(allow_lbl)
+
+	_allow_journey_filler_toggle = Button.new()
+	_allow_journey_filler_toggle.toggle_mode = true
+	_allow_journey_filler_toggle.focus_mode = Control.FOCUS_NONE
+	_style_toggle(_allow_journey_filler_toggle, true)
+	allow_row.add_child(_allow_journey_filler_toggle)
+
+	var allow_hint: Label = Label.new()
+	allow_hint.text = "a scene may use its own range + speed"
+	_style_label(allow_hint, UITheme.SEPARATOR, 12, false)
+	allow_row.add_child(allow_hint)
+
 	# Speed row
 	var filler_speed_row: HBoxContainer = HBoxContainer.new()
 	filler_speed_row.add_theme_constant_override("separation", 16)
@@ -1147,9 +1172,7 @@ func _apply_layout() -> void:
 			_filler_range_max_lbl.text = "MAX: %d" % roundi(hi)
 			# Apply live so an active storyboard's filler picks up the new range
 			# immediately, not just on the next storyboard.
-			FunscriptPlayer.SetFillerParams(
-				roundi(lo), roundi(hi), _filler_speed_input.text.to_int()
-			)
+			DeviceFiller.set_params(roundi(lo), roundi(hi), _filler_speed_input.text.to_int())
 			_save_settings()
 	)
 	_filler_toggle.toggled.connect(
@@ -1157,10 +1180,15 @@ func _apply_layout() -> void:
 			_style_toggle(_filler_toggle, pressed)
 			_save_settings()
 	)
+	_allow_journey_filler_toggle.toggled.connect(
+		func(pressed: bool) -> void:
+			_style_toggle(_allow_journey_filler_toggle, pressed)
+			_save_settings()
+	)
 	_filler_speed_input.text_changed.connect(
 		func(_t: String) -> void:
 			# Same live-apply for half-cycle changes.
-			FunscriptPlayer.SetFillerParams(
+			DeviceFiller.set_params(
 				roundi(_filler_range_slider.lo),
 				roundi(_filler_range_slider.hi),
 				_filler_speed_input.text.to_int()
@@ -1169,7 +1197,7 @@ func _apply_layout() -> void:
 	)
 
 	var filler_hint: Label = Label.new()
-	filler_hint.text = "Keeps the device active during storyboard scenes with a repeating alternating stroke. Respects the Position Clamp above."
+	filler_hint.text = "Keeps the device active during storyboard scenes with a repeating alternating stroke. Respects the Position Clamp above. A scene that sets its own range and speed uses those instead, unless you switch that off."
 	filler_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(filler_hint, UITheme.SEPARATOR, 11, false)
 	filler_section.add_child(filler_hint)
@@ -1664,6 +1692,11 @@ func _load_settings() -> void:
 		_filler_toggle.button_pressed = filler_enabled
 		_style_toggle(_filler_toggle, filler_enabled)
 
+	var allow_journey: bool = SettingsService.get_allow_journey_filler()
+	if _allow_journey_filler_toggle != null:
+		_allow_journey_filler_toggle.button_pressed = allow_journey
+		_style_toggle(_allow_journey_filler_toggle, allow_journey)
+
 	if _filler_speed_input != null:
 		_filler_speed_input.text = str(SettingsService.get_filler_half_cycle_ms())
 
@@ -1763,6 +1796,8 @@ func _save_settings() -> void:
 
 	if _filler_toggle != null:
 		SettingsService.set_filler_enabled(_filler_toggle.button_pressed)
+		if _allow_journey_filler_toggle != null:
+			SettingsService.set_allow_journey_filler(_allow_journey_filler_toggle.button_pressed)
 		var filler_spd: int = _filler_speed_input.text.to_int()
 		if filler_spd <= 0:
 			filler_spd = 2000

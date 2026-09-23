@@ -93,6 +93,10 @@ const DEFAULT_PREVIEW_VIDEO_SPLIT: float = 0.68
 # the rest is the segment-timeline column on the right. Draggable + persisted, like the video split.
 const DEFAULT_PREVIEW_COLUMNS_SPLIT: float = 0.68
 const DEFAULT_FILLER_ENABLED: bool = false
+# Whether a journey may set the filler's range and tempo for one of its storyboards. On by
+# default: an author tuning a scene is the point of the feature. Off refuses every authored
+# filler outright — the player's own settings then decide, exactly as before the feature existed.
+const DEFAULT_ALLOW_JOURNEY_FILLER: bool = true
 const DEFAULT_FILLER_HALF_CYCLE: int = 2000
 const DEFAULT_FILLER_LO: int = 0
 const DEFAULT_FILLER_HI: int = 100
@@ -473,6 +477,12 @@ func get_filler_enabled() -> bool:
 	return bool(_config.get_value("storyboard_filler", "enabled", DEFAULT_FILLER_ENABLED))
 
 
+func get_allow_journey_filler() -> bool:
+	return bool(
+		_config.get_value("storyboard_filler", "allow_journey", DEFAULT_ALLOW_JOURNEY_FILLER)
+	)
+
+
 func get_filler_half_cycle_ms() -> int:
 	return int(_config.get_value("storyboard_filler", "half_cycle_ms", DEFAULT_FILLER_HALF_CYCLE))
 
@@ -699,6 +709,10 @@ func set_beat_bar_enabled(value: bool) -> void:
 
 func set_filler_enabled(value: bool) -> void:
 	_config.set_value("storyboard_filler", "enabled", value)
+
+
+func set_allow_journey_filler(value: bool) -> void:
+	_config.set_value("storyboard_filler", "allow_journey", value)
 
 
 func set_filler_half_cycle_ms(value: int) -> void:

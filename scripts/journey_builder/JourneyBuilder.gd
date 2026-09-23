@@ -289,6 +289,9 @@ var _test_seed_flags: Array = []  # flag names to pre-set for a Test-From-Here r
 var _test_seed_items: Array = []  # item ids to grant for a Test-From-Here run (exercise item forks / shops)
 var _test_seed_counters: Dictionary = {}  # counter name->value to pre-set (exercise counter forks)
 var _test_panel_expanded: bool = false  # side-panel "Test From Here" group open/closed, persisted across node selections (panel rebuilds)
+# Same, for a storyboard's REWARDS group. UI state rather than data: what it holds is always part
+# of the node, the section only decides whether it is on screen.
+var _rewards_expanded: bool = false
 
 # Streaming-copy tuning. Chunks are read/written 1 MB at a time; the main thread
 # yields one frame only after COPY_FRAME_BUDGET_MS of accumulated work — frequent
@@ -2352,6 +2355,39 @@ func _on_back_pressed() -> void:
 		_leave_builder()
 		return
 	_show_unsaved_prompt()
+
+
+# ── Device filler test (storyboard editor) ───────────────────────────────────
+# The side panel is rebuilt on every selection change, so the RUNNING state can't live on the
+# button — it lives here, where it survives a rebuild and can be stopped on the way out. A stroke
+# left running after the author walked away would be the worst kind of bug to ship.
+var _filler_test_active: bool = false
+
+
+func filler_test_active() -> bool:
+	return _filler_test_active
+
+
+## Starts the test stroke, or stops a running one. Returns true when it is now running.
+func toggle_filler_test(lo: int, hi: int, half_cycle_ms: int) -> bool:
+	if _filler_test_active:
+		stop_filler_test()
+		return false
+	DeviceFiller.start(lo, hi, half_cycle_ms)
+	_filler_test_active = true
+	_show_status("Filler test running — press again to stop.", false)
+	return true
+
+
+func stop_filler_test() -> void:
+	_filler_test_active = false
+	# No early return on "it wasn't running": the flag is this scene's belief, and a stop that failed
+	# once would make every later stop a no-op. The stop itself is idempotent, so always send it.
+	DeviceFiller.stop()
+
+
+func _exit_tree() -> void:
+	stop_filler_test()  # never leave a device stroking because a scene changed
 
 
 func _leave_builder() -> void:

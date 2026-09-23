@@ -707,8 +707,52 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 
 # ── Round serialization ──────────────────────────────────────────────────────
 
-
 # Normalizes a graph node's in-editor `data` into its canonical on-disk (Format-2) form: the
+# ── Authored storyboard filler ───────────────────────────────────────────────
+# A storyboard has no funscript of its own, so the device idles through it unless the PLAYER has
+# switched on their Storyboard Filler (Options → a plain up/down stroke at their own range and
+# tempo). That is a comfort setting, not a creative one, and it can't know that THIS scene is a
+# slow build and the next is a frenzy. A storyboard node can therefore carry a filler of its own:
+# same simple up/down stroke, but the author's range and tempo, used in place of the player's.
+#
+# It overrides their VALUES, never their consent: a player who wants no journey deciding what
+# their device does keeps one switch that refuses all of it (SettingsService.get_allow_journey_
+# filler). Stored only when enabled — an empty block on every storyboard would be noise on disk.
+const FILLER_MIN_HALF_CYCLE: int = 150  # ms per half-stroke; below this a device can't keep up
+const FILLER_MAX_HALF_CYCLE: int = 6000
+const FILLER_DEFAULT_HALF_CYCLE: int = 1400
+const FILLER_DEFAULT_LO: int = 10
+const FILLER_DEFAULT_HI: int = 90
+
+
+# A node's filler block in canonical form. `lo`/`hi` are 0-100 stroke positions, ordered so lo is
+# always the bottom; `half_cycle_ms` is one stroke in one direction.
+static func normalize_storyboard_filler(raw: Variant) -> Dictionary:
+	var src: Dictionary = raw if raw is Dictionary else {}
+	var lo: int = clampi(int(src.get("lo", FILLER_DEFAULT_LO)), 0, 100)
+	var hi: int = clampi(int(src.get("hi", FILLER_DEFAULT_HI)), 0, 100)
+	return {
+		"enabled": bool(src.get("enabled", false)),
+		"lo": mini(lo, hi),
+		"hi": maxi(lo, hi),
+		"half_cycle_ms":
+		clampi(
+			int(src.get("half_cycle_ms", FILLER_DEFAULT_HALF_CYCLE)),
+			FILLER_MIN_HALF_CYCLE,
+			FILLER_MAX_HALF_CYCLE
+		),
+	}
+
+
+# Nothing to store: switched off, or a range with no travel in it (lo == hi would hold the device
+# still and read as a bug rather than as a choice).
+static func storyboard_filler_is_empty(filler: Dictionary) -> bool:
+	return (
+		not bool(filler.get("enabled", false))
+		or int(filler.get("lo", 0)) >= int(filler.get("hi", 0))
+	)
+
+
 # lowercase field set the runtime + scanner expect, with every field typed. Two jobs:
 #   1. Guarantee the BASELINE fields a node always carries (a never-edited new node has only
 #      a couple of keys; the runtime should still get a complete, fully-populated record).
@@ -805,6 +849,12 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			# An organisational label for the builder's graph. Never shown to a player — a storyboard's
 			# on-screen content is its lines, and this is only how an author tells twelve of them apart.
 			out["name"] = str(data.get("name", ""))
+			# The scene's own device filler, when the author set one (see normalize_storyboard_filler).
+			var filler: Dictionary = normalize_storyboard_filler(data.get("filler", {}))
+			if storyboard_filler_is_empty(filler):
+				out.erase("filler")
+			else:
+				out["filler"] = filler
 		"fork":
 			out["title"] = str(data.get("title", ""))
 			out["description"] = str(data.get("description", ""))

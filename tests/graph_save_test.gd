@@ -335,3 +335,51 @@ func test_round_flags_coerce_to_bools() -> void:
 func test_coerce_checkpoint_node() -> void:
 	var out: Dictionary = JourneyData.coerce_node_save_data("checkpoint", {"name": "Act 1"})
 	assert_str(out["name"]).is_equal("Act 1")
+
+
+# ── Authored storyboard filler ───────────────────────────────────────────────
+# A storyboard node may carry its own device stroke. Stored only when it would do something, so an
+# untouched storyboard doesn't gain a dead block on disk.
+
+
+func test_storyboard_filler_normalizes_and_orders_the_range() -> void:
+	var f := JourneyData.normalize_storyboard_filler(
+		{"enabled": true, "lo": 90, "hi": 20, "half_cycle_ms": 999999}
+	)
+	assert_int(int(f["lo"])).is_equal(20)  # swapped: lo is always the bottom
+	assert_int(int(f["hi"])).is_equal(90)
+	assert_int(int(f["half_cycle_ms"])).is_equal(JourneyData.FILLER_MAX_HALF_CYCLE)
+	var floored := JourneyData.normalize_storyboard_filler({"half_cycle_ms": 1})
+	assert_int(int(floored["half_cycle_ms"])).is_equal(JourneyData.FILLER_MIN_HALF_CYCLE)
+	var clamped := JourneyData.normalize_storyboard_filler({"lo": -40, "hi": 400})
+	assert_int(int(clamped["lo"])).is_equal(0)
+	assert_int(int(clamped["hi"])).is_equal(100)
+
+
+func test_storyboard_filler_is_empty_when_off_or_flat() -> void:
+	assert_bool(JourneyData.storyboard_filler_is_empty({})).is_true()
+	(
+		assert_bool(JourneyData.storyboard_filler_is_empty({"enabled": false, "lo": 10, "hi": 90}))
+		. is_true()
+	)
+	# A range with no travel would hold the device still and read as a bug, not a choice.
+	(
+		assert_bool(JourneyData.storyboard_filler_is_empty({"enabled": true, "lo": 50, "hi": 50}))
+		. is_true()
+	)
+	(
+		assert_bool(JourneyData.storyboard_filler_is_empty({"enabled": true, "lo": 10, "hi": 90}))
+		. is_false()
+	)
+
+
+func test_coerce_keeps_an_enabled_filler_and_drops_a_dead_one() -> void:
+	var kept := JourneyData.coerce_node_save_data(
+		"storyboard", {"filler": {"enabled": true, "lo": 15, "hi": 85, "half_cycle_ms": 1200}}
+	)
+	assert_int(int((kept["filler"] as Dictionary)["half_cycle_ms"])).is_equal(1200)
+	var dropped := JourneyData.coerce_node_save_data(
+		"storyboard", {"filler": {"enabled": false, "lo": 15, "hi": 85}}
+	)
+	assert_bool(dropped.has("filler")).is_false()
+	assert_bool(JourneyData.coerce_node_save_data("storyboard", {}).has("filler")).is_false()
