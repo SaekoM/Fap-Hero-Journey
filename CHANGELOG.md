@@ -142,6 +142,11 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Sync calibration can now show a large offset.** The ruler was a perfectly regular stroke, which
+  looks identical one cycle later — so a device two seconds late read as perfectly synced, and that is
+  more lag than the delay slider's whole range. The pattern is now a repeating bar of three phases that
+  feel nothing like each other: one long slow stroke, three quick ones, then a pause. Feeling the quick
+  ones while the bar is still climbing tells you at a glance that you are a long way out.
 - **Storyboard filler now reaches a Handy on WiFi.** The filler drives serial and Bluetooth devices
   with one command per half-stroke, and a Handy on direct WiFi takes a streamed script instead — so it
   was simply never sent anything and sat still through every storyboard. It now gets the same stroke as

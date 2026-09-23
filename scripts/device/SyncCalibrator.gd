@@ -56,7 +56,7 @@ func points() -> Array:
 # there is nothing on the other end of it.
 func start() -> bool:
 	stop()
-	_actions = StrokePattern.calibration()
+	_actions = StrokePattern.bar()
 	_points = HandyPoints.actions_to_points(_actions)
 	_duration_ms = int((_actions[_actions.size() - 1] as Vector2).x)
 	_start_ticks = Time.get_ticks_msec()

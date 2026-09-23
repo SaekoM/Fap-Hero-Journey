@@ -21,7 +21,7 @@ func _positions(actions: Array) -> Array:
 # One cycle with a hold is bottom → top → held top → bottom, and the next cycle's opening point is what
 # holds the bottom. 1000 ms cycle, 200 ms hold → 300 ms of travel each way.
 func test_one_cycle_has_a_hold_at_each_end() -> void:
-	var actions: Array = StrokePattern.calibration(1000, 2000, 0, 100, 200)
+	var actions: Array = StrokePattern.cycles(1000, 2000, 0, 100, 200)
 	assert_array(_times(actions).slice(0, 5)).contains_exactly([0, 300, 500, 800, 1000])
 	assert_array(_positions(actions).slice(0, 5)).contains_exactly([0, 100, 100, 0, 0])
 
@@ -29,38 +29,38 @@ func test_one_cycle_has_a_hold_at_each_end() -> void:
 # With no hold the pattern is a plain triangle — and, importantly, no two points share a timestamp,
 # which is what the omitted closing point protects against.
 func test_no_hold_leaves_no_duplicate_timestamps() -> void:
-	var times: Array = _times(StrokePattern.calibration(1000, 4000, 0, 100, 0))
+	var times: Array = _times(StrokePattern.cycles(1000, 4000, 0, 100, 0))
 	assert_array(times).contains_exactly([0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000])
 
 
 func test_timestamps_are_strictly_increasing() -> void:
-	var times: Array = _times(StrokePattern.calibration(2000, 20000))
+	var times: Array = _times(StrokePattern.cycles(2000, 20000))
 	for i: int in range(1, times.size()):
 		assert_int(int(times[i])).is_greater(int(times[i - 1]))
 
 
 func test_the_pattern_ends_at_rest_at_the_bottom() -> void:
-	var actions: Array = StrokePattern.calibration(1000, 3000, 10, 90, 200)
+	var actions: Array = StrokePattern.cycles(1000, 3000, 10, 90, 200)
 	var last: Vector2 = actions[actions.size() - 1]
 	assert_int(int(last.x)).is_equal(3000)
 	assert_int(int(last.y)).is_equal(10)
 
 
 func test_it_spans_at_least_the_requested_length() -> void:
-	var actions: Array = StrokePattern.calibration(2000, 10000)
+	var actions: Array = StrokePattern.cycles(2000, 10000)
 	assert_int(int((actions[actions.size() - 1] as Vector2).x)).is_greater_equal(10000)
 
 
 # A hold long enough to swallow the travel would leave a pattern that only teleports between the ends,
 # which no device can be judged against. It is clamped instead.
 func test_an_over_long_hold_still_leaves_room_to_travel() -> void:
-	var actions: Array = StrokePattern.calibration(1000, 1000, 0, 100, 900)
+	var actions: Array = StrokePattern.cycles(1000, 1000, 0, 100, 900)
 	var travel: int = int((actions[1] as Vector2).x) - int((actions[0] as Vector2).x)
 	assert_int(travel).is_greater_equal(StrokePattern.MIN_TRAVEL_MS)
 
 
 func test_positions_are_clamped_to_the_legal_range() -> void:
-	var positions: Array = _positions(StrokePattern.calibration(1000, 2000, -40, 180, 200))
+	var positions: Array = _positions(StrokePattern.cycles(1000, 2000, -40, 180, 200))
 	assert_int(positions.min()).is_equal(0)
 	assert_int(positions.max()).is_equal(100)
 
@@ -68,9 +68,7 @@ func test_positions_are_clamped_to_the_legal_range() -> void:
 # The pattern is fed to the device paths as a script, so it has to survive the same conversion a real
 # funscript does.
 func test_it_converts_to_handy_points() -> void:
-	var points: Array = HandyPoints.actions_to_points(
-		StrokePattern.calibration(1000, 2000, 5, 95, 200)
-	)
+	var points: Array = HandyPoints.actions_to_points(StrokePattern.cycles(1000, 2000, 5, 95, 200))
 	assert_int(points.size()).is_greater(4)
 	assert_int(HandyPoints.sample_pos(points, 300)).is_equal(95)
 	assert_int(HandyPoints.sample_pos(points, 0)).is_equal(5)
@@ -127,3 +125,59 @@ func test_a_higher_position_draws_higher() -> void:
 	# And both stay inside the widget, so a stroke at either extreme draws a whole marker.
 	assert_float(StrokeMeter.pos_to_y(rect, 100.0)).is_greater_equal(0.0)
 	assert_float(StrokeMeter.pos_to_y(rect, 0.0)).is_less_equal(100.0)
+
+
+# ── The bar: a ruler with marks on it ────────────────────────────────────────
+# A perfectly regular stroke looks identical at t and t+cycle, so a device a whole cycle late reads as
+# perfectly synced. The bar's three phases are what make an offset visible.
+
+
+func test_a_bar_runs_sweep_then_taps_then_rest() -> void:
+	var times: Array = _times(StrokePattern.bar(1, 0, 100))
+	var positions: Array = _positions(StrokePattern.bar(1, 0, 100))
+	# Start, the sweep's four points, four per tap, then the rest.
+	assert_int(times.size()).is_equal(1 + 4 + 4 * StrokePattern.BAR_TAPS + 1)
+	assert_array(times.slice(0, 5)).contains_exactly([0, 1100, 1400, 2500, 2800])
+	assert_array(positions.slice(0, 5)).contains_exactly([0, 100, 100, 0, 0])
+	# It ends still, at the bottom, after the rest.
+	assert_int(int(positions[positions.size() - 1])).is_equal(0)
+	assert_int(int(times[times.size() - 1]) - int(times[times.size() - 2])).is_equal(
+		StrokePattern.BAR_REST_MS
+	)
+
+
+# The point of the shape: each phase moves at a rate nothing else in the bar does, so feeling one while
+# the meter shows another IS the error. A sweep that took as long as a tap would prove nothing.
+func test_the_phases_are_told_apart_by_speed() -> void:
+	assert_int(StrokePattern.BAR_SWEEP_TRAVEL_MS).is_greater(StrokePattern.BAR_TAP_TRAVEL_MS * 4)
+	assert_int(StrokePattern.BAR_REST_MS).is_greater(StrokePattern.BAR_SWEEP_HOLD_MS * 2)
+
+
+# A bar has to be longer than any delay the slider can dial in, or a big offset would land on the SAME
+# phase one bar over and hide itself again — the very failure the bar exists to fix.
+func test_a_bar_outlasts_the_delay_range() -> void:
+	var one: Array = StrokePattern.bar(1, 0, 100)
+	var bar_ms: int = int((one[one.size() - 1] as Vector2).x)
+	assert_int(bar_ms).is_greater(2 * SyncCalibrationScreen.DELAY_RANGE_MS)
+
+
+func test_bar_timestamps_are_strictly_increasing() -> void:
+	var times: Array = _times(StrokePattern.bar(20000))
+	for i: int in range(1, times.size()):
+		assert_int(int(times[i])).is_greater(int(times[i - 1]))
+
+
+func test_bar_spans_at_least_the_requested_length_and_clamps_positions() -> void:
+	var actions: Array = StrokePattern.bar(20000)
+	assert_int(int((actions[actions.size() - 1] as Vector2).x)).is_greater_equal(20000)
+	var positions: Array = _positions(StrokePattern.bar(6000, -40, 180))
+	assert_int(positions.min()).is_equal(0)
+	assert_int(positions.max()).is_equal(100)
+
+
+func test_bar_converts_to_handy_points() -> void:
+	var points: Array = HandyPoints.actions_to_points(StrokePattern.bar(6000, 5, 95))
+	assert_int(HandyPoints.sample_pos(points, 0)).is_equal(5)
+	assert_int(HandyPoints.sample_pos(points, StrokePattern.BAR_SWEEP_TRAVEL_MS)).is_equal(95)
+	# Halfway up the long sweep — the landmark the screen asks you to match.
+	assert_int(HandyPoints.sample_pos(points, StrokePattern.BAR_SWEEP_TRAVEL_MS / 2)).is_equal(50)

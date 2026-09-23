@@ -93,8 +93,10 @@ func _build_ui() -> void:
 
 	var intro: Label = Label.new()
 	intro.text = (
-		"A slow, full-range stroke plays on your device and draws here at the same time. Watch the bar "
-		+ "reach the top, feel when the device does, and move the delay until they agree."
+		"A pattern plays on your device and draws here at the same time: one long slow stroke, three "
+		+ "quick ones, then a pause. Match any of the three — they feel nothing like each other, so if "
+		+ "you feel the quick ones while the bar is still climbing, you are a long way out. Move the "
+		+ "delay until the device and the bar agree."
 	)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_label(intro, UITheme.WHITE_SOFT, 13, false)
