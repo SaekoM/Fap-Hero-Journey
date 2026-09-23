@@ -57,6 +57,33 @@ static func scan_all(journeys_dir: String) -> Array:
 	return result
 
 
+# One base journey and every rendition that ultimately overlays it, freshly read from disk — the
+# builder's version switcher asks for this rather than scan_all, which parses every base's graph in
+# the library when only this family is wanted. Returns the base's play dict with `renditions`
+# attached (each with `chain_folders`), or {} when the base can't be read.
+static func scan_family(
+	journeys_dir: String, base_folder: String, base_folder_name: String
+) -> Dictionary:
+	var base: Dictionary = parse_graph(base_folder, base_folder_name)
+	if base.is_empty():
+		return {}
+	var renditions: Array = []
+	var dir: DirAccess = DirAccess.open(journeys_dir)
+	if dir != null:
+		dir.list_dir_begin()
+		var entry: String = dir.get_next()
+		while entry != "":
+			if dir.current_is_dir() and not entry.begins_with("."):
+				var folder_path: String = journeys_dir + "/" + entry
+				var raw: Dictionary = _read_raw_json(folder_path)
+				if not raw.is_empty() and JourneyRendition.is_rendition(raw):
+					renditions.append(_rendition_summary(raw, folder_path, entry))
+			entry = dir.get_next()
+		dir.list_dir_end()
+	group_renditions([base], renditions)
+	return base
+
+
 # Reads a folder's journey.json into its raw dict (or {} when missing/malformed). Used to peek at Type
 # before deciding whether to parse a full journey or collect a rendition summary.
 static func _read_raw_json(folder_path: String) -> Dictionary:

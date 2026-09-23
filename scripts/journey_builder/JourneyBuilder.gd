@@ -62,6 +62,16 @@ var _pending_save_warnings: Array = []
 # and only then cleared — by _commit_pending_rendition_rewrite once the staging swap has succeeded;
 # a failed save keeps it, so a retry still commits it.
 var _pending_rendition_rewrite: Dictionary = {}
+# The top bar's VERSION dropdown (base + every rendition of it), built once the base is known; null
+# for a journey that has never been saved (nothing to switch to yet).
+var _version_select: OptionButton = null
+var _version_targets: Array = []  # index-aligned with the dropdown: {} for the base, else a summary
+# Something to do INSTEAD of returning to the catalogue once a save has landed — a version switch
+# that had to save first. Consumed by _finalize_save_success.
+var _after_save: Callable = Callable()
+# OPEN button for the child a just-finished extraction wrote, and that child's id.
+var _open_child_btn: Button = null
+var _open_child_id: String = ""
 const CAUSE_SETTING_MEDIA_MISSING: String = "setting_media_missing"
 const CAUSE_SHOP_SLOTS_SHORT: String = "shop_slots_short"
 const CAUSE_LAYOUT_STALE: String = "layout_stale"
@@ -314,6 +324,7 @@ func _ready() -> void:
 			_apply_merge_inject(merge_inject)
 			merge_inject = {}
 	_side_renderer.show_journey_info_panel()
+	_build_version_switcher()
 	# Check for leftover staging folders from interrupted saves (crash, force-
 	# kill, power loss). They take disk space and the user has no way to know
 	# they exist otherwise — the dot prefix hides them from the catalogue.
@@ -2347,13 +2358,189 @@ func _leave_builder() -> void:
 	Transition.change_scene("res://scenes/main/Main.tscn")
 
 
+# ── Version switcher (base ↔ renditions, without the catalogue round-trip) ────
+
+
+# The base folder this editor belongs to: its own in base mode, the ghosted parent's in rendition
+# mode. "" for a journey that has never been saved.
+func _family_base_folder() -> String:
+	return _rendition_parent_folder if _rendition_mode else _original_journey_folder
+
+
+# A VERSION dropdown in the top bar: Base, then every rendition of this base (a stacked one says what
+# it sits on). Picking one reloads the builder into it — the same handoff the catalogue's EDIT uses,
+# minus the trip through the catalogue. Read fresh from disk each time it's built, so a rendition
+# extracted a moment ago is already there.
+func _build_version_switcher() -> void:
+	if is_instance_valid(_version_select):
+		_version_select.queue_free()
+		_version_select = null
+	_version_targets = []
+	var base_folder: String = _family_base_folder()
+	if base_folder.strip_edges() == "":
+		return
+	var family: Dictionary = JourneyScanner.scan_family(
+		SettingsService.get_journeys_dir(), base_folder, base_folder.get_file()
+	)
+	if family.is_empty():
+		return
+	var rends: Array = family.get("renditions", [])
+	if rends.is_empty() and not _rendition_mode:
+		return  # a lone base has nothing to switch to
+	var name_by_id: Dictionary = {}
+	for r: Dictionary in rends:
+		name_by_id[str(r.get("journey_id", ""))] = str(r.get("name", "Rendition"))
+
+	_version_select = OptionButton.new()
+	_version_select.focus_mode = Control.FOCUS_NONE
+	_version_select.tooltip_text = UITheme.wrap_tip(
+		"Switch between this journey and its renditions"
+	)
+	_version_select.custom_minimum_size = Vector2(220, 0)
+	UITheme.style_option_button(_version_select)
+	_version_select.add_item("◆ Base — %s" % str(family.get("title", "journey")))
+	_version_targets.append({})
+	var current: int = 0 if not _rendition_mode else -1
+	for r: Dictionary in rends:
+		var label: String = "◇ " + str(r.get("name", "Rendition"))
+		var pid: String = str(r.get("parent_id", ""))
+		if name_by_id.has(pid):
+			label += "  — on %s" % str(name_by_id[pid])
+		_version_select.add_item(label)
+		_version_targets.append(r)
+		if _rendition_mode and str(r.get("journey_id", "")) == _journey_id:
+			current = _version_targets.size() - 1
+	if current < 0:
+		# This rendition hasn't been saved yet, so the scan doesn't know it. Show it as itself.
+		_version_select.add_item(
+			"◇ %s  (unsaved)" % (_journey_name if _journey_name != "" else "New rendition")
+		)
+		_version_targets.append({"_self": true})
+		current = _version_targets.size() - 1
+	_version_select.selected = current
+	_version_select.item_selected.connect(_on_version_picked)
+	_top_bar.add_child(_version_select)
+	_top_bar.move_child(_version_select, _title_lbl.get_index() + 1)
+
+
+func _on_version_picked(index: int) -> void:
+	if index < 0 or index >= _version_targets.size():
+		return
+	var target: Dictionary = _version_targets[index]
+	if bool(target.get("_self", false)):
+		return
+	if target.is_empty() and not _rendition_mode:
+		return  # already on the base
+	if (
+		not target.is_empty()
+		and _rendition_mode
+		and str(target.get("journey_id", "")) == _journey_id
+	):
+		return  # already here
+	if not _has_unsaved_changes():
+		_open_version(target)
+		return
+	# Put the dropdown back on the current version while the author decides; a chosen switch reloads
+	# the scene anyway, so the widget's state only matters if they cancel.
+	_reset_version_select_to_current()
+	_show_unsaved_prompt("switching", _open_version.bind(target))
+
+
+func _reset_version_select_to_current() -> void:
+	if not is_instance_valid(_version_select):
+		return
+	for i: int in _version_targets.size():
+		var t: Dictionary = _version_targets[i]
+		var is_current: bool = (
+			bool(t.get("_self", false))
+			or (t.is_empty() and not _rendition_mode)
+			or (
+				not t.is_empty() and _rendition_mode and str(t.get("journey_id", "")) == _journey_id
+			)
+		)
+		if is_current:
+			_version_select.selected = i
+			return
+
+
+# Reloads the builder into `target`: {} for the base, else a rendition summary from scan_family.
+# Exactly the handoff JourneySelect's EDIT builds, from a fresh read of the family so the base's
+# renditions list (and a stacked rendition's ancestor chain) are current.
+func _open_version(target: Dictionary) -> void:
+	var base_folder: String = _family_base_folder()
+	var family: Dictionary = JourneyScanner.scan_family(
+		SettingsService.get_journeys_dir(), base_folder, base_folder.get_file()
+	)
+	if family.is_empty():
+		_show_status("Couldn't read the base journey to switch versions.", true)
+		return
+	if target.is_empty():
+		edit_journey = family
+		Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
+		return
+	# The summary as the fresh scan knows it (chain_folders come from the grouping, not the dropdown).
+	var summary: Dictionary = {}
+	for r: Dictionary in family.get("renditions", []):
+		if str(r.get("journey_id", "")) == str(target.get("journey_id", "")):
+			summary = r
+	if summary.is_empty():
+		_show_status("That rendition isn't on disk any more.", true)
+		return
+	var chain: Array = summary.get("chain_folders", [])
+	var ancestors: Array = chain.slice(0, maxi(0, chain.size() - 1))
+	var parent: Dictionary = {}
+	for r: Dictionary in family.get("renditions", []):
+		if str(r.get("journey_id", "")) == str(summary.get("parent_id", "")):
+			parent = r
+	rendition_over = JourneyScanner.rendition_over_handoff(family, ancestors, parent)
+	if not ancestors.is_empty() and rendition_over.is_empty():
+		_show_status(
+			"That rendition builds on another that didn't compose cleanly — fix the parent first.",
+			true
+		)
+		return
+	rendition_parent = family
+	edit_rendition = summary
+	Transition.change_scene("res://scenes/journey_builder/JourneyBuilder.tscn")
+
+
+# After an extraction: an OPEN button beside the status line for the child it just wrote. Taking it
+# saves this journey first — the extraction isn't final until it's saved — then switches into the
+# child. Staying is the default; the button is only an offer.
+func _offer_open_child(child_id: String, child_name: String) -> void:
+	_open_child_id = child_id
+	if is_instance_valid(_open_child_btn):
+		_open_child_btn.queue_free()
+	_open_child_btn = Button.new()
+	_open_child_btn.text = "⤴ SAVE & OPEN “%s”" % child_name
+	_open_child_btn.focus_mode = Control.FOCUS_NONE
+	_open_child_btn.tooltip_text = UITheme.wrap_tip(
+		"Save this journey (finalizing the extraction), then open the new rendition"
+	)
+	UITheme.style_button(_open_child_btn, UITheme.CYAN)
+	_open_child_btn.pressed.connect(
+		func() -> void:
+			_after_save = _open_version.bind({"journey_id": _open_child_id})
+			_open_child_btn.queue_free()
+			_open_child_btn = null
+			_on_save_pressed()
+	)
+	_top_bar.add_child(_open_child_btn)
+	_top_bar.move_child(_open_child_btn, _save_btn.get_index())
+
+
 # Three ways out rather than two. An author who reached for BACK with an hour of work on screen should
 # not have to choose between losing it and cancelling to go and find the save button — so saving is one
 # of the answers, not a thing you must go back and do first.
 #
 # Not the shared _show_builder_confirm: that one is Cancel + a single action, and widening it would put
 # a third button on every other confirmation in this file.
-func _show_unsaved_prompt() -> void:
+#
+# `verb` names what the author is about to do ("leaving", "switching"); `on_leave` is where a
+# discard goes and, after a successful save, where the save goes instead of the catalogue.
+func _show_unsaved_prompt(verb: String = "leaving", on_leave: Callable = Callable()) -> void:
+	if not on_leave.is_valid():
+		on_leave = _leave_builder
 	var parts: Dictionary = UITheme.build_centered_modal(
 		"UNSAVED CHANGES", UITheme.AMBER, Vector2i(620, 300)
 	)
@@ -2361,7 +2548,10 @@ func _show_unsaved_prompt() -> void:
 	var vbox: VBoxContainer = parts["vbox"]
 
 	var lbl: Label = Label.new()
-	lbl.text = ("This journey has changes that aren't on disk yet. Leaving now discards them.")
+	lbl.text = (
+		"This journey has changes that aren't on disk yet. %s now discards them."
+		% verb.capitalize()
+	)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 13, false)
@@ -2379,26 +2569,30 @@ func _show_unsaved_prompt() -> void:
 	cancel_btn.pressed.connect(func() -> void: modal.queue_free())
 	row.add_child(cancel_btn)
 
+	var action: String = "SWITCH" if verb == "switching" else "LEAVE"
 	var discard_btn: Button = Button.new()
-	discard_btn.text = "DISCARD & LEAVE"
+	discard_btn.text = "DISCARD & " + action
 	discard_btn.custom_minimum_size = Vector2(190, 0)
 	UITheme.style_button(discard_btn, UITheme.DANGER)
 	discard_btn.pressed.connect(
 		func() -> void:
 			modal.queue_free()
-			_leave_builder()
+			on_leave.call()
 	)
 	row.add_child(discard_btn)
 
 	var save_btn: Button = Button.new()
-	save_btn.text = "SAVE & LEAVE"
+	save_btn.text = "SAVE & " + action
 	save_btn.custom_minimum_size = Vector2(190, 0)
 	UITheme.style_button(save_btn, UITheme.CYAN)
-	# A save that succeeds returns to the catalogue on its own; one that fails shows its own error and
-	# leaves the author in the builder with their work, which is the right outcome either way.
+	# A save that succeeds goes where the author was headed (the catalogue, or the chosen version);
+	# one that fails shows its own error and leaves the author in the builder with their work, which
+	# is the right outcome either way.
 	save_btn.pressed.connect(
 		func() -> void:
 			modal.queue_free()
+			if verb == "switching":
+				_after_save = on_leave
 			_on_save_pressed()
 	)
 	row.add_child(save_btn)
@@ -3871,6 +4065,9 @@ func _on_save_pressed() -> void:
 	_reset_save_state()
 	if not await _do_save():
 		_save_btn.disabled = false
+		# A destination queued for AFTER this save (a version switch) must not fire from some later,
+		# unrelated save.
+		_after_save = Callable()
 
 
 # Drops focus from whatever side-panel field holds it so its pending edit commits before the
@@ -4249,6 +4446,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	_original_journey_folder = ""
 
 	var ok: bool = not (await _write_rendition_pack()).is_empty()
+	var child_id: String = _journey_id  # the child's minted id, before this editor's own comes back
 
 	# Restore the editor's own state regardless of outcome — base editing, or this rendition's.
 	_rendition_mode = bool(snap_rendition["mode"])
@@ -4281,6 +4479,8 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	}
 	_graph.clear_graph_selection()
 	_refresh_graph()
+	_build_version_switcher()  # the child is on disk now, so it belongs in the dropdown
+	_offer_open_child(child_id, rend_name)
 	_show_status(
 		(
 			'Extracted %d node%s into rendition "%s". Save this %s to finalize.'
@@ -6262,6 +6462,11 @@ func _finalize_save_success() -> void:
 
 	_show_status(message, false)
 	await get_tree().create_timer(hold).timeout
+	if _after_save.is_valid():
+		var go: Callable = _after_save
+		_after_save = Callable()
+		go.call()
+		return
 	Transition.change_scene("res://scenes/journey_select/JourneySelect.tscn")
 
 

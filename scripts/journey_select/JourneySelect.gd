@@ -18,6 +18,11 @@ const HOVER_MARGIN: int = 12
 const MODAL_MIN_WIDTH: int = 980
 const MODAL_MIN_HEIGHT: int = 600
 const MODAL_COVER_W: int = 280
+# The carousel's column is wider than the plain cover's: it shows the art full-bleed, so the
+# width IS the picture. Fixed rather than shaped to each cover — a modal that resized itself as
+# you stepped through versions was more distracting than a letterboxed banner.
+const MODAL_CAROUSEL_SHARE: float = 0.40
+const MODAL_CAROUSEL_MAX_W: int = 680
 const BORDER_WIDTH: int = 3
 
 # Journeys root is configurable via Options → Journey Storage Location.
@@ -100,7 +105,9 @@ var _import_btn: Button = null
 
 # Rendition (overlay) version selector — built per-modal when the selected journey has installed
 # renditions. `_selected_rendition` is {} for the plain base, or the chosen rendition summary dict.
-var _rendition_select: OptionButton = null
+# The cover area while a journey has renditions: base + rendition covers as a carousel, the centred
+# card being the selected version. Hidden (plain cover shown) for a journey with none.
+var _carousel: RenditionCarousel = null
 var _selected_rendition: Dictionary = {}
 
 # ＋ RENDITION button — a per-journey action (modal ActionRow) that opens the builder in overlay mode.
@@ -285,6 +292,13 @@ func _apply_layout() -> void:
 	_modal_layout.add_theme_constant_override("separation", 20)
 
 	_cover_img.size_flags_vertical = Control.SIZE_EXPAND_FILL  # width is set proportionally in _apply_modal_size
+	_carousel = RenditionCarousel.new()
+	_carousel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_carousel.visible = false
+	_carousel.selected_changed.connect(_on_carousel_selected)
+	_modal_layout.add_child(_carousel)
+	_modal_layout.move_child(_carousel, _cover_img.get_index() + 1)
+	_apply_modal_size()  # ran above before the carousel existed; it takes the cover's width from here
 
 	_details_col.add_theme_constant_override("separation", 10)
 	_details_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1553,6 +1567,10 @@ func _apply_modal_size() -> void:
 	# The cover grows with the modal (a share of its width), floored at the old size and capped so the
 	# details column still has room.
 	_cover_img.custom_minimum_size = Vector2(clampi(int(w * 0.34), MODAL_COVER_W, 560), 0)
+	if _carousel != null:
+		_carousel.custom_minimum_size = Vector2(
+			clampi(int(w * MODAL_CAROUSEL_SHARE), MODAL_COVER_W, MODAL_CAROUSEL_MAX_W), 0
+		)
 	# Move the modal's centre-anchor left by half the reserved width so the pair is balanced on screen.
 	var shift: float = 0.5 - (reserve * 0.5) / maxf(1.0, vp.x)
 	_modal_panel.anchor_left = shift
@@ -2032,59 +2050,54 @@ func _refresh_rendition_selector(journey: Dictionary) -> void:
 	_selected_rendition = {}
 	_rend_delete_btn = null
 	_refresh_rend_resume_button()  # drop any stale Part-2 button from the previously shown journey
-	var old: Node = _details_col.get_node_or_null("RenditionRow")
-	if old:
-		old.free()
 	var rends: Array = journey.get("renditions", [])
 	if rends.is_empty():
-		_rendition_select = null
+		# No versions to choose between: the plain cover, as before.
+		_carousel.visible = false
+		_carousel.set_entries([], 0)
+		_carousel.set_side_control(null)
+		_cover_img.visible = true
 		return
 
-	var row: HBoxContainer = HBoxContainer.new()
-	row.name = "RenditionRow"
-	row.add_theme_constant_override("separation", 8)
-	var lbl: Label = Label.new()
-	_style_label(lbl, UITheme.SEPARATOR, 11, true)
-	lbl.text = "VERSION"
-	row.add_child(lbl)
+	# One card per version, the base first. A rendition without a cover of its own borrows the base's,
+	# muted, so it still reads as that journey without pretending to be identical.
+	var base_cover: String = str(journey.get("cover_path", ""))
+	var entries: Array = [{"label": "Base", "cover_path": base_cover, "dimmed": false}]
+	for r: Dictionary in rends:
+		var own: String = str(r.get("cover_path", ""))
+		(
+			entries
+			. append(
+				{
+					"label": str(r.get("name", "Rendition")),
+					"cover_path": own if own != "" else base_cover,
+					"dimmed": own == "",
+				}
+			)
+		)
+	_carousel.set_entries(entries, 0)
 
-	# For chained (sibling-dependency) renditions, label which ancestor a rendition stacks on so the
-	# dependency is legible — selecting it composes that ancestor too.
-	var name_by_id: Dictionary = {}
-	for rr: Dictionary in rends:
-		name_by_id[str(rr.get("journey_id", ""))] = str(rr.get("name", "Rendition"))
-	_rendition_select = OptionButton.new()
-	_rendition_select.add_item("Base", 0)
-	for i in rends.size():
-		var r: Dictionary = rends[i]
-		var label: String = str(r.get("name", "Rendition"))
-		var pid: String = str(r.get("parent_id", ""))
-		if name_by_id.has(pid):  # parent is another rendition → show the stack
-			label += "  — on %s" % str(name_by_id[pid])
-		_rendition_select.add_item(label, i + 1)
-	_rendition_select.selected = 0
-	# Signal-connect lambda (not a dict value) — safe. Index 0 = base; otherwise the rendition summary.
-	_rendition_select.item_selected.connect(
-		func(idx: int) -> void:
-			_selected_rendition = {} if idx == 0 else (rends[idx - 1] as Dictionary)
-			if _rend_delete_btn != null:
-				_rend_delete_btn.visible = idx != 0
-			_update_node_view_for_selection()
-	)
-	row.add_child(_rendition_select)
-
-	# Delete the selected rendition (base journeys are untouched). Hidden while "Base" is selected.
+	# Delete the selected rendition (base journeys are untouched). Hidden while "Base" is centred.
 	var del_btn: Button = Button.new()
 	del_btn.text = "🗑"
 	del_btn.tooltip_text = "Delete this rendition"
 	_style_button(del_btn, UITheme.MAGENTA)
 	del_btn.visible = false
 	del_btn.pressed.connect(_confirm_delete_rendition)
-	row.add_child(del_btn)
+	_carousel.set_side_control(del_btn)
 	_rend_delete_btn = del_btn
 
-	_details_col.add_child(row)
-	_details_col.move_child(row, _modal_diff.get_index() + 1)
+	_cover_img.visible = false
+	_carousel.visible = true
+
+
+# The carousel centred a different version. Index 0 = base; otherwise the rendition summary.
+func _on_carousel_selected(idx: int) -> void:
+	var rends: Array = _current_journey.get("renditions", [])
+	_selected_rendition = {} if idx <= 0 or idx > rends.size() else (rends[idx - 1] as Dictionary)
+	if _rend_delete_btn != null:
+		_rend_delete_btn.visible = idx != 0
+	_update_node_view_for_selection()
 
 
 # Creates or removes the Resume button based on whether the current journey

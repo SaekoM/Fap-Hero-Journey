@@ -89,6 +89,23 @@ from a base: the child is written at once, this rendition drops the nodes on scr
 finalize (Ctrl+Z restores them and removes the child). Notes and frames travel as they do from a
 base. Only the rendition’s own nodes can leave; the dimmed parent nodes stay where they are.
 
+### ◆ Switch versions from inside the builder
+
+A VERSION dropdown in the builder’s top bar lists the base and every rendition of it — a stacked one
+says what it sits on — and picking one opens it in place, without the trip back through the catalogue.
+Unsaved work asks Save / Discard / Cancel first, exactly like Back. After extracting a branch, a
+SAVE & OPEN button offers the new rendition: it saves this journey (the extraction isn’t final until
+it does) and opens the child.
+
+### ◆ Renditions are picked from their covers
+
+The VERSION dropdown in a journey’s detail view is gone. The cover area is now a carousel: the base
+first, then each rendition, the selected one shown full-bleed with a dot row for the rest. Step with the
+arrows, click the cover, scroll the wheel over it, or use Left/Right. The column is wider than the old
+cover slot and the art fills it edge to edge, so a landscape banner has room to be seen. A rendition
+without a cover of its own shows the base’s, muted, so it still reads as that journey without
+pretending to be identical. Journeys with no renditions keep the plain cover.
+
 ### ◆ Lock any export for editing
 
 Until now the edit-lock only ever came from a split export — the paid scripts half was locked on
