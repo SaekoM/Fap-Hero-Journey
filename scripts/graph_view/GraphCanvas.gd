@@ -37,7 +37,42 @@ func set_backdrops(list: Array) -> void:
 	queue_redraw()
 
 
+# Slack added around the drawn extent so a cull rect computed one frame is still right the next, while
+# a drag is carrying something outward.
+const CULL_MARGIN: float = 512.0
+
+
+# Godot culls a CanvasItem by its own rect, and this one deliberately draws outside it: node positions
+# run NEGATIVE (the tree layout centres on x = 0) and a hand-placed node can sit thousands of pixels
+# past the far edge. Once the drawn area no longer overlapped the rect the WHOLE item was culled, so
+# every edge vanished at once at particular pan/zoom combinations while the node cards stayed — they
+# are separate items with rects of their own. A custom cull rect covering what we actually draw fixes
+# it for good, and recomputing it per redraw means a drag that carries a node out of the old extent is
+# covered without the parent having to notice.
+func _update_cull_rect() -> void:
+	var r: Rect2 = Rect2(Vector2.ZERO, size)
+	for c: Node in get_children():
+		if c is Control:
+			r = r.merge(Rect2((c as Control).position, (c as Control).size))
+	for e: Dictionary in edges:
+		for pt: Vector2 in e.get("points", PackedVector2Array()) as PackedVector2Array:
+			r = r.expand(pt)
+	for b: Dictionary in bands:
+		r = r.merge(b.get("rect", Rect2()) as Rect2)
+	for bd: Dictionary in backdrops:
+		var tex: Texture2D = bd.get("texture")
+		if tex == null:
+			continue
+		# A rotated backdrop sweeps beyond its own box; its diagonal is the safe bound either way.
+		var drawn: Vector2 = tex.get_size() * maxf(0.01, float(bd.get("scale", 1.0)))
+		var reach: float = drawn.length() * 0.5
+		var centre: Vector2 = (bd.get("offset", Vector2.ZERO) as Vector2) + drawn * 0.5
+		r = r.merge(Rect2(centre - Vector2(reach, reach), Vector2(reach, reach) * 2.0))
+	RenderingServer.canvas_item_set_custom_rect(get_canvas_item(), true, r.grow(CULL_MARGIN))
+
+
 func _draw() -> void:
+	_update_cull_rect()
 	for bd in backdrops:
 		var tex: Texture2D = bd.get("texture")
 		var op: float = clampf(float(bd.get("opacity", 0.6)), 0.0, 1.0)

@@ -29,7 +29,7 @@ const VIEW_TOP_MARGIN: float = 40.0
 const FIT_PADDING: float = 60.0
 # Minimum canvas extent, and extra margin added around the laid-out content. The
 # canvas is grown to fit tall/wide journeys so its draw (the edges) is never
-# culled — see _resize_canvas_to_content.
+# culled — see GraphCanvas._update_cull_rect.
 const CANVAS_MIN_SIZE: float = 8000.0
 const CANVAS_CONTENT_MARGIN: float = 600.0
 
@@ -252,11 +252,11 @@ func _do_layout() -> void:
 	_layout_graph()
 
 
-# Grows _canvas so its rect always covers the laid-out content. Edges are drawn
-# on _canvas as part of its own _draw, so if the content is taller/wider than the
-# canvas rect, the renderer culls the whole canvas item once you scroll past that
-# rect — and every edge disappears at once (nodes are separate items and survive).
-# Sizing to the real content height/width keeps the edges visible at any scroll.
+# Grows _canvas so its own rect roughly covers the laid-out content, which keeps its minimum size
+# honest. This used to be what kept the edges from being culled, and it was never quite enough: it
+# measures only forward from the origin, while node positions run negative and a drag can carry one
+# past the extent measured at layout time. GraphCanvas now sets an explicit cull rect around whatever
+# it actually draws (see _update_cull_rect there), so visibility no longer depends on this.
 func _resize_canvas_to_content(content_size: Vector2) -> void:
 	var w: float = maxf(CANVAS_MIN_SIZE, content_size.x + CANVAS_CONTENT_MARGIN)
 	var h: float = maxf(CANVAS_MIN_SIZE, content_size.y + CANVAS_CONTENT_MARGIN)

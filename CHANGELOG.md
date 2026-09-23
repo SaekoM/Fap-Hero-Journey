@@ -116,6 +116,12 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Connector lines no longer vanish on a wide or tall journey.** Godot culls a drawing surface by
+  its own rectangle, and the builder's edges are drawn on one surface: once a journey's nodes ran far
+  enough in any direction — or into the negative coordinates the auto-layout normally produces — the
+  whole surface could be culled at particular pan/zoom combinations and every edge disappeared at once,
+  while the node cards stayed put. The canvas now declares a visibility rectangle around what it
+  actually draws, recomputed each frame, so dragging a node out to the edge of the world is covered too.
 - **Merging a branch back, then discarding, no longer loses it.** The merge cut the branch out of
   the child rendition on disk straight away, then handed it to the parent editor unsaved — so Back →
   Discard in that window threw away the only copy. The child is now left alone until the parent is
