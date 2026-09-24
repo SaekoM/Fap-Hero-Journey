@@ -106,13 +106,45 @@ cover slot and the art fills it edge to edge, so a landscape banner has room to 
 without a cover of its own shows the base’s, muted, so it still reads as that journey without
 pretending to be identical. Journeys with no renditions keep the plain cover.
 
+### ◆ Scene music and audio accents are told apart
+
+A fork had a MUSIC field and a FORK AUDIO field, and nothing said what the difference was — so a track
+dropped into either one sounded much the same, except one of them restarted every time the player
+reached that fork. They are different things and now say so: **SCENE MUSIC (CONTINUES BETWEEN NODES)**
+is the score, crossfading with whatever was playing and carrying on into the next node that asks for
+the same track; **AUDIO ACCENT (PLAYS ONCE, OVER THE MUSIC)** is a sting that plays over it and stops
+when the fork closes. Both labels explain themselves on hover.
+
+### ◆ A tidier journey panel
+
+Every collapsible section in the builder has a look of its own now — the journey groups, and the
+round’s boss, effect, pool, extra axes, vibrator scripts, non-gameplay modifiers, rewards and device
+filler: an icon, a chevron that turns, a header that brightens while open, and an inset panel hanging
+off it so the contents clearly belong to that section rather than to whatever comes next. Each panel is
+bordered in its section’s own colour, so a boss group still reads as a boss group. The side panel keeps a
+little space between its content and the scrollbar, which used to run flush against it.
+
+The hardest difficulty is called **Impossible** rather than Insane. Journeys already saved under the old
+name are read under the new one, so nothing loses its rating or its colour.
+
+The journey-level settings are a long list of things most journeys leave alone, and reaching the items,
+music, settings and cast below meant scrolling past all of them. Three of them now collapse: **PLAYER
+MAP** (which now also holds the map backdrops — a backdrop only matters if there is a map to draw it
+on), **AUTO-ADVANCE**, and **AFTERCARE FINISH**. Each is one line closed, and each remembers whether you
+left it open.
+
+Journey music also moves up to sit with the custom items, above settings and cast — after the settings
+it read as a property of the last one rather than of the journey. And the finish button is called
+aftercare finish throughout now; the “I came” wording is gone.
+
 ### ◆ A tidier storyboard editor
 
-A storyboard’s five reward fields — coins, item, the flags it raises or clears, the counters it moves,
-and any items it takes back — now sit together in one collapsible **REWARDS** section instead of running
-down the panel between the setting picker and the dialogue lines. Most scenes hand out nothing, so most
-of the time that’s one line rather than a screenful of empty controls; a tick on the header says when
-something is set, and the section remembers whether you left it open.
+What a node hands out — coins, an item, the flags it raises or clears, the counters it moves, and any
+items it takes back — now sits in one collapsible **REWARDS + FLAGS / COUNTERS** section, on rounds,
+storyboards and shops alike, instead of running down the panel between the things you came to edit.
+Most nodes hand out nothing, so most of the time that’s one line rather than a screenful of empty
+controls; a tick on the header says when something is set, and the section remembers whether you left
+it open.
 
 ### ◆ A storyboard can set its own device stroke
 

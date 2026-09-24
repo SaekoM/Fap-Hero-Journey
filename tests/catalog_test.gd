@@ -121,3 +121,15 @@ func test_sensory_rate_value_round_trips_and_reads() -> void:
 	)
 	assert_str(JD.sensory_rate_text(e, 1.0)).is_equal("8.0 s")
 	assert_str(JD.sensory_rate_text(JD.sensory_entry_by_kind("tremor"), 1.0)).is_equal("25 Hz")
+
+
+# A difficulty renamed after journeys were saved under the old name still has to resolve — the name IS
+# the stored value, so a miss would drop a journey back to Easy and lose its colour on the card.
+func test_a_renamed_difficulty_still_resolves() -> void:
+	assert_str(JD.canonical_difficulty("Insane")).is_equal("Impossible")
+	assert_int(JD.DIFFICULTIES.find(JD.canonical_difficulty("Insane"))).is_greater_equal(0)
+	# Every current name is its own canonical form.
+	for name: String in JD.DIFFICULTIES:
+		assert_str(JD.canonical_difficulty(name)).is_equal(name)
+	# Something unrecognised comes back untouched for the caller to fall back on.
+	assert_str(JD.canonical_difficulty("Unknown")).is_equal("Unknown")

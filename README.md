@@ -38,7 +38,7 @@ A Godot 4.6 application for creating and playing structured, interactive fap-her
 - **Live validation badges** — nodes flag missing funscripts, underfilled forks, or moved files before you save
 - **Fork / Shop / Storyboard nodes** — branching paths with per-path image/name/description, purchasable modifier screens, and dialogue cutscenes
 - **Tags** — toggle content tags per journey; defined in `data/tags.json` (no recompile needed)
-- **Difficulty** — Easy / Medium / Hard / Very Hard / Extreme / Insane
+- **Difficulty** — Easy / Medium / Hard / Very Hard / Extreme / Impossible
 - **Non-destructive save** — staged to a temp folder then atomically swapped in, so a cancel or failure never touches the existing journey; videos are copied (or transcoded — see [Transcoding](#transcoding)) with a live, cancel-safe progress modal
 - **Edit existing journeys** — rename, reorder, change funscripts without re-importing videos
 

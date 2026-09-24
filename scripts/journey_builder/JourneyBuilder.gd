@@ -144,7 +144,7 @@ var _journey_auto_advance_enabled: bool = false  # countdown on storyboards / in
 var _journey_auto_advance_storyboard_secs: int = 20  # per-line storyboard countdown when enabled
 var _journey_auto_advance_fork_secs: int = 45  # fork-decision countdown when enabled
 var _journey_shown_counters: Array = []  # Array[String] of counter names surfaced to the player (HUD + inventory)
-var _journey_allow_finish: bool = false  # author opt-in: the player "I came" / FINISH button ends the run early
+var _journey_allow_finish: bool = false  # author opt-in: the player FINISH button ends the run early
 var _journey_finish_node: String = ""  # entry node of the off-graph aftercare sequence played on FINISH (round/storyboard; optional)
 var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
 var _journey_characters: Array = []  # storyboard cast (runtime dicts: id/name/portraits[]/placements[])
@@ -289,14 +289,18 @@ var _test_seed_flags: Array = []  # flag names to pre-set for a Test-From-Here r
 var _test_seed_items: Array = []  # item ids to grant for a Test-From-Here run (exercise item forks / shops)
 var _test_seed_counters: Dictionary = {}  # counter name->value to pre-set (exercise counter forks)
 var _test_panel_expanded: bool = false  # side-panel "Test From Here" group open/closed, persisted across node selections (panel rebuilds)
-# Same, for a storyboard's REWARDS group. UI state rather than data: what it holds is always part
-# of the node, the section only decides whether it is on screen.
-var _rewards_expanded: bool = false
+# Collapsible side-panel groups (map / aftercare finish / auto-advance / rewards), by key. Same
+# reasoning as above: the panel is rebuilt constantly, and which sections an author has open is
+# theirs to keep. Keyed by group rather than by node — wanting to see rewards is a preference about
+# the tool, not about whichever node happens to be selected.
+var _side_groups_open: Dictionary = {}
 
 # Streaming-copy tuning. Chunks are read/written 1 MB at a time; the main thread
 # yields one frame only after COPY_FRAME_BUDGET_MS of accumulated work — frequent
 # enough that the window stays responsive, rare enough that the frame-wait tax
 # stays under ~1 s even on multi-GB videos.
+# Space kept between the side panel's content and its scrollbar.
+const SIDE_SCROLLBAR_GUTTER: int = 8
 const COPY_CHUNK_SIZE: int = 1024 * 1024
 const COPY_FRAME_BUDGET_MS: int = 100
 
@@ -585,6 +589,7 @@ func _apply_layout() -> void:
 	_side_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	_side_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_add_side_scrollbar_gutter()
 	_side_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_side_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
@@ -652,6 +657,20 @@ func _apply_theme() -> void:
 # Adds the "Fit" (frame the whole graph) and "Shortcuts" (keybinding reference)
 # buttons to the top bar, just left of Save. Created in code so the .tscn stays
 # untouched.
+# The scrollbar sits at the scroll container's right edge, and a full-width field ran flush into it —
+# which reads as clipped content and leaves nothing to grab the bar by. Wraps the column in a margin so
+# it stops short. Done in code rather than in the scene so the node the side panel renders into keeps
+# its path and its identity.
+func _add_side_scrollbar_gutter() -> void:
+	var gutter: MarginContainer = MarginContainer.new()
+	gutter.add_theme_constant_override("margin_right", SIDE_SCROLLBAR_GUTTER)
+	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gutter.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_side_scroll.remove_child(_side_vbox)
+	_side_scroll.add_child(gutter)
+	gutter.add_child(_side_vbox)
+
+
 func _setup_toolbar_buttons() -> void:
 	var fit_btn: Button = Button.new()
 	fit_btn.text = "⊡ FIT"

@@ -22,6 +22,11 @@ const ROW_SEP: int = 8
 
 const DropZoneScript = preload("res://scripts/journey_builder/DropZone.gd")
 
+# The collapsible groups in the journey panel: how far their body is inset from the header's edges,
+# and the border that ties the two together.
+const GROUP_BODY_PAD: int = 10
+const GROUP_BODY_BORDER: int = 1
+
 # T-code secondary axes shown in the collapsible expander for each round.
 const EXTRA_AXES_INFO: Array = [
 	{"axis": "L1", "label": "L1  —  SURGE  (in / out)"},
@@ -232,9 +237,160 @@ func show_journey_info_panel() -> void:
 
 	side_vbox.add_child(_side_section_separator())
 
-	# Player map — author switch. Off enforces "surprise": the player can't open
-	# the in-play journey map (◇ MAP / M) for this journey.
-	side_vbox.add_child(_side_field_label("PLAYER MAP"))
+	# Everything about the player's map, in one group: whether they get one at all, how much of
+	# it they see, and the art behind it. Four toggles and a stack of images is a lot of panel
+	# for a journey that just wants the default map, so it collapses.
+	side_vbox.add_child(
+		_make_collapsible_group(
+			"map", "PLAYER MAP", "🗺", show_journey_info_panel, _build_map_settings_section
+		)
+	)
+
+	# Fork choices: show or hide the "N ROUNDS" tag on each choice (rounds distinct to that path).
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_side_field_label("FORK CHOICES"))
+	var fork_counts_toggle: CheckButton = CheckButton.new()
+	fork_counts_toggle.text = "SHOW ROUND COUNTS"
+	fork_counts_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			'Show the "N ROUNDS" tag on each fork choice — how many rounds are down that path before it rejoins another. Turn off to hide it and keep each choice a mystery.'
+		)
+	)
+	fork_counts_toggle.add_theme_font_size_override("font_size", 12)
+	fork_counts_toggle.button_pressed = _owner._journey_show_fork_counts
+	side_vbox.add_child(fork_counts_toggle)
+	fork_counts_toggle.toggled.connect(
+		func(on: bool) -> void: _owner._journey_show_fork_counts = on
+	)
+
+	# Mystery preview: blur the journey-select preview's totals + round flow until the player has
+	# DISCOVERED nodes (persistent across playthroughs), keeping length/structure a surprise.
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_side_field_label("JOURNEY PREVIEW"))
+	var mystery_toggle: CheckButton = CheckButton.new()
+	mystery_toggle.text = "MYSTERY PREVIEW  (BLUR UNTIL DISCOVERED)"
+	mystery_toggle.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"On the journey-select screen, blur the totals (rounds · duration · actions) and the round-by-round flow. Each un-blurs once the player has ever reached that node, so length and structure stay a surprise until explored."
+		)
+	)
+	mystery_toggle.add_theme_font_size_override("font_size", 12)
+	mystery_toggle.button_pressed = _owner._journey_mystery_preview
+	side_vbox.add_child(mystery_toggle)
+	mystery_toggle.toggled.connect(func(on: bool) -> void: _owner._journey_mystery_preview = on)
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(
+		_make_collapsible_group(
+			"auto_advance",
+			"AUTO-ADVANCE",
+			"⏱",
+			show_journey_info_panel,
+			_build_auto_advance_section
+		)
+	)
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(
+		_make_collapsible_group(
+			"finish", "AFTERCARE FINISH", "🏁", show_journey_info_panel, _build_finish_section
+		)
+	)
+
+	# The journey's libraries, in the order an author fills them: the things it hands out, the music
+	# under all of it, the places it happens in, and the people in them. Music sits with the journey-
+	# wide media rather than after the settings, where it read as a property of the last one.
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_custom_items_section())
+	side_vbox.add_child(_make_journey_bgm_section())
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_settings_section())
+	side_vbox.add_child(_make_characters_section())
+
+	side_vbox.add_child(_side_section_separator())
+	side_vbox.add_child(_make_graph_add_buttons())
+
+
+# A collapsible group in the side panel. Whole stretches of this panel are things a given journey or
+# node leaves alone, and scrolling past them to reach what you came for was the cost of that. Each
+# group is one line closed.
+#
+# Open/closed is keyed by name on the builder rather than held here: the panel is rebuilt on every
+# selection change and on most edits, and a section that snapped shut each time would be worse than no
+# section at all. Keyed by GROUP rather than by node, too — "I want to see rewards" is a preference
+# about the tool, not about the node that happens to be selected.
+#
+# `rebuild` re-renders whatever panel this group lives in; `build` fills the body, and is only called
+# when the group is open.
+func _make_collapsible_group(
+	key: String, title: String, icon: String, rebuild: Callable, build: Callable
+) -> Control:
+	var open: bool = bool((_owner._side_groups_open as Dictionary).get(key, false))
+
+	var wrapper: VBoxContainer = VBoxContainer.new()
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
+
+	# The icon does the work a colour can't here: the panel is one purple button after another, and
+	# a glyph is what makes a group findable at a glance when you already know what you came for.
+	var header: Button = Button.new()
+	header.text = "%s  %s  %s" % [icon, title, "▾" if open else "▸"]
+	header.toggle_mode = true
+	header.button_pressed = open
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(header, UITheme.PURPLE_BRIGHT if open else UITheme.PURPLE_MID)
+	header.toggled.connect(
+		func(pressed: bool) -> void:
+			(_owner._side_groups_open as Dictionary)[key] = pressed
+			rebuild.call()
+	)
+	wrapper.add_child(header)
+
+	if not open:
+		return wrapper
+
+	var inner: VBoxContainer = VBoxContainer.new()
+	inner.add_theme_constant_override("separation", 6)
+	wrapper.add_child(_wrap_group_body(inner, UITheme.PURPLE_BRIGHT))
+	build.call(inner)
+	return wrapper
+
+
+# The panel an open expander's contents sit in: inset, on its own ground, bordered in the header's
+# own accent, and square along the top so it reads as hanging OFF that header rather than as one more
+# thing stacked in the column. Without it a group's contents looked like they belonged to whatever
+# came next, which in a panel of stacked sections is most of the confusion there is.
+#
+# Takes the contents rather than returning an empty shell, so the caller keeps a direct reference to
+# the node it fills — and so hiding the RESULT hides the border with it, which a toggled expander
+# needs and an early-returning one doesn't care about.
+func _wrap_group_body(content: Control, accent: Color) -> PanelContainer:
+	var body: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = UITheme.CARD_BG
+	style.border_color = accent
+	style.border_width_left = GROUP_BODY_BORDER
+	style.border_width_right = GROUP_BODY_BORDER
+	style.border_width_bottom = GROUP_BODY_BORDER
+	style.corner_radius_bottom_left = UITheme.CORNER_RADIUS
+	style.corner_radius_bottom_right = UITheme.CORNER_RADIUS
+	style.content_margin_left = GROUP_BODY_PAD
+	style.content_margin_right = GROUP_BODY_PAD
+	style.content_margin_top = GROUP_BODY_PAD
+	style.content_margin_bottom = GROUP_BODY_PAD
+	body.add_theme_stylebox_override("panel", style)
+	body.add_child(content)
+	return body
+
+
+# The player's map: whether they get one, how much of it the fog reveals, and the art behind it.
+# Grouped because the two halves are one decision — a backdrop only matters if there is a map to
+# draw it on.
+func _build_map_settings_section(side_vbox: VBoxContainer) -> void:
+	# The switch itself. Off enforces "surprise": the player can't open the in-play journey map
+	# (◇ MAP / M) for this journey at all.
 	var map_toggle: CheckButton = CheckButton.new()
 	map_toggle.text = "ALLOW JOURNEY MAP"
 	map_toggle.tooltip_text = (
@@ -347,44 +503,10 @@ func show_journey_info_panel() -> void:
 	side_vbox.add_child(_side_section_separator())
 	_build_map_backdrop_section(side_vbox)
 
-	# Fork choices: show or hide the "N ROUNDS" tag on each choice (rounds distinct to that path).
-	side_vbox.add_child(_side_section_separator())
-	side_vbox.add_child(_side_field_label("FORK CHOICES"))
-	var fork_counts_toggle: CheckButton = CheckButton.new()
-	fork_counts_toggle.text = "SHOW ROUND COUNTS"
-	fork_counts_toggle.tooltip_text = (
-		UITheme
-		. wrap_tip(
-			'Show the "N ROUNDS" tag on each fork choice — how many rounds are down that path before it rejoins another. Turn off to hide it and keep each choice a mystery.'
-		)
-	)
-	fork_counts_toggle.add_theme_font_size_override("font_size", 12)
-	fork_counts_toggle.button_pressed = _owner._journey_show_fork_counts
-	side_vbox.add_child(fork_counts_toggle)
-	fork_counts_toggle.toggled.connect(
-		func(on: bool) -> void: _owner._journey_show_fork_counts = on
-	)
 
-	# Mystery preview: blur the journey-select preview's totals + round flow until the player has
-	# DISCOVERED nodes (persistent across playthroughs), keeping length/structure a surprise.
-	side_vbox.add_child(_side_section_separator())
-	side_vbox.add_child(_side_field_label("JOURNEY PREVIEW"))
-	var mystery_toggle: CheckButton = CheckButton.new()
-	mystery_toggle.text = "MYSTERY PREVIEW  (BLUR UNTIL DISCOVERED)"
-	mystery_toggle.tooltip_text = (
-		UITheme
-		. wrap_tip(
-			"On the journey-select screen, blur the totals (rounds · duration · actions) and the round-by-round flow. Each un-blurs once the player has ever reached that node, so length and structure stay a surprise until explored."
-		)
-	)
-	mystery_toggle.add_theme_font_size_override("font_size", 12)
-	mystery_toggle.button_pressed = _owner._journey_mystery_preview
-	side_vbox.add_child(mystery_toggle)
-	mystery_toggle.toggled.connect(func(on: bool) -> void: _owner._journey_mystery_preview = on)
-
-	# Auto-advance: a countdown on storyboards (per line) and interactive forks so a player can't
-	# park there to "rest". The seconds spin greys out until it's enabled.
-	side_vbox.add_child(_side_section_separator())
+# Auto-advance: a countdown on storyboards (per line) and interactive forks so a player can't park
+# there to "rest". The seconds spins grey out until it is enabled.
+func _build_auto_advance_section(side_vbox: VBoxContainer) -> void:
 	var aa_toggle: CheckButton = CheckButton.new()
 	aa_toggle.text = "AUTO-ADVANCE STORYBOARDS & FORKS"
 	aa_toggle.tooltip_text = (
@@ -425,20 +547,6 @@ func show_journey_info_panel() -> void:
 	fork_spin.value_changed.connect(
 		func(v: float) -> void: _owner._journey_auto_advance_fork_secs = int(v)
 	)
-
-	side_vbox.add_child(_side_section_separator())
-	side_vbox.add_child(_make_finish_section())
-
-	side_vbox.add_child(_side_section_separator())
-	side_vbox.add_child(_make_custom_items_section())
-
-	side_vbox.add_child(_side_section_separator())
-	side_vbox.add_child(_make_settings_section())
-	side_vbox.add_child(_make_journey_bgm_section())
-	side_vbox.add_child(_make_characters_section())
-
-	side_vbox.add_child(_side_section_separator())
-	side_vbox.add_child(_make_graph_add_buttons())
 
 
 # The MAP BACKDROPS section of the journey-info panel: a stack of location images. Locked base layers show
@@ -715,20 +823,13 @@ const _ITEM_EFFECT_KINDS: Array = [
 ]
 
 
-# FINISH ("I came") — a journey opt-in for an always-available hold-to-confirm button that ends the run
+# AFTERCARE FINISH — a journey opt-in for an always-available hold-to-confirm button that ends the run
 # early, optionally into a designated aftercare storyboard (off-graph) before the end screen.
-func _make_finish_section() -> Control:
-	var box: VBoxContainer = VBoxContainer.new()
-	box.add_theme_constant_override("separation", 6)
-	var header: Label = Label.new()
-	header.text = 'FINISH  ( "I CAME" )'
-	header.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
-	header.add_theme_font_size_override("font_size", 13)
-	box.add_child(header)
+func _build_finish_section(box: VBoxContainer) -> void:
 	var hint: Label = Label.new()
 	hint.text = (
 		"An always-available hold-to-confirm button that ends the run early — optionally into an "
-		+ 'aftercare SEQUENCE (e.g. a "you lose" storyboard → an aftercare round) before the end screen. '
+		+ "aftercare SEQUENCE (e.g. a winding-down storyboard → a gentle round) before the end screen. "
 		+ "Pick the FIRST node; wire the rest off the main graph, ending in a node with no exit."
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -777,7 +878,6 @@ func _make_finish_section() -> Control:
 			_owner._journey_allow_finish = on
 			dd.disabled = not on
 	)
-	return box
 
 
 # A short identifying stub for a finish-node dropdown entry: a round's name, or a storyboard's first
@@ -1528,7 +1628,20 @@ func _make_override_image_row(node: Dictionary) -> Control:
 func _make_override_music_row(node: Dictionary) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label("MUSIC"))
+	(
+		col
+		. add_child(
+			_side_field_label(
+				"SCENE MUSIC  (CONTINUES BETWEEN NODES)",
+				(
+					"The score under this node, in place of its setting's. It crossfades with whatever was "
+					+ "playing, and keeps playing into the next node when that node asks for the same music — "
+					+ "so a run of scenes can share one track without it restarting. For a one-off sting that "
+					+ "plays over the music instead, use the audio accent."
+				)
+			)
+		)
+	)
 
 	var zone: PanelContainer = DropZoneScript.new()
 	zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
@@ -2956,14 +3069,14 @@ func show_graph_node_editor(node_id: String) -> void:
 			_owner._refresh_graph()  # structural change → re-render the canvas
 			show_graph_node_editor(node_id)
 		_build_side_panel_editor(side_vbox, display, arr, 0, reselect)
-		# Round and storyboard nodes group SETS FLAGS / COUNTERS with Coins inside their own editor
-		# (a Rewards group); a shop's editor isn't grouped, so its fields are appended here. Loop markers
-		# are pure control nodes (no rewards) and checkpoints carry theirs in the ON-CONTINUE block
-		# instead — so only the shop gets the generic fields (elsewhere they'd be dead or duplicate).
+		# Round and storyboard nodes build their own rewards group inside their editors, where their
+		# coins and item sit with it. A shop awards none of those, so its group is added here with the
+		# shared three alone. Loop markers are pure control nodes (no rewards) and checkpoints carry
+		# theirs in the ON-CONTINUE block instead — for those the fields would be dead or duplicate.
 		if node_type == "shop":
-			side_vbox.add_child(_make_set_flags_field(data))
-			side_vbox.add_child(_make_set_counters_field(data))
-			side_vbox.add_child(_make_remove_items_field(data))
+			side_vbox.add_child(
+				_make_rewards_group(data, func() -> void: show_graph_node_editor(node_id))
+			)
 		# Divider between the content editor (round types / fields) and the node-operations block
 		# (connect / duplicate / delete / add) below.
 		side_vbox.add_child(_side_divider_line())
@@ -3811,17 +3924,29 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		to_dd.item_selected.connect(func(i: int) -> void: data["timeout_path"] = i - 1)
 		col.add_child(to_dd)
 
-	col.add_child(_side_field_label("FORK AUDIO (OPTIONAL)"))
+	(
+		col
+		. add_child(
+			_side_field_label(
+				"AUDIO ACCENT  (PLAYS ONCE, OVER THE MUSIC)",
+				(
+					"A one-off sound the moment this fork opens — a sting, a voice line, a heartbeat. It plays "
+					+ "OVER whatever music is running and stops when the fork closes; it never becomes the "
+					+ "scene's music. For a track that carries on into the next node, use SCENE MUSIC above."
+				)
+			)
+		)
+	)
 	var fork_audio_zone: PanelContainer = DropZoneScript.new()
 	fork_audio_zone.accepted_extensions = JourneyAudio.AUDIO_EXTENSIONS.duplicate()
-	fork_audio_zone.picker_title = "Select Fork Audio"
+	fork_audio_zone.picker_title = "Select Audio Accent"
 	fork_audio_zone.picker_filters = ["*.ogg,*.mp3,*.wav ; Audio Files"]
 	fork_audio_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.add_child(fork_audio_zone)
 	if str(data.get("audio", "")) != "":
 		fork_audio_zone.call_deferred("set_file", data["audio"])
 	var fork_loop_toggle: CheckButton = CheckButton.new()
-	fork_loop_toggle.text = "LOOP THIS AUDIO"
+	fork_loop_toggle.text = "LOOP WHILE THE FORK IS OPEN"
 	fork_loop_toggle.add_theme_font_size_override("font_size", 11)
 	fork_loop_toggle.button_pressed = bool(data.get("audio_loop", false))
 	fork_loop_toggle.visible = str(data.get("audio", "")) != ""
@@ -3833,7 +3958,7 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	fork_audio_vol.visible = str(data.get("audio", "")) != ""
 	col.add_child(fork_audio_vol)
 	var fork_audio_rm: Button = Button.new()
-	fork_audio_rm.text = "✕ REMOVE AUDIO"
+	fork_audio_rm.text = "✕ REMOVE ACCENT"
 	fork_audio_rm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	fork_audio_rm.visible = str(data.get("audio", "")) != ""
 	UITheme.style_button(fork_audio_rm, UITheme.MAGENTA)
@@ -4648,12 +4773,16 @@ func _journey_has_loops() -> bool:
 # ── Internal: small helpers ─────────────────────────────────────────────────
 
 
-func _side_field_label(text: String) -> Label:
+func _side_field_label(text: String, tip: String = "") -> Label:
 	var lbl: Label = Label.new()
 	lbl.text = text
 	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	lbl.add_theme_font_size_override("font_size", 10)
 	lbl.uppercase = true
+	if tip != "":
+		# A Label ignores the mouse by default, so a tooltip on one would never be seen.
+		lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+		lbl.tooltip_text = UITheme.wrap_tip(tip)
 	return lbl
 
 
@@ -4859,44 +4988,14 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 
 	# ── Rewards & state ─────────────────────────────────────────────────────────
 	col.add_child(_side_divider_line())
-	col.add_child(_side_field_label("COINS AWARDED"))
-	var coins_spin: SpinBox = SpinBox.new()
-	coins_spin.min_value = 0
-	coins_spin.max_value = 999999
-	coins_spin.step = 1
-	coins_spin.value = round_data.get("coins", 0)
-	coins_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_spin_box(coins_spin)
-	coins_spin.value_changed.connect(func(v: float) -> void: arr[idx]["coins"] = int(v))
-	col.add_child(coins_spin)
-
-	# Optional item reward — granted (alongside coins) when the round ends. Same picker as the
-	# storyboard reward; "None" clears it.
-	col.add_child(_side_field_label("ITEM REWARD  (OPTIONAL)"))
-	var item_values: Array = [""]
-	var item_dd: OptionButton = OptionButton.new()
-	item_dd.add_item("None")
-	# Built-in items only (see _all_item_ids) so a test-play's leftover journey items don't duplicate.
-	for k: String in InventoryService.GetBuiltinItemIds():
-		item_values.append(k)
-		item_dd.add_item(str(InventoryService.GetItemData(k).get("name", k)))
-	# Journey-scoped custom items — the live edit model is authoritative.
-	for it: Dictionary in _owner._journey_items:
-		item_values.append(str(it.get("id", "")))
-		item_dd.add_item("%s  (custom)" % str(it.get("name", "")))
-	item_dd.selected = max(0, item_values.find(str(round_data.get("award_item", ""))))
-	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_option_button(item_dd)
-	_apply_item_tooltips(item_dd, item_values)
-	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["award_item"] = item_values[i])
-	col.add_child(item_dd)
-
-	# Flags + counters this round sets when it plays (read by conditional forks downstream — e.g.
-	# "+1 belt" after each encounter).
-	col.add_child(_side_section_separator())
-	col.add_child(_make_set_flags_field(arr[idx]))
-	col.add_child(_make_set_counters_field(arr[idx]))
-	col.add_child(_make_remove_items_field(arr[idx]))
+	col.add_child(
+		_make_rewards_group(
+			arr[idx],
+			reselect.bind(idx),
+			int(round_data.get("coins", 0)) != 0 or str(round_data.get("award_item", "")) != "",
+			func(body: VBoxContainer) -> void: _build_round_awards(body, arr, idx)
+		)
+	)
 
 	# ── Round behavior ───────────────────────────────────────────────────────────
 	# (Checkpoints are their own node type now — added from the canvas, not a round flag.)
@@ -5416,54 +5515,82 @@ func _shop_item_price(item_id: String) -> int:
 	return 0
 
 
-# Everything a storyboard HANDS OUT when it ends, in one collapsible block: coins, an item, the flags
-# it raises or clears, the counters it moves, and any items it takes back. Five fields that a scene
-# usually doesn't use at all — inline they were a screenful of empty controls between the setting
-# picker and the dialogue lines, which is what an author is actually there to edit.
+# Everything a node HANDS OUT when it ends, in one collapsible block: coins, an item, the flags it
+# raises or clears, the counters it moves, and any items it takes back. Most nodes hand out nothing, and
+# inline that was a screenful of empty controls between the things an author is actually there to edit.
+#
+# `extra_build` adds whatever the node type awards beyond the shared three (a round's coins and award
+# item, a storyboard's coins and item; a shop has neither), and `extra_set` says whether any of it is
+# set — the header's tick has to tell the truth about a group you cannot see into.
 #
 # Unlike EFFECT ROUND and DEVICE FILLER the header is NOT a switch: rewards have no off state, so it
-# only opens and closes. The tick says whether anything is set, so a closed section still tells the
-# truth about the node. Open/closed lives on the builder (_rewards_expanded), not on the button — the
-# panel is rebuilt on every selection change, and a group that snapped shut each time would be worse
-# than no group at all.
-func _make_rewards_expander(arr: Array, idx: int, reselect: Callable) -> Control:
-	var data: Dictionary = arr[idx]
+# only opens and closes.
+func _make_rewards_group(
+	data: Dictionary, rebuild: Callable, extra_set: bool = false, extra_build: Callable = Callable()
+) -> Control:
 	var has_any: bool = (
-		int(data.get("coins", 0)) != 0
-		or str(data.get("item", "")) != ""
+		extra_set
 		or not (data.get("set_flags", []) as Array).is_empty()
 		or not (data.get("clear_flags", []) as Array).is_empty()
 		or not (data.get("set_counters", {}) as Dictionary).is_empty()
 		or not (data.get("remove_items", []) as Array).is_empty()
 	)
-	var open: bool = bool(_owner._rewards_expanded)
-
-	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 6)
-
-	var header: Button = Button.new()
-	header.text = ("▾  REWARDS" if open else "▸  REWARDS") + ("  ✓" if has_any else "")
-	header.toggle_mode = true
-	header.button_pressed = open
-	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.tooltip_text = (
-		UITheme
-		. wrap_tip(
-			"Coins, an item, flags and counters this scene awards when it ends — and any items it takes back."
-		)
+	return _make_collapsible_group(
+		"rewards",
+		"REWARDS + FLAGS / COUNTERS" + ("  ✓" if has_any else ""),
+		"◈",
+		rebuild,
+		func(body: VBoxContainer) -> void:
+			if extra_build.is_valid():
+				extra_build.call(body)
+			# The same three fields every rewarding node uses, so they behave identically everywhere.
+			body.add_child(_make_set_flags_field(data))
+			body.add_child(_make_set_counters_field(data))
+			body.add_child(_make_remove_items_field(data))
 	)
-	UITheme.style_button(header, UITheme.PURPLE_MID)
-	header.toggled.connect(
-		func(pressed: bool) -> void:
-			_owner._rewards_expanded = pressed
-			reselect.call(idx)
-	)
-	wrapper.add_child(header)
 
-	if not open:
-		return wrapper
 
-	wrapper.add_child(_side_field_label("COINS AWARDED"))
+# What a round awards on its own: coins, and an optional item alongside them. Its picker carries the
+# built-in items plus this journey's custom ones, which the storyboard's does not.
+func _build_round_awards(body: VBoxContainer, arr: Array, idx: int) -> void:
+	var round_data: Dictionary = arr[idx]
+	body.add_child(_side_field_label("COINS AWARDED"))
+	var coins_spin: SpinBox = SpinBox.new()
+	coins_spin.min_value = 0
+	coins_spin.max_value = 999999
+	coins_spin.step = 1
+	coins_spin.value = round_data.get("coins", 0)
+	coins_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(coins_spin)
+	coins_spin.value_changed.connect(func(v: float) -> void: arr[idx]["coins"] = int(v))
+	body.add_child(coins_spin)
+
+	# Optional item reward — granted (alongside coins) when the round ends. Same picker as the
+	# storyboard reward; "None" clears it.
+	body.add_child(_side_field_label("ITEM REWARD  (OPTIONAL)"))
+	var item_values: Array = [""]
+	var item_dd: OptionButton = OptionButton.new()
+	item_dd.add_item("None")
+	# Built-in items only (see _all_item_ids) so a test-play's leftover journey items don't duplicate.
+	for k: String in InventoryService.GetBuiltinItemIds():
+		item_values.append(k)
+		item_dd.add_item(str(InventoryService.GetItemData(k).get("name", k)))
+	# Journey-scoped custom items — the live edit model is authoritative.
+	for it: Dictionary in _owner._journey_items:
+		item_values.append(str(it.get("id", "")))
+		item_dd.add_item("%s  (custom)" % str(it.get("name", "")))
+	item_dd.selected = max(0, item_values.find(str(round_data.get("award_item", ""))))
+	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(item_dd)
+	_apply_item_tooltips(item_dd, item_values)
+	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["award_item"] = item_values[i])
+	body.add_child(item_dd)
+
+
+# What a storyboard awards on its own: coins, and an optional item alongside them.
+func _build_storyboard_awards(body: VBoxContainer, arr: Array, idx: int) -> void:
+	var data: Dictionary = arr[idx]
+	body.add_child(_side_field_label("COINS AWARDED"))
 	var coins_spin: SpinBox = SpinBox.new()
 	coins_spin.min_value = 0
 	coins_spin.max_value = 999999
@@ -5472,10 +5599,10 @@ func _make_rewards_expander(arr: Array, idx: int, reselect: Callable) -> Control
 	coins_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_spin_box(coins_spin)
 	coins_spin.value_changed.connect(func(v: float) -> void: arr[idx]["coins"] = int(v))
-	wrapper.add_child(coins_spin)
+	body.add_child(coins_spin)
 
 	# Optional item reward — granted (alongside coins) when the storyboard ends.
-	wrapper.add_child(_side_field_label("ITEM REWARD  (OPTIONAL)"))
+	body.add_child(_side_field_label("ITEM REWARD  (OPTIONAL)"))
 	var item_values: Array = [""]
 	var item_dd: OptionButton = OptionButton.new()
 	item_dd.add_item("None")
@@ -5487,13 +5614,7 @@ func _make_rewards_expander(arr: Array, idx: int, reselect: Callable) -> Control
 	UITheme.style_option_button(item_dd)
 	_apply_item_tooltips(item_dd, item_values)
 	item_dd.item_selected.connect(func(i: int) -> void: arr[idx]["item"] = item_values[i])
-	wrapper.add_child(item_dd)
-
-	# The same three fields every other rewarding node uses, so they behave identically here.
-	wrapper.add_child(_make_set_flags_field(data))
-	wrapper.add_child(_make_set_counters_field(data))
-	wrapper.add_child(_make_remove_items_field(data))
-	return wrapper
+	body.add_child(item_dd)
 
 
 # A storyboard has no funscript, so the device idles through it unless the player switched on their own
@@ -5511,10 +5632,10 @@ func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	var is_on: bool = bool(filler["enabled"])
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 6)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	var toggle_btn: Button = Button.new()
-	toggle_btn.text = "◍  DEVICE FILLER  ✓" if is_on else "◍  DEVICE FILLER"
+	toggle_btn.text = "◍  DEVICE FILLER  ✓ ▾" if is_on else "◍  DEVICE FILLER  ▸"
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = is_on
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5524,7 +5645,7 @@ func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 			"Give this scene its own device stroke, overriding the player's filler range and speed. Players who switch off 'let journeys set it' in Options keep their own."
 		)
 	)
-	UITheme.style_button(toggle_btn, UITheme.PURPLE_MID)
+	UITheme.style_button(toggle_btn, UITheme.PURPLE_BRIGHT if is_on else UITheme.PURPLE_MID)
 	toggle_btn.toggled.connect(
 		func(pressed: bool) -> void:
 			filler["enabled"] = pressed
@@ -5537,18 +5658,22 @@ func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	if not is_on:
 		return wrapper
 
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	wrapper.add_child(_wrap_group_body(body, UITheme.PURPLE_MID))
+
 	var hint: Label = Label.new()
 	hint.text = "A plain up/down stroke while this storyboard is on screen, at your range and speed instead of the player's."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	wrapper.add_child(hint)
+	body.add_child(hint)
 
-	wrapper.add_child(_side_field_label("STROKE RANGE"))
+	body.add_child(_side_field_label("STROKE RANGE"))
 	var range_row: HBoxContainer = HBoxContainer.new()
 	range_row.add_theme_constant_override("separation", 6)
-	wrapper.add_child(range_row)
+	body.add_child(range_row)
 	var lo_spin: SpinBox = SpinBox.new()
 	var hi_spin: SpinBox = SpinBox.new()
 	for spin: SpinBox in [lo_spin, hi_spin]:
@@ -5565,7 +5690,7 @@ func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	range_row.add_child(lo_spin)
 	range_row.add_child(hi_spin)
 
-	wrapper.add_child(_side_field_label("HALF-STROKE (MS)"))
+	body.add_child(_side_field_label("HALF-STROKE (MS)"))
 	var speed_spin: SpinBox = SpinBox.new()
 	speed_spin.min_value = JourneyData.FILLER_MIN_HALF_CYCLE
 	speed_spin.max_value = JourneyData.FILLER_MAX_HALF_CYCLE
@@ -5576,13 +5701,13 @@ func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 		"One stroke in one direction. Bigger is slower — 2000 is a slow goon, 400 is frantic."
 	)
 	UITheme.style_spin_box(speed_spin)
-	wrapper.add_child(speed_spin)
+	body.add_child(speed_spin)
 
 	var test_btn: Button = Button.new()
 	test_btn.text = "■ STOP TEST" if _owner.filler_test_active() else "▶ TEST ON DEVICE"
 	test_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(test_btn, UITheme.CYAN)
-	wrapper.add_child(test_btn)
+	body.add_child(test_btn)
 
 	# Live while testing: a change to any field re-seeds the running stroke, so the numbers can be
 	# dialled in against what is actually being felt rather than by stopping and starting.
@@ -5631,7 +5756,14 @@ func _make_side_storyboard_editor(arr: Array, idx: int, reselect: Callable) -> C
 
 	# The two collapsible groups lead, so what an author comes here to edit — the place and the lines —
 	# isn't pushed down the panel by settings most scenes never touch.
-	col.add_child(_make_rewards_expander(arr, idx, reselect))
+	col.add_child(
+		_make_rewards_group(
+			sb_data,
+			reselect.bind(idx),
+			int(sb_data.get("coins", 0)) != 0 or str(sb_data.get("item", "")) != "",
+			func(body: VBoxContainer) -> void: _build_storyboard_awards(body, arr, idx)
+		)
+	)
 	col.add_child(_make_filler_expander(arr, idx, reselect))
 
 	# The scene's default place. Any line may name a different one; see the per-line picker.
@@ -6384,10 +6516,10 @@ func _make_axis_expander(arr: Array, idx: int) -> Control:
 		arr[idx]["axis_scripts"] = {}
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 4)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	var toggle_btn: Button = Button.new()
-	toggle_btn.text = "▶  EXTRA AXES  (SERIAL ONLY)"
+	toggle_btn.text = "⇅  EXTRA AXES  (SERIAL ONLY)  ▸"
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = false
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6396,8 +6528,9 @@ func _make_axis_expander(arr: Array, idx: int) -> Control:
 
 	var axes_panel: VBoxContainer = VBoxContainer.new()
 	axes_panel.add_theme_constant_override("separation", 6)
-	axes_panel.visible = false
-	wrapper.add_child(axes_panel)
+	var axes_body: PanelContainer = _wrap_group_body(axes_panel, UITheme.PURPLE_MID)
+	axes_body.visible = false
+	wrapper.add_child(axes_body)
 
 	var hint: Label = Label.new()
 	hint.text = "SECONDARY-AXIS .FUNSCRIPT FILES FOR T-CODE SR6 / OSR2+ DEVICES.  SERIAL OUTPUT ONLY — IGNORED FOR BUTTPLUG."
@@ -6441,9 +6574,12 @@ func _make_axis_expander(arr: Array, idx: int) -> Control:
 	toggle_btn.toggled.connect(
 		func(pressed: bool) -> void:
 			toggle_btn.text = (
-				"▼  EXTRA AXES  (SERIAL ONLY)" if pressed else "▶  EXTRA AXES  (SERIAL ONLY)"
+				"⇅  EXTRA AXES  (SERIAL ONLY)  ▾" if pressed else "⇅  EXTRA AXES  (SERIAL ONLY)  ▸"
 			)
-			axes_panel.visible = pressed
+			UITheme.style_button(
+				toggle_btn, UITheme.PURPLE_BRIGHT if pressed else UITheme.PURPLE_MID
+			)
+			axes_body.visible = pressed
 	)
 
 	return wrapper
@@ -6462,10 +6598,10 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 		arr[idx]["vib_scripts"] = {}
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 4)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	var toggle_btn: Button = Button.new()
-	toggle_btn.text = "▶  VIBRATOR SCRIPTS  (BUTTPLUG ONLY)"
+	toggle_btn.text = "≋  VIBRATOR SCRIPTS  (BUTTPLUG ONLY)  ▸"
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = false
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6474,8 +6610,9 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 
 	var vib_panel: VBoxContainer = VBoxContainer.new()
 	vib_panel.add_theme_constant_override("separation", 6)
-	vib_panel.visible = false
-	wrapper.add_child(vib_panel)
+	var vib_body: PanelContainer = _wrap_group_body(vib_panel, UITheme.PURPLE_MID)
+	vib_body.visible = false
+	wrapper.add_child(vib_body)
 
 	var hint: Label = Label.new()
 	hint.text = "PER-CHANNEL FUNSCRIPTS FOR MULTI-MOTOR VIBRATORS (E.G. WE-VIBE, LOVENSE NORA).  LEAVE EMPTY TO USE THE MAIN FUNSCRIPT FOR ALL CHANNELS."
@@ -6519,11 +6656,14 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 	toggle_btn.toggled.connect(
 		func(pressed: bool) -> void:
 			toggle_btn.text = (
-				"▼  VIBRATOR SCRIPTS  (BUTTPLUG ONLY)"
+				"≋  VIBRATOR SCRIPTS  (BUTTPLUG ONLY)  ▾"
 				if pressed
-				else "▶  VIBRATOR SCRIPTS  (BUTTPLUG ONLY)"
+				else "≋  VIBRATOR SCRIPTS  (BUTTPLUG ONLY)  ▸"
 			)
-			vib_panel.visible = pressed
+			UITheme.style_button(
+				toggle_btn, UITheme.PURPLE_BRIGHT if pressed else UITheme.PURPLE_MID
+			)
+			vib_body.visible = pressed
 	)
 
 	return wrapper
@@ -6709,10 +6849,10 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	var is_boss: bool = arr[idx]["round_type"] == "boss"
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 6)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	var toggle_btn: Button = Button.new()
-	toggle_btn.text = ("▼  BOSS ROUND" if is_boss else "▶  BOSS ROUND")
+	toggle_btn.text = "☠  BOSS ROUND  ▾" if is_boss else "☠  BOSS ROUND  ▸"
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = is_boss
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6721,8 +6861,9 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 
 	var boss_panel: VBoxContainer = VBoxContainer.new()
 	boss_panel.add_theme_constant_override("separation", 8)
-	boss_panel.visible = is_boss
-	wrapper.add_child(boss_panel)
+	var boss_body: PanelContainer = _wrap_group_body(boss_panel, UITheme.MAGENTA)
+	boss_body.visible = is_boss
+	wrapper.add_child(boss_body)
 
 	var hint: Label = Label.new()
 	hint.text = "BOSS ROUNDS APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE AND OPEN WITH A TELEGRAPHED INTRO CARD. ITEMS ARE LOCKED OUT UNLESS AN ENCOUNTER ALLOWS THEM."
@@ -6835,10 +6976,12 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	var is_pool: bool = arr[idx]["round_type"] == "pool"
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 6)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	var toggle_btn: Button = Button.new()
-	toggle_btn.text = "🎲  POOL (RANDOM ENCOUNTER)  ✓" if is_pool else "🎲  POOL (RANDOM ENCOUNTER)"
+	toggle_btn.text = (
+		"🎲  POOL (RANDOM ENCOUNTER)  ✓ ▾" if is_pool else "🎲  POOL (RANDOM ENCOUNTER)  ▸"
+	)
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = is_pool
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6855,6 +6998,10 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	if not is_pool:
 		return wrapper
 
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	wrapper.add_child(_wrap_group_body(body, UITheme.CYAN))
+
 	if not arr[idx].has("pool_entries"):
 		arr[idx]["pool_entries"] = []
 
@@ -6863,7 +7010,7 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	wrapper.add_child(hint)
+	body.add_child(hint)
 
 	var card_toggle: CheckButton = CheckButton.new()
 	card_toggle.text = 'SHOW "ENCOUNTER!" CARD'
@@ -6876,7 +7023,7 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	card_toggle.add_theme_font_size_override("font_size", 12)
 	card_toggle.button_pressed = bool(arr[idx].get("show_encounter", true))
 	card_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["show_encounter"] = on)
-	wrapper.add_child(card_toggle)
+	body.add_child(card_toggle)
 
 	var norepeat_toggle: CheckButton = CheckButton.new()
 	norepeat_toggle.text = "DON'T REPEAT CLIPS ACROSS COPIES"
@@ -6889,11 +7036,11 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	norepeat_toggle.add_theme_font_size_override("font_size", 12)
 	norepeat_toggle.button_pressed = bool(arr[idx].get("no_repeat", false))
 	norepeat_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["no_repeat"] = on)
-	wrapper.add_child(norepeat_toggle)
+	body.add_child(norepeat_toggle)
 
 	var list: VBoxContainer = VBoxContainer.new()
 	list.add_theme_constant_override("separation", 8)
-	wrapper.add_child(list)
+	body.add_child(list)
 	_rebuild_pool_entries(arr, idx, list, reselect)
 
 	var add_btn: Button = Button.new()
@@ -6905,13 +7052,13 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 			(arr[idx]["pool_entries"] as Array).append(_default_pool_entry())
 			_rebuild_pool_entries(arr, idx, list, reselect)
 	)
-	wrapper.add_child(add_btn)
+	body.add_child(add_btn)
 
 	# Bulk add: drop videos and/or whole folders here — one encounter per video, funscript /
 	# axis / vib siblings matched by file name (the same importer the canvas uses). Registered
 	# so JourneyBuilder can route the OS drop here first; see try_handle_pool_drop.
 	var drop: PanelContainer = _make_pool_drop_zone()
-	wrapper.add_child(drop)
+	body.add_child(drop)
 	_pool_drop = {"zone": drop, "arr": arr, "idx": idx, "list": list, "reselect": reselect}
 
 	return wrapper
@@ -7251,14 +7398,14 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	var is_effect: bool = arr[idx]["round_type"] == "effect"
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 6)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	var toggle_btn: Button = Button.new()
-	toggle_btn.text = "✦  EFFECT ROUND  ✓" if is_effect else "✦  EFFECT ROUND"
+	toggle_btn.text = "✦  EFFECT ROUND  ✓ ▾" if is_effect else "✦  EFFECT ROUND  ▸"
 	toggle_btn.toggle_mode = true
 	toggle_btn.button_pressed = is_effect
 	toggle_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button(toggle_btn, UITheme.PURPLE_MID)
+	UITheme.style_button(toggle_btn, UITheme.PURPLE_BRIGHT if is_effect else UITheme.PURPLE_MID)
 	toggle_btn.toggled.connect(
 		func(pressed: bool) -> void:
 			arr[idx]["round_type"] = "effect" if pressed else "normal"
@@ -7269,19 +7416,23 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	if not is_effect:
 		return wrapper
 
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	wrapper.add_child(_wrap_group_body(body, UITheme.PURPLE_MID))
+
 	var hint: Label = Label.new()
 	hint.text = "Applies a mix of gameplay effects (hindrances and/or boons) plus optional sensory modifiers at the start. Items stay usable. Tick nothing for a pure visual round (intro card + border only)."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	wrapper.add_child(hint)
+	body.add_child(hint)
 
-	wrapper.add_child(_make_reveal_toggle(arr, idx))
+	body.add_child(_make_reveal_toggle(arr, idx))
 
 	# ── Framing (border on/off + colours + card header) ──
-	wrapper.add_child(HSeparator.new())
-	wrapper.add_child(_side_field_label("APPEARANCE"))
+	body.add_child(HSeparator.new())
+	body.add_child(_side_field_label("APPEARANCE"))
 
 	# Screen border — an edge frame drawn around the play area for the round. Off by
 	# default; the colour picker below only matters when it's on.
@@ -7298,25 +7449,23 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 			arr[idx]["show_border"] = on
 			reselect.call(idx)
 	)
-	wrapper.add_child(border_toggle)
+	body.add_child(border_toggle)
 	if show_border:
-		wrapper.add_child(
+		body.add_child(
 			_make_effect_color_field(
 				arr, idx, "frame_color", "BORDER COLOUR", JourneyData.EFFECT_COLOR_NEUTRAL
 			)
 		)
 
-	wrapper.add_child(
+	body.add_child(
 		_make_effect_color_field(
 			arr, idx, "card_accent", "INTRO CARD ACCENT", JourneyData.EFFECT_COLOR_NEUTRAL
 		)
 	)
-	wrapper.add_child(
-		_make_effect_text_field(arr, idx, "card_header", "INTRO CARD HEADER", "EFFECT")
-	)
+	body.add_child(_make_effect_text_field(arr, idx, "card_header", "INTRO CARD HEADER", "EFFECT"))
 
 	# ── Resolvable (cleanse / endure) layer — optional on any effect round ──
-	wrapper.add_child(HSeparator.new())
+	body.add_child(HSeparator.new())
 	var resolvable: bool = bool(arr[idx].get("resolvable", false))
 	var res_toggle: CheckButton = CheckButton.new()
 	res_toggle.text = "RESOLVABLE (pay to cleanse / endure for a reward)"
@@ -7327,28 +7476,26 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 			arr[idx]["resolvable"] = on
 			reselect.call(idx)
 	)
-	wrapper.add_child(res_toggle)
+	body.add_child(res_toggle)
 	if resolvable:
-		wrapper.add_child(
-			_make_effect_int_field(arr, idx, "cleanse_cost", "CLEANSE COST (COINS)", 50)
-		)
-		wrapper.add_child(
+		body.add_child(_make_effect_int_field(arr, idx, "cleanse_cost", "CLEANSE COST (COINS)", 50))
+		body.add_child(
 			_make_effect_int_field(arr, idx, "endure_reward", "ENDURE REWARD (COINS)", 0)
 		)
 
 	# ── Effect selection (hindrances + boons in one list) ──
-	wrapper.add_child(HSeparator.new())
+	body.add_child(HSeparator.new())
 	var rand_toggle: CheckButton = CheckButton.new()
 	rand_toggle.text = "RANDOM (roll the effect)"
 	rand_toggle.add_theme_font_size_override("font_size", 12)
 	rand_toggle.button_pressed = bool(arr[idx].get("effect_random", true))
 	rand_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["effect_random"] = on)
-	wrapper.add_child(rand_toggle)
+	body.add_child(rand_toggle)
 
-	wrapper.add_child(_build_effect_catalog_picker(arr, idx))
+	body.add_child(_build_effect_catalog_picker(arr, idx))
 
 	# ── Sensory layer (always-apply modifiers + optional random pool) ──
-	wrapper.add_child(HSeparator.new())
+	body.add_child(HSeparator.new())
 	var pool_toggle: CheckButton = CheckButton.new()
 	pool_toggle.text = "INCLUDE SENSORY IN RANDOM POOL"
 	pool_toggle.tooltip_text = (
@@ -7360,8 +7507,8 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	pool_toggle.add_theme_font_size_override("font_size", 12)
 	pool_toggle.button_pressed = bool(arr[idx].get("sensory_in_pool", false))
 	pool_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["sensory_in_pool"] = on)
-	wrapper.add_child(pool_toggle)
-	wrapper.add_child(_build_sensory_picker(arr, idx, true))  # effect rounds can rename sensory
+	body.add_child(pool_toggle)
+	body.add_child(_build_sensory_picker(arr, idx, true))  # effect rounds can rename sensory
 
 	return wrapper
 
@@ -7621,7 +7768,7 @@ func _build_sensory_picker(arr: Array, idx: int, allow_rename: bool = false) -> 
 	var selected: Array = arr[idx]["sensory"]
 
 	var wrapper: VBoxContainer = VBoxContainer.new()
-	wrapper.add_theme_constant_override("separation", 4)
+	wrapper.add_theme_constant_override("separation", 0)  # the body tucks under the header
 
 	# Collapsed by default to keep the panel tidy; auto-expanded when the round
 	# already has modifiers so its setup is visible at a glance.
@@ -7630,18 +7777,19 @@ func _build_sensory_picker(arr: Array, idx: int, allow_rename: bool = false) -> 
 	header.toggle_mode = true
 	header.button_pressed = open
 	header.text = (
-		("▼  NON-GAMEPLAY MODIFIERS  (%d)" % selected.size())
+		("◐  NON-GAMEPLAY MODIFIERS  (%d)  ▾" % selected.size())
 		if open
-		else "▶  NON-GAMEPLAY MODIFIERS"
+		else "◐  NON-GAMEPLAY MODIFIERS  ▸"
 	)
 	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button(header, UITheme.PURPLE_MID)
+	UITheme.style_button(header, UITheme.PURPLE_BRIGHT if open else UITheme.PURPLE_MID)
 	wrapper.add_child(header)
 
 	var content: VBoxContainer = VBoxContainer.new()
 	content.add_theme_constant_override("separation", 4)
-	content.visible = open
-	wrapper.add_child(content)
+	var content_body: PanelContainer = _wrap_group_body(content, UITheme.PURPLE_MID)
+	content_body.visible = open
+	wrapper.add_child(content_body)
 
 	content.add_child(_side_field_label("VISUAL"))
 	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
@@ -7656,11 +7804,15 @@ func _build_sensory_picker(arr: Array, idx: int, allow_rename: bool = false) -> 
 
 	header.toggled.connect(
 		func(on: bool) -> void:
-			content.visible = on
+			content_body.visible = on
+			UITheme.style_button(header, UITheme.PURPLE_BRIGHT if on else UITheme.PURPLE_MID)
 			header.text = (
-				("▼  NON-GAMEPLAY MODIFIERS  (%d)" % (arr[idx].get("sensory", []) as Array).size())
+				(
+					"◐  NON-GAMEPLAY MODIFIERS  (%d)  ▾"
+					% (arr[idx].get("sensory", []) as Array).size()
+				)
 				if on
-				else "▶  NON-GAMEPLAY MODIFIERS"
+				else "◐  NON-GAMEPLAY MODIFIERS  ▸"
 			)
 	)
 	return wrapper

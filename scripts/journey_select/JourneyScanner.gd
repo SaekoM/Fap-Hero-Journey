@@ -288,7 +288,9 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		"folder_name": folder,
 		"title": data.get("Name", folder),
 		"description": data.get("Description", ""),
-		"difficulty": data.get("Difficulty", "Unknown"),
+		# Under its CURRENT name: a difficulty that has been renamed since this journey was saved would
+		# otherwise miss the colour table and the catalogue filter alike.
+		"difficulty": JourneyData.canonical_difficulty(str(data.get("Difficulty", "Unknown"))),
 		"author": data.get("Author", "Unknown"),
 		# Journey-level: author can disable the player map to enforce surprise.
 		# Absent → true so the whole pre-existing catalogue keeps the map.
@@ -307,7 +309,7 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
 		"auto_advance_storyboard_secs": int(data.get("AutoAdvanceStoryboardSecs", 20)),
 		"auto_advance_fork_secs":
-		# Finish / "I came" button: author opt-in to end the run early, optionally into a designated
+		# Aftercare finish button: author opt-in to end the run early, optionally into a designated
 		int(data.get("AutoAdvanceForkSecs", data.get("AutoAdvanceSecs", 45))),
 		# aftercare node (any type — a gentle round or a storyboard; off the main graph) before the end.
 		"allow_finish": bool(data.get("AllowFinish", false)),
@@ -680,7 +682,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		"folder_name": folder,
 		"title": data.get("Name", folder),
 		"description": data.get("Description", ""),
-		"difficulty": data.get("Difficulty", "Unknown"),
+		# Under its CURRENT name: a difficulty that has been renamed since this journey was saved would
+		# otherwise miss the colour table and the catalogue filter alike.
+		"difficulty": JourneyData.canonical_difficulty(str(data.get("Difficulty", "Unknown"))),
 		"author": data.get("Author", "Unknown"),
 		"tags": TagRegistry.sanitize(data.get("Tags", [])),
 		"map_enabled": bool(data.get("MapEnabled", true)),
@@ -694,7 +698,7 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		"auto_advance_enabled": bool(data.get("AutoAdvanceEnabled", false)),
 		"auto_advance_storyboard_secs": int(data.get("AutoAdvanceStoryboardSecs", 20)),
 		"auto_advance_fork_secs":
-		# Finish / "I came" button: author opt-in to end the run early, optionally into a designated
+		# Aftercare finish button: author opt-in to end the run early, optionally into a designated
 		int(data.get("AutoAdvanceForkSecs", data.get("AutoAdvanceSecs", 45))),
 		# aftercare node (any type — a gentle round or a storyboard; off the main graph) before the end.
 		"allow_finish": bool(data.get("AllowFinish", false)),

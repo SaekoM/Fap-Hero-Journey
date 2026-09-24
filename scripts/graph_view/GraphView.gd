@@ -986,7 +986,7 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 		row.add_child(start_lbl)
 		row.move_child(start_lbl, 0)
 
-	# FINISH marker — the aftercare-sequence entry played by the "I came" button (off the main graph).
+	# FINISH marker — the aftercare-sequence entry played by the FINISH button (off the main graph).
 	if item.get("is_finish", false):
 		var finish_lbl: Label = Label.new()
 		finish_lbl.text = "🏁 FINISH"

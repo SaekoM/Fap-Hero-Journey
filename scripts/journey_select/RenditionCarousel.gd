@@ -296,7 +296,15 @@ func _layout(animated: bool) -> void:
 
 	# Name strip over the picture's foot: scrim, label centred, side control hugging the right. As tall
 	# as the side control needs, so a button bigger than the text is never clipped by clip_contents.
-	var side_min: Vector2 = _side_slot.get_combined_minimum_size()
+	#
+	# The width is reserved whether or not the control is SHOWING. Only a rendition has a delete button,
+	# so measuring the strip by what is visible made the name jump sideways the moment you stepped off
+	# the base — a layout that moves as you browse reads as a glitch. The gutter is the same on both
+	# sides, so the name sits on the frame's centre line in every case.
+	var side_min: Vector2 = Vector2.ZERO
+	for c: Node in _side_slot.get_children():
+		if c is Control:
+			side_min = side_min.max((c as Control).get_combined_minimum_size())
 	var strip_h: float = maxf(STRIP_H, side_min.y)
 	var strip_y: float = frame.y - strip_h
 	_scrim.visible = true
@@ -304,8 +312,8 @@ func _layout(animated: bool) -> void:
 	_scrim.size = Vector2(frame.x, strip_h)
 	_scrim.z_index = 3
 	_label.text = str(_entries[_selected].get("label", ""))
-	_label.position = Vector2(0.0, strip_y)
-	_label.size = Vector2(frame.x - side_min.x, strip_h)
+	_label.position = Vector2(side_min.x, strip_y)
+	_label.size = Vector2(maxf(0.0, frame.x - side_min.x * 2.0), strip_h)
 	_label.z_index = 4
 	_side_slot.position = Vector2(frame.x - side_min.x, strip_y + (strip_h - side_min.y) * 0.5)
 	_side_slot.size = side_min

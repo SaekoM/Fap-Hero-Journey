@@ -16,7 +16,7 @@ const DIFF_COLORS: Dictionary = {
 	"Hard": Color(1.0, 0.55, 0.1),
 	"Very Hard": Color(1.0, 0.25, 0.05),
 	"Extreme": Color(1.0, 0.1, 0.1),
-	"Insane": Color(0.9, 0.05, 0.5),
+	"Impossible": Color(0.9, 0.05, 0.5),
 }
 
 # Accent palette for generated placeholders — picked deterministically per title

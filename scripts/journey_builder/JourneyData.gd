@@ -19,7 +19,10 @@ extends RefCounted
 #   JourneyData.find_video_in_round(folder) – first video file in a folder
 # ---------------------------------------------------------------------------
 
-const DIFFICULTIES: Array = ["Easy", "Medium", "Hard", "Very Hard", "Extreme", "Insane"]
+const DIFFICULTIES: Array = ["Easy", "Medium", "Hard", "Very Hard", "Extreme", "Impossible"]
+# Difficulty names a journey may already be stored under → what they are called now. The name is
+# the stored value, so renaming one without this would drop every journey using it back to Easy.
+const DIFFICULTY_RENAMES: Dictionary = {"Insane": "Impossible"}
 
 const VIDEO_EXTENSIONS: Array[String] = ["mp4", "m4v", "mkv", "avi", "mov", "wmv", "webm"]
 const FUNSCRIPT_EXTENSIONS: Array[String] = ["funscript", "json"]
@@ -703,6 +706,11 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 		"gift_item": str(src.get("gift_item", "")),
 		"show_reveal": bool(src.get("show_reveal", true)),
 	}
+
+
+# A stored difficulty under its current name — the same string for one that never moved.
+static func canonical_difficulty(name: String) -> String:
+	return str(DIFFICULTY_RENAMES.get(name, name))
 
 
 # ── Round serialization ──────────────────────────────────────────────────────
@@ -2361,7 +2369,7 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 	var author: String = journey.get("author", "")
 	var description: String = journey.get("description", "")
 
-	var diff: String = journey.get("difficulty", "Easy")
+	var diff: String = canonical_difficulty(str(journey.get("difficulty", "Easy")))
 	var diff_idx: int = DIFFICULTIES.find(diff)
 	if diff_idx < 0:
 		diff_idx = 0

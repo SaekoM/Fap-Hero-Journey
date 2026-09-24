@@ -127,7 +127,7 @@ var _current_overlay: Control = null
 var _map_enabled: bool = true  # journey-level: author allows the player map
 var _show_fork_counts: bool = true  # journey-level: show the "N ROUNDS" tag on fork choices
 var _show_loops_on_map: bool = false  # journey-level: show Loop markers on the player map (off = hide)
-# Finish ("I came") — journey-level opt-in. When on, an always-available hold-to-confirm button ends the
+# Aftercare finish — journey-level opt-in. When on, an always-available hold-to-confirm button ends the
 # run early; if a finish node (any type — a gentle round or a storyboard) is designated it plays as
 # aftercare before the end screen.
 var _allow_finish: bool = false
@@ -236,7 +236,7 @@ const ENCOUNTER_HOLD_SECS: float = 1.2
 var _effect_resolved: bool = false
 var _effect_cleanse_btn: Button = null
 var _warmup_skip_btn: Button = null  # free ⏭ skip on an author-marked warmup round
-var _finish_btn: Button = null  # hold-to-confirm FINISH ("I came") button, shown during rounds when enabled
+var _finish_btn: Button = null  # hold-to-confirm FINISH button, shown during rounds when enabled
 var _finish_hold_tween: Tween = null  # fills while FINISH is held; fires _finish_journey at completion
 var _finishing: bool = false  # set once FINISH is confirmed, so a late button_up can't re-trigger
 # True only while an authored OUTCOME moment is holding. Deliberately NOT `_finishing`, which latches for
@@ -1048,7 +1048,7 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 
 	if bool(round.get("is_warmup", false)):
 		_show_warmup_skip_button()
-	# FINISH ("I came") is available during every round when the journey opts in.
+	# FINISH is available during every round when the journey opts in.
 	_show_finish_button()
 
 	var fs_path: String = round.get("funscript_path", "")
@@ -2115,7 +2115,7 @@ func _remove_warmup_skip_button() -> void:
 const _FINISH_IDLE_TEXT: String = "✔ HOLD TO FINISH"
 
 
-# The FINISH ("I came") button — a hold-to-confirm floating button (a tap can't end the session), shown
+# The FINISH button — a hold-to-confirm floating button (a tap can't end the session), shown
 # only during rounds when the journey opts in. Sits just ABOVE the HUD bar, hugging the RIGHT edge (like
 # the cleanse button but right-aligned). Fades with the HUD's idle cycle — when the UI fades out it does
 # too — but stays clickable at rest so a hold started as it fades isn't broken.
@@ -2127,7 +2127,7 @@ func _show_finish_button() -> void:
 	btn.text = _FINISH_IDLE_TEXT
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.tooltip_text = UITheme.wrap_tip(
-		"Hold to finish the session (I came). Ends the run and shows the finale."
+		"Hold to finish the session. Ends the run and shows the finale."
 	)
 	UITheme.style_button(btn, UITheme.MAGENTA)
 	btn.anchor_left = 1.0
