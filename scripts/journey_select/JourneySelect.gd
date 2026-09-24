@@ -1083,17 +1083,197 @@ func _on_import_pressed() -> void:
 	var dialog: FileDialog = FileDialog.new()
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.title = "Import Journey Package"
+	dialog.title = "Import Journey"
+	dialog.add_filter("*.fhj, *.zip", "Journey Package or Folder Zip")
 	dialog.add_filter("*.fhj", "FHJ Journey Package")
+	# Journeys were shared as plain zips of the journey folder before .fhj existed, and those are
+	# still in circulation — the button that says IMPORT should take them.
+	dialog.add_filter("*.zip", "Journey Folder Zip (legacy)")
 	SettingsService.remember_browse_dir(dialog)
 	dialog.file_selected.connect(
 		func(path: String) -> void:
 			dialog.queue_free()
-			_open_package(path)
+			if path.to_lower().ends_with(".zip"):
+				_open_journey_zip(path)
+			else:
+				_open_package(path)
 	)
 	dialog.canceled.connect(dialog.queue_free)
 	add_child(dialog)
 	dialog.popup_centered_ratio(0.6)
+
+
+# A legacy journey zip: somebody's journey folder, zipped, from before .fhj packaging. Each journey.json
+# inside is its own install, offered one after another — these archives predate renditions, so there is
+# no parent/overlay relationship to preserve between them.
+#
+# The preview, the id-collision prompt and the installer are the package flow's, reached through a
+# manifest derived from the journey.json inside (see JourneyPackager.read_zip_journeys). Only the
+# extraction differs.
+func _open_journey_zip(zip_abs: String) -> void:
+	var found: Dictionary = JourneyPackager.read_zip_journeys(zip_abs)
+	if not bool(found.get("ok", false)):
+		_show_message("Import Failed", str(found.get("error", "Unrecognized file.")))
+		return
+	var journeys: Array = found.get("journeys", [])
+	if bool(found.get("large", false)):
+		# Godot reads a zip entry whole into memory, so a big archive may simply run out. Warned rather
+		# than refused: it depends on the machine, and refusing an import that would have worked is its
+		# own kind of wrong.
+		_themed_modal(
+			"Large Zip",
+			(
+				"This zip is %s. Older zips are unpacked a whole file at a time, so a very large one can run out of memory — unlike an .fhj, which streams.\n\nIt may work; if it fails, ask whoever shared it for an .fhj export."
+				% String.humanize_size(int(found.get("archive_bytes", 0)))
+			),
+			[
+				{
+					"text": "IMPORT ANYWAY",
+					"accent": UITheme.PURPLE_BRIGHT,
+					"on_press": _zip_import_next.bind(zip_abs, journeys, 0)
+				},
+				{"text": "CANCEL", "accent": UITheme.PURPLE_MID},
+			]
+		)
+		return
+	_zip_import_next(zip_abs, journeys, 0)
+
+
+# Walks the journeys found in a zip, previewing each in turn. Sequential rather than all-at-once so each
+# keeps the confirmation and the id-collision choice a single import gets; `index` is where we are.
+func _zip_import_next(zip_abs: String, journeys: Array, index: int) -> void:
+	if index >= journeys.size():
+		if journeys.size() > 1:
+			_show_message(
+				"Import Finished", "Went through all %d journeys in the zip." % journeys.size()
+			)
+		return
+	var entry: Dictionary = journeys[index]
+	var manifest: Dictionary = entry["manifest"]
+	var more: String = ""
+	if journeys.size() > 1:
+		more = "\n\nJourney %d of %d in this zip." % [index + 1, journeys.size()]
+	_show_zip_import_preview(zip_abs, journeys, index, str(entry["root"]), manifest, more)
+
+
+func _show_zip_import_preview(
+	zip_abs: String, journeys: Array, index: int, root: String, manifest: Dictionary, extra: String
+) -> void:
+	var counts: Dictionary = manifest.get("counts", {})
+	var body: String = (
+		"%s\nby %s\n\n%d rounds · %d forks · %d shops · %d storyboards"
+		% [
+			str(manifest.get("name", "Untitled")),
+			str(manifest.get("author", "Unknown")),
+			int(counts.get("rounds", 0)),
+			int(counts.get("forks", 0)),
+			int(counts.get("shops", 0)),
+			int(counts.get("storyboards", 0)),
+		]
+	)
+	var need: String = str(manifest.get("min_version", ""))
+	if need != "" and not UpdateService.app_meets(need):
+		body += (
+			"\n\n⚠ Made for FHJ v%s or newer (you're on v%s). It may not open or play correctly."
+			% [need, UpdateService.current_version()]
+		)
+	body += extra
+
+	_themed_modal(
+		"Import Journey",
+		body,
+		[
+			{
+				"text": "IMPORT",
+				"accent": UITheme.PURPLE_BRIGHT,
+				"on_press": _begin_zip_import.bind(zip_abs, journeys, index, root, manifest)
+			},
+			{
+				"text": "SKIP" if journeys.size() > 1 else "CANCEL",
+				"accent": UITheme.PURPLE_MID,
+				"on_press": _zip_import_next.bind(zip_abs, journeys, index + 1)
+			},
+		]
+	)
+
+
+# The same id-collision question a package import asks: the archive may hold a journey already in the
+# catalogue, and overwriting or copying is the player's call.
+func _begin_zip_import(
+	zip_abs: String, journeys: Array, index: int, root: String, manifest: Dictionary
+) -> void:
+	var collision: Dictionary = JourneyPackage.find_id_collision(
+		str(manifest.get("journey_id", "")), _journeys
+	)
+	if collision.is_empty():
+		_run_zip_install(
+			zip_abs,
+			journeys,
+			index,
+			root,
+			_unique_folder_name(str(manifest.get("name", "journey"))),
+			""
+		)
+		return
+	_themed_modal(
+		"Already Installed",
+		(
+			'"%s" is already in your catalogue. Replace it, or add this one as a separate copy?'
+			% str(collision.get("title", ""))
+		),
+		[
+			{
+				"text": "REPLACE",
+				"accent": UITheme.DANGER,
+				"on_press":
+				_run_zip_install.bind(
+					zip_abs, journeys, index, root, str(collision.get("folder_name", "")), ""
+				)
+			},
+			{
+				"text": "KEEP BOTH",
+				"accent": UITheme.PURPLE_BRIGHT,
+				"on_press":
+				_run_zip_install.bind(
+					zip_abs,
+					journeys,
+					index,
+					root,
+					_unique_folder_name(str(manifest.get("name", "journey")) + " copy"),
+					JourneyData.new_journey_id()
+				)
+			},
+			{
+				"text": "CANCEL",
+				"accent": UITheme.PURPLE_MID,
+				"on_press": _zip_import_next.bind(zip_abs, journeys, index + 1)
+			},
+		]
+	)
+
+
+func _run_zip_install(
+	zip_abs: String, journeys: Array, index: int, root: String, folder_name: String, new_id: String
+) -> void:
+	var progress: Dictionary = _show_progress_overlay("Importing journey…")
+	var bar: ProgressBar = progress["bar"]
+	var result: Dictionary = await JourneyPackager.install_from_zip(
+		zip_abs, root, folder_name, new_id, func(frac: float) -> void: bar.value = frac * 100.0
+	)
+	(progress["overlay"] as Node).queue_free()
+	if bool(result.get("ok", false)):
+		# Same write-barrier as a package import: a save or scoreboard left in this folder points at
+		# content that has just been replaced.
+		JourneySaveService.delete_save(folder_name)
+		ScoreboardService.clear(folder_name)
+		_scan_journeys()
+		_sort_and_populate()
+		if journeys.size() > 1:
+			_zip_import_next(zip_abs, journeys, index + 1)
+		else:
+			_show_message("Journey Imported", "Added to your catalogue.")
+		return
+	_show_message("Import Failed", str(result.get("error", "Unknown error.")))
 
 
 # Reads the manifest and either rejects (corrupt / not-yet-supported package kinds) or shows the

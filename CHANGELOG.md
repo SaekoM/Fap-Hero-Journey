@@ -97,6 +97,16 @@ Unsaved work asks Save / Discard / Cancel first, exactly like Back. After extrac
 SAVE & OPEN button offers the new rendition: it saves this journey (the extraction isn’t final until
 it does) and opens the child.
 
+### ◆ Import takes the old journey zips
+
+Before `.fhj` packaging existed, journeys were shared as a plain zip of the journey folder — and those
+are still in circulation. IMPORT now takes one. It finds the journey inside wherever it sits (zipped
+flat, wrapped in a folder, or buried deeper), previews it, asks the same question about replacing an
+existing copy, and installs it like any package. A zip holding several journeys offers each in turn.
+
+One caveat the app tells you about: a zip is unpacked a whole file at a time, so a very large one can
+run out of memory where an `.fhj` would stream. You get a warning and the choice to try anyway.
+
 ### ◆ Renditions are picked from their covers
 
 The VERSION dropdown in a journey’s detail view is gone. The cover area is now a carousel: the base

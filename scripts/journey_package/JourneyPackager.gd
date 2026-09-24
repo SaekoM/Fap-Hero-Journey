@@ -229,6 +229,140 @@ static func install(
 	return {"ok": true, "error": "", "folder": journeys_root + "/" + folder_name}
 
 
+# ── Legacy ZIP import ────────────────────────────────────────────────────────
+# Journeys were shared as plain zips of the journey folder before .fhj existed, and those archives are
+# still out there. They carry no manifest, so one is DERIVED from the journey.json inside: that gives
+# the import preview, the id-collision check and the installer the same shape they get from a real
+# package, and none of that code needs to know a zip was involved.
+#
+# The engine's zip support is why .fhj is not a zip (see the header): ZIPReader has no streaming API and
+# no ZIP64, so every entry is read whole into memory. That is survivable for the script-and-image
+# journeys these archives tend to be, and is why `read_zip_journeys` reports the archive size for the
+# caller to warn on.
+
+
+# What is inside a journey zip: {ok, error, journeys: [{root, manifest}], archive_bytes, large}.
+# One entry per journey.json found, each with a manifest built from that journey's own data.
+static func read_zip_journeys(zip_abs: String) -> Dictionary:
+	var reader: ZIPReader = ZIPReader.new()
+	if reader.open(zip_abs) != OK:
+		return _err("Could not open the zip (is the file complete?).")
+	var files: PackedStringArray = reader.get_files()
+	var roots: Array = JourneyZip.find_roots(files)
+	if roots.is_empty():
+		reader.close()
+		return _err("No journey.json inside — this zip isn't a journey folder.")
+
+	var journeys: Array = []
+	for root: String in roots:
+		var raw_json: PackedByteArray = reader.read_file(root + JourneyZip.JOURNEY_FILE)
+		var parser: JSON = JSON.new()
+		if parser.parse(raw_json.get_string_from_utf8()) != OK or not (parser.data is Dictionary):
+			continue  # a journey.json we can't read is not a journey we can offer
+		var journey_data: Dictionary = parser.data
+		# These archives predate renditions, and an overlay without its base would install unplayable.
+		if JourneyRendition.is_rendition(journey_data):
+			continue
+		# A manifest of its own, so the rest of the import flow sees a package like any other. Assets are
+		# enumerated from the journey data exactly as an export would, which also means the preview's
+		# counts come from the same code that produces them for .fhj.
+		var cover_rel: String = _zip_cover_rel(files, root)
+		var assets: Array = JourneyPackage.enumerate_assets(journey_data, cover_rel)
+		var manifest: Dictionary = JourneyPackage.build_manifest(
+			journey_data, assets, cover_rel, "embedded", "full"
+		)
+		var parsed: Dictionary = JourneyPackage.parse_manifest(manifest)
+		if not bool(parsed.get("ok", false)):
+			continue
+		journeys.append({"root": root, "manifest": parsed})
+	reader.close()
+	if journeys.is_empty():
+		return _err("The journey.json inside this zip could not be read.")
+
+	var bytes: int = 0
+	var f: FileAccess = FileAccess.open(zip_abs, FileAccess.READ)
+	if f != null:
+		bytes = f.get_length()
+		f.close()
+	return {
+		"ok": true,
+		"error": "",
+		"journeys": journeys,
+		"archive_bytes": bytes,
+		"large": bytes >= JourneyZip.LARGE_ARCHIVE_BYTES,
+	}
+
+
+# The cover's path relative to a journey root, or "" — media/cover.<ext>, the same name find_cover_image
+# looks for on disk.
+static func _zip_cover_rel(files: PackedStringArray, root: String) -> String:
+	for ext: String in COVER_EXTS:
+		var rel: String = "media/cover." + ext
+		for f: String in files:
+			if f.replace("\\", "/") == root + rel:
+				return rel
+	return ""
+
+
+# Installs one journey out of a zip, staging then swapping exactly as `install` does so a failure part
+# way through can never leave a half-written journey where a good one was. `root` comes from
+# read_zip_journeys. Returns {ok, error, folder}.
+static func install_from_zip(
+	zip_abs: String,
+	root: String,
+	folder_name: String,
+	new_id: String = "",
+	on_progress: Callable = Callable()
+) -> Dictionary:
+	var reader: ZIPReader = ZIPReader.new()
+	if reader.open(zip_abs) != OK:
+		return _err("Could not open the zip (is the file complete?).")
+	var entries: Array = JourneyZip.entries_under(reader.get_files(), root)
+	if entries.is_empty():
+		reader.close()
+		return _err("That journey's folder is empty inside the zip.")
+
+	var journeys_root: String = SettingsService.get_journeys_dir()
+	var staging: String = journeys_root + "/.~import_" + folder_name
+	var staging_abs: String = ProjectSettings.globalize_path(staging)
+	if DirAccess.dir_exists_absolute(staging_abs):
+		JourneyData.delete_dir_recursive(staging_abs)
+	DirAccess.make_dir_recursive_absolute(staging_abs)
+
+	var done: int = 0
+	for e: Dictionary in entries:
+		var dst: String = staging_abs.path_join(str(e["rel"]))
+		DirAccess.make_dir_recursive_absolute(dst.get_base_dir())
+		# Whole-entry read: the engine offers nothing else, which is the limitation the caller warned
+		# about. A failure here is far more likely to be memory than disk.
+		var data: PackedByteArray = reader.read_file(str(e["zip_path"]))
+		var out: FileAccess = FileAccess.open(dst, FileAccess.WRITE)
+		if out == null:
+			reader.close()
+			JourneyData.delete_dir_recursive(staging_abs)
+			return _err(
+				"Could not write %s (out of memory, or the drive is full?)." % str(e["rel"])
+			)
+		out.store_buffer(data)
+		out.close()
+		done += 1
+		if on_progress.is_valid():
+			on_progress.call(float(done) / float(entries.size()))
+		if done % 8 == 0:
+			await (Engine.get_main_loop() as SceneTree).process_frame
+	reader.close()
+
+	# An archive shared between two people can carry the same JourneyId twice; import-as-copy restamps it
+	# through the same path a package does. No lock: these predate paid packs.
+	_finalize_journey_json(staging_abs.path_join("journey.json"), new_id, false)
+
+	var final_abs: String = ProjectSettings.globalize_path(journeys_root + "/" + folder_name)
+	if DirAccess.dir_exists_absolute(final_abs):
+		JourneyData.delete_dir_recursive(final_abs)
+	DirAccess.rename_absolute(staging_abs, final_abs)
+	return {"ok": true, "error": "", "folder": journeys_root + "/" + folder_name}
+
+
 # Merges a VIDEO pack's files directly into an already-installed journey folder — the recombination
 # step: the scripts pack installed the journey with empty video slots, this drops the free video +
 # cover into the same content/ + media/ (matched by their shared pooled rel paths). Additive; it never
