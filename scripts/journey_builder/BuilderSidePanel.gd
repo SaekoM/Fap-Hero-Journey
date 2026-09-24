@@ -27,6 +27,10 @@ const DropZoneScript = preload("res://scripts/journey_builder/DropZone.gd")
 const GROUP_BODY_PAD: int = 10
 const GROUP_BODY_BORDER: int = 1
 
+## The dropdown id for "declare a new one and use it here", past the end of the name ids. Shared by
+## the counter and flag pickers, which are the same menu over different registries.
+const NEW_ENTRY_ID: int = 9000
+
 # T-code secondary axes shown in the collapsible expander for each round.
 const EXTRA_AXES_INFO: Array = [
 	{"axis": "L1", "label": "L1  —  SURGE  (in / out)"},
@@ -80,6 +84,8 @@ var _custom_items_list: VBoxContainer = null
 var _manage_items_btn: Button = null
 var _characters_list: VBoxContainer = null  # same live-container pattern as _custom_items_list
 var _settings_list: VBoxContainer = null  # journey-level reusable places (backgrounds + music)
+var _counters_list: VBoxContainer = null  # journey-level declared counters (bounds + start + label)
+var _flags_list: VBoxContainer = null  # journey-level declared flags (name + label + note)
 var _shown_node_id: String = ""  # the graph node this panel is currently editing
 var _journey_bgm_list: VBoxContainer = null  # the journey-wide score, one row per track
 
@@ -219,21 +225,20 @@ func show_journey_info_panel() -> void:
 
 	side_vbox.add_child(_side_section_separator())
 
-	# Shown counters — journey-level. Counters listed here are surfaced to the player (a transient
-	# top-right pop when they change + a list in the inventory panel); every other counter stays
-	# hidden and gating-only. Names must match what nodes/choices set via "SETS COUNTERS".
-	side_vbox.add_child(_side_field_label("SHOWN COUNTERS  (comma-separated, player-visible)"))
-	var sc_edit: LineEdit = LineEdit.new()
-	sc_edit.placeholder_text = "e.g. belt, satisfied_partners"
-	sc_edit.text = ", ".join(
-		PackedStringArray(JourneyData.clean_flag_list(_owner._journey_shown_counters))
+	# Counters — journey-level. Was a comma-separated list of names to show the player; it now holds
+	# everything a counter IS, because the bounds are what stop an author tracking them by hand.
+	side_vbox.add_child(
+		_make_collapsible_group(
+			"counters", "COUNTERS", "🔢", show_journey_info_panel, _build_counters_section
+		)
 	)
-	UITheme.style_line_edit(sc_edit)
-	sc_edit.text_changed.connect(
-		func(v: String) -> void:
-			_owner._journey_shown_counters = JourneyData.clean_flag_list(Array(v.split(",")))
+	# Flags — the boolean half of the same idea. Declaring one buys no rules (there is nothing to bound)
+	# but it is what lets every field that names a flag offer a list instead of a text box.
+	side_vbox.add_child(
+		_make_collapsible_group(
+			"flags", "FLAGS", "⚑", show_journey_info_panel, _build_flags_section
+		)
 	)
-	side_vbox.add_child(sc_edit)
 
 	side_vbox.add_child(_side_section_separator())
 
@@ -2064,6 +2069,655 @@ func _open_setting_editor_modal(setting_idx: int) -> void:
 	editor.closed.connect(_rebuild_settings_list)
 
 
+# ── Counters (journey-level named numbers) ────────────────────────
+# A counter has always existed just by being named in a node's SETS COUNTERS field. Declaring one here
+# is optional and adds what a name alone cannot say: where it starts, how low and how high it can go,
+# and what the player should see it called. Same shape as the cast and items sections — a row each,
+# the fields in a modal.
+
+
+func _build_counters_section(side_vbox: VBoxContainer) -> void:
+	var hint: Label = Label.new()
+	hint.text = (
+		"Declare a counter to give it bounds: ammo that stops at 0, arousal that stops at 100. "
+		+ "The clamp holds everywhere the counter is written — nodes, fork choices, items — so the "
+		+ "journey can add and subtract freely without going out of range. Counters you never "
+		+ "declare keep working exactly as before, unbounded and hidden."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	side_vbox.add_child(hint)
+
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	side_vbox.add_child(list)
+	_counters_list = list
+	_rebuild_counters_list()
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD COUNTER"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_counters.append(JourneyData.new_counter_def())
+			_rebuild_counters_list()
+			_open_counter_modal(_owner._journey_counters.size() - 1)
+	)
+	side_vbox.add_child(add_btn)
+
+	# Most journeys reach this panel with counters already scattered through their nodes. Offering to
+	# collect them beats asking the author to remember every name they typed months ago.
+	var undeclared: Array = _undeclared_counter_names()
+	if undeclared.is_empty():
+		return
+	var find_btn: Button = Button.new()
+	find_btn.text = (
+		"⌕ ADD THE %d COUNTER%s THIS JOURNEY USES"
+		% [undeclared.size(), "" if undeclared.size() == 1 else "S"]
+	)
+	find_btn.tooltip_text = UITheme.wrap_tip(
+		"Found in nodes, fork choices and loop conditions: %s" % ", ".join(undeclared)
+	)
+	find_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(find_btn, UITheme.CYAN)
+	find_btn.pressed.connect(
+		func() -> void:
+			for name: String in undeclared:
+				var def: Dictionary = JourneyData.new_counter_def(name)
+				# Collected, not changed: these counters are already running unbounded, and a floor a
+				# new row would have defaulted to is a rule the author never wrote.
+				def["has_min"] = false
+				_owner._journey_counters.append(def)
+			show_journey_info_panel()
+	)
+	side_vbox.add_child(find_btn)
+
+
+# Counter names the graph uses that no row covers yet — what ⌕ ADD THE N offers to declare.
+func _undeclared_counter_names() -> Array:
+	var out: Array = []
+	for name: String in JourneyData.counter_names_in_graph(_owner._graph_model):
+		if JourneyData.counter_def(_owner._journey_counters, name).is_empty():
+			out.append(name)
+	return out
+
+
+func _rebuild_counters_list() -> void:
+	if not is_instance_valid(_counters_list):
+		return
+	for c: Node in _counters_list.get_children():
+		c.queue_free()
+	for i: int in _owner._journey_counters.size():
+		_counters_list.add_child(_make_counter_row(i))
+
+
+func _make_counter_row(counter_idx: int) -> Control:
+	var def: Dictionary = _owner._journey_counters[counter_idx]
+
+	var card: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = UITheme.PANEL_BG
+	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	card.add_theme_stylebox_override("panel", style)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	card.add_child(row)
+
+	var info: VBoxContainer = VBoxContainer.new()
+	info.add_theme_constant_override("separation", 1)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+
+	var name_lbl: Label = Label.new()
+	var cname: String = str(def.get("name", "")).strip_edges()
+	var label: String = str(def.get("label", "")).strip_edges()
+	name_lbl.text = cname if cname != "" else "(unnamed)"
+	if label != "":
+		name_lbl.text += "  “%s”" % label
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	info.add_child(name_lbl)
+
+	# The range and the start are the whole point of declaring it, so they belong on the row rather
+	# than behind a click — and an undeclared name the journey uses is worth saying out loud.
+	var badge: Label = Label.new()
+	var uses: int = _counter_uses(cname)
+	badge.text = (
+		"%s  ·  starts %d  ·  %s"
+		% [
+			JourneyData.counter_range_text(def),
+			int(def.get("start", 0)),
+			"used %d×" % uses if uses > 0 else "unused",
+		]
+	)
+	if bool(def.get("shown", false)):
+		badge.text += "  ·  👁 shown"
+	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.SEPARATOR)
+	badge.add_theme_font_size_override("font_size", 10)
+	info.add_child(badge)
+
+	# The base's counters while authoring a rendition: usable and gate-able, but a rendition only adds
+	# its own — changing a bound here would change it for every other rendition on that base.
+	if _owner._rendition_mode and _owner._rendition_parent_counter_names.has(cname):
+		row.add_child(_locked_base_badge())
+		return card
+
+	var edit_btn: Button = Button.new()
+	edit_btn.text = "✎ EDIT"
+	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
+	edit_btn.pressed.connect(_open_counter_modal.bind(counter_idx))
+	row.add_child(edit_btn)
+
+	var del_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	del_btn.pressed.connect(_confirm_delete_counter.bind(counter_idx))
+	row.add_child(del_btn)
+	return card
+
+
+# How many nodes and fork choices write or read this counter — the same "is this in use" answer the
+# settings and cast rows give, and the check that catches a name typed two different ways.
+func _counter_uses(name: String) -> int:
+	if name == "":
+		return 0
+	var total: int = 0
+	for nid: Variant in _owner._graph_model.get("nodes", {}):
+		var node: Dictionary = (_owner._graph_model["nodes"] as Dictionary)[nid]
+		var data: Dictionary = node.get("data", {})
+		if JourneyData.clean_counter_deltas(data.get("set_counters", {})).has(name):
+			total += 1
+		if str(data.get("cond_counter", "")) == name:
+			total += 1
+		for c: Variant in data.get("loop_conditions", []):
+			if c is Dictionary and str((c as Dictionary).get("counter", "")) == name:
+				total += 1
+		for e: Variant in node.get("out", []):
+			if not (e is Dictionary):
+				continue
+			if JourneyData.clean_counter_deltas((e as Dictionary).get("set_counters", {})).has(
+				name
+			):
+				total += 1
+			if str((e as Dictionary).get("cond_counter", "")) == name:
+				total += 1
+	return total
+
+
+# Deleting a counter row deletes its RULES, never the counter: the nodes keep setting it and the gates
+# keep reading it, unbounded again. That is mild enough to do without a prompt when nothing uses the
+# name, and worth spelling out when something does.
+func _confirm_delete_counter(counter_idx: int) -> void:
+	if counter_idx < 0 or counter_idx >= _owner._journey_counters.size():
+		return
+	var def: Dictionary = _owner._journey_counters[counter_idx]
+	var name: String = str(def.get("name", "")).strip_edges()
+	var uses: int = _counter_uses(name)
+	if uses == 0:
+		_owner._journey_counters.remove_at(counter_idx)
+		_rebuild_counters_list()
+		return
+	_owner._show_builder_confirm(
+		"DELETE COUNTER",
+		(
+			(
+				'"%s" is used %d× in this journey. Deleting the row drops its limits, starting value and '
+				% [name, uses]
+			)
+			+ "label — the counter itself keeps working, unbounded and hidden, exactly as an undeclared "
+			+ "counter always has."
+		),
+		"DELETE",
+		func() -> void:
+			_owner._journey_counters.remove_at(counter_idx)
+			_rebuild_counters_list()
+	)
+
+
+func _open_counter_modal(counter_idx: int) -> void:
+	if counter_idx < 0 or counter_idx >= _owner._journey_counters.size():
+		return
+	var def: Dictionary = _owner._journey_counters[counter_idx]
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"COUNTER", UITheme.PURPLE_BRIGHT, Vector2i(560, 640)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	_owner.add_child(modal)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 4)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+	_fill_counter_editor_body(body, def)
+
+	var close_btn: Button = Button.new()
+	close_btn.text = "DONE"
+	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
+	close_btn.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			_rebuild_counters_list()
+	)
+	vbox.add_child(close_btn)
+
+	var backdrop: Control = modal.get_child(0) as Control
+	if backdrop:
+		backdrop.gui_input.connect(
+			func(event: InputEvent) -> void:
+				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+					modal.queue_free()
+					_rebuild_counters_list()
+		)
+
+
+# Redraws itself on a change that moves the fields below it — ticking a bound on reveals its number,
+# and a preset moves both at once.
+func _fill_counter_editor_body(body: VBoxContainer, def: Dictionary) -> void:
+	var rebuild: Callable = func() -> void: _fill_counter_editor_body(body, def)
+	for c: Node in body.get_children():
+		c.queue_free()
+
+	body.add_child(
+		_side_field_label(
+			"NAME",
+			"The name nodes and fork gates use — it must match what SETS COUNTERS writes, exactly."
+		)
+	)
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.placeholder_text = "e.g. ammo"
+	name_edit.text = str(def.get("name", ""))
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: def["name"] = v.strip_edges())
+	body.add_child(name_edit)
+
+	body.add_child(
+		_side_field_label("LABEL (OPTIONAL)", "What the player sees. Blank shows the name itself.")
+	)
+	var label_edit: LineEdit = LineEdit.new()
+	label_edit.placeholder_text = "e.g. Handgun Ammo"
+	label_edit.text = str(def.get("label", ""))
+	UITheme.style_line_edit(label_edit)
+	label_edit.text_changed.connect(func(v: String) -> void: def["label"] = v)
+	body.add_child(label_edit)
+
+	body.add_child(_side_section_separator())
+
+	# The presets are the request in one click; the two fields below are the same thing, spelled out.
+	body.add_child(
+		_side_field_label(
+			"LIMITS", "The counter can never leave this range, however it is changed."
+		)
+	)
+	var presets: HBoxContainer = HBoxContainer.new()
+	presets.add_theme_constant_override("separation", 6)
+	for preset: Array in [
+		["PERCENT", "percent", "0 to 100."],
+		["RESOURCE", "resource", "Never below 0, no ceiling — ammo, keys, charges."],
+		["FREE", "free", "No floor, no ceiling. How every counter behaved before."],
+	]:
+		var btn: Button = Button.new()
+		btn.text = str(preset[0])
+		btn.tooltip_text = UITheme.wrap_tip(str(preset[2]))
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(btn, UITheme.PURPLE_MID)
+		btn.pressed.connect(
+			func() -> void:
+				def.merge(JourneyData.COUNTER_PRESETS[str(preset[1])], true)
+				rebuild.call()
+		)
+		presets.add_child(btn)
+	body.add_child(presets)
+
+	_add_counter_bound_field(body, def, rebuild, true)
+	_add_counter_bound_field(body, def, rebuild, false)
+
+	body.add_child(_side_section_separator())
+
+	body.add_child(
+		_side_field_label(
+			"STARTS AT", "The value every run begins with, before any node has changed it."
+		)
+	)
+	var start_spin: SpinBox = SpinBox.new()
+	start_spin.min_value = -999999
+	start_spin.max_value = 999999
+	start_spin.value = int(def.get("start", 0))
+	UITheme.style_spin_box(start_spin)
+	start_spin.value_changed.connect(func(v: float) -> void: def["start"] = int(v))
+	body.add_child(start_spin)
+
+	var shown_chk: CheckBox = CheckBox.new()
+	shown_chk.text = "Show this counter to the player"
+	shown_chk.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"A pop in the corner when it changes, and a line in the inventory panel. Unshown counters still gate forks — silently."
+		)
+	)
+	shown_chk.button_pressed = bool(def.get("shown", false))
+	shown_chk.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	shown_chk.toggled.connect(func(on: bool) -> void: def["shown"] = on)
+	body.add_child(shown_chk)
+
+	body.add_child(_side_field_label("NOTE (OPTIONAL)", "For you, not the player."))
+	var note_edit: LineEdit = LineEdit.new()
+	note_edit.placeholder_text = "e.g. spent by the pistol fork, refilled at the shop"
+	note_edit.text = str(def.get("note", ""))
+	UITheme.style_line_edit(note_edit)
+	note_edit.text_changed.connect(func(v: String) -> void: def["note"] = v)
+	body.add_child(note_edit)
+
+
+# One bound: the switch that turns it on, and the number it holds when it is on. Two fields rather
+# than one with a magic "off" value, so "no ceiling" is a state rather than a number to guess.
+func _add_counter_bound_field(
+	body: VBoxContainer, def: Dictionary, rebuild: Callable, is_floor: bool
+) -> void:
+	var has_key: String = "has_min" if is_floor else "has_max"
+	var value_key: String = "min" if is_floor else "max"
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var chk: CheckBox = CheckBox.new()
+	chk.text = "FLOOR" if is_floor else "CEILING"
+	chk.button_pressed = bool(def.get(has_key, false))
+	chk.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	chk.custom_minimum_size = Vector2(110, 0)
+	chk.toggled.connect(
+		func(on: bool) -> void:
+			def[has_key] = on
+			rebuild.call()
+	)
+	row.add_child(chk)
+
+	if bool(def.get(has_key, false)):
+		var spin: SpinBox = SpinBox.new()
+		spin.min_value = -999999
+		spin.max_value = 999999
+		spin.value = int(def.get(value_key, 0))
+		spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_spin_box(spin)
+		spin.value_changed.connect(func(v: float) -> void: def[value_key] = int(v))
+		row.add_child(spin)
+	else:
+		var none: Label = Label.new()
+		none.text = "no floor" if is_floor else "no ceiling"
+		none.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		none.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		none.add_theme_font_size_override("font_size", 11)
+		row.add_child(none)
+
+	body.add_child(row)
+
+
+# ── Flags (journey-level named booleans) ─────────────────────────
+# The counter section's simpler twin: a flag is set or it is not, so a declaration is only its name,
+# what to call it, and a note about why it exists. What declaring buys is the picker.
+
+
+func _build_flags_section(side_vbox: VBoxContainer) -> void:
+	var hint: Label = Label.new()
+	hint.text = (
+		"Flags remember that something happened — a door opened, a boss spared — and forks, loops "
+		+ "and items read them later. Declaring one lists it wherever a flag is chosen, so a name is "
+		+ "never typed twice and never typed wrong. Flags you never declare keep working as before."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 11)
+	side_vbox.add_child(hint)
+
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	side_vbox.add_child(list)
+	_flags_list = list
+	_rebuild_flags_list()
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD FLAG"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			_owner._journey_flags.append(JourneyData.new_flag_def())
+			_rebuild_flags_list()
+			_open_flag_modal(_owner._journey_flags.size() - 1)
+	)
+	side_vbox.add_child(add_btn)
+
+	var undeclared: Array = _undeclared_flag_names()
+	if undeclared.is_empty():
+		return
+	var find_btn: Button = Button.new()
+	find_btn.text = (
+		"⌕ ADD THE %d FLAG%s THIS JOURNEY USES"
+		% [undeclared.size(), "" if undeclared.size() == 1 else "S"]
+	)
+	find_btn.tooltip_text = UITheme.wrap_tip(
+		(
+			"Found in nodes, fork choices, boss outcomes and loop conditions: %s"
+			% ", ".join(undeclared)
+		)
+	)
+	find_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(find_btn, UITheme.CYAN)
+	find_btn.pressed.connect(
+		func() -> void:
+			for name: String in undeclared:
+				_owner._journey_flags.append(JourneyData.new_flag_def(name))
+			show_journey_info_panel()
+	)
+	side_vbox.add_child(find_btn)
+
+
+# Flag names the graph uses that no row covers yet — what ⌕ ADD THE N offers to declare.
+func _undeclared_flag_names() -> Array:
+	var out: Array = []
+	for name: String in JourneyData.flag_names_in_graph(_owner._graph_model):
+		if JourneyData.flag_def(_owner._journey_flags, name).is_empty():
+			out.append(name)
+	return out
+
+
+func _rebuild_flags_list() -> void:
+	if not is_instance_valid(_flags_list):
+		return
+	for c: Node in _flags_list.get_children():
+		c.queue_free()
+	for i: int in _owner._journey_flags.size():
+		_flags_list.add_child(_make_flag_row(i))
+
+
+func _make_flag_row(flag_idx: int) -> Control:
+	var def: Dictionary = _owner._journey_flags[flag_idx]
+
+	var card: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = UITheme.PANEL_BG
+	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	card.add_theme_stylebox_override("panel", style)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	card.add_child(row)
+
+	var info: VBoxContainer = VBoxContainer.new()
+	info.add_theme_constant_override("separation", 1)
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+
+	var name_lbl: Label = Label.new()
+	var fname: String = str(def.get("name", "")).strip_edges()
+	var label: String = str(def.get("label", "")).strip_edges()
+	name_lbl.text = fname if fname != "" else "(unnamed)"
+	if label != "":
+		name_lbl.text += "  “%s”" % label
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	info.add_child(name_lbl)
+
+	var badge: Label = Label.new()
+	var uses: int = _flag_uses(fname)
+	badge.text = "used %d×" % uses if uses > 0 else "unused"
+	var note: String = str(def.get("note", "")).strip_edges()
+	if note != "":
+		badge.text += "  ·  %s" % note
+	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.SEPARATOR)
+	badge.add_theme_font_size_override("font_size", 10)
+	info.add_child(badge)
+
+	if _owner._rendition_mode and _owner._rendition_parent_flag_names.has(fname):
+		row.add_child(_locked_base_badge())
+		return card
+
+	var edit_btn: Button = Button.new()
+	edit_btn.text = "✎ EDIT"
+	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
+	edit_btn.pressed.connect(_open_flag_modal.bind(flag_idx))
+	row.add_child(edit_btn)
+
+	var del_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+	del_btn.pressed.connect(_confirm_delete_flag.bind(flag_idx))
+	row.add_child(del_btn)
+	return card
+
+
+# How many nodes, choices, boss outcomes and loops name this flag — the same "is this in use" answer
+# the counter rows give, and the check that catches a name written two different ways.
+func _flag_uses(name: String) -> int:
+	if name == "":
+		return 0
+	var total: int = 0
+	for nid: Variant in _owner._graph_model.get("nodes", {}):
+		var node: Dictionary = (_owner._graph_model["nodes"] as Dictionary)[nid]
+		var data: Dictionary = node.get("data", {})
+		for key: String in ["set_flags", "clear_flags"]:
+			if name in JourneyData.clean_flag_list(data.get(key, [])):
+				total += 1
+		if name in JourneyData.boss_outcome_flags(data):
+			total += 1
+		for c: Variant in data.get("loop_conditions", []):
+			if c is Dictionary and str((c as Dictionary).get("flag", "")) == name:
+				total += 1
+		for e: Variant in node.get("out", []):
+			if not (e is Dictionary):
+				continue
+			for key2: String in ["set_flags", "clear_flags"]:
+				if name in JourneyData.clean_flag_list((e as Dictionary).get(key2, [])):
+					total += 1
+			if str((e as Dictionary).get("required_flag", "")) == name:
+				total += 1
+	return total
+
+
+# Deleting a flag row deletes its NAME and note, never the flag: the nodes keep setting it and the
+# gates keep reading it, just undeclared again.
+func _confirm_delete_flag(flag_idx: int) -> void:
+	if flag_idx < 0 or flag_idx >= _owner._journey_flags.size():
+		return
+	var def: Dictionary = _owner._journey_flags[flag_idx]
+	var name: String = str(def.get("name", "")).strip_edges()
+	var uses: int = _flag_uses(name)
+	if uses == 0:
+		_owner._journey_flags.remove_at(flag_idx)
+		_rebuild_flags_list()
+		return
+	_owner._show_builder_confirm(
+		"DELETE FLAG",
+		(
+			(
+				'"%s" is used %d× in this journey. Deleting the row drops its label and note — the flag '
+				% [name, uses]
+			)
+			+ "itself keeps working, and keeps appearing in the pickers because the journey still uses it."
+		),
+		"DELETE",
+		func() -> void:
+			_owner._journey_flags.remove_at(flag_idx)
+			_rebuild_flags_list()
+	)
+
+
+func _open_flag_modal(flag_idx: int) -> void:
+	if flag_idx < 0 or flag_idx >= _owner._journey_flags.size():
+		return
+	var def: Dictionary = _owner._journey_flags[flag_idx]
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"FLAG", UITheme.PURPLE_BRIGHT, Vector2i(560, 420)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	_owner.add_child(modal)
+
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 4)
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(body)
+
+	body.add_child(
+		_side_field_label(
+			"NAME", "The name nodes and gates use — it must match what sets the flag, exactly."
+		)
+	)
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.placeholder_text = "e.g. found_key"
+	name_edit.text = str(def.get("name", ""))
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: def["name"] = v.strip_edges())
+	body.add_child(name_edit)
+
+	body.add_child(_side_field_label("LABEL (OPTIONAL)", "A readable name for the pickers."))
+	var label_edit: LineEdit = LineEdit.new()
+	label_edit.placeholder_text = "e.g. Found the key"
+	label_edit.text = str(def.get("label", ""))
+	UITheme.style_line_edit(label_edit)
+	label_edit.text_changed.connect(func(v: String) -> void: def["label"] = v)
+	body.add_child(label_edit)
+
+	body.add_child(_side_field_label("NOTE (OPTIONAL)", "For you, not the player."))
+	var note_edit: LineEdit = LineEdit.new()
+	note_edit.placeholder_text = "e.g. set by the mercy fork, read by the ending"
+	note_edit.text = str(def.get("note", ""))
+	UITheme.style_line_edit(note_edit)
+	note_edit.text_changed.connect(func(v: String) -> void: def["note"] = v)
+	body.add_child(note_edit)
+
+	var close_btn: Button = Button.new()
+	close_btn.text = "DONE"
+	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
+	close_btn.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			_rebuild_flags_list()
+	)
+	vbox.add_child(close_btn)
+
+	var backdrop: Control = modal.get_child(0) as Control
+	if backdrop:
+		backdrop.gui_input.connect(
+			func(event: InputEvent) -> void:
+				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+					modal.queue_free()
+					_rebuild_flags_list()
+		)
+
+
 # ── Cast roster (journey-level storyboard characters) ───────────────────────
 # Same shape as the custom-items section: a short list of rows in the journey panel, each character's
 # full field set (name / portrait / default side) living in a modal. Characters mutate
@@ -2820,9 +3474,9 @@ func _make_item_effect_row(
 		"interest":
 			row.add_child(_make_factor_spin(fx, "pct", 0.0, 1.0, 0.05, "gain ", 0.25))
 		"flag":
-			row.add_child(_make_effect_line_edit(fx, "flag", "flag name…"))
+			row.add_child(_make_flag_picker(fx, "flag", "(pick a flag)", rebuild))
 		"counter":
-			row.add_child(_make_effect_line_edit(fx, "counter", "counter name…"))
+			row.add_child(_make_counter_picker(fx, "counter", "(pick a counter)", rebuild))
 			row.add_child(_make_int_spin(fx, "delta", -999, 999, "Δ ", 1))
 		_:
 			if not sensory.is_empty() and sensory.has("idef"):
@@ -2923,17 +3577,6 @@ func _make_int_spin(
 	UITheme.style_spin_box(s)
 	s.value_changed.connect(func(v: float) -> void: fx[key] = int(v))
 	return s
-
-
-# Text field for an effect param (flag / counter name), writing fx[key] live.
-func _make_effect_line_edit(fx: Dictionary, key: String, placeholder: String) -> LineEdit:
-	var le: LineEdit = LineEdit.new()
-	le.placeholder_text = placeholder
-	le.text = str(fx.get(key, ""))
-	le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_line_edit(le)
-	le.text_changed.connect(func(v: String) -> void: fx[key] = v)
-	return le
 
 
 # Toggle chip for one journey tag. Filled with the tag's colour when on,
@@ -3316,24 +3959,87 @@ func show_graph_multi_select_panel(ids: Array) -> void:
 # conditional sub-config) and its CHOICES — one per out-edge. Unlike the tree fork editor, a
 # choice holds no nested items; it just carries its config and a `to` target wired by connect
 # mode. Mutates node.data + node.out in place; structural changes go through `reselect`.
-# A "SETS FLAGS" comma-separated field writing a cleaned string array to target["set_flags"] — shared
-# by a playable node's data and a fork choice's edge. Flags are set when the node plays or the choice
-# is taken, and read by flag-conditional forks downstream.
-# A small label listing the flags already used in the journey, so authors reuse consistent names (a
-# lightweight stand-in for autocomplete). "No flags used yet." when there are none.
-func _known_flags_hint() -> Label:
-	var known: Array = (_owner._all_set_flags() as Dictionary).keys()
-	known.sort()
-	var lbl: Label = Label.new()
-	lbl.text = (
-		("Known: " + ", ".join(PackedStringArray(known)))
-		if not known.is_empty()
-		else "No flags used yet."
+# ── Flag pickers ─────────────────────────────────────────────
+# The counter pickers' boolean twin. A flag name used to be typed, and a name that matched nothing
+# produced no error: the journey behaved as though the flag were simply never set, which looks exactly
+# like a branch the player did not reach.
+
+
+# Every flag this journey knows: the declared ones in the order the author listed them, then any name
+# the graph already uses. A journey that has declared nothing still picks from its own flags.
+func _known_flag_names() -> Array:
+	var out: Array = []
+	for d: Variant in _owner._journey_flags:
+		if d is Dictionary and str((d as Dictionary).get("name", "")) != "":
+			out.append(str((d as Dictionary)["name"]))
+	for name: String in JourneyData.flag_names_in_graph(_owner._graph_model):
+		if not (name in out):
+			out.append(name)
+	return out
+
+
+# 'found_key  "Found the key"' for a declared flag, 'found_key  (undeclared)' for one that exists only
+# because something sets it.
+func _flag_option_text(name: String) -> String:
+	var def: Dictionary = JourneyData.flag_def(_owner._journey_flags, name)
+	if def.is_empty():
+		return "%s  (undeclared)" % name
+	var label: String = str(def.get("label", "")).strip_edges()
+	return "%s  “%s”" % [name, label] if label != "" else name
+
+
+# A dropdown over the journey's flags, writing the chosen name to target[key]. Mirrors
+# _make_counter_picker, including the entry that declares a new flag without leaving the node.
+func _make_flag_picker(
+	target: Dictionary, key: String, blank_label: String, on_change: Callable
+) -> OptionButton:
+	var dd: OptionButton = OptionButton.new()
+	var names: Array = _known_flag_names()
+	var current: String = str(target.get(key, ""))
+	if current != "" and not (current in names):
+		names.append(current)
+
+	dd.add_item(blank_label, 0)
+	for i: int in names.size():
+		dd.add_item(_flag_option_text(str(names[i])), i + 1)
+	dd.add_separator()
+	dd.add_item("＋ NEW FLAG…", NEW_ENTRY_ID)
+	dd.selected = 0 if current == "" else names.find(current) + 1
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(idx: int) -> void:
+			var id: int = dd.get_item_id(idx)
+			if id == NEW_ENTRY_ID:
+				dd.selected = 0 if current == "" else names.find(current) + 1
+				_prompt_new_flag(target, key, on_change)
+				return
+			if id != 0 and (id < 1 or id > names.size()):
+				return
+			target[key] = "" if id == 0 else str(names[id - 1])
+			on_change.call()
 	)
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
-	lbl.add_theme_font_size_override("font_size", 9)
-	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	return lbl
+	return dd
+
+
+func _prompt_new_flag(target: Dictionary, key: String, on_change: Callable) -> void:
+	_owner._show_builder_prompt(
+		"NEW FLAG",
+		"Name it as the journey will refer to it. Its label and note live in the journey panel — FLAGS.",
+		"e.g. found_key",
+		"DECLARE",
+		func(name: String) -> void:
+			if JourneyData.flag_def(_owner._journey_flags, name).is_empty():
+				_owner._journey_flags.append(JourneyData.new_flag_def(name))
+			target[key] = name
+			on_change.call()
+	)
+
+
+# ── Flag changes (a node's / choice's effects) ───────────────────────
+# Flags are set when the node plays or the choice is taken, and read by flag-conditional forks
+# downstream. A node stores two lists — set_flags and clear_flags — which the author used to write as
+# one line, a leading "-" marking a clear. A row per change says the same thing without the syntax.
 
 
 # An "image fit" dropdown → target["image_fit"] (fit / crop / stretch) — how a fork-choice or boss image
@@ -3362,44 +4068,99 @@ func _make_image_fit_field(target: Dictionary, default_fit: String) -> Control:
 
 
 func _make_set_flags_field(target: Dictionary) -> Control:
+	return _make_flag_changes_field(
+		target.get("set_flags", []),
+		target.get("clear_flags", []),
+		"SETS FLAGS",
+		"Applied when this plays. A flag stays set for the rest of the run unless something clears it.",
+		"＋ ADD FLAG CHANGE",
+		true,
+		func(lists: Dictionary) -> void:
+			target["set_flags"] = lists["set_flags"]
+			target["clear_flags"] = lists["clear_flags"]
+	)
+
+
+# The row editor behind every flag-list field. `allow_clear` false drops the SETS/CLEARS column, for a
+# field that can only turn flags on (the test-play seed); `write` takes {set_flags, clear_flags}.
+func _make_flag_changes_field(
+	sets: Array,
+	clears: Array,
+	label: String,
+	tip: String,
+	add_text: String,
+	allow_clear: bool,
+	write: Callable
+) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label("SETS FLAGS  (COMMA-SEPARATED · PREFIX - TO CLEAR)"))
-	var edit: LineEdit = LineEdit.new()
-	edit.placeholder_text = "e.g. found_key, -spared_boss"
-	edit.text = _join_flag_field(target)
-	UITheme.style_line_edit(edit)
-	edit.text_changed.connect(func(v: String) -> void: _parse_flag_field(v, target))
-	col.add_child(edit)
-	col.add_child(_known_flags_hint())
+	col.add_child(_side_field_label(label, tip))
+	# Rows are the editing model, as they are for counters: two lists cannot hold a row whose flag has
+	# not been chosen yet, and cannot keep a row in place while it moves between set and clear.
+	var rows: Array = []
+	for f: Variant in JourneyData.clean_flag_list(sets):
+		rows.append({"name": str(f), "mode": "set"})
+	for f: Variant in JourneyData.clean_flag_list(clears):
+		rows.append({"name": str(f), "mode": "clear"})
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	col.add_child(box)
+	_fill_flag_change_rows(box, rows, add_text, allow_clear, write)
 	return col
 
 
-# Splits the SETS FLAGS text into set_flags (plain names) and clear_flags (names written with a leading "-").
-# So "found_key, -spared_boss" sets found_key and clears spared_boss on the run's flag set.
-func _parse_flag_field(text: String, target: Dictionary) -> void:
-	var sets: Array = []
-	var clears: Array = []
-	for part: String in text.split(","):
-		var s: String = part.strip_edges()
-		if s.begins_with("-"):
-			var name: String = s.substr(1).strip_edges()
-			if name != "" and not (name in clears):
-				clears.append(name)
-		elif s != "" and not (s in sets):
-			sets.append(s)
-	target["set_flags"] = sets
-	target["clear_flags"] = clears
+func _fill_flag_change_rows(
+	box: VBoxContainer, rows: Array, add_text: String, allow_clear: bool, write: Callable
+) -> void:
+	var rebuild: Callable = func() -> void:
+		_fill_flag_change_rows(box, rows, add_text, allow_clear, write)
+	for c: Node in box.get_children():
+		c.queue_free()
 
+	for i: int in rows.size():
+		var entry: Dictionary = rows[i]
+		var row: HBoxContainer = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		# Hoisted: a multi-statement lambda in the argument list of a NESTED call is a parse error.
+		var on_pick: Callable = func() -> void:
+			write.call(JourneyData.flag_rows_to_lists(rows))
+			rebuild.call()
+		row.add_child(_make_flag_picker(entry, "name", "(pick a flag)", on_pick))
 
-# Rebuilds the field text from set_flags + clear_flags (each cleared flag shown with a leading "-").
-func _join_flag_field(target: Dictionary) -> String:
-	var parts: PackedStringArray = PackedStringArray()
-	for f: Variant in JourneyData.clean_flag_list(target.get("set_flags", [])):
-		parts.append(str(f))
-	for f: Variant in JourneyData.clean_flag_list(target.get("clear_flags", [])):
-		parts.append("-" + str(f))
-	return ", ".join(parts)
+		if allow_clear:
+			var mode: OptionButton = OptionButton.new()
+			mode.add_item("SETS", 0)
+			mode.add_item("CLEARS", 1)
+			mode.selected = 1 if str(entry.get("mode", "set")) == "clear" else 0
+			mode.custom_minimum_size = Vector2(104, 0)
+			UITheme.style_option_button(mode)
+			mode.item_selected.connect(
+				func(idx: int) -> void:
+					entry["mode"] = "clear" if idx == 1 else "set"
+					write.call(JourneyData.flag_rows_to_lists(rows))
+			)
+			row.add_child(mode)
+
+		var del: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+		del.pressed.connect(
+			func() -> void:
+				rows.remove_at(i)
+				write.call(JourneyData.flag_rows_to_lists(rows))
+				rebuild.call()
+		)
+		row.add_child(del)
+		box.add_child(row)
+
+	var add: Button = Button.new()
+	add.text = add_text
+	add.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add, UITheme.PURPLE_MID)
+	add.pressed.connect(
+		func() -> void:
+			rows.append({"name": "", "mode": "set"})
+			rebuild.call()
+	)
+	box.add_child(add)
 
 
 # A multi-select dropdown (built-in + journey custom items) → target["remove_items"] (array of ids). Each
@@ -3429,24 +4190,193 @@ func _make_remove_items_field(target: Dictionary) -> Control:
 	return col
 
 
-# The numeric sibling of _make_set_flags_field: a "belt:1, arousal:2, stress:-1" field writing a
-# {name: delta} map to target["set_counters"]. A bare name means +1 (the "notch on the belt" case).
+# ── Counter pickers ─────────────────────────────────────────
+# Every field that names a counter picks one instead of spelling it. A typed name that matched nothing
+# produced no error anywhere: a reward went to a counter nobody read, and a gate compared against a
+# counter that is always 0 — both of which look right in the panel and do nothing in the run.
+
+
+# Every counter this journey knows: the declared ones in the order the author listed them, then any
+# name a node, gate or loop already uses that no row covers. A journey that has declared nothing still
+# picks from its own counters, so the picker is never empty where the old text field would have worked.
+func _known_counter_names() -> Array:
+	var out: Array = []
+	for d: Variant in _owner._journey_counters:
+		if d is Dictionary and str((d as Dictionary).get("name", "")) != "":
+			out.append(str((d as Dictionary)["name"]))
+	for name: String in JourneyData.counter_names_in_graph(_owner._graph_model):
+		if not (name in out):
+			out.append(name)
+	return out
+
+
+# "ammo  (0 – 12)" for a declared counter, "stress  (undeclared)" for one that only exists because
+# something sets it — so the list says which names carry rules and which are still loose.
+func _counter_option_text(name: String) -> String:
+	var def: Dictionary = JourneyData.counter_def(_owner._journey_counters, name)
+	if def.is_empty():
+		return "%s  (undeclared)" % name
+	return "%s  (%s)" % [name, JourneyData.counter_range_text(def)]
+
+
+# A dropdown over the journey's counters, writing the chosen name to target[key]. `blank_label` is what
+# an empty value reads as, which differs per field: a choice with no counter falls back to the fork's,
+# a loop with none is simply unset. The last entry declares a new counter and selects it, so one can be
+# invented without leaving the node being edited.
+#
+# `on_change` must rebuild the section this lives in: declaring a counter changes what every other
+# picker on screen can offer.
+func _make_counter_picker(
+	target: Dictionary, key: String, blank_label: String, on_change: Callable
+) -> OptionButton:
+	var dd: OptionButton = OptionButton.new()
+	var names: Array = _known_counter_names()
+	var current: String = str(target.get(key, ""))
+	# A name that outlived whatever used to reference it still belongs in its own list, or selecting
+	# this node would silently rewrite the field to blank.
+	if current != "" and not (current in names):
+		names.append(current)
+
+	dd.add_item(blank_label, 0)
+	for i: int in names.size():
+		dd.add_item(_counter_option_text(str(names[i])), i + 1)
+	dd.add_separator()
+	dd.add_item("＋ NEW COUNTER…", NEW_ENTRY_ID)
+	dd.selected = 0 if current == "" else names.find(current) + 1
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(idx: int) -> void:
+			var id: int = dd.get_item_id(idx)
+			if id == NEW_ENTRY_ID:
+				# Put the menu back where it was first: a cancelled prompt must not leave the field
+				# reading "＋ NEW COUNTER…" as though that were the counter.
+				dd.selected = 0 if current == "" else names.find(current) + 1
+				_prompt_new_counter(target, key, on_change)
+				return
+			# The separator carries an auto id of its own; nothing outside the name range names a
+			# counter, and indexing on one would be a crash rather than a wrong value.
+			if id != 0 and (id < 1 or id > names.size()):
+				return
+			target[key] = "" if id == 0 else str(names[id - 1])
+			on_change.call()
+	)
+	return dd
+
+
+# Declares a counter from wherever one was needed and points the field at it. A name the journey
+# already uses is declared UNBOUNDED — it has been running without limits and a floor this dialog
+# invented is a rule the author never wrote. A genuinely new one takes the usual "never below 0".
+func _prompt_new_counter(target: Dictionary, key: String, on_change: Callable) -> void:
+	var used: Array = JourneyData.counter_names_in_graph(_owner._graph_model)
+	_owner._show_builder_prompt(
+		"NEW COUNTER",
+		"Name it as the journey will refer to it. Its limits, starting value and label live in the journey panel — COUNTERS.",
+		"e.g. ammo",
+		"DECLARE",
+		func(name: String) -> void:
+			if JourneyData.counter_def(_owner._journey_counters, name).is_empty():
+				var def: Dictionary = JourneyData.new_counter_def(name)
+				if name in used:
+					def["has_min"] = false
+				_owner._journey_counters.append(def)
+			target[key] = name
+			on_change.call()
+	)
+
+
+# ── Counter changes (a node's / choice's rewards) ─────────────────────
+# The numeric sibling of _make_set_flags_field, writing a {name: delta} map to target["set_counters"].
 # Applied when the node plays / the choice is taken (GameState.ApplyCounters); read by counter forks.
+#
+# Was one text field of "belt:1, arousal:2, stress:-1". It is a row per change now that the counters
+# are declared: the name is picked rather than spelled, and the amount is a number rather than a
+# fragment of syntax to get right.
+
+
 func _make_set_counters_field(target: Dictionary) -> Control:
+	return _make_counter_map_field(
+		JourneyData.clean_counter_deltas(target.get("set_counters", {})),
+		"SETS COUNTERS",
+		"Applied when this plays. Negative spends, positive awards — a counter's own limits decide how far either can go.",
+		"＋ ADD COUNTER CHANGE",
+		func(map: Dictionary) -> void: target["set_counters"] = map
+	)
+
+
+# The row editor behind every {counter: number} field. `write` takes the finished map, so the field
+# does not need to know whether it lives under a key in a node's data or on the builder itself.
+func _make_counter_map_field(
+	initial: Dictionary, label: String, tip: String, add_text: String, write: Callable
+) -> Control:
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label("SETS COUNTERS  (name:delta, comma-separated)"))
-	var edit: LineEdit = LineEdit.new()
-	edit.placeholder_text = "e.g. belt:1, arousal:2, stress:-1"
-	edit.text = JourneyData.counter_deltas_to_text(
-		JourneyData.clean_counter_deltas(target.get("set_counters", {}))
-	)
-	UITheme.style_line_edit(edit)
-	edit.text_changed.connect(
-		func(v: String) -> void: target["set_counters"] = JourneyData.parse_counter_deltas(v)
-	)
-	col.add_child(edit)
+	col.add_child(_side_field_label(label, tip))
+	# The rows are the editing model; the map is written from them. A map cannot hold a row whose
+	# counter has not been chosen yet, and it cannot keep two rows apart while one is being repointed.
+	var rows: Array = []
+	for name: Variant in initial:
+		rows.append({"name": str(name), "delta": int(initial[name])})
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	col.add_child(box)
+	_fill_counter_change_rows(box, rows, add_text, write)
 	return col
+
+
+func _fill_counter_change_rows(
+	box: VBoxContainer, rows: Array, add_text: String, write: Callable
+) -> void:
+	var rebuild: Callable = func() -> void: _fill_counter_change_rows(box, rows, add_text, write)
+	for c: Node in box.get_children():
+		c.queue_free()
+
+	for i: int in rows.size():
+		var entry: Dictionary = rows[i]
+		var row: HBoxContainer = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		# Hoisted rather than written inline: a multi-statement lambda in the argument list of a
+		# NESTED call is a parse error in Godot, which neither gdparse nor gdformat reports.
+		var on_pick: Callable = func() -> void:
+			write.call(JourneyData.counter_rows_to_map(rows))
+			rebuild.call()
+		row.add_child(_make_counter_picker(entry, "name", "(pick a counter)", on_pick))
+
+		var spin: SpinBox = SpinBox.new()
+		spin.min_value = -999999
+		spin.max_value = 999999
+		spin.step = 1
+		spin.value = int(entry.get("delta", 1))
+		spin.custom_minimum_size = Vector2(92, 0)
+		UITheme.style_spin_box(spin)
+		spin.value_changed.connect(
+			func(v: float) -> void:
+				entry["delta"] = int(v)
+				write.call(JourneyData.counter_rows_to_map(rows))
+		)
+
+		row.add_child(spin)
+
+		var del: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
+		del.pressed.connect(
+			func() -> void:
+				rows.remove_at(i)
+				write.call(JourneyData.counter_rows_to_map(rows))
+				rebuild.call()
+		)
+		row.add_child(del)
+		box.add_child(row)
+
+	var add: Button = Button.new()
+	add.text = add_text
+	add.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add, UITheme.PURPLE_MID)
+	add.pressed.connect(
+		func() -> void:
+			rows.append({"name": "", "delta": 1})
+			rebuild.call()
+	)
+	box.add_child(add)
 
 
 # The side-panel channel-overlay editor for a ghosted base ROUND during rendition authoring (replaces the
@@ -3748,7 +4678,9 @@ func _make_overlay_choice_block(
 
 	# Full parity with a native choice: the fork's per-resolution gate (weight / cost / threshold /
 	# requirement) + on-take flags/counters, so an overlay option behaves exactly like a base one.
-	_add_choice_resolution_and_effects(sub, out, ei, resolution, metric)
+	_add_choice_resolution_and_effects(
+		sub, out, ei, resolution, metric, func() -> void: show_graph_node_editor(node_id)
+	)
 
 	# LEADS TO — connect this choice to a target node (routes through the anchor connect, which appends
 	# it as an extra choice at compose). Shows the current destination or an unconnected warning.
@@ -3858,14 +4790,14 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		# so one fork can gate different choices on different counters (e.g. prod ≥ 2 vs test ≥ 3).
 		if metric == "counter":
 			col.add_child(_side_field_label("DEFAULT COUNTER  (per-choice can override)"))
-			var cn_edit: LineEdit = LineEdit.new()
-			cn_edit.placeholder_text = "e.g. belt, arousal, satisfied_partners"
-			cn_edit.text = str(data.get("cond_counter", ""))
-			UITheme.style_line_edit(cn_edit)
-			cn_edit.text_changed.connect(
-				func(v: String) -> void: data["cond_counter"] = v.strip_edges()
+			col.add_child(
+				_make_counter_picker(
+					data,
+					"cond_counter",
+					"(none — gate can't resolve)",
+					func() -> void: reselect.call(0)
+				)
 			)
-			col.add_child(cn_edit)
 
 		# Who resolves it: the game auto-spins to the best match, or the player picks among the paths
 		# they've unlocked (the condition gates which choices are selectable).
@@ -4001,8 +4933,10 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 # Shared verbatim by native fork choices and rendition OVERLAY choices, so an overlay option gates and
 # acts exactly like a base one. `resolution`/`metric` come from the (base-owned) fork; edits write into
 # out[ei]. The gate fields reuse the tree path helpers, which index out[ei] just like a tree path.
+# `rebuild` re-renders the choice — a counter picker that declares a new counter changes what every
+# other picker on screen can offer.
 func _add_choice_resolution_and_effects(
-	sub: VBoxContainer, out: Array, ei: int, resolution: String, metric: String
+	sub: VBoxContainer, out: Array, ei: int, resolution: String, metric: String, rebuild: Callable
 ) -> void:
 	var edge: Dictionary = out[ei]
 	if resolution == "random":
@@ -4014,15 +4948,9 @@ func _add_choice_resolution_and_effects(
 		_add_required_item_field(sub, out, ei, edge, "REQUIRED ITEM")
 	elif resolution == "conditional" and metric == "flag":
 		sub.add_child(_side_field_label("REQUIRED FLAG"))
-		var rf_edit: LineEdit = LineEdit.new()
-		rf_edit.placeholder_text = "Flag name (e.g. spared_boss)..."
-		rf_edit.text = str(edge.get("required_flag", ""))
-		UITheme.style_line_edit(rf_edit)
-		rf_edit.text_changed.connect(
-			func(v: String) -> void: out[ei]["required_flag"] = v.strip_edges()
+		sub.add_child(
+			_make_flag_picker(out[ei], "required_flag", "(none — always available)", rebuild)
 		)
-		sub.add_child(rf_edit)
-		sub.add_child(_known_flags_hint())
 	elif resolution == "conditional":
 		var metric_word: String = "SCORE"
 		if metric == "coins":
@@ -4032,14 +4960,9 @@ func _add_choice_resolution_and_effects(
 			# Each choice can gate on its own counter (e.g. one on "prod", another on "test"); blank
 			# falls back to the fork's default counter. This is the per-choice sibling of the threshold.
 			sub.add_child(_side_field_label("COUNTER  (blank = fork default)"))
-			var pc_edit: LineEdit = LineEdit.new()
-			pc_edit.placeholder_text = "Counter name (e.g. prod)…"
-			pc_edit.text = str(edge.get("cond_counter", ""))
-			UITheme.style_line_edit(pc_edit)
-			pc_edit.text_changed.connect(
-				func(v: String) -> void: out[ei]["cond_counter"] = v.strip_edges()
+			sub.add_child(
+				_make_counter_picker(out[ei], "cond_counter", "(the fork's counter)", rebuild)
 			)
-			sub.add_child(pc_edit)
 		var thr_label: String = "ACTIVATES AT ≥  (%s)" % metric_word
 		_add_path_int_field(sub, out, ei, "threshold", thr_label, 999999)
 
@@ -4140,7 +5063,9 @@ func _make_graph_choice_block(
 
 	# Per-resolution gate field(s) + on-take effects (flags/counters). Shared with rendition overlay
 	# choices so an overlay option behaves exactly like a native one.
-	_add_choice_resolution_and_effects(sub, out, ei, resolution, metric)
+	_add_choice_resolution_and_effects(
+		sub, out, ei, resolution, metric, func() -> void: reselect.call(ei)
+	)
 	# LEADS TO — the choice's target node, wired via connect mode.
 	sub.add_child(_side_section_separator())
 	sub.add_child(_side_field_label("LEADS TO"))
@@ -4247,18 +5172,19 @@ func _make_test_controls(item: Dictionary, arr: Array) -> Control:
 	panel.add_child(seed_row)
 
 	# Pre-set flags for the test run, so flag-gated forks can be exercised from a mid-journey node.
-	panel.add_child(_side_field_label("SEED FLAGS  (COMMA-SEPARATED)"))
-	var flag_edit: LineEdit = LineEdit.new()
-	flag_edit.placeholder_text = "e.g. spared_boss"
-	flag_edit.text = ", ".join(
-		PackedStringArray(JourneyData.clean_flag_list(_owner._test_seed_flags))
+	# Flags the test run begins with already set. Only setting — a run starts with none, so there is
+	# nothing for a clear to do.
+	panel.add_child(
+		_make_flag_changes_field(
+			_owner._test_seed_flags,
+			[],
+			"SEED FLAGS",
+			"Set before the test run reaches the node, so flag-gated choices downstream can be taken.",
+			"＋ SEED A FLAG",
+			false,
+			func(lists: Dictionary) -> void: _owner._test_seed_flags = lists["set_flags"]
+		)
 	)
-	UITheme.style_line_edit(flag_edit)
-	flag_edit.text_changed.connect(
-		func(v: String) -> void:
-			_owner._test_seed_flags = JourneyData.clean_flag_list(Array(v.split(",")))
-	)
-	panel.add_child(flag_edit)
 
 	# Pre-grant items for the run, so item-gated forks / shops can be exercised from a mid-journey node.
 	panel.add_child(_side_field_label("SEED ITEMS"))
@@ -4280,18 +5206,17 @@ func _make_test_controls(item: Dictionary, arr: Array) -> Control:
 	UITheme.style_menu_button(seed_items_dd)
 	seed_items_dd.selection_changed.connect(func(ids: Array) -> void: _owner._test_seed_items = ids)
 
-	# Pre-set counters for the run (name:value), so counter-gated forks can be exercised.
-	panel.add_child(_side_field_label("SEED COUNTERS  (name:value, comma-separated)"))
-	var counter_edit: LineEdit = LineEdit.new()
-	counter_edit.placeholder_text = "e.g. belt:2, arousal:3"
-	counter_edit.text = JourneyData.counter_deltas_to_text(
-		JourneyData.clean_counter_deltas(_owner._test_seed_counters)
+	# Pre-set counters for the run, so counter-gated forks can be exercised from here. These are
+	# absolute values rather than changes — where the run starts, not what it adds.
+	panel.add_child(
+		_make_counter_map_field(
+			JourneyData.clean_counter_deltas(_owner._test_seed_counters),
+			"SEED COUNTERS",
+			"What each counter is set to when the test run begins. Still clamped to the counter's limits.",
+			"＋ SEED A COUNTER",
+			func(map: Dictionary) -> void: _owner._test_seed_counters = map
+		)
 	)
-	UITheme.style_line_edit(counter_edit)
-	counter_edit.text_changed.connect(
-		func(v: String) -> void: _owner._test_seed_counters = JourneyData.parse_counter_deltas(v)
-	)
-	panel.add_child(counter_edit)
 
 	toggle_btn.toggled.connect(
 		func(pressed: bool) -> void:
@@ -4636,11 +5561,24 @@ func _make_loop_condition_row(data: Dictionary, ci: int, reselect: Callable) -> 
 		"repeats":
 			box.add_child(_loop_int_field("LOOP COUNT", cond, "count", 1))
 		"counter":
-			box.add_child(_loop_text_field("COUNTER NAME", cond, "counter", "e.g. belt"))
+			box.add_child(_side_field_label("COUNTER"))
+			box.add_child(
+				_make_counter_picker(
+					cond,
+					"counter",
+					"(none — never exits on a count)",
+					func() -> void: reselect.call(0)
+				)
+			)
 			box.add_child(_loop_cmp_field(cond, reselect))
 			box.add_child(_loop_int_field("VALUE", cond, "threshold", 0))
 		"flag":
-			box.add_child(_loop_text_field("FLAG NAME", cond, "flag", "e.g. found_key"))
+			box.add_child(_side_field_label("FLAG"))
+			box.add_child(
+				_make_flag_picker(
+					cond, "flag", "(none — never exits on a flag)", func() -> void: reselect.call(0)
+				)
+			)
 		"item":
 			box.add_child(_loop_item_field(cond))
 	return box
@@ -4693,21 +5631,6 @@ func _loop_int_field(label: String, target: Dictionary, key: String, min_v: int)
 	UITheme.style_spin_box(spin)
 	spin.value_changed.connect(func(v: float) -> void: target[key] = int(v))
 	col.add_child(spin)
-	return col
-
-
-func _loop_text_field(
-	label: String, target: Dictionary, key: String, placeholder: String
-) -> Control:
-	var col: VBoxContainer = VBoxContainer.new()
-	col.add_theme_constant_override("separation", 4)
-	col.add_child(_side_field_label(label))
-	var edit: LineEdit = LineEdit.new()
-	edit.placeholder_text = placeholder
-	edit.text = str(target.get(key, ""))
-	UITheme.style_line_edit(edit)
-	edit.text_changed.connect(func(v: String) -> void: target[key] = v.strip_edges())
-	col.add_child(edit)
 	return col
 
 
@@ -5368,7 +6291,7 @@ func _make_arrival_audit_block(node_id: String) -> Control:
 	var info: Dictionary = _owner.audit_arrival_info(node_id)
 	if info.is_empty():
 		var hint: Label = Label.new()
-		hint.text = "COMPUTE THE AUDIT TO SEE COINS / SCORE ARRIVING AT THIS NODE."
+		hint.text = "COMPUTE THE AUDIT TO SEE COINS / SCORE / COUNTERS ARRIVING AT THIS NODE."
 		hint.add_theme_color_override(
 			"font_color",
 			Color(UITheme.PURPLE_MID.r, UITheme.PURPLE_MID.g, UITheme.PURPLE_MID.b, 0.7)
@@ -5398,6 +6321,13 @@ func _make_arrival_audit_block(node_id: String) -> Control:
 		box.add_child(
 			_arrival_stat_row("REACHED IN", "%.0f%% OF SIMULATED RUNS" % float(info["seen_pct"]))
 		)
+		# Each declared counter the runs carried here. A gate further down the graph is authored
+		# against a number, and this is where that number can be checked against what arrives.
+		for c: Dictionary in info.get("counters", []):
+			var cname: String = str(c["label"]).strip_edges()
+			if cname == "":
+				cname = str(c["name"])
+			box.add_child(_arrival_stat_row(cname.to_upper(), "avg ≈ %.1f" % float(c["avg"])))
 
 	var btn: Button = UITheme.make_icon_btn(
 		"⚖ COMPUTE" if info.is_empty() else "⟳ REFRESH", false, UITheme.PURPLE_MID
@@ -6829,11 +7759,28 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 					str(arr[idx].get("funscript_path", "")),
 					_owner._journey_characters,
 					_owner._journey_items,
-					_owner._journey_allow_finish
+					_owner._journey_allow_finish,
+					_owner._journey_flags,
+					_declare_flag_for
 				)
 			)
 	)
 	return button
+
+
+# Declares a flag on behalf of an editor that has no access to the journey — the boss encounter
+# editor, whose WON / LOST pickers need to be able to invent a name. `accept` takes the new name.
+func _declare_flag_for(accept: Callable) -> void:
+	_owner._show_builder_prompt(
+		"NEW FLAG",
+		"Name it as the journey will refer to it. Its label and note live in the journey panel — FLAGS.",
+		"e.g. beat_the_boss",
+		"DECLARE",
+		func(name: String) -> void:
+			if JourneyData.flag_def(_owner._journey_flags, name).is_empty():
+				_owner._journey_flags.append(JourneyData.new_flag_def(name))
+			accept.call(name)
+	)
 
 
 # A "BOSS ROUND" toggle that, when on, marks the round as a boss and reveals its

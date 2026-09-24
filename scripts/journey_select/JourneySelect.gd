@@ -41,6 +41,10 @@ const DIFF_COLORS: Dictionary = {
 
 const JourneyCardScene = preload("res://scenes/journey_select/JourneyCard.tscn")
 
+## Where new journeys come from. Nothing on this screen said where to look, and a catalogue is only as
+## good as what the player has managed to find.
+const FORUM_URL: String = "https://discuss.eroscripts.com/c/software/journeys/45"
+
 @onready var _bg: ColorRect = $Background
 @onready var _top_bar: HBoxContainer = $TopBar
 @onready var _back_btn: Button = $TopBar/BackButton
@@ -1653,13 +1657,12 @@ func _passes_filter(j: Dictionary) -> bool:
 func _populate_grid(journeys: Array) -> void:
 	for child in _grid.get_children():
 		child.queue_free()
-	if journeys.is_empty():
-		_empty_lbl.text = (
-			"No journeys match your filter."
-			if not _journeys.is_empty()
-			else "No journeys yet.\nCreate one in the builder!"
-		)
-	_empty_lbl.visible = journeys.is_empty()
+	# A filter that matched nothing, as opposed to a catalogue that is simply empty: the empty one gets
+	# the link card below, and this label is anchored across the whole grid area, so showing both would
+	# stack them on top of each other.
+	var filtering: bool = journeys.size() != _journeys.size()
+	_empty_lbl.text = "No journeys match your filter."
+	_empty_lbl.visible = journeys.is_empty() and filtering
 
 	# Header count — total catalogue size, or "shown OF total" while filtering.
 	if _count_label != null:
@@ -1681,6 +1684,36 @@ func _populate_grid(journeys: Array) -> void:
 		# is capped so a large catalogue still finishes quickly.
 		card.animate_in(min(idx, 16) * 0.022)
 		idx += 1
+
+	# The last slot in the grid leads to where more journeys live. Hidden while filtering: it matches no
+	# filter, so leaving it would make "0 OF 12" show a card.
+	if not filtering:
+		var link: PanelContainer = JourneyCardScene.instantiate()
+		_grid.add_child(link)
+		link.setup_link("Get More Journeys", "COMMUNITY FORUM", "+", UITheme.CYAN)
+		link.selected.connect(_confirm_open_forum)
+		link.animate_in(min(idx, 16) * 0.022)
+
+
+# Leaving the app for the browser is worth asking about first: the player may be somewhere they would
+# rather a forum did not open, and the card sits one slot away from the journeys they meant to click.
+func _confirm_open_forum() -> void:
+	UISound.journey()
+	_themed_modal(
+		"Open the Forum?",
+		(
+			"This opens your browser at the community journey board, where new journeys are posted:\n\n%s"
+			% FORUM_URL
+		),
+		[
+			{"text": "OPEN FORUM", "accent": UITheme.CYAN, "on_press": _open_forum},
+			{"text": "STAY HERE", "accent": UITheme.PURPLE_MID},
+		]
+	)
+
+
+func _open_forum() -> void:
+	OS.shell_open(FORUM_URL)
 
 
 func _on_journey_selected(journey: Dictionary) -> void:

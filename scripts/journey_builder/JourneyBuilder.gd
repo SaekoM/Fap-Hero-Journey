@@ -143,7 +143,8 @@ var _journey_mystery_preview: bool = false  # blur the previewer's totals + flow
 var _journey_auto_advance_enabled: bool = false  # countdown on storyboards / interactive forks (off = players self-pace)
 var _journey_auto_advance_storyboard_secs: int = 20  # per-line storyboard countdown when enabled
 var _journey_auto_advance_fork_secs: int = 45  # fork-decision countdown when enabled
-var _journey_shown_counters: Array = []  # Array[String] of counter names surfaced to the player (HUD + inventory)
+var _journey_counters: Array = []  # Array[Dictionary] — declared counters: bounds, start, label, shown
+var _journey_flags: Array = []  # Array[Dictionary] — declared flags: name, label, note
 var _journey_allow_finish: bool = false  # author opt-in: the player FINISH button ends the run early
 var _journey_finish_node: String = ""  # entry node of the off-graph aftercare sequence played on FINISH (round/storyboard; optional)
 var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
@@ -191,6 +192,8 @@ var _rendition_parent_summary: Dictionary = {}
 # (JourneyRendition's additive contract), and only those are written on save.
 var _rendition_parent_setting_ids: Dictionary = {}  # setting id -> true
 var _rendition_parent_character_ids: Dictionary = {}  # character id -> true
+var _rendition_parent_counter_names: Dictionary = {}  # counter name -> true (counters key by name)
+var _rendition_parent_flag_names: Dictionary = {}  # flag name -> true (flags key by name)
 
 var _selected_graph_node_id: String = ""  # the lone selected node id, or "" when 0 or 2+ are selected
 var _selected_graph_node_ids: Array = []  # the full selection set (mirrors GraphView; drives group ops)
@@ -882,6 +885,8 @@ func _run_audit() -> Dictionary:
 			_graph_model,
 			{
 				"items": items,
+				"counters": _journey_counters,
+				"flags": _journey_flags,
 				"round_scores": round_scores,
 				"round_lengths": round_lengths,
 				"round_score_bounds": round_score_bounds,
@@ -958,7 +963,36 @@ func audit_arrival_info(node_id: String) -> Dictionary:
 		"score_hi": int(score.get("hi", 0)),
 		"score_avg": float((visits.get("avg_arrival_score", {}) as Dictionary).get(node_id, 0.0)),
 		"seen_pct": int((visits.get("nodes", {}) as Dictionary).get(node_id, 0)) * 100.0 / runs,
+		"counters": _arrival_counters(visits, node_id),
 	}
+
+
+# Each declared counter's average value on arrival at one node, as [{name, label, avg}] in the order
+# they were declared. Only counters the node was actually reached with appear — a counter the sim
+# never carried here has nothing to average.
+func _arrival_counters(visits: Dictionary, node_id: String) -> Array:
+	var per_counter: Dictionary = visits.get("avg_arrival_counters", {})
+	var out: Array = []
+	for def: Variant in _journey_counters:
+		if not (def is Dictionary):
+			continue
+		var name: String = str((def as Dictionary).get("name", ""))
+		if name == "" or not per_counter.has(name):
+			continue
+		var by_node: Dictionary = per_counter[name]
+		if not by_node.has(node_id):
+			continue
+		(
+			out
+			. append(
+				{
+					"name": name,
+					"label": str((def as Dictionary).get("label", "")),
+					"avg": float(by_node[node_id]),
+				}
+			)
+		)
+	return out
 
 
 # Side-panel refresh button: recompute the audit, then rebuild the panel so
@@ -986,6 +1020,13 @@ func _show_audit_modal(result: Dictionary) -> void:
 		var sep: HSeparator = HSeparator.new()
 		sep.add_theme_color_override("separator", UITheme.SEPARATOR)
 		vbox.add_child(sep)
+
+	var counters: Array = result.get("counters", [])
+	if not counters.is_empty():
+		vbox.add_child(_audit_counters_block(counters))
+		var csep: HSeparator = HSeparator.new()
+		csep.add_theme_color_override("separator", UITheme.SEPARATOR)
+		vbox.add_child(csep)
 
 	var scroll: ScrollContainer = ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1043,6 +1084,81 @@ func _show_audit_modal(result: Dictionary) -> void:
 	add_child(modal)
 
 
+# Where the simulated runs left each declared counter, against the range it was given. The bounds are
+# the author's intent and the spread is what the journey actually does with them; side by side, a
+# range that is too tight or too generous shows up without reading a single node.
+func _audit_counters_block(counters: Array) -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+
+	var hdr: Label = Label.new()
+	hdr.text = "COUNTERS"
+	UITheme.style_label(hdr, UITheme.CYAN, 11, true)
+	box.add_child(hdr)
+
+	var grid: GridContainer = GridContainer.new()
+	grid.columns = 5
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 2)
+	# HIGHEST is the peak a run passed through; ENDS AT is where runs finish. They differ for anything
+	# that is spent as well as earned, and the gap between them is the counter's actual working range.
+	for head: String in ["COUNTER", "RANGE", "HIGHEST", "ENDS AT", "AT ITS LIMIT"]:
+		var h: Label = Label.new()
+		h.text = head
+		UITheme.style_label(h, UITheme.SEPARATOR, 10, false)
+		grid.add_child(h)
+
+	for row: Variant in counters:
+		var c: Dictionary = row
+		var name: Label = Label.new()
+		var label: String = str(c.get("label", "")).strip_edges()
+		name.text = str(c.get("name", ""))
+		name.tooltip_text = (
+			UITheme.wrap_tip(str(c.get("note", ""))) if str(c.get("note", "")) != "" else ""
+		)
+		name.mouse_filter = Control.MOUSE_FILTER_PASS
+		if label != "":
+			name.text += "  “%s”" % label
+		UITheme.style_label(name, UITheme.WHITE_SOFT, 11, false)
+		grid.add_child(name)
+
+		var range_lbl: Label = Label.new()
+		range_lbl.text = JourneyData.counter_range_text(c)
+		UITheme.style_label(range_lbl, UITheme.PURPLE_BRIGHT, 11, false)
+		grid.add_child(range_lbl)
+
+		var peak: Label = Label.new()
+		peak.text = "%d" % int(c.get("peak", 0))
+		UITheme.style_label(peak, UITheme.WHITE_SOFT, 11, false)
+		grid.add_child(peak)
+
+		var ends: Label = Label.new()
+		ends.text = (
+			"%d" % int(c.get("lo", 0))
+			if int(c.get("lo", 0)) == int(c.get("hi", 0))
+			else (
+				"%d – %d  (avg %.1f)"
+				% [int(c.get("lo", 0)), int(c.get("hi", 0)), float(c.get("avg", 0.0))]
+			)
+		)
+		UITheme.style_label(ends, UITheme.WHITE_SOFT, 11, false)
+		grid.add_child(ends)
+
+		var pinned: Label = Label.new()
+		var pct: float = float(c.get("absorbed_pct", 0.0))
+		pinned.text = "—" if pct <= 0.0 else "%d%% of runs" % roundi(pct)
+		UITheme.style_label(
+			pinned,
+			UITheme.AMBER if pct >= JourneyAudit.COUNTER_PINNED_PCT else UITheme.DARK_TEXT,
+			11,
+			false
+		)
+		grid.add_child(pinned)
+
+	box.add_child(grid)
+	return box
+
+
 func _audit_finding_row(f: Dictionary, jump: Callable) -> Control:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
@@ -1062,15 +1178,24 @@ func _audit_finding_row(f: Dictionary, jump: Callable) -> Control:
 	UITheme.style_label(tag, tag_color, 11, true)
 	row.add_child(tag)
 
+	var node_id: String = str(f.get("node_id", ""))
 	var body: Label = Label.new()
-	body.text = "%s — %s" % [_audit_node_label(str(f.get("node_id", ""))), str(f.get("msg", ""))]
+	# A journey-wide finding (a counter's range, say) belongs to no node, so it carries none: prefixing
+	# it with a node label would send the reader looking for a place that isn't the problem.
+	body.text = (
+		str(f.get("msg", ""))
+		if node_id == ""
+		else "%s — %s" % [_audit_node_label(node_id), str(f.get("msg", ""))]
+	)
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_label(body, UITheme.WHITE_SOFT, 12, false)
 	row.add_child(body)
 
+	if node_id == "":
+		return row
+
 	# Whole-row click → jump to the node (labels ignore mouse, so the row gets it).
-	var node_id: String = str(f.get("node_id", ""))
 	row.mouse_filter = Control.MOUSE_FILTER_STOP
 	row.tooltip_text = UITheme.wrap_tip("Click to locate this node on the canvas")
 	row.gui_input.connect(
@@ -3039,7 +3164,8 @@ func _load_graph(journey: Dictionary) -> void:
 	_map_backdrops = _dup_backdrops(journey.get("map_backdrops", []))
 	_base_backdrops = []  # a base journey has no locked context; renditions set this in their start hook
 	_push_backdrops()  # no-op until the graph exists; _setup_graph_view re-pushes on first load
-	_journey_shown_counters = (parsed.get("shown_counters", []) as Array).duplicate()
+	_journey_counters = (parsed.get("counters", []) as Array).duplicate(true)
+	_journey_flags = (parsed.get("flags", []) as Array).duplicate(true)
 	# Custom journey items come from the scanner's resolved `items` on the raw journey dict —
 	# NOT from `parsed`, whose "items" key is JourneyData.parse_journey's NODE SEQUENCE (a name
 	# collision). Reading `parsed["items"]` here loaded the round/shop nodes as blank custom items.
@@ -3098,6 +3224,10 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 		_journey_settings = (rendition_over.get("settings", _journey_settings) as Array).duplicate(
 			true
 		)
+		_journey_counters = (rendition_over.get("counters", _journey_counters) as Array).duplicate(
+			true
+		)
+		_journey_flags = (rendition_over.get("flags", _journey_flags) as Array).duplicate(true)
 		_journey_characters = (
 			(rendition_over.get("characters", _journey_characters) as Array).duplicate(true)
 		)
@@ -3119,6 +3249,8 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 	# Every setting and character shown so far is the base's (or an ancestor's): usable, locked.
 	_rendition_parent_setting_ids = _ids_of(_journey_settings)
 	_rendition_parent_character_ids = _ids_of(_journey_characters)
+	_rendition_parent_counter_names = _ids_of(_journey_counters, "name")
+	_rendition_parent_flag_names = _ids_of(_journey_flags, "name")
 	# The base's notes and frames are the base author's. A rendition can't save them, so it doesn't
 	# show them — its own arrive with its delta (_load_rendition_delta).
 	_graph_model.erase("comments")
@@ -3183,6 +3315,12 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 	# id the base already has is the compose rule (first wins), so a stale copy can never shadow it.
 	_journey_settings = JourneyData.merge_by_id(_journey_settings, delta.get("settings", []))
 	_journey_characters = JourneyData.merge_by_id(_journey_characters, delta.get("characters", []))
+	# Counters compose by NAME rather than id — that is what a counter is referenced by everywhere
+	# else, so a rendition redeclaring one the base already has is ignored, not duplicated.
+	_journey_counters = JourneyData.merge_by_id(
+		_journey_counters, delta.get("counters", []), "name"
+	)
+	_journey_flags = JourneyData.merge_by_id(_journey_flags, delta.get("flags", []), "name")
 	# Its own notes and frames (the base's were dropped on entry — see _enter_rendition_mode).
 	_graph_model["comments"] = (delta.get("comments", []) as Array).duplicate(true)
 	_graph_model["groups"] = (delta.get("groups", []) as Array).duplicate(true)
@@ -4449,6 +4587,8 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 		"parent_ids": _rendition_parent_ids,
 		"setting_ids": _rendition_parent_setting_ids,
 		"character_ids": _rendition_parent_character_ids,
+		"counter_names": _rendition_parent_counter_names,
+		"flag_names": _rendition_parent_flag_names,
 		"slot_fills": _rendition_slot_fills,
 	}
 
@@ -4495,6 +4635,8 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	# move: lock them all and the pack writes no Settings / Characters of its own.
 	_rendition_parent_setting_ids = _ids_of(_journey_settings)
 	_rendition_parent_character_ids = _ids_of(_journey_characters)
+	_rendition_parent_counter_names = _ids_of(_journey_counters, "name")
+	_rendition_parent_flag_names = _ids_of(_journey_flags, "name")
 	_rendition_slot_fills = []
 	_journey_id = ""
 	_journey_name = rend_name
@@ -4508,6 +4650,8 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	_rendition_parent_ids = snap_rendition["parent_ids"]
 	_rendition_parent_setting_ids = snap_rendition["setting_ids"]
 	_rendition_parent_character_ids = snap_rendition["character_ids"]
+	_rendition_parent_counter_names = snap_rendition.get("counter_names", {})
+	_rendition_parent_flag_names = snap_rendition.get("flag_names", {})
 	_rendition_parent_id = str(snap_rendition["parent_id"])
 	_rendition_parent_folder = str(snap_rendition["parent_folder"])
 	_rendition_slot_fills = snap_rendition["slot_fills"]
@@ -4931,6 +5075,57 @@ func _show_builder_confirm(title: String, body: String, ok_text: String, on_ok: 
 	add_child(modal)
 
 
+# The confirm dialog's text-entry sibling: same shape, with a field whose contents go to `on_ok`. An
+# empty entry is treated as a cancel, so nothing downstream has to defend against a blank name.
+#
+# A Control modal rather than a Window — the canvas stands its panning down for a focused LineEdit in
+# this viewport (GraphView._text_focused), which a separate window would not report.
+func _show_builder_prompt(
+	title: String, body: String, placeholder: String, ok_text: String, on_ok: Callable
+) -> void:
+	var parts: Dictionary = UITheme.build_centered_modal(title, UITheme.CYAN, Vector2i(560, 300))
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+
+	var lbl: Label = Label.new()
+	lbl.text = body
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	UITheme.style_label(lbl, UITheme.WHITE_SOFT, 13, false)
+	vbox.add_child(lbl)
+
+	var edit: LineEdit = LineEdit.new()
+	edit.placeholder_text = placeholder
+	UITheme.style_line_edit(edit)
+	vbox.add_child(edit)
+	edit.grab_focus()
+
+	var submit: Callable = func() -> void:
+		var value: String = edit.text.strip_edges()
+		modal.queue_free()
+		if value != "":
+			on_ok.call(value)
+	edit.text_submitted.connect(func(_v: String) -> void: submit.call())
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	vbox.add_child(row)
+	var cancel_btn: Button = Button.new()
+	cancel_btn.text = "CANCEL"
+	cancel_btn.custom_minimum_size = Vector2(140, 0)
+	UITheme.style_button(cancel_btn, UITheme.PURPLE_MID)
+	cancel_btn.pressed.connect(func() -> void: modal.queue_free())
+	row.add_child(cancel_btn)
+	var ok_btn: Button = Button.new()
+	ok_btn.text = ok_text
+	ok_btn.custom_minimum_size = Vector2(180, 0)
+	UITheme.style_button(ok_btn, UITheme.CYAN)
+	ok_btn.pressed.connect(submit)
+	row.add_child(ok_btn)
+	add_child(modal)
+
+
 # A manual rendition Save: write the overlay to disk, then finalize (return to the catalogue) like any
 # other save. Extraction instead calls _write_rendition_pack directly and STAYS in the builder.
 func _save_rendition() -> bool:
@@ -4998,6 +5193,8 @@ func _write_rendition_pack() -> Dictionary:
 		"slot_fills": _pool_slot_fills(paths["abs_dir"]),  # channel scripts pooled after the nodes above
 		"settings": settings,
 		"characters": characters,
+		"counters": _rendition_owned_counters(),
+		"flags": _rendition_owned_flags(),
 	}
 	var data: Dictionary = JourneyRendition.coerce_rendition(rendition)
 	# The rendition's OWN backdrop layers (pooled into its media/) — the base's stay in the base and are
@@ -5014,12 +5211,13 @@ func _write_rendition_pack() -> Dictionary:
 	return paths
 
 
-# {id: true} over a list of id-bearing dicts (settings, characters).
-func _ids_of(list: Array) -> Dictionary:
+# {id: true} over a list of id-bearing dicts (settings, characters) — or {name: true} for counters,
+# which are keyed by name.
+func _ids_of(list: Array, key: String = "id") -> Dictionary:
 	var ids: Dictionary = {}
 	for e: Variant in list:
-		if e is Dictionary and str((e as Dictionary).get("id", "")) != "":
-			ids[str((e as Dictionary).get("id", ""))] = true
+		if e is Dictionary and str((e as Dictionary).get(key, "")) != "":
+			ids[str((e as Dictionary).get(key, ""))] = true
 	return ids
 
 
@@ -5033,6 +5231,33 @@ func _rendition_owned_settings() -> Array:
 			and not _rendition_parent_setting_ids.has(str((s as Dictionary).get("id", "")))
 		):
 			out.append(s)
+	return out
+
+
+# The flags a rendition declared itself — same rule as its counters: it can name a new one, it cannot
+# rewrite the base's, which every other rendition on that base shares.
+func _rendition_owned_flags() -> Array:
+	var out: Array = []
+	for f: Variant in _journey_flags:
+		if (
+			f is Dictionary
+			and not _rendition_parent_flag_names.has(str((f as Dictionary).get("name", "")))
+		):
+			out.append(f)
+	return out
+
+
+# The counters a rendition declared itself. A rendition can give a NEW counter its bounds; it cannot
+# change the base's, which would edit the base through the back door and break every other rendition
+# stacked on it.
+func _rendition_owned_counters() -> Array:
+	var out: Array = []
+	for c: Variant in _journey_counters:
+		if (
+			c is Dictionary
+			and not _rendition_parent_counter_names.has(str((c as Dictionary).get("name", "")))
+		):
+			out.append(c)
 	return out
 
 
@@ -5744,7 +5969,11 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"AutoAdvanceEnabled": _journey_auto_advance_enabled,
 		"AutoAdvanceStoryboardSecs": _journey_auto_advance_storyboard_secs,
 		"AutoAdvanceForkSecs": _journey_auto_advance_fork_secs,
-		"ShownCounters": JourneyData.clean_flag_list(_journey_shown_counters),
+		"Counters": JourneyData.coerce_counter_defs(_journey_counters),
+		"Flags": JourneyData.coerce_flag_defs(_journey_flags),
+		# Written alongside the registry purely so a build older than 0.8.6 still surfaces the same
+		# counters to the player. Derived, never read back — the registry is the one source of truth.
+		"ShownCounters": JourneyData.shown_counter_names(_journey_counters),
 		"AllowFinish": _journey_allow_finish,
 		"FinishNode": _journey_finish_node,
 		"Items": JourneyData.coerce_journey_items(items_for_save),
@@ -6086,6 +6315,14 @@ func _save_round_node_media(
 					str(e_gif["rel"]) if e_gif["handled"] else _pool_small_file(e_boss_src, abs_dir)
 				)
 				entry_out["sensory"] = (entry_in.get("sensory", []) as Array).duplicate(true)
+				# The entry's authored encounter, its attack scripts / cast art / audio pooled into
+				# content/ exactly as a round-level timeline's are — which is what lets a rolled
+				# encounter travel in the .fhj rather than pointing at the author's own disk.
+				var e_tl_raw: Variant = entry_in.get("timeline", {})
+				if e_tl_raw is Dictionary:
+					var e_tl: Dictionary = RoundTimeline.normalize(e_tl_raw)
+					if not RoundTimeline.is_empty(e_tl):
+						entry_out["timeline"] = await _pool_timeline_media(e_tl, abs_dir, modal)
 			entries_out.append(entry_out)
 		saved_data["pool_entries"] = entries_out
 

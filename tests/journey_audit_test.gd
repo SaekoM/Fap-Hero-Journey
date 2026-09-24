@@ -615,3 +615,237 @@ func test_loop_counter_threshold_counts_body() -> void:
 	)
 	var dur_avg: float = float((result["stats"] as Dictionary)["duration_ms"]["avg"])
 	assert_bool(dur_avg >= 29500.0 and dur_avg <= 30500.0).is_true()  # belt hits 3 after 3x body
+
+
+# ── Declared counters ──────────────────────────────────────────
+# The simulation has to clamp exactly as the runtime does, or every number it reports is about a
+# journey the player never gets to play.
+
+
+func _counter(name: String, lo: Variant, hi: Variant, start: int = 0) -> Dictionary:
+	var d: Dictionary = JourneyData.new_counter_def(name)
+	d["has_min"] = lo != null
+	d["min"] = int(lo) if lo != null else 0
+	d["has_max"] = hi != null
+	d["max"] = int(hi) if hi != null else 0
+	d["start"] = start
+	return d
+
+
+func _counter_row(result: Dictionary, name: String) -> Dictionary:
+	for row: Variant in result.get("counters", []):
+		if row is Dictionary and str((row as Dictionary)["name"]) == name:
+			return row
+	return {}
+
+
+# A pistol issued full, fired dry, never refilled. The clamp holds it at 0 however many more shots
+# the journey takes, and the peak still remembers the 12 it began with.
+func test_a_declared_counter_starts_loaded_and_stops_at_its_floor() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{
+			"a":
+			{
+				"type": "round",
+				"data": {"coins": 0, "set_counters": {"ammo": -5}},
+				"out": [_edge("b")]
+			},
+			"b": {"type": "round", "data": {"coins": 0, "set_counters": {"ammo": -20}}, "out": []},
+		}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("ammo", 0, 12, 12)]})
+	var row: Dictionary = _counter_row(result, "ammo")
+	assert_int(int(row["lo"])).is_equal(0)  # −13 would be the unclamped total
+	assert_int(int(row["hi"])).is_equal(0)
+	assert_int(int(row["peak"])).is_equal(12)
+
+
+# The compatibility promise, proved through the whole audit: an undeclared counter is reported on by
+# nobody and clamped by nothing.
+func test_an_undeclared_counter_is_not_tracked_or_clamped() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{"a": {"type": "round", "data": {"coins": 0, "set_counters": {"stress": -40}}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph)
+	assert_array(result.get("counters", [])).is_empty()
+	assert_array(_findings_of_kind(result, "counter_pinned")).is_empty()
+
+
+# Every run pushes past the ceiling, so most of what the journey adds is thrown away — the case the
+# warning exists for, and one that looks perfectly correct node by node.
+func test_a_counter_pinned_at_its_ceiling_is_flagged() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{
+			"a":
+			{
+				"type": "round",
+				"data": {"coins": 0, "set_counters": {"arousal": 80}},
+				"out": [_edge("b")]
+			},
+			"b":
+			{"type": "round", "data": {"coins": 0, "set_counters": {"arousal": 80}}, "out": []},
+		}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("arousal", 0, 100)]})
+	assert_int(int(_counter_row(result, "arousal")["hi"])).is_equal(100)
+	assert_int(_findings_of_kind(result, "counter_pinned", JourneyAudit.SEV_WARN).size()).is_equal(
+		1
+	)
+
+
+func test_a_ceiling_nothing_comes_near_is_flagged() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{"a": {"type": "round", "data": {"coins": 0, "set_counters": {"arousal": 10}}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("arousal", 0, 100)]})
+	assert_int(_findings_of_kind(result, "counter_headroom").size()).is_equal(1)
+
+
+# Spending a counter all the way back down must NOT read as "never climbed": the run ends at 0 having
+# used the entire range, which is why the peak is tracked and not just the final value.
+func test_a_counter_spent_back_to_zero_is_not_called_unreachable() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{"a": {"type": "round", "data": {"coins": 0, "set_counters": {"ammo": -12}}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("ammo", 0, 12, 12)]})
+	assert_int(int(_counter_row(result, "ammo")["hi"])).is_equal(0)
+	assert_array(_findings_of_kind(result, "counter_headroom")).is_empty()
+	assert_array(_findings_of_kind(result, "counter_pinned")).is_empty()
+
+
+# The typo case: the row says "ammo", the node says "amo", and both halves look right on their own.
+func test_a_declared_counter_nothing_touches_is_flagged() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{"a": {"type": "round", "data": {"coins": 0, "set_counters": {"amo": -1}}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("ammo", 0, 12, 12)]})
+	assert_int(_findings_of_kind(result, "counter_unused").size()).is_equal(1)
+
+
+# Counter findings are about the journey, not a place in it, so they carry no node to jump to — the
+# report renders those without a node label.
+func test_counter_findings_carry_no_node() -> void:
+	var graph := {
+		"start": "a",
+		"nodes": {"a": {"type": "round", "data": {"coins": 0, "set_counters": {"x": 1}}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("ghost", 0, 100)]})
+	var found: Array = _findings_of_kind(result, "counter_unused")
+	assert_int(found.size()).is_equal(1)
+	assert_str(str((found[0] as Dictionary)["node_id"])).is_equal("")
+
+
+# A gate reads the CLAMPED value, so a fork asking for more than the ceiling allows can never be
+# taken — the simulation must agree with the runtime about that, or its traffic is fiction.
+func test_a_gate_above_the_ceiling_is_never_taken() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{
+			"a":
+			{
+				"type": "round",
+				"data": {"coins": 0, "set_counters": {"ammo": 99}},
+				"out": [_edge("gate")],
+			},
+			"gate":
+			{
+				"type": "fork",
+				"data":
+				{"resolution": "conditional", "cond_metric": "counter", "cond_counter": "ammo"},
+				"out": [_edge("rich", {"threshold": 50}), _edge("poor", {"threshold": 0})],
+			},
+			"rich": _round(0),
+			"poor": _round(0),
+		}
+	}
+	var result: Dictionary = _audit(graph, {"counters": [_counter("ammo", 0, 12)]})
+	var nodes: Dictionary = (result["visits"] as Dictionary)["nodes"]
+	assert_int(int(nodes.get("rich", 0))).is_equal(0)
+	assert_int(int(nodes.get("poor", 0))).is_greater(0)
+
+
+# A fork gating on ITS OWN counter, with choices that name none, must resolve against that counter's
+# real value — the substitution the runtime makes before resolving. The audit used to read counter ""
+# here, which is always 0, so a journey's main counter gate simulated as if nothing ever set it.
+func test_a_fork_level_counter_gate_reaches_its_choices() -> void:
+	var graph := {
+		"start": "gate",
+		"nodes":
+		{
+			"gate":
+			{
+				"type": "fork",
+				"data":
+				{
+					"resolution": "conditional",
+					"cond_metric": "counter",
+					"cond_counter": "ammo",
+					"default_path": 1,
+				},
+				"out": [_edge("armed", {"threshold": 10}), _edge("empty", {"threshold": 0})],
+			},
+			"armed": _round(0),
+			"empty": _round(0),
+		}
+	}
+	# Starts at 12, so the armed path is the one every run should take.
+	var result: Dictionary = _audit(graph, {"counters": [_counter("ammo", 0, 12, 12)]})
+	var nodes: Dictionary = (result["visits"] as Dictionary)["nodes"]
+	assert_int(int(nodes.get("armed", 0))).is_greater(0)
+	assert_int(int(nodes.get("empty", 0))).is_equal(0)
+
+
+# A declared flag nothing mentions is the typo case: the row says "spared_boss", the fork asks for
+# "spared_bos", and the branch simply never unlocks.
+func test_a_declared_flag_nothing_touches_is_flagged() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{"a": {"type": "round", "data": {"coins": 0, "set_flags": ["spared_bos"]}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph, {"flags": [JourneyData.new_flag_def("spared_boss")]})
+	assert_int(_findings_of_kind(result, "flag_declared_unused").size()).is_equal(1)
+
+
+func test_a_declared_flag_the_journey_uses_is_not_flagged() -> void:
+	var graph := {
+		"start": "a",
+		"nodes":
+		{"a": {"type": "round", "data": {"coins": 0, "set_flags": ["spared_boss"]}, "out": []}}
+	}
+	var result: Dictionary = _audit(graph, {"flags": [JourneyData.new_flag_def("spared_boss")]})
+	assert_array(_findings_of_kind(result, "flag_declared_unused")).is_empty()
+
+
+# A flag only ever READ still counts as used — nothing setting it is a different finding, anchored to
+# the choice that requires it, and reporting both would say the same thing twice.
+func test_a_flag_that_is_only_required_counts_as_used() -> void:
+	var graph := {
+		"start": "f",
+		"nodes":
+		{
+			"f":
+			{
+				"type": "fork",
+				"data": {"resolution": "conditional", "cond_metric": "flag"},
+				"out": [_edge("a", {"required_flag": "spared_boss"}), _edge("b")],
+			},
+			"a": _round(0),
+			"b": _round(0),
+		}
+	}
+	var result: Dictionary = _audit(graph, {"flags": [JourneyData.new_flag_def("spared_boss")]})
+	assert_array(_findings_of_kind(result, "flag_declared_unused")).is_empty()

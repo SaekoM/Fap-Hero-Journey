@@ -575,6 +575,12 @@ static func _resolve_round_paths(d: Dictionary, base: String) -> void:
 		entry["boss_image"] = _abs(str(entry.get("boss_image", "")), base)
 		_resolve_channels(entry.get("axis_scripts", {}), base)
 		_resolve_channels(entry.get("vib_scripts", {}), base)
+		# A boss entry's own encounter, healed and re-pointed at the pooled media the same way the
+		# round-level one above is.
+		if entry.get("timeline", null) is Dictionary:
+			entry["timeline"] = RoundTimeline.resolve_media(
+				RoundTimeline.normalize(entry["timeline"] as Dictionary), base
+			)
 
 
 # Resolves every value of a {channel: rel} media map to absolute, in place.

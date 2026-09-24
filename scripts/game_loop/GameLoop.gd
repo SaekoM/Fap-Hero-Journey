@@ -138,8 +138,10 @@ var _finish_node_id: String = ""
 var _auto_advance_enabled: bool = false
 var _auto_advance_storyboard_secs: int = 20
 var _auto_advance_fork_secs: int = 45
-# Counter names the author surfaced to the player (journey-level "ShownCounters"). A change to one
+# Counter names the author marked player-visible in the journey's counter registry. A change to one
 # of these shows the transient top-right pop; the inventory panel lists them. Others stay hidden.
+# The journey's declared counters (bounds live in GameState; these are for what to CALL one).
+var _journey_counters: Array = []
 var _shown_counters: Array = []
 # Occupied vertical slots for counter pops (index -> true) so simultaneous pops stack rather than
 # overlap. See _alloc_counter_pop_slot.
@@ -164,6 +166,11 @@ var _overlay_map_allowed: bool = false
 # True for the duration of a boss round (set when the round loads, cleared at
 # round end). Drives item lockout, the red frame, and the climax pulse.
 var _is_boss_round: bool = false
+
+# What this round's boss damage / attempt counters are keyed by. The node id for an ordinary boss
+# round; a pool round appends the drawn entry, since one node plays a different opponent each time.
+# Set in _begin_round, so it is always the fight currently on screen.
+var _boss_progress_id: String = ""
 # Pool ("encounter") round: set when a picked entry still owes its mystery reveal card. The
 # card is played in _start_round_after_gates (before any boss intro), not in _begin_round, so
 # a rolled boss stays a surprise until the card slides away.
@@ -364,7 +371,8 @@ func _ready() -> void:
 	_auto_advance_storyboard_secs = int(GameState.Journey.get("auto_advance_storyboard_secs", 20))
 	_auto_advance_fork_secs = int(GameState.Journey.get("auto_advance_fork_secs", 45))
 	_map_fog_reveal = int(GameState.Journey.get("map_fog_reveal", 1))
-	_shown_counters = (GameState.Journey.get("shown_counters", []) as Array)
+	_journey_counters = (GameState.Journey.get("counters", []) as Array)
+	_shown_counters = JourneyData.shown_counter_names(_journey_counters)
 	_build_map()
 	_connect_signals()
 	# Resume vs fresh start: when the player picked Resume from the catalogue,
@@ -958,6 +966,9 @@ func _load_current_round() -> void:
 	# type — a rolled boss telegraphs with its own intro card. The mystery reveal card is deferred
 	# to _start_round_after_gates so it plays before that boss intro. Must run before the flags.
 	_pending_encounter_card = false
+	# Cleared per round, never carried: _resolve_pool_round narrows it to the drawn entry, and the
+	# fallback below fills in the plain node id for every other kind of round.
+	_boss_progress_id = ""
 	if str(round.get("round_type", "normal")) == "pool":
 		_resolve_pool_round(round)
 		_pending_encounter_card = bool(round.get("show_encounter", true))
@@ -969,6 +980,10 @@ func _load_current_round() -> void:
 	_paused = false
 	_pause_btn.text = "|| PAUSE"
 	_update_muffle()  # a new round never starts muffled (e.g. paused → next round)
+
+	# A non-pool round's fight is the node's own; a pool round set this to the drawn entry above.
+	if _boss_progress_id == "":
+		_boss_progress_id = GameState.CurrentNodeId()
 
 	var rtype: String = round.get("round_type", "normal")
 	_is_boss_round = rtype == "boss"
@@ -1534,7 +1549,9 @@ func _fade_and_free_overlay(node: Control, dur: float = 0.4) -> void:
 # _begin_round — long after the intro card has been shown or skipped. The counter holds the attempt that
 # just ended, so anything above zero means this is not the first arrival.
 func _is_boss_replay() -> bool:
-	return GameState.CounterValue(RoundTimeline.attempt_counter_key(GameState.CurrentNodeId())) > 0
+	# Keyed like the rest of this fight's progress — for a pool round that is the drawn entry, so a
+	# second opponent at the same node still gets her own intro card.
+	return GameState.CounterValue(RoundTimeline.attempt_counter_key(_boss_progress_id)) > 0
 
 
 func _show_boss_intro(round: Dictionary) -> void:
@@ -1947,6 +1964,15 @@ func _resolve_pool_round(round: Dictionary) -> void:
 		round["boss_tagline"] = str(e.get("boss_tagline", ""))
 		round["boss_image"] = str(e.get("boss_image", ""))
 		round["sensory"] = (e.get("sensory", []) as Array).duplicate(true)
+	# The drawn entry's OWN encounter, and only ever that one. Assigned unconditionally so a
+	# round-level timeline left behind by a round that used to be a boss can never play for an entry
+	# that never authored a fight.
+	var e_timeline: Variant = e.get("timeline", {})
+	round["timeline"] = e_timeline if e_timeline is Dictionary else {}
+	# Each encounter's damage and attempts are ITS own. The progress counters are keyed by node, and
+	# one pool node plays every entry — so without this, losing to one opponent would leave the next
+	# one starting the fight already wounded and on attempt two.
+	_boss_progress_id = "%s#%s" % [GameState.CurrentNodeId(), str(e.get("video_path", ""))]
 
 
 # The mystery "ENCOUNTER!" reveal for a pool round: slides in from the right, holds,
@@ -3452,9 +3478,9 @@ func _on_save_item_used() -> void:
 		_show_toast("✕  SAVE FAILED")
 
 
-# A player-visible counter changed → transient top-right pop. Hidden counters (not in the journey's
-# ShownCounters) fire the signal but show nothing — they gate silently. The persistent value list
-# lives in the inventory panel.
+# A player-visible counter changed → transient top-right pop. A counter the journey never marked
+# shown — including every undeclared one — fires the signal and displays nothing: it gates
+# silently. The persistent value list lives in the inventory panel.
 func _on_counter_changed(name: String, value: int, delta: int) -> void:
 	if name in _shown_counters:
 		_show_counter_pop(name, value, delta)
@@ -3474,7 +3500,10 @@ func _alloc_counter_pop_slot() -> int:
 # A counter changed: "BELT  +1  → 3". Green for a gain, magenta for a loss.
 func _show_counter_pop(name: String, value: int, delta: int) -> void:
 	_show_pop(
-		name, "%+d" % delta, "→ %d" % value, UITheme.SUCCESS if delta >= 0 else UITheme.MAGENTA
+		JourneyData.counter_display_name(_journey_counters, name),
+		"%+d" % delta,
+		"→ %d" % value,
+		UITheme.SUCCESS if delta >= 0 else UITheme.MAGENTA
 	)
 
 
@@ -4315,9 +4344,12 @@ func _reset_boss_fight() -> void:
 func _load_boss_counters() -> void:
 	if _timeline_data.is_empty():
 		return
-	var node_id: String = GameState.CurrentNodeId()
-	_boss_damage_carried = GameState.CounterValue(RoundTimeline.damage_counter_key(node_id))
-	_boss_attempt = maxi(1, GameState.CounterValue(RoundTimeline.attempt_counter_key(node_id)) + 1)
+	_boss_damage_carried = GameState.CounterValue(
+		RoundTimeline.damage_counter_key(_boss_progress_id)
+	)
+	_boss_attempt = maxi(
+		1, GameState.CounterValue(RoundTimeline.attempt_counter_key(_boss_progress_id)) + 1
+	)
 	# She recovers some of the bar between attempts, so a replay can escalate rather than only grind
 	# down whatever is left. Applied on LOAD rather than when banking: the counter still records exactly
 	# what the player achieved, and only the fight they walk back into is softened.
@@ -4332,9 +4364,10 @@ func _load_boss_counters() -> void:
 func _bank_boss_progress() -> void:
 	if _timeline_data.is_empty():
 		return
-	var node_id: String = GameState.CurrentNodeId()
-	GameState.SetCounterValue(RoundTimeline.damage_counter_key(node_id), _boss_damage_total())
-	GameState.SetCounterValue(RoundTimeline.attempt_counter_key(node_id), _boss_attempt)
+	GameState.SetCounterValue(
+		RoundTimeline.damage_counter_key(_boss_progress_id), _boss_damage_total()
+	)
+	GameState.SetCounterValue(RoundTimeline.attempt_counter_key(_boss_progress_id), _boss_attempt)
 
 
 # Wipes a beaten boss's bookkeeping. Without this a journey that loops back to the same node would find
@@ -4342,9 +4375,8 @@ func _bank_boss_progress() -> void:
 func _clear_boss_progress() -> void:
 	if _timeline_data.is_empty():
 		return
-	var node_id: String = GameState.CurrentNodeId()
-	GameState.SetCounterValue(RoundTimeline.damage_counter_key(node_id), 0)
-	GameState.SetCounterValue(RoundTimeline.attempt_counter_key(node_id), 0)
+	GameState.SetCounterValue(RoundTimeline.damage_counter_key(_boss_progress_id), 0)
+	GameState.SetCounterValue(RoundTimeline.attempt_counter_key(_boss_progress_id), 0)
 
 
 # Sets the flag an author hung on this outcome, if they named one. Advancing past a boss no longer tells

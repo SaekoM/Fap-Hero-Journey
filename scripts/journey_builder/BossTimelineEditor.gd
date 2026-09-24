@@ -72,6 +72,12 @@ var _items: Array = []  # the journey's custom items — an override among them 
 # with it off they are authorable but unreachable — worth saying plainly rather than letting someone
 # build an ending that silently never plays.
 var _allow_finish: bool = false
+
+# The journey's declared flags (shared reference) and the builder's "declare a new one" prompt. Empty
+# and invalid respectively when the editor is opened without them, which just leaves the WON / LOST
+# pickers listing whatever the encounter already names.
+var _flags: Array = []
+var _on_new_flag: Callable = Callable()
 var _reference_points: Array = []  # the round's stroke as (t_ms, pos), reused by the effect overlays
 
 var _modal: Control = null
@@ -138,7 +144,9 @@ func open(
 	funscript_path: String = "",
 	characters: Array = [],
 	items: Array = [],
-	allow_finish: bool = false
+	allow_finish: bool = false,
+	flags: Array = [],
+	on_new_flag: Callable = Callable()
 ) -> void:
 	_timeline = RoundTimeline.normalize(timeline)
 	_full_ms = maxi(1, full_ms)
@@ -147,6 +155,10 @@ func open(
 	_characters = characters
 	_items = items
 	_allow_finish = allow_finish
+	# The journey's declared flags, so an outcome picks one rather than spelling it. Held by reference:
+	# declaring one here adds it to the journey, which is where the rest of the builder reads it from.
+	_flags = flags
+	_on_new_flag = on_new_flag
 	parent.add_child(self)  # in the tree, so the modal below is freed with this node
 
 	var parts: Dictionary = UITheme.build_centered_modal(
@@ -1533,6 +1545,70 @@ func _build_outcomes_section() -> void:
 	)
 
 
+## The dropdown id for "declare a new flag and raise it here", past the end of the name ids.
+const NEW_FLAG_ID: int = 9000
+
+
+# Which run flag this ending raises, picked from the journey's flags rather than typed. A flag that is
+# spelled differently here than in the fork that reads it is a fight whose outcome the journey never
+# learns — and both halves look correct on their own.
+func _make_outcome_flag_field(flag_key: String) -> OptionButton:
+	var dd: OptionButton = OptionButton.new()
+	var names: Array = _flag_names()
+	var current: String = str(_timeline.get(flag_key, "")).strip_edges()
+	if current != "" and not (current in names):
+		names.append(current)  # a flag this encounter names that the journey no longer knows
+
+	dd.add_item("(raises nothing)", 0)
+	for i: int in names.size():
+		dd.add_item(str(names[i]), i + 1)
+	if _on_new_flag.is_valid():
+		dd.add_separator()
+		dd.add_item("＋ NEW FLAG…", NEW_FLAG_ID)
+	dd.selected = 0 if current == "" else names.find(current) + 1
+	dd.tooltip_text = (UITheme.wrap_tip(
+		(
+			"Raises this run flag when the round ends this way, so a later fork or round can ask "
+			+ "how the fight went. Advancing past the boss no longer means the player beat it."
+		)
+	))
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(idx: int) -> void:
+			var id: int = dd.get_item_id(idx)
+			if id == NEW_FLAG_ID:
+				dd.selected = 0 if current == "" else names.find(current) + 1
+				_on_new_flag.call(_adopt_new_outcome_flag.bind(flag_key))
+				return
+			if id != 0 and (id < 1 or id > names.size()):
+				return
+			_snapshot("field:" + flag_key)
+			_timeline[flag_key] = "" if id == 0 else str(names[id - 1])
+	)
+	return dd
+
+
+# The journey's flag names for the pickers: declared first, then any this encounter's own endings
+# already raise, so a second ending can reuse what the first named.
+func _flag_names() -> Array:
+	var out: Array = []
+	for d: Variant in _flags:
+		if d is Dictionary and str((d as Dictionary).get("name", "")) != "":
+			out.append(str((d as Dictionary)["name"]))
+	for name: String in RoundTimeline.outcome_flags(_timeline):
+		if not (name in out):
+			out.append(name)
+	return out
+
+
+# Takes the name the builder's NEW FLAG prompt produced. Rebuilds the inspector so every outcome's
+# picker offers it, not just the one that asked.
+func _adopt_new_outcome_flag(flag_key: String, name: String) -> void:
+	_snapshot("field:" + flag_key)
+	_timeline[flag_key] = name
+	_rebuild_inspector()
+
+
 # A folding section of the inspector: a header that opens and closes a body of controls.
 #
 # The encounter settings run to about forty controls, and an author works one of these at a time — as one
@@ -1805,25 +1881,7 @@ func _build_outcome_block(
 		_inspector.add_child(_make_outcome_row(event))
 
 	if flag_key != "":
-		var flag: LineEdit = LineEdit.new()
-		flag.text = str(_timeline.get(flag_key, ""))
-		flag.placeholder_text = "Flag to raise (optional)"
-		flag.tooltip_text = (
-			UITheme
-			. wrap_tip(
-				(
-					"Raises this run flag when the round ends this way, so a later fork or round can ask "
-					+ "how the fight went. Advancing past the boss no longer means the player beat it."
-				)
-			)
-		)
-		UITheme.style_line_edit(flag)
-		flag.text_changed.connect(
-			func(value: String) -> void:
-				_snapshot("field:" + flag_key)
-				_timeline[flag_key] = value
-		)
-		_inspector.add_child(flag)
+		_inspector.add_child(_make_outcome_flag_field(flag_key))
 
 	var add_row: HBoxContainer = HBoxContainer.new()
 	add_row.add_theme_constant_override("separation", 8)

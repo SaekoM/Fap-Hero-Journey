@@ -54,14 +54,15 @@ func _ready() -> void:
 
 
 # Rebuilds the journey-stats list from the counters the author marked player-visible
-# (GameState.Journey.shown_counters); hidden entirely when the journey surfaces none.
+# (the journey's counter registry); hidden entirely when the journey surfaces none.
 func _refresh_stats() -> void:
 	if _stats_box == null:
 		return
 	for c in _stats_box.get_children():
 		c.queue_free()
 
-	var shown: Array = GameState.Journey.get("shown_counters", [])
+	var defs: Array = GameState.Journey.get("counters", [])
+	var shown: Array = JourneyData.shown_counter_names(defs)
 	if shown.is_empty():
 		return
 
@@ -74,12 +75,20 @@ func _refresh_stats() -> void:
 	for name: Variant in shown:
 		var row: HBoxContainer = HBoxContainer.new()
 		var n_lbl: Label = Label.new()
-		n_lbl.text = str(name).to_upper()
+		n_lbl.text = JourneyData.counter_display_name(defs, str(name)).to_upper()
 		n_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		UITheme.style_label(n_lbl, UITheme.WHITE_SOFT, 12, false)
 		row.add_child(n_lbl)
 		var v_lbl: Label = Label.new()
-		v_lbl.text = str(GameState.CounterValue(str(name)))
+		# A counter with a ceiling reads as "8 / 12": the number alone doesn't say how much is left,
+		# which is the whole question an ammo count is asked.
+		var def: Dictionary = JourneyData.counter_def(defs, str(name))
+		var value: int = GameState.CounterValue(str(name))
+		v_lbl.text = (
+			"%d / %d" % [value, int(def.get("max", 0))]
+			if bool(def.get("has_max", false))
+			else str(value)
+		)
 		UITheme.style_label(v_lbl, UITheme.PURPLE_BRIGHT, 12, true)
 		row.add_child(v_lbl)
 		_stats_box.add_child(row)

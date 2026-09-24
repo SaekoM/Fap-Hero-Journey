@@ -209,6 +209,8 @@ static func rendition_over_handoff(
 		"chain_folders": ancestors.duplicate(),
 		"settings": composed.get("settings", []),
 		"characters": composed.get("characters", []),
+		"counters": composed.get("counters", []),
+		"flags": composed.get("flags", []),
 	}
 
 
@@ -226,11 +228,14 @@ static func compose_play_journey(
 		return {}
 	var graph: Dictionary = {"start": base.get("start", ""), "nodes": base.get("nodes", {})}
 	var errors: Array = []
-	# Settings and cast are ADDITIVE through the chain: the base's first, then each rendition's own,
-	# first id wins — a rendition brings its own places and people but never replaces the base's
-	# (JourneyRendition's contract), and every scene in the merged graph finds what it references.
+	# Settings, cast and counters are ADDITIVE through the chain: the base's first, then each
+	# rendition's own, first entry wins — a rendition brings its own places, people and counters but
+	# never replaces the base's (JourneyRendition's contract), so every scene in the merged graph finds
+	# what it references and every counter keeps the bounds the base gave it.
 	var settings: Array = base.get("settings", [])
 	var characters: Array = base.get("characters", [])
+	var counters: Array = base.get("counters", [])
+	var flags: Array = base.get("flags", [])
 	for rf: Variant in chain_folders:
 		var delta: Dictionary = load_rendition_delta(str(rf))
 		var composed: Dictionary = JourneyCompose.compose_graph(graph, delta)
@@ -238,10 +243,14 @@ static func compose_play_journey(
 		errors.append_array(composed["errors"] as Array)
 		settings = JourneyData.merge_by_id(settings, delta.get("settings", []))
 		characters = JourneyData.merge_by_id(characters, delta.get("characters", []))
+		counters = JourneyData.merge_by_id(counters, delta.get("counters", []), "name")
+		flags = JourneyData.merge_by_id(flags, delta.get("flags", []), "name")
 	base["start"] = graph["start"]
 	base["nodes"] = graph["nodes"]
 	base["settings"] = settings
 	base["characters"] = characters
+	base["counters"] = counters
+	base["flags"] = flags
 	base["compose_errors"] = errors
 	base["active_rendition"] = str(chain_folders[-1]) if not chain_folders.is_empty() else ""
 	# Rebuild the catalogue preview (round/fork/shop/storyboard lists + totals) from the MERGED graph so
@@ -317,8 +326,10 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
-		# Counter names surfaced to the player (see _graph_meta).
-		"shown_counters": JourneyData.clean_flag_list(data.get("ShownCounters", [])),
+		# The journey's declared counters: bounds, starting value and whether the player sees each
+		# one. A journey written before the registry migrates from its ShownCounters list.
+		"counters": JourneyData.counter_defs_from_disk(data),
+		"flags": JourneyData.parse_flag_defs(data.get("Flags", [])),
 		# Stable journey id; blank on journeys written before ids existed (see _graph_meta).
 		"journey_id": str(data.get("JourneyId", "")),
 		# Soft edit-lock: true on a journey installed from a paid pack, so the buyer can't open it in the
@@ -712,9 +723,11 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Soft edit-lock: true on a journey installed from a paid pack, so the buyer can't open it in the
 		# builder. A courtesy lock (journey.json is plaintext) — see JourneySelect._on_edit_pressed.
 		"locked": bool(data.get("Locked", false)),
-		# Counter names the author chose to surface to the player (HUD pop + inventory list). The
-		# runtime reads this off GameState.Journey; other counters stay hidden, gating only.
-		"shown_counters": JourneyData.clean_flag_list(data.get("ShownCounters", [])),
+		# The journey's declared counters — bounds, starting values, and which ones the player sees
+		# (HUD pop + inventory list). The runtime reads this off GameState.Journey to clamp every
+		# counter write; an undeclared counter stays unbounded and hidden, gating only.
+		"counters": JourneyData.counter_defs_from_disk(data),
+		"flags": JourneyData.parse_flag_defs(data.get("Flags", [])),
 		# Author-defined journey-scoped items — loaded into InventoryService at play and listed in the
 		# builder's item dropdowns. Parsed to the runtime (snake-case) shape, image paths resolved.
 		"items": _journey_items_resolved(data, path),

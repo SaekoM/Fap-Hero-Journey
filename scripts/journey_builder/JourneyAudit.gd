@@ -85,12 +85,15 @@ static func audit(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 	findings.append_array(_coverage_findings(graph, ctx))
 	findings.append_array(_checkpoint_findings(flow))
 	findings.append_array(_cold_edge_findings(graph, visits))
+	findings.append_array(_counter_findings(graph, visits))
+	findings.append_array(_flag_findings(graph, ctx))
 
 	return {
 		"findings": findings,
 		"coins": flow["coins"],
 		"last_score": flow["last_score"],
 		"visits": visits,
+		"counters": visits.get("counters", []),
 		"stats": _statistics(graph, ctx, flow, visits),
 	}
 
@@ -1097,6 +1100,33 @@ static func simulate(
 	var round_scores: Dictionary = ctx.get("round_scores", {})
 	var round_lengths: Dictionary = ctx.get("round_lengths", {})
 	var items: Dictionary = ctx.get("items", {})
+	# Declared counters are tracked across runs; undeclared ones are left alone. A counter nobody gave
+	# rules to has no ceiling to be pinned against and no start to report, so there is nothing to say
+	# about it that the node it is set on doesn't already say.
+	var counter_defs: Array = ctx.get("counters", [])
+	var counter_starts: Dictionary = JourneyData.counter_start_values(counter_defs)
+	var tracked_counters: Array = []
+	var counter_finals: Dictionary = {}  # name → {lo, hi, sum}
+	var counter_absorbed: Dictionary = {}  # name → runs where a bound shortened a delta
+	var counter_arrivals: Dictionary = {}  # name → {node_id: summed value on arrival}
+	for d: Variant in counter_defs:
+		if not (d is Dictionary):
+			continue
+		var dname: String = str((d as Dictionary).get("name", ""))
+		if dname == "":
+			continue
+		tracked_counters.append(dname)
+		# The peak starts AT the counter's starting value: a pistol issued full and only ever fired
+		# would otherwise report a peak below the load it began with.
+		counter_finals[dname] = {
+			"lo": 0,
+			"hi": 0,
+			"sum": 0,
+			"seeded": false,
+			"peak": int(counter_starts.get(dname, 0)),
+		}
+		counter_absorbed[dname] = 0
+		counter_arrivals[dname] = {}
 	var all_item_ids: Array = items.keys()
 	all_item_ids.sort()
 	var needed_below: Dictionary = _items_needed_below(graph)
@@ -1129,7 +1159,10 @@ static func simulate(
 		var owned: Dictionary = {}  # item_id → count
 		var run_flags: Dictionary = {}
 		var loop_iters: Dictionary = {}  # loop_end id → iterations this run (mirrors GameState._loopCounts)
-		var counters: Dictionary = {}  # counter name → value (mirrors GameState._counters) for gates/loops
+		# Counter name → value (mirrors GameState._counters) for gates and loops, seeded with the
+		# declared starting values exactly as a real run begins.
+		var counters: Dictionary = counter_starts.duplicate()
+		var absorbed: Dictionary = {}  # names a bound shortened a delta for, this run
 		var id: String = start
 		var steps: int = 0
 
@@ -1145,8 +1178,14 @@ static func simulate(
 			var type: String = str(node.get("type", ""))
 			for f: String in JourneyData.clean_flag_list(data.get("set_flags", [])):
 				run_flags[f] = true
+			# Counters ON ARRIVAL, before this node applies its own — the same moment the coin and
+			# score averages are taken, so the side panel reads one consistent "state here".
+			for cname: String in tracked_counters:
+				var seen: Dictionary = counter_arrivals[cname]
+				seen[id] = int(seen.get(id, 0)) + int(counters.get(cname, 0))
 			_roll_boss_outcome(data, run_flags, rng)
-			_apply_counters(counters, data)
+			_apply_counters(counters, data, counter_defs, absorbed)
+			_sample_counter_extremes(counter_finals, counters, tracked_counters)
 
 			match type:
 				"round":
@@ -1217,7 +1256,8 @@ static func simulate(
 			var e: Dictionary = out[ei]
 			for f: String in JourneyData.clean_flag_list(e.get("set_flags", [])):
 				run_flags[f] = true
-			_apply_counters(counters, e)
+			_apply_counters(counters, e, counter_defs, absorbed)
+			_sample_counter_extremes(counter_finals, counters, tracked_counters)
 			if type == "fork" and str(data.get("resolution", "")) == "sacrifice":
 				coins = maxi(0, coins - int(e.get("cost", 0)))
 				var req: String = str(e.get("required_item", ""))
@@ -1227,6 +1267,17 @@ static func simulate(
 			edge_visits[key] = int(edge_visits.get(key, 0)) + 1
 			id = str(e.get("to", ""))
 
+		# Where this run left each declared counter, and whether a bound ever had to step in.
+		for cname: String in tracked_counters:
+			var acc: Dictionary = counter_finals[cname]
+			var value: int = int(counters.get(cname, 0))
+			acc["lo"] = value if not bool(acc["seeded"]) else mini(int(acc["lo"]), value)
+			acc["hi"] = value if not bool(acc["seeded"]) else maxi(int(acc["hi"]), value)
+			acc["sum"] = int(acc["sum"]) + value
+			acc["seeded"] = true
+			if absorbed.has(cname):
+				counter_absorbed[cname] = int(counter_absorbed[cname]) + 1
+
 	var avg_arrival_coins: Dictionary = {}
 	var avg_arrival_score: Dictionary = {}
 	for id: String in node_visits:
@@ -1235,6 +1286,14 @@ static func simulate(
 		avg_arrival_score[id] = float(arrive_score.get(id, 0)) / v
 
 	var denom: int = maxi(1, completed)
+	var avg_arrival_counters: Dictionary = {}
+	for cname: String in tracked_counters:
+		var per_node: Dictionary = {}
+		for id: String in counter_arrivals[cname] as Dictionary:
+			per_node[id] = (
+				float((counter_arrivals[cname] as Dictionary)[id]) / maxi(1, int(node_visits[id]))
+			)
+		avg_arrival_counters[cname] = per_node
 	return {
 		"runs": runs,
 		"nodes": node_visits,
@@ -1247,7 +1306,45 @@ static func simulate(
 		"avg_stretch_ms": float(stretch_total_ms) / maxi(1, stretch_count),
 		"avg_arrival_coins": avg_arrival_coins,
 		"avg_arrival_score": avg_arrival_score,
+		"avg_arrival_counters": avg_arrival_counters,
+		"counters": _counter_summary(counter_defs, counter_finals, counter_absorbed, runs),
 	}
+
+
+# The highest each tracked counter has been at ANY point, across every run. Sampled after every write
+# rather than at the end, because where a run finishes says nothing about where it went: ammo issued
+# at 12 and spent to 0 ends at 0 having used its whole range.
+static func _sample_counter_extremes(
+	finals: Dictionary, counters: Dictionary, tracked: Array
+) -> void:
+	for name: String in tracked:
+		var acc: Dictionary = finals[name]
+		acc["peak"] = maxi(int(acc["peak"]), int(counters.get(name, 0)))
+
+
+# Per declared counter: its bounds, where the simulated runs left it, and how often a bound had to
+# step in. {name, label, has_min, min, has_max, max, start, lo, hi, peak, avg, absorbed_pct} — lo/hi
+# being the spread of FINAL values, peak the highest reached along the way.
+static func _counter_summary(
+	defs: Array, finals: Dictionary, absorbed: Dictionary, runs: int
+) -> Array:
+	var out: Array = []
+	for d: Variant in defs:
+		if not (d is Dictionary):
+			continue
+		var def: Dictionary = d
+		var name: String = str(def.get("name", ""))
+		if name == "" or not finals.has(name):
+			continue
+		var acc: Dictionary = finals[name]
+		var row: Dictionary = def.duplicate()
+		row["lo"] = int(acc["lo"])
+		row["hi"] = int(acc["hi"])
+		row["peak"] = int(acc["peak"])
+		row["avg"] = float(acc["sum"]) / float(maxi(1, runs))
+		row["absorbed_pct"] = float(int(absorbed.get(name, 0))) * 100.0 / float(maxi(1, runs))
+		out.append(row)
+	return out
 
 
 # One simulated round's coin delta under the baseline model (endure, never
@@ -1295,10 +1392,20 @@ static func _roll_round_coins(
 
 # Applies a node's / fork-edge's set_counters ({name: signed delta}) to the run's counters — the sim's
 # mirror of GameState.ApplyCounters, so counter gates and counter-exit loops evaluate against real values.
-static func _apply_counters(counters: Dictionary, src: Dictionary) -> void:
+# `defs` are the journey's declared counters, so the bounds bind here too: a gate on ammo ≥ 10 must see
+# the same ammo the player would. `absorbed` collects the names a bound shortened a delta for, which is
+# what the report's pin warnings are counted from.
+static func _apply_counters(
+	counters: Dictionary, src: Dictionary, defs: Array = [], absorbed: Dictionary = {}
+) -> void:
 	var deltas: Dictionary = src.get("set_counters", {})
 	for cname: Variant in deltas:
-		counters[str(cname)] = int(counters.get(str(cname), 0)) + int(deltas[cname])
+		var name: String = str(cname)
+		var want: int = int(counters.get(name, 0)) + int(deltas[cname])
+		var got: int = JourneyData.clamp_counter_by_name(defs, name, want)
+		if got != want:
+			absorbed[name] = true
+		counters[name] = got
 
 
 # Mirrors GameState.LoopExitReady for the Monte-Carlo: is a loop_end's exit satisfied at iteration `iters`,
@@ -1374,7 +1481,14 @@ static func _pick_edge(
 			var checker: Callable = has_flag if metric == "flag" else is_owned
 			# Counters are tracked through the run (nodes'/edges' set_counters), so counter gates resolve
 			# against real values just like the runtime.
-			var counter_of: Callable = func(cn: String) -> int: return int(counters.get(cn, 0))
+			#
+			# A choice that names no counter of its own gates on the FORK's, which is the substitution
+			# GameState.ResolveFork makes before handing its paths to the same resolver. Without it every
+			# such choice here resolved against counter "" — always 0 — so a fork with one counter and
+			# several thresholds simulated as if the counter never moved.
+			var fork_counter: String = str(data.get("cond_counter", ""))
+			var counter_of: Callable = func(cn: String) -> int:
+				return int(counters.get(cn if cn != "" else fork_counter, 0))
 			return ForkResolver.conditional_path(
 				out, metric, int(data.get("default_path", 0)), value, checker, counter_of
 			)
@@ -1391,6 +1505,132 @@ static func _pick_edge(
 			return affordable[rng.randi_range(0, affordable.size() - 1)]
 		_:  # player choice — uniform
 			return rng.randi_range(0, out.size() - 1)
+
+
+# ── Counter findings ───────────────────────────────────────
+# A clamp never breaks a journey, so nothing here is DEAD. What it can do is quietly make an author's
+# arithmetic meaningless — a counter that spends the run pinned at its ceiling discards most of what
+# the journey adds to it, and one that never comes near its ceiling was given the wrong range. Both
+# read as "my numbers do nothing" while every node looks correct on its own.
+
+# Runs where a bound had to shorten a delta, above which the counter is judged pinned rather than
+# occasionally topped up. Half is the point where the clamp is the rule and not the exception.
+const COUNTER_PINNED_PCT: float = 50.0
+
+## A counter reaching this little of its range across every simulated run has a ceiling that isn't
+## doing the job the author set it — a fifth is low enough that a deliberately generous headroom
+## doesn't trip it.
+const COUNTER_HEADROOM_PCT: float = 20.0
+
+
+static func _counter_findings(graph: Dictionary, visits: Dictionary) -> Array:
+	var out: Array = []
+	var used: Array = JourneyData.counter_names_in_graph(graph)
+	for row: Variant in visits.get("counters", []):
+		if not (row is Dictionary):
+			continue
+		var c: Dictionary = row
+		var name: String = str(c.get("label", "")).strip_edges()
+		if name == "":
+			name = str(c.get("name", ""))
+
+		# Declared and untouched. Usually a name typed two ways — the row says `ammo`, the node says
+		# `amo` — which reads as a counter that simply refuses to move, with both halves looking right.
+		if not (str(c.get("name", "")) in used):
+			(
+				out
+				. append(
+					_finding(
+						SEV_INFO,
+						"counter_unused",
+						"",
+						-1,
+						(
+							'"%s" is declared but nothing in this journey sets or reads it — check the name matches what the nodes use.'
+							% name
+						)
+					)
+				)
+			)
+			continue
+
+		var pinned: float = float(c.get("absorbed_pct", 0.0))
+		if pinned >= COUNTER_PINNED_PCT:
+			(
+				out
+				. append(
+					_finding(
+						SEV_WARN,
+						"counter_pinned",
+						"",
+						-1,
+						(
+							'"%s" runs into its limits in %d%% of runs — changes outside %s are discarded. Widen the range, or spend it somewhere.'
+							% [name, roundi(pinned), JourneyData.counter_range_text(c)]
+						)
+					)
+				)
+			)
+			continue
+		# Headroom only means something against a real ceiling, and only once the range is wide
+		# enough for "barely used" to be distinguishable from "nearly full".
+		if not bool(c.get("has_max", false)) or not bool(c.get("has_min", false)):
+			continue
+		var lo: int = int(c.get("min", 0))
+		var hi: int = int(c.get("max", 0))
+		var span: int = hi - lo
+		var reached: int = int(c.get("peak", 0)) - lo
+		if span < 5 or reached < 0:
+			continue
+		var used_pct: float = float(reached) * 100.0 / float(span)
+		if used_pct <= COUNTER_HEADROOM_PCT:
+			(
+				out
+				. append(
+					_finding(
+						SEV_INFO,
+						"counter_headroom",
+						"",
+						-1,
+						(
+							'"%s" never gets above %d of its %d ceiling in any run — the top of its range is unreachable.'
+							% [name, int(c.get("peak", 0)), hi]
+						)
+					)
+				)
+			)
+	return out
+
+
+# A declared flag the journey never mentions. Almost always a name written two ways — the row says
+# "spared_boss", the fork asks for "spared_bos" — which reads as a branch the player never unlocked,
+# with both halves looking right. The counter registry has the same check for the same reason.
+static func _flag_findings(graph: Dictionary, ctx: Dictionary) -> Array:
+	var out: Array = []
+	var used: Array = JourneyData.flag_names_in_graph(graph)
+	for d: Variant in ctx.get("flags", []):
+		if not (d is Dictionary):
+			continue
+		var name: String = str((d as Dictionary).get("name", ""))
+		if name == "" or name in used:
+			continue
+		var shown: String = str((d as Dictionary).get("label", "")).strip_edges()
+		(
+			out
+			. append(
+				_finding(
+					SEV_INFO,
+					"flag_declared_unused",
+					"",
+					-1,
+					(
+						'Flag "%s" is declared but nothing in this journey sets or reads it — check the name matches what the nodes use.'
+						% (shown if shown != "" else name)
+					)
+				)
+			)
+		)
+	return out
 
 
 static func _cold_edge_findings(graph: Dictionary, visits: Dictionary) -> Array:

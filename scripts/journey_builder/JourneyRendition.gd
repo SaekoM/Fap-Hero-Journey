@@ -15,11 +15,13 @@ extends RefCounted
 ##     "Anchors": [ {"Anchor": <existing node id>, "Edge": {to, …}, "Slot"?: <fork choice idx>} ],
 ##     "SlotFills": [ {"Node", "Field", "Channel"?, "Path"} ],
 ##     "Settings": [ …the rendition's OWN places… ], "Characters": [ …its OWN cast… ],
+##     "Counters": [ …its OWN declared counters… ], "Flags": [ …its OWN declared flags… ],
 ##   }
 ## Envelope keys are PascalCase (journey.json convention); node data + out-edges stay lowercase, exactly
 ## as a normal journey stores them — so Anchors' `Edge` is a plain out-edge dict.
 ##
-## Settings and Characters are ADDITIVE (0.8.6): a rendition brings its own places and people, pooled
+## Settings, Characters, Counters and Flags are ADDITIVE (0.8.6): a rendition brings its own places,
+## people, counters and flags, pooled
 ## in its own folder, and the composed journey is the base's list followed by each rendition's, first
 ## id wins (JourneyData.merge_by_id). A rendition never edits or removes the base's — the same contract
 ## as nodes — so it can be discarded, merged or stacked without the base changing underneath another
@@ -51,6 +53,8 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 		"anchors": _parse_anchors(data.get("Anchors", [])),
 		"slot_fills": _parse_slot_fills(data.get("SlotFills", [])),
 		"settings": JourneyData.parse_journey_settings(data.get("Settings", [])),
+		"counters": JourneyData.parse_counter_defs(data.get("Counters", [])),
+		"flags": JourneyData.parse_flag_defs(data.get("Flags", [])),
 		"characters": JourneyData.parse_journey_characters(data.get("Characters", [])),
 	}
 
@@ -78,6 +82,8 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 		"Anchors": _coerce_anchors(rendition.get("anchors", [])),
 		"SlotFills": _coerce_slot_fills(rendition.get("slot_fills", [])),
 		"Settings": JourneyData.coerce_journey_settings(rendition.get("settings", [])),
+		"Counters": JourneyData.coerce_counter_defs(rendition.get("counters", [])),
+		"Flags": JourneyData.coerce_flag_defs(rendition.get("flags", [])),
 		"Characters": JourneyData.coerce_journey_characters(rendition.get("characters", [])),
 	}
 	JourneyData.stamp_journey_identity(out, str(rendition.get("journey_id", "")))

@@ -69,6 +69,39 @@ func _ready() -> void:
 	_set_style(false)
 
 
+# A card that is not a journey: the slot at the end of the catalogue that leads somewhere new ones can
+# be found. Built through the same card so it inherits the hover, the scale and the intro animation —
+# it belongs in the grid, so it should behave like the things around it rather than be a button wearing
+# a card's clothes.
+#
+# `glyph` stands in for the cover. No difficulty pill, no round count: it has neither, and inventing
+# them would make it read as a journey you had somehow not installed.
+func setup_link(title: String, subtitle: String, glyph: String, accent: Color) -> void:
+	_title.text = title
+	_footer.text = subtitle
+	_footer.add_theme_color_override("font_color", accent)
+
+	var bg: ColorRect = ColorRect.new()
+	bg.color = Color(accent.r, accent.g, accent.b, 0.07)
+	bg.anchor_right = 1.0
+	bg.anchor_bottom = 1.0
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cover.add_child(bg)
+
+	var mark: Label = Label.new()
+	mark.text = glyph
+	mark.add_theme_font_size_override("font_size", 84)
+	mark.add_theme_color_override("font_color", Color(accent.r, accent.g, accent.b, 0.55))
+	mark.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mark.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	mark.anchor_right = 1.0
+	mark.anchor_bottom = 1.0
+	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cover.add_child(mark)
+
+	_build_gradient_scrim()
+
+
 func setup(journey: Dictionary) -> void:
 	var title: String = journey.get("title", "Unknown")
 	_title.text = title

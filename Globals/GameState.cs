@@ -33,6 +33,12 @@ public partial class GameState : Node
     // counter reads as 0, so a threshold works before anything has bumped it. Cleared on a fresh start.
     private System.Collections.Generic.Dictionary<string, int> _counters = new();
 
+    // Bounds for the journey's DECLARED counters (journey.counters), cached from Journey whenever it
+    // is set so a clamp costs a lookup rather than a walk of the registry on every write. A counter
+    // with no entry here is unbounded — which is every counter in a journey written before the
+    // registry, and any name an author never declared.
+    private System.Collections.Generic.Dictionary<string, (int Min, int Max)> _counterBounds = new();
+
     // Per-loop iteration counts (loop node id → how many times its body has run this pass). Bumped each time
     // the walker reaches a loop node; reset to 0 when that loop exits (so a later re-entry counts fresh).
     // Rides the save record so a resume mid-loop keeps its iteration progress. Cleared on a fresh start.
@@ -73,6 +79,8 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
+        RebuildCounterBounds();
+        SeedCounterStarts();
         EnterCurrent();
     }
 
@@ -92,6 +100,7 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
+        SeedCounterStarts();
         EnterCurrent();
         return true;
     }
@@ -184,6 +193,54 @@ public partial class GameState : Node
         }
     }
 
+    // Reads journey.counters into _counterBounds. Called wherever Journey is assigned, since the
+    // bounds belong to the journey rather than to the run.
+    private void RebuildCounterBounds()
+    {
+        _counterBounds.Clear();
+        if (!Journey.ContainsKey("counters")) return;
+        foreach (var entry in Journey["counters"].AsGodotArray())
+        {
+            var def = entry.AsGodotDictionary();
+            var name = def.ContainsKey("name") ? def["name"].AsString() : "";
+            if (name == "") continue;
+            var min = def.ContainsKey("has_min") && def["has_min"].AsBool()
+                ? def["min"].AsInt32()
+                : int.MinValue;
+            var max = def.ContainsKey("has_max") && def["has_max"].AsBool()
+                ? def["max"].AsInt32()
+                : int.MaxValue;
+            _counterBounds[name] = (min, max < min ? min : max);
+        }
+    }
+
+    // Puts every declared counter at its starting value — a pistol begins loaded instead of needing a
+    // set_counters on the first node. Silent: a start is the run's initial state, not a change to it,
+    // so there is nothing for the HUD to pop.
+    private void SeedCounterStarts()
+    {
+        if (!Journey.ContainsKey("counters")) return;
+        foreach (var entry in Journey["counters"].AsGodotArray())
+        {
+            var def = entry.AsGodotDictionary();
+            var name = def.ContainsKey("name") ? def["name"].AsString() : "";
+            if (name == "") continue;
+            var start = def.ContainsKey("start") ? def["start"].AsInt32() : 0;
+            // Clamped first: a counter whose floor is above zero starts AT that floor even when no
+            // starting value was given, so its declared range is true from the first frame.
+            var seeded = ClampCounter(name, start);
+            if (seeded != 0) _counters[name] = seeded;
+        }
+    }
+
+    // `value` brought inside the counter's declared bounds. Undeclared counters pass through, which is
+    // what lets every counter write route through here without changing how older journeys behave.
+    private int ClampCounter(string name, int value)
+    {
+        if (!_counterBounds.TryGetValue(name, out var b)) return value;
+        return value < b.Min ? b.Min : (value > b.Max ? b.Max : value);
+    }
+
     // Applies src["set_counters"] ({name: delta}) to the run's counters — the numeric analogue of
     // ApplyFlags, called for the same node-data and fork-edge sources. Deltas accumulate, so the
     // same counter bumped on several nodes sums; a delta may be negative.
@@ -197,8 +254,12 @@ public partial class GameState : Node
             if (name == "") continue;
             var delta = deltas[key].AsInt32();
             _counters.TryGetValue(name, out var cur);
-            _counters[name] = cur + delta;
-            EmitSignal(SignalName.CounterChanged, name, _counters[name], delta);
+            var next = ClampCounter(name, cur + delta);
+            _counters[name] = next;
+            // The EFFECTIVE delta, which a bound may have shortened or swallowed whole: firing "-1" at
+            // an empty magazine would pop a change on the HUD that did not happen.
+            if (next != cur)
+                EmitSignal(SignalName.CounterChanged, name, next, next - cur);
         }
     }
 
@@ -232,6 +293,9 @@ public partial class GameState : Node
     // encounter's accumulated damage is the case this exists for. Deliberately does not emit
     // CounterChanged: that signal drives author-facing reactions, and a health bar ticking during a
     // fight is not a counter the author wrote or expects anything to hang off.
+    //
+    // Unclamped for the same reason: these keys are machine-generated per node, not counters an author
+    // declared bounds for, and a bound that happened to share a name would silently cap boss damage.
     public void SetCounterValue(string name, int value)
     {
         if (!string.IsNullOrEmpty(name))
@@ -273,7 +337,9 @@ public partial class GameState : Node
         foreach (var key in values.Keys)
         {
             var name = key.AsString();
-            if (name != "") _counters[name] = values[key].AsInt32();
+            // Clamped like any other write — seeding a value the run could never reach would test a
+            // journey that does not exist.
+            if (name != "") _counters[name] = ClampCounter(name, values[key].AsInt32());
         }
     }
 
@@ -698,6 +764,10 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
+        RebuildCounterBounds();
+        // Starts first, so a counter DECLARED since this save was written begins where the author says
+        // rather than at 0; the saved values then overlay whatever the run had actually reached.
+        SeedCounterStarts();
 
         if (saveData.ContainsKey("current_node") && _nodes.ContainsKey(saveData["current_node"].AsString()))
         {
@@ -717,7 +787,9 @@ public partial class GameState : Node
                 foreach (var key in saved.Keys)
                 {
                     var name = key.AsString();
-                    if (name != "") _counters[name] = saved[key].AsInt32();
+                    // Clamped on the way in: the author may have tightened a bound since this save,
+                    // and a restored run must obey the journey as it is now.
+                    if (name != "") _counters[name] = ClampCounter(name, saved[key].AsInt32());
                 }
             }
             // Restore per-loop iteration counts so a resume mid-loop continues from the right pass.

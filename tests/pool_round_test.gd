@@ -151,3 +151,94 @@ func test_weighted_pick_favors_heavy_entry() -> void:
 	assert_int(ForkResolver.weighted_pick(weights, 0)).is_equal(0)
 	assert_int(ForkResolver.weighted_pick(weights, 1)).is_equal(1)
 	assert_int(ForkResolver.weighted_pick(weights, 3)).is_equal(1)
+
+
+# ── Per-entry encounters ───────────────────────────────────────
+# A pool entry can be a boss with its OWN authored encounter — the builder offers the same boss
+# expander per entry, and JourneyData.boss_timelines has always claimed "its own, plus one per pool
+# entry". Coercion dropped it: the entry dict was rebuilt field by field with no `timeline` among
+# them, so an author's encounter was destroyed by the save that was meant to keep it.
+
+
+func _entry_timeline() -> Dictionary:
+	# Named, with an outcome flag — enough to be non-empty without depending on the event schema.
+	return {"name": "The Duel", "won_flag": "beat_her", "damage_target": 40}
+
+
+func test_coerce_pool_entry_keeps_its_own_encounter() -> void:
+	var e: Dictionary = JourneyData.coerce_pool_entry(
+		{"name": "Ogre", "round_type": "boss", "timeline": _entry_timeline()}
+	)
+	assert_bool(e.has("timeline")).is_true()
+	assert_str(str((e["timeline"] as Dictionary)["won_flag"])).is_equal("beat_her")
+
+
+# Canonicalized on the way through, exactly as a round's own timeline is, so a hand-edited or legacy
+# entry lands in the same shape a freshly authored one does.
+func test_coerce_pool_entry_normalizes_the_encounter() -> void:
+	var e: Dictionary = JourneyData.coerce_pool_entry(
+		{"round_type": "boss", "timeline": {"won_flag": "  beat_her  "}}
+	)
+	assert_str(str((e["timeline"] as Dictionary)["won_flag"])).is_equal("beat_her")
+
+
+# An empty encounter is dropped rather than written — the rule the round-level timeline follows, so a
+# journey.json doesn't carry a dead block per entry.
+func test_coerce_pool_entry_drops_an_empty_encounter() -> void:
+	(
+		assert_bool(
+			JourneyData.coerce_pool_entry({"round_type": "boss", "timeline": {}}).has("timeline")
+		)
+		. is_false()
+	)
+
+
+# A normal entry has no fight to author, so it never carries one even if the data holds a leftover
+# from an entry that used to be a boss.
+func test_a_normal_entry_carries_no_encounter() -> void:
+	var e: Dictionary = JourneyData.coerce_pool_entry(
+		{"round_type": "normal", "timeline": _entry_timeline()}
+	)
+	assert_bool(e.has("timeline")).is_false()
+
+
+func test_a_malformed_entry_timeline_is_ignored_not_fatal() -> void:
+	var e: Dictionary = JourneyData.coerce_pool_entry({"round_type": "boss", "timeline": "nope"})
+	assert_bool(e.has("timeline")).is_false()
+
+
+# The whole point of the fix: an entry's encounter survives the node save. This is the path a real
+# save takes (coerce_node_save_data → pool_entries → coerce_pool_entry).
+func test_an_entry_encounter_survives_the_node_round_trip() -> void:
+	var saved: Dictionary = (
+		JourneyData
+		. coerce_node_save_data(
+			"round",
+			{
+				"round_type": "pool",
+				"pool_entries":
+				[{"name": "Ogre", "round_type": "boss", "timeline": _entry_timeline()}],
+			}
+		)
+	)
+	var entry: Dictionary = (saved["pool_entries"] as Array)[0]
+	assert_str(str((entry["timeline"] as Dictionary)["won_flag"])).is_equal("beat_her")
+
+
+# What the audit and the flag pickers read. It always collected per-entry timelines; until the
+# coercion carried them, that collection could only ever see an encounter the author had not yet
+# saved — which is why a pool boss's outcome flag vanished from every list after a reload.
+func test_boss_outcome_flags_include_a_pool_entrys_own() -> void:
+	var data: Dictionary = {
+		"round_type": "pool",
+		"pool_entries":
+		[
+			{"round_type": "boss", "timeline": {"won_flag": "beat_ogre"}},
+			{
+				"round_type": "boss",
+				"timeline": {"won_flag": "beat_troll", "lost_flag": "troll_won"}
+			},
+		],
+	}
+	var flags: Array = JourneyData.boss_outcome_flags(data)
+	assert_array(flags).contains_exactly_in_any_order(["beat_ogre", "beat_troll", "troll_won"])

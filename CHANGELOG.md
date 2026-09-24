@@ -97,6 +97,119 @@ Unsaved work asks Save / Discard / Cancel first, exactly like Back. After extrac
 SAVE & OPEN button offers the new rendition: it saves this journey (the extraction isn’t final until
 it does) and opens the child.
 
+### ◆ Counters have limits now
+
+A counter used to exist simply by being named: type `ammo:-1` into a node and the run grew an ammo
+counter, starting at 0, with nothing to stop it going to −40. Every rule about it — never below zero,
+never above a hundred — lived in the author’s head.
+
+The journey panel has a **COUNTERS** group. Declare one and it gets a **floor**, a **ceiling**, a
+**starting value**, a **label** the player sees instead of the raw name, and a note for yourself.
+Three presets fill the limits in one click — **Percent** (0–100), **Resource** (never below 0, no
+ceiling), **Free** (neither). The clamp holds wherever the counter is written: nodes, fork choices,
+item effects, test-play seeding and a restored save. A pistol can start loaded at 12, spend a shot
+per fork and never read −1, without a single guard node.
+
+Declaring is optional. A counter you never declare behaves exactly as it always did — unbounded,
+starting at 0, hidden — so nothing already authored changes. The old SHOWN COUNTERS text field is
+gone: its names become rows with the “show this counter” box ticked, and a button offers to add rows
+for every counter already used in the journey, which is the fastest way to find the one you typed
+two different ways.
+
+A counter with a ceiling reads as **8 / 12** in the inventory panel, and a pop that a limit swallowed
+whole no longer appears — firing “−1” at an empty magazine announced a change that never happened.
+
+Renditions can declare counters of their own, additively, like settings and cast. A rendition cannot
+re-bound one the base declared: those bounds are shared by every rendition stacked on it.
+
+### ◆ Flags are declared and picked too
+
+The same treatment, for the boolean half. The journey panel has a **FLAGS** group: declare a flag and
+it gets a readable label and a note about why it exists. There is nothing to bound — a flag is set or
+it is not — so what declaring buys is the picker.
+
+Every field that named a flag now offers a list: a node’s and a fork choice’s flag changes, a
+flag-gated choice’s **REQUIRED FLAG**, a loop’s exit condition, a custom item’s flag effect, the TEST
+FROM HERE seed, and a boss encounter’s **WON / LOST** flags — which matter most, since they are exactly
+what a later fork asks about, and a fight whose outcome flag is spelled two ways is a fight the
+journey never learns the result of.
+
+SETS FLAGS is a row per change: pick the flag, then **SETS** or **CLEARS**. That replaces the line of
+syntax where a leading `-` meant “clear this one”. Undeclared flags still work exactly as before and
+still appear in every picker, marked as undeclared, and a button offers to declare every flag the
+journey already uses — boss outcome flags included, which no list used to show.
+
+The audit gained one check to match the counters’: a flag declared but never set or read anywhere.
+That is nearly always a name written two ways, which reads as a branch the player simply never
+unlocked.
+
+### ◆ Counters are picked, not typed
+
+Every field that named a counter was a text box. **SETS COUNTERS** took a line of syntax —
+`belt:1, arousal:2, stress:-1` — and the five other places you name one took a bare string. A name
+that matched nothing produced no error anywhere: the reward went to a counter nobody read, and the
+gate compared against a counter that is always 0. Both look right in the panel and do nothing in the
+run.
+
+Now that counters are declared, they are **picked from a dropdown** — in SETS COUNTERS (on nodes and
+on fork choices), a fork’s DEFAULT COUNTER, a choice’s own COUNTER, a loop’s exit condition, a custom
+item’s counter effect, and the TEST FROM HERE seed. Each entry shows the counter’s range, so you can
+see what you’re reaching for; anything the journey already uses but hasn’t declared is listed too, and
+marked as such.
+
+SETS COUNTERS is a row per change instead of a line of syntax: pick the counter, then set the amount.
+The list ends with **＋ NEW COUNTER…**, which declares one and points the field at
+it without leaving the node you’re editing — a counter the journey already uses is declared unbounded,
+since it has been running without limits and a floor invented here is a rule you never wrote.
+
+### ◆ The audit reports on counters
+
+The audit has always tracked counters through its simulated runs — it had to, to resolve
+counter-gated forks — and then threw the numbers away. It now clamps them exactly as the runtime
+does and reports what it saw: a **COUNTERS** table in the report giving each declared counter its
+range, where the runs left it (low, high, average), and how often a limit had to step in. Each node’s
+⚖ ON ARRIVAL block gained the counter values arriving there, beside coins and score — so a gate can
+be authored against a number you can actually see.
+
+Two new warnings come out of that. A counter that **runs into its limits in half the runs or more**
+is discarding most of what the journey adds to it. One that **never climbs past a fifth of its
+range** was given a ceiling it cannot reach. Both look correct node by node and only show up when
+the whole journey is run.
+
+### ◆ Fixed: a pool entry’s own boss encounter was thrown away
+
+A pool (“encounter”) round can make each entry its own boss, and the builder offers the full encounter
+editor per entry — attacks, phases, stances, WON / LOST flags. None of it survived. The entry was
+rebuilt field by field on save with no `timeline` among the fields, so the encounter was destroyed by
+the save meant to keep it; the loader never resolved its media; and playback never adopted it. What
+played instead was the round’s own timeline, which for a pool round is usually nothing — or, for a
+round switched from boss to pool, a stale encounter that then played for every entry alike.
+
+Entry encounters now save, load and play. Each drawn entry brings its own fight and its own outcome
+flags, so a journey can ask **which** opponent was beaten rather than only whether the round was won.
+
+Two things follow from that, both fixed here: a fight’s carried damage and attempt count are keyed by
+the drawn entry rather than by the node, so losing to one opponent no longer leaves the next starting
+wounded and on attempt two at the same pool node — and the intro card is keyed the same way, so a
+second opponent still gets her telegraph. A rolled boss you have already fought and lost to keeps her
+damage for when she comes round again.
+
+### ◆ Fixed: the audit mis-simulated fork gates on a journey’s main counter
+
+A conditional fork can name one counter and give each choice its own threshold — the usual way a
+counter gate is written. The runtime passes that counter down to each choice before resolving; the
+audit did not, so those choices were compared against a counter with no name, whose value is always
+0. The effect was a journey whose main gate looked dead to the audit while playing correctly: the
+high path reported no traffic and the default swallowed every simulated run.
+
+### ◆ A card that says where journeys come from
+
+Nothing in the app ever said where new journeys are posted, which is a poor thing to leave to word of
+mouth. The catalogue now ends with a **GET MORE JOURNEYS** card, sitting in the grid like any other,
+that opens the community journey board in your browser. It asks first — it names the address and you can
+say no — because leaving the app for a browser shouldn’t happen on a misclick. The card is hidden while
+a search or filter is active, since it isn’t a result.
+
 ### ◆ Import takes the old journey zips
 
 Before `.fhj` packaging existed, journeys were shared as a plain zip of the journey folder — and those

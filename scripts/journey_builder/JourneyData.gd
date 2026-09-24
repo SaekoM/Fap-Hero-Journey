@@ -970,6 +970,14 @@ static func coerce_pool_entry(e: Dictionary) -> Dictionary:
 		out["boss_tagline"] = str(e.get("boss_tagline", ""))
 		out["boss_image"] = str(e.get("boss_image", ""))
 		out["sensory"] = (e.get("sensory", []) as Array).duplicate(true)
+		# The entry's OWN authored encounter — normalized and dropped when it would do nothing,
+		# exactly as a round's own timeline is. Its media is pooled later by _save_round_node_media,
+		# like the rest of the entry's assets.
+		var raw_timeline: Variant = e.get("timeline", {})
+		if raw_timeline is Dictionary:
+			var timeline: Dictionary = RoundTimeline.normalize(raw_timeline)
+			if not RoundTimeline.is_empty(timeline):
+				out["timeline"] = timeline
 	return out
 
 
@@ -2103,6 +2111,369 @@ static func clean_flag_list(v: Variant) -> Array:
 	return out
 
 
+# The builder's counter-change rows ([{name, delta}]) as the {name: delta} map everything downstream
+# reads. A row whose counter has not been chosen yet contributes nothing, and two rows naming one
+# counter SUM — a map cannot hold both, and summing is the only reading that loses neither.
+static func counter_rows_to_map(rows: Array) -> Dictionary:
+	var out: Dictionary = {}
+	for r: Variant in rows:
+		if not (r is Dictionary):
+			continue
+		var name: String = str((r as Dictionary).get("name", "")).strip_edges()
+		if name == "":
+			continue
+		out[name] = int(out.get(name, 0)) + int((r as Dictionary).get("delta", 0))
+	return clean_counter_deltas(out)
+
+
+# ── Flag definitions (the journey's declared flags) ───────────────────
+# What a counter definition is to a number, this is to a boolean — with nothing to bound, since a flag
+# is only ever set or not. So a definition is just the name, what to call it, and why it exists.
+#
+# Its job is the picker: a flag used to be typed, and a name that matched nothing produced no error
+# anywhere. The journey simply behaved as though the flag were never set, which is indistinguishable
+# from a story branch the player did not reach.
+#
+# Declaring is OPTIONAL, exactly as it is for counters: a flag no entry covers behaves as it always
+# did. Keyed by name for the same reason — every node, gate and condition references flags by name.
+
+
+static func new_flag_def(name: String = "") -> Dictionary:
+	return {"name": name, "label": "", "note": ""}
+
+
+static func parse_flag_def(raw: Dictionary) -> Dictionary:
+	return {
+		"name": str(raw.get("Name", "")).strip_edges(),
+		"label": str(raw.get("Label", "")),
+		"note": str(raw.get("Note", "")),
+	}
+
+
+static func parse_flag_defs(raw: Array) -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for r: Variant in raw:
+		if not (r is Dictionary):
+			continue
+		var def: Dictionary = parse_flag_def(r)
+		var name: String = str(def["name"])
+		if name == "" or seen.has(name):
+			continue  # first wins, the rule a rendition's additive merge follows
+		seen[name] = true
+		out.append(def)
+	return out
+
+
+static func coerce_flag_defs(list: Array) -> Array:
+	var out: Array = []
+	for f: Variant in list:
+		if not (f is Dictionary):
+			continue
+		var d: Dictionary = f
+		var name: String = str(d.get("name", "")).strip_edges()
+		if name == "":
+			continue  # an unnamed row is a half-finished edit, not a flag
+		out.append({"Name": name, "Label": str(d.get("label", "")), "Note": str(d.get("note", ""))})
+	return out
+
+
+# The definition covering `name`, or {} when the flag is undeclared — which is not an error, just a
+# flag whose rules were never written down.
+static func flag_def(defs: Array, name: String) -> Dictionary:
+	if name == "":
+		return {}
+	for d: Variant in defs:
+		if d is Dictionary and str((d as Dictionary).get("name", "")) == name:
+			return d
+	return {}
+
+
+static func flag_display_name(defs: Array, name: String) -> String:
+	var label: String = str(flag_def(defs, name).get("label", "")).strip_edges()
+	return label if label != "" else name
+
+
+# Every flag name the graph touches: what nodes and choices set or clear, what a boss encounter can
+# raise, what a choice requires, and what a loop watches. The union rather than only the SET sites — a
+# flag that is required but never set is a different problem (see the dead-path check), and a picker
+# that hid it would make the author type the name again to fix it.
+static func flag_names_in_graph(graph: Dictionary) -> Array:
+	var names: Dictionary = {}
+	for nid: Variant in graph.get("nodes", {}):
+		var node: Dictionary = (graph["nodes"] as Dictionary)[nid]
+		var data: Dictionary = node.get("data", {})
+		for key: String in ["set_flags", "clear_flags"]:
+			for f: Variant in clean_flag_list(data.get(key, [])):
+				names[str(f)] = true
+		for f: String in boss_outcome_flags(data):
+			names[f] = true
+		for c: Variant in data.get("loop_conditions", []):
+			if c is Dictionary and str((c as Dictionary).get("flag", "")) != "":
+				names[str((c as Dictionary)["flag"])] = true
+		for e: Variant in node.get("out", []):
+			if not (e is Dictionary):
+				continue
+			for key2: String in ["set_flags", "clear_flags"]:
+				for f: Variant in clean_flag_list((e as Dictionary).get(key2, [])):
+					names[str(f)] = true
+			if str((e as Dictionary).get("required_flag", "")) != "":
+				names[str((e as Dictionary)["required_flag"])] = true
+	var out: Array = names.keys()
+	out.sort()
+	return out
+
+
+# The builder's flag-change rows ([{name, mode}]) split into the two lists a node stores. `mode` is
+# "clear" for a row that clears; anything else sets. A row whose flag has not been chosen yet
+# contributes nothing, and a flag named twice keeps its LAST row — the lists are sets, so the same
+# flag cannot both set and clear, and the later row is the one the author just touched.
+static func flag_rows_to_lists(rows: Array) -> Dictionary:
+	var mode_of: Dictionary = {}
+	var order: Array = []
+	for r: Variant in rows:
+		if not (r is Dictionary):
+			continue
+		var name: String = str((r as Dictionary).get("name", "")).strip_edges()
+		if name == "":
+			continue
+		if not mode_of.has(name):
+			order.append(name)
+		mode_of[name] = str((r as Dictionary).get("mode", "set"))
+	var sets: Array = []
+	var clears: Array = []
+	for name: String in order:
+		if str(mode_of[name]) == "clear":
+			clears.append(name)
+		else:
+			sets.append(name)
+	return {"set_flags": sets, "clear_flags": clears}
+
+
+# ── Counter definitions (the journey's declared counters) ────────────────
+# A counter used to exist only by being NAMED: type "ammo:-1" into a node and the run grew an ammo
+# counter, unbounded, starting at 0. That works, but it leaves the author holding every rule in their
+# head — ammo must never go negative, arousal must stop at 100 — and nothing enforces either.
+#
+# A declared counter states its rules once: what it is called, what it shows as, where it starts, and
+# the floor and ceiling it is clamped to. Declaring is OPTIONAL and additive: a name no entry covers
+# behaves exactly as it always did, so no existing journey changes by upgrading.
+#
+# Keyed by NAME rather than a generated id, unlike settings and cast. Nodes, fork gates and loop
+# conditions have always referenced counters by name; minting ids would mean rewriting every one of
+# those references for no gain the author can see.
+
+## A counter with no floor / no ceiling stores `has_min` / `has_max` false rather than a sentinel
+## value, so "unbounded" survives a JSON round trip without a magic number pretending to be one.
+const COUNTER_PRESETS: Dictionary = {
+	"percent": {"has_min": true, "min": 0, "has_max": true, "max": 100},
+	"resource": {"has_min": true, "min": 0, "has_max": false, "max": 0},
+	"free": {"has_min": false, "min": 0, "has_max": false, "max": 0},
+}
+
+
+static func new_counter_def(name: String = "") -> Dictionary:
+	return {
+		"name": name,
+		"label": "",
+		"note": "",
+		"has_min": true,
+		"min": 0,
+		"has_max": false,
+		"max": 0,
+		"start": 0,
+		"shown": false,
+	}
+
+
+# Normalizes one definition from disk or the editor. A blank name is kept as-is rather than healed:
+# unlike a setting's id, a counter's name is authored, and inventing one would bind the entry to a
+# counter nothing sets.
+static func parse_counter_def(raw: Dictionary) -> Dictionary:
+	var has_min: bool = bool(raw.get("HasMin", false))
+	var has_max: bool = bool(raw.get("HasMax", false))
+	var lo: int = int(raw.get("Min", 0))
+	var hi: int = int(raw.get("Max", 0))
+	# A ceiling below its floor is an authoring slip that would clamp every value to one number and
+	# make every gate above it dead. Widening the ceiling keeps the counter usable and visibly wrong.
+	if has_min and has_max and hi < lo:
+		hi = lo
+	return {
+		"name": str(raw.get("Name", "")).strip_edges(),
+		"label": str(raw.get("Label", "")),
+		"note": str(raw.get("Note", "")),
+		"has_min": has_min,
+		"min": lo,
+		"has_max": has_max,
+		"max": hi,
+		"start": int(raw.get("Start", 0)),
+		"shown": bool(raw.get("Shown", false)),
+	}
+
+
+static func parse_counter_defs(raw: Array) -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for r: Variant in raw:
+		if not (r is Dictionary):
+			continue
+		var def: Dictionary = parse_counter_def(r)
+		var name: String = str(def["name"])
+		# Two entries for one name would make "the ammo ceiling" ambiguous and leave the reader to pick.
+		# The first wins, which is also the rule a rendition's additive merge follows.
+		if name == "" or seen.has(name):
+			continue
+		seen[name] = true
+		out.append(def)
+	return out
+
+
+static func coerce_counter_defs(list: Array) -> Array:
+	var out: Array = []
+	for c: Variant in list:
+		if not (c is Dictionary):
+			continue
+		var d: Dictionary = c
+		var name: String = str(d.get("name", "")).strip_edges()
+		if name == "":
+			continue  # an unnamed row is a half-finished edit, not a counter
+		(
+			out
+			. append(
+				{
+					"Name": name,
+					"Label": str(d.get("label", "")),
+					"Note": str(d.get("note", "")),
+					"HasMin": bool(d.get("has_min", false)),
+					"Min": int(d.get("min", 0)),
+					"HasMax": bool(d.get("has_max", false)),
+					"Max": int(d.get("max", 0)),
+					"Start": int(d.get("start", 0)),
+					"Shown": bool(d.get("shown", false)),
+				}
+			)
+		)
+	return out
+
+
+# The definition covering `name`, or {} when the counter is undeclared — which is not an error, just
+# the older unbounded behaviour.
+static func counter_def(defs: Array, name: String) -> Dictionary:
+	if name == "":
+		return {}
+	for d: Variant in defs:
+		if d is Dictionary and str((d as Dictionary).get("name", "")) == name:
+			return d
+	return {}
+
+
+# `value` brought inside one definition's bounds. An undeclared counter (or a def with neither bound)
+# passes through untouched, which is what keeps this safe to call on every counter write.
+static func clamp_counter(def: Dictionary, value: int) -> int:
+	var out: int = value
+	if bool(def.get("has_min", false)):
+		out = maxi(out, int(def.get("min", 0)))
+	if bool(def.get("has_max", false)):
+		out = mini(out, int(def.get("max", 0)))
+	return out
+
+
+static func clamp_counter_by_name(defs: Array, name: String, value: int) -> int:
+	return clamp_counter(counter_def(defs, name), value)
+
+
+# What every declared counter starts a run at, as {name: value} — seeded at journey start so a pistol
+# begins loaded instead of needing a set_counters on the first node. Counters starting at 0 are left
+# out: 0 is what a missing counter already reads as.
+static func counter_start_values(defs: Array) -> Dictionary:
+	var out: Dictionary = {}
+	for d: Variant in defs:
+		if not (d is Dictionary):
+			continue
+		var name: String = str((d as Dictionary).get("name", ""))
+		var start: int = clamp_counter(d, int((d as Dictionary).get("start", 0)))
+		if name != "" and start != 0:
+			out[name] = start
+	return out
+
+
+# The names the player sees on the HUD and in the inventory panel. Replaces the journey's old flat
+# ShownCounters list, which is still read when a journey predates the registry (see parse_journey).
+static func shown_counter_names(defs: Array) -> Array:
+	var out: Array = []
+	for d: Variant in defs:
+		if d is Dictionary and bool((d as Dictionary).get("shown", false)):
+			var name: String = str((d as Dictionary).get("name", ""))
+			if name != "":
+				out.append(name)
+	return out
+
+
+# A counter's limits in words: "0 – 12", "0 and up", "up to 100", "no limits". In words because a
+# missing bound is a state rather than a number — printing the integer a clamp would have used says
+# nothing anyone means by "no ceiling".
+static func counter_range_text(def: Dictionary) -> String:
+	var has_min: bool = bool(def.get("has_min", false))
+	var has_max: bool = bool(def.get("has_max", false))
+	if has_min and has_max:
+		return "%d – %d" % [int(def.get("min", 0)), int(def.get("max", 0))]
+	if has_min:
+		return "%d and up" % int(def.get("min", 0))
+	if has_max:
+		return "up to %d" % int(def.get("max", 0))
+	return "no limits"
+
+
+# What to call a counter on screen: its authored label, else the bare name. The HUD and inventory
+# panel uppercase whatever comes back, exactly as they did when the name was all there was.
+static func counter_display_name(defs: Array, name: String) -> String:
+	var label: String = str(counter_def(defs, name).get("label", "")).strip_edges()
+	return label if label != "" else name
+
+
+# The journey's counters as read from journey.json, migrating a journey written before the registry
+# existed. Those carry only `ShownCounters` — a flat list of names the player can see — so each name
+# becomes a declared counter that is shown and otherwise unbounded, which is exactly how it behaved.
+# The author then has rows to put bounds on instead of a text field to retype.
+static func counter_defs_from_disk(data: Dictionary) -> Array:
+	var defs: Array = parse_counter_defs(data.get("Counters", []))
+	if not defs.is_empty():
+		return defs
+	for name: String in clean_flag_list(data.get("ShownCounters", [])):
+		var def: Dictionary = new_counter_def(name)
+		def["has_min"] = false  # nothing bounded these before, and a save must not change a run
+		def["shown"] = true
+		defs.append(def)
+	return defs
+
+
+# Every counter name the graph actually touches — nodes' and fork choices' set_counters, fork gates,
+# and loop exit conditions — sorted. Feeds the editor's "find counters in this journey" action and the
+# audit's report, both of which need to know what exists before anything has been declared.
+static func counter_names_in_graph(graph: Dictionary) -> Array:
+	var names: Dictionary = {}
+	for nid: Variant in graph.get("nodes", {}):
+		var node: Dictionary = (graph["nodes"] as Dictionary)[nid]
+		var data: Dictionary = node.get("data", {})
+		for n: Variant in clean_counter_deltas(data.get("set_counters", {})):
+			names[str(n)] = true
+		if str(data.get("cond_counter", "")) != "":
+			names[str(data["cond_counter"])] = true
+		for c: Variant in data.get("loop_conditions", []):
+			if c is Dictionary and str((c as Dictionary).get("counter", "")) != "":
+				names[str((c as Dictionary)["counter"])] = true
+		for e: Variant in node.get("out", []):
+			if not (e is Dictionary):
+				continue
+			for n: Variant in clean_counter_deltas((e as Dictionary).get("set_counters", {})):
+				names[str(n)] = true
+			if str((e as Dictionary).get("cond_counter", "")) != "":
+				names[str((e as Dictionary)["cond_counter"])] = true
+	var out: Array = names.keys()
+	out.sort()
+	return out
+
+
 # The numeric analogue of clean_flag_list: normalizes a {name: delta} map (from disk or the editor)
 # to {String: int}, dropping blank names and zero deltas (a +0 counter change is a no-op, so it
 # stays out of journey.json). GameState.ApplyCounters reads the result as set_counters.
@@ -2116,32 +2487,6 @@ static func clean_counter_deltas(v: Variant) -> Dictionary:
 		if name != "" and delta != 0:
 			out[name] = delta
 	return out
-
-
-# Parses the authoring text field ("belt:1, arousal:2, stress:-1") into a {name: delta} map. Each
-# comma-separated token is "name:delta"; a bare "name" defaults to +1 (the "notch on the belt"
-# case). Round-trips with counter_deltas_to_text.
-static func parse_counter_deltas(text: String) -> Dictionary:
-	var out: Dictionary = {}
-	for token: String in text.split(",", false):
-		var parts: PackedStringArray = token.split(":")
-		var name: String = parts[0].strip_edges()
-		if name == "":
-			continue
-		var delta: int = 1
-		if parts.size() > 1 and parts[1].strip_edges() != "":
-			delta = int(parts[1].strip_edges())
-		if delta != 0:
-			out[name] = delta
-	return out
-
-
-# Renders a {name: delta} map back to the "belt:1, arousal:2, stress:-1" field text.
-static func counter_deltas_to_text(deltas: Dictionary) -> String:
-	var parts: PackedStringArray = []
-	for name: Variant in deltas:
-		parts.append("%s:%d" % [str(name), int(deltas[name])])
-	return ", ".join(parts)
 
 
 # ── Shop offer ───────────────────────────────────────────────────────────────
@@ -2486,7 +2831,8 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"map_fog": bool(journey.get("map_fog", false)),
 		"map_fog_reveal": int(journey.get("map_fog_reveal", 1)),
 		"mystery_preview": bool(journey.get("mystery_preview", false)),
-		"shown_counters": journey.get("shown_counters", []),
+		"counters": journey.get("counters", []),
+		"flags": journey.get("flags", []),
 		"auto_advance_enabled": bool(journey.get("auto_advance_enabled", false)),
 		"auto_advance_storyboard_secs": int(journey.get("auto_advance_storyboard_secs", 20)),
 		"auto_advance_fork_secs": int(journey.get("auto_advance_fork_secs", 45)),
