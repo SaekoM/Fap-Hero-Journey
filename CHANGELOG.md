@@ -176,6 +176,13 @@ is discarding most of what the journey adds to it. One that **never climbs past 
 range** was given a ceiling it cannot reach. Both look correct node by node and only show up when
 the whole journey is run.
 
+### ◆ Fixed: DONE could scroll out of the setting editor
+
+A setting with enough background variants grew its side column past the bottom of the panel, taking
+DONE with it — no way to close the editor except ESC. The variant list and the selected variant’s
+fields now scroll together, with DONE pinned beneath them, the same way the cast editor has always
+worked.
+
 ### ◆ Storyboard prompts moved off the dialogue
 
 “Click or space to continue” and the auto-advance countdown sat inside the bottom of the dialogue bar,

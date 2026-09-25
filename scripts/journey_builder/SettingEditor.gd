@@ -246,27 +246,36 @@ func _build_side() -> Control:
 	side.add_theme_constant_override("separation", 6)
 	side.custom_minimum_size = Vector2(300, 0)
 
-	side.add_child(_label("VARIANTS  (first is the default)"))
+	# Everything above DONE scrolls; DONE stays pinned beneath it. A setting can hold any number of
+	# variants, and a list that grew the column pushed DONE off the bottom of the panel — the one
+	# control this editor cannot be left without. The same shape CharacterEditor uses.
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	side.add_child(scroll)
+	var content: VBoxContainer = VBoxContainer.new()
+	content.add_theme_constant_override("separation", 6)
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(content)
+
+	content.add_child(_label("VARIANTS  (first is the default)"))
 	_list_col = VBoxContainer.new()
 	_list_col.add_theme_constant_override("separation", 3)
-	side.add_child(_list_col)
+	content.add_child(_list_col)
 
 	var add_btn: Button = Button.new()
 	add_btn.text = "＋ ADD VARIANT"
 	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
 	add_btn.pressed.connect(_add_background)
-	side.add_child(add_btn)
+	content.add_child(add_btn)
 
-	side.add_child(HSeparator.new())
+	content.add_child(HSeparator.new())
 
 	_options_col = VBoxContainer.new()
 	_options_col.add_theme_constant_override("separation", 6)
-	side.add_child(_options_col)
+	content.add_child(_options_col)
 
-	var spacer: Control = Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	side.add_child(spacer)
-
+	side.add_child(HSeparator.new())
 	var done: Button = Button.new()
 	done.text = "DONE"
 	UITheme.style_button(done, UITheme.CYAN)
