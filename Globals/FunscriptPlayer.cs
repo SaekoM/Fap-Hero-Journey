@@ -156,6 +156,26 @@ public partial class FunscriptPlayer : Node
     // glide the way MultiFunPlayer does. Buttplug stays on the per-keyframe path (BLE rate limits).
     private int _interpIndex = 0;
     private double _lastSerialTarget = 50.0;
+
+    // ── Auto Twist ──────────────────────────────────────────────────────────
+    // R0 synthesised from the stroke for content with no twist script (MULTIAXIS_DESIGN.md §1). Not an
+    // entry in _axes: it is derived per tick from the L0 actually sent, so it never goes through the
+    // keyframe loop, is never fanned out to restim, and never counts as an authored R0.
+
+    // Gain on the stroke; 0 = off. Seeded in ResolveOutput, pushed live by Options via SetAutoTwist.
+    private double _autoTwistGain = 0.0;
+    // The last twist sent, which the per-tick speed ceiling measures from. Centre when idle.
+    private double _lastAutoTwist = 50.0;
+    // Whether Auto Twist has moved R0 since it was last homed, so a pause only re-centres a twist
+    // this code actually moved.
+    private bool _autoTwistDriving = false;
+    // The loaded main track is an e-stim ALPHA channel rather than a stroke: nothing to twist with.
+    private bool _mainIsAlpha = false;
+
+    // How fast synthesised twist may move, in units/sec. Only engages on fast, deep strokes at the upper
+    // steps — a 150 ms full-depth stroke at Strong would otherwise ask for ~670 u/s, which is a shake.
+    // The one number here that can only be tuned on hardware.
+    private const double MaxTwistSpeed = 500.0;
     // Interval multiple the serial stream sends with (slightly > tick so the OSR keeps gliding toward
     // a fresh target). Best value varies by device/firmware, so it's a live setting — seeded in
     // ResolveOutput, overridable via SetSerialInterpFactor (Options).
@@ -328,6 +348,11 @@ public partial class FunscriptPlayer : Node
 
     public void LoadFunscript(string path)
     {
+        // GameLoop swaps a sibling .alpha file in for the main track when one exists; that is e-stim
+        // position, not a stroke, so Auto Twist has nothing to follow.
+        string stem = System.IO.Path.GetFileNameWithoutExtension(path ?? "").ToLowerInvariant();
+        _mainIsAlpha = stem.EndsWith(".alpha") || stem.EndsWith("_alpha");
+        _lastAutoTwist = 50.0;
         _actions.Clear();
         _actionIndex = 0;
         _positionMs = 0.0;
@@ -470,6 +495,61 @@ public partial class FunscriptPlayer : Node
 
     /// Live-update the max stroke speed cap from Options (units/sec, 0 = off).
     public void SetMaxStrokeSpeed(int unitsPerSec) => _maxStrokeSpeed = Math.Max(0, unitsPerSec);
+
+    /// Live Auto Twist gain from Options (0 = off, 1 = full travel at a full stroke). The steps and their
+    /// gains live in SettingsService, so this only ever receives a number.
+    public void SetAutoTwist(double gain) => _autoTwistGain = Math.Clamp(gain, 0.0, 1.0);
+
+    /// The whole Auto Twist model, and nothing else: twist = centre + gain × (stroke − centre), then held
+    /// to at most `maxDelta` from the previous twist. Pure — public only so the gdUnit suite can reach it
+    /// the way it reaches GameState.
+    ///
+    /// Stateless by design. Each tick's twist depends only on that tick's stroke, so a tick the ceiling
+    /// trims simply lags and the next one catches up; nothing accumulates, so it cannot drift off centre.
+    /// Works in full 0–100 space — the player's R0 window is applied once, by the caller.
+    public double AutoTwistStep(double stroke, double previousTwist, double gain, double maxDelta)
+    {
+        double twist = 50.0 + gain * (stroke - 50.0);
+        if (maxDelta > 0.0)
+            twist = Math.Clamp(twist, previousTwist - maxDelta, previousTwist + maxDelta);
+        return Math.Clamp(twist, 0.0, 100.0);
+    }
+
+    /// The sent stroke with the player's Stroke Range taken back out, as a 0–100 script position. Pure,
+    /// public for the same reason as AutoTwistStep.
+    ///
+    /// That range fits the STROKE to the player's device. The twist has a window of its own (R0), and
+    /// scaling it by both would compress it twice: a 10–90 stroke range would cap Strong at 10–90 before
+    /// R0's window even applied, so full twist travel was out of reach for anyone who had narrowed their
+    /// stroke. Every effect, the ease and the max-speed cap survive the round trip — they happen before
+    /// or on top of the rescale, and the rescale is linear, so undoing it leaves them in place.
+    public double StrokeInScriptSpace(double sent, int rangeMin, int rangeMax)
+    {
+        double span = rangeMax - rangeMin;
+        if (span <= 0.0)
+            return 50.0;  // a zero-width stroke range carries no stroke to follow
+        return Math.Clamp((sent - rangeMin) / span * 100.0, 0.0, 100.0);
+    }
+
+    // On, with a stroke to follow, and no authored twist playing. Checked against what actually LOADED:
+    // _axes holds the round's merged axis set (sibling files included), or an override's own channels
+    // while one plays — so an override with R0 wins and one without leaves Auto Twist running on its
+    // stroke. A failed R0 load leaves no track, and therefore no suppression.
+    private bool AutoTwistActive() =>
+        _autoTwistGain > 0.0
+        && !_mainIsAlpha
+        && !(_axes.TryGetValue("R0", out var authored) && authored.Actions.Count > 0);
+
+    // One tick of Auto Twist, sent in the same interval as the stroke move it was derived from. Serial
+    // only: restim maps R0 to its carrier frequency, which a synthesised twist must never touch.
+    private void SendAutoTwist(SerialDeviceService serial, double stroke, double delta, uint intervalMs)
+    {
+        _lastAutoTwist = AutoTwistStep(stroke, _lastAutoTwist, _autoTwistGain, MaxTwistSpeed * delta);
+        (int axisMin, int axisMax) = GetAxisRange("R0");
+        int pos = RescaleToAxisRange((int)Math.Round(_lastAutoTwist), axisMin, axisMax);
+        serial.SendAxis("R0", intervalMs, Math.Clamp(pos, axisMin, axisMax) / 100.0);
+        _autoTwistDriving = true;
+    }
 
     /// Live-update the serial stroke-smoothing interval factor from Options. Clamped to the same
     /// band as the setting so a slider (or a hand-edited config) can't drive it out of range.
@@ -986,6 +1066,13 @@ public partial class FunscriptPlayer : Node
             foreach (var axis in _axes.Keys)
                 serialAx.SendAxis(axis, _homeEaseMs, 0.5);
 
+        // Auto Twist is not in _axes, so the loop above never reaches it. Centre it the same way — unless
+        // an authored R0 is loaded, in which case that loop already did.
+        if (_autoTwistDriving && !_axes.ContainsKey("R0") && serialAx != null && serialAx.SerialConnected)
+            serialAx.SendAxis("R0", _homeEaseMs, 0.5);
+        _autoTwistDriving = false;
+        _lastAutoTwist = 50.0;
+
         // Silence every mapped vibe actuator.
         var bpv = _buttplug;
         if (bpv != null && bpv.BpConnected)
@@ -1281,7 +1368,14 @@ public partial class FunscriptPlayer : Node
         // Interval a touch longer than the tick so the OSR is always still gliding toward a fresh
         // target instead of finishing early and dwelling (which would re-introduce stepping).
         uint intervalMs = (uint)Math.Max(1, Math.Round(delta * 1000.0 * _serialInterpFactor));
-        serial.SendLinear(intervalMs, Math.Clamp(target, 0.0, 100.0) / 100.0);
+        double sent = Math.Clamp(target, 0.0, 100.0);
+        serial.SendLinear(intervalMs, sent / 100.0);
+
+        // Auto Twist rides the stroke it was derived from: the same value, after every effect and the
+        // speed cap above, so anything that reshapes the stroke reshapes the twist. Block returned early,
+        // so a blocked stroke holds the twist too.
+        if (AutoTwistActive())
+            SendAutoTwist(serial, StrokeInScriptSpace(sent, _rangeMin, _rangeMax), delta, intervalMs);
     }
 
     // Send a single linear command to the device for the current filler direction.
@@ -1353,6 +1447,7 @@ public partial class FunscriptPlayer : Node
         _intifaceDelayMs = _settings.Call("get_intiface_delay_ms").AsInt32();
         _vibeIntensity = Math.Clamp(_settings.Call("get_vibe_intensity").AsInt32(), 0, 100) / 100f;
         _maxStrokeSpeed = Math.Max(0, _settings.Call("get_max_stroke_speed").AsInt32());
+        _autoTwistGain = Math.Clamp(_settings.Call("get_auto_twist_gain").AsDouble(), 0.0, 1.0);
         _serialInterpFactor = _settings.Call("get_serial_interp_factor").AsDouble();
 
         // Seed the constrict state machine's tuning from settings.

@@ -2,6 +2,24 @@
 
 ## v0.8.6
 
+### ◆ Auto Twist
+
+An SR6, or an OSR2 with the twist add-on, has sat with its twist axis idle through almost every
+journey — nearly all content is scripted for the stroke alone. **Options → Device → Auto Twist** gives
+it something to do: the twist follows the stroke, turning where the stroke turns, and swings further
+the deeper the stroke goes. **Subtle / Medium / Strong** reach ±5 / ±25 / ±50 either side of centre
+on a full-depth stroke; Off by default.
+
+It follows the stroke your device is actually sent, so every effect on the stroke reaches the twist
+too — a curse that freezes the stroke freezes the twist, one that makes strokes shallow makes the twist
+gentle. A round with its own twist script always plays that instead, and so does an override item
+that brings one; an override without one keeps the twist following its stroke. It is capped at a
+speed well short of a shake, goes through your Twist range like any other twist, and is sent to the
+serial device only — never to restim, where the same axis controls carrier frequency.
+
+Serial devices only: Buttplug has no twist command and the Handy is a single axis. There is no device
+check — turning it on is how you tell the app your hardware has twist.
+
 ### ◆ The end-of-run map respects fog of war
 
 A fogged journey revealed its whole structure on the end screen — every branch, whether or not

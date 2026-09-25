@@ -122,6 +122,7 @@ var _home_ease_input: LineEdit = null
 var _vibe_slider: HSlider = null
 var _vibe_value_lbl: Label = null
 var _max_speed_slider: HSlider = null
+var _auto_twist_dd: OptionButton = null
 var _max_speed_value_lbl: Label = null
 var _hud_delay_slider: HSlider = null
 var _hud_delay_value_lbl: Label = null
@@ -833,7 +834,7 @@ func _apply_layout() -> void:
 	# L1/L2/R0/R1/R2 → surge/sway/twist/roll/pitch. Each axis has its own travel
 	# window, independent of the stroke range. These are bipolar (home to centre
 	# 50), so a symmetric range narrows the swing around centre. Only axes with a
-	# loaded script on a multi-axis device actually move (OSR2 none; SR6 all).
+	# loaded script on a multi-axis device actually move (OSR2: roll + pitch; SR6: all).
 	var axis_hint: Label = Label.new()
 	axis_hint.text = "Per-axis range for multi-axis devices (e.g. SR6). The stroke axis uses Stroke Range above."
 	axis_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -892,6 +893,35 @@ func _apply_layout() -> void:
 				FunscriptPlayer.SetAxisRangeClamp(axis_id, roundi(lo), roundi(hi))
 				_save_settings()
 		)
+
+	# ── Auto Twist (synthesised R0 for stroke-only content) ──────────────────
+	# Beside the per-axis ranges because it is one: it only ever drives R0, through R0's window above.
+	var twist_row: HBoxContainer = HBoxContainer.new()
+	twist_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(twist_row)
+
+	var twist_lbl: Label = Label.new()
+	twist_lbl.text = "Auto Twist (R0)"
+	twist_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(twist_lbl, UITheme.WHITE_SOFT, 14, false)
+	twist_row.add_child(twist_lbl)
+
+	_auto_twist_dd = OptionButton.new()
+	for step_name: String in SettingsService.AUTO_TWIST_STEPS:
+		_auto_twist_dd.add_item(step_name)
+	UITheme.style_option_button(_auto_twist_dd)
+	twist_row.add_child(_auto_twist_dd)
+	_auto_twist_dd.item_selected.connect(func(_i: int) -> void: _save_settings())
+
+	var twist_hint: Label = Label.new()
+	twist_hint.text = (
+		"Twists with the stroke on content that has no twist script of its own — for a serial device "
+		+ "with a twist axis (SR6, or an OSR2 with the twist add-on). A scripted twist always plays "
+		+ "instead. Scaled by the Twist range above, so a narrow window makes even Strong subtle."
+	)
+	twist_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(twist_hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(twist_hint)
 
 	# ── Home Position row ────────────────────────────────────────────────────
 	var home_row: HBoxContainer = HBoxContainer.new()
@@ -1617,6 +1647,10 @@ func _load_settings() -> void:
 		_max_speed_value_lbl.text = ("Off" if max_speed <= 0 else "%d u/s" % max_speed)
 	FunscriptPlayer.SetMaxStrokeSpeed(max_speed)
 
+	if _auto_twist_dd != null:
+		_auto_twist_dd.selected = SettingsService.get_auto_twist()
+	FunscriptPlayer.SetAutoTwist(SettingsService.get_auto_twist_gain())
+
 	var hud_delay: float = SettingsService.get_hud_hide_delay()
 	if _hud_delay_slider != null:
 		_hud_delay_slider.value = hud_delay
@@ -1757,6 +1791,10 @@ func _save_settings() -> void:
 		var max_speed: int = roundi(_max_speed_slider.value)
 		SettingsService.set_max_stroke_speed(max_speed)
 		FunscriptPlayer.SetMaxStrokeSpeed(max_speed)
+
+	if _auto_twist_dd != null:
+		SettingsService.set_auto_twist(_auto_twist_dd.selected)
+		FunscriptPlayer.SetAutoTwist(SettingsService.get_auto_twist_gain())
 
 	if _hud_delay_slider != null:
 		SettingsService.set_hud_hide_delay(_hud_delay_slider.value)
