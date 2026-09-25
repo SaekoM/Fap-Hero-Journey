@@ -2715,6 +2715,25 @@ func _add_seq_to_list(
 
 # Renders a fork header + each path (with path header + recursed items).
 func _add_fork_to_list(list: VBoxContainer, fork: Dictionary, indent: int) -> void:
+	# A silent fork never shows itself in play, so the catalogue must not show it either — its title
+	# is usually the question it asks, and its path names are the answers. Both would be handed to the
+	# player before they pressed START.
+	#
+	# The paths' CONTENTS still list, inline at this level. The preview already shows every branch of
+	# every fork rather than a route, so flattening one reveals nothing it was not showing and hides
+	# nothing it was.
+	if bool(fork.get("silent", false)):
+		for p: Dictionary in fork.get("paths", []):
+			_add_seq_to_list(
+				list,
+				p.get("rounds", []),
+				p.get("shops", []),
+				p.get("storyboards", []),
+				p.get("forks", []),
+				indent
+			)
+		return
+
 	# Fork header row
 	var fork_row: HBoxContainer = HBoxContainer.new()
 	fork_row.add_theme_constant_override("separation", 8)

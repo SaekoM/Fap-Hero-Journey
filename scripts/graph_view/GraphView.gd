@@ -1148,6 +1148,11 @@ func _type_label(item: Dictionary) -> String:
 				first_speaker = lines[0].get("speaker", "")
 			return first_speaker if first_speaker != "" else "Storyboard"
 		"fork":
+			# A silent fork resolves on arrival and is never shown, so on the PLAYER's map it is a
+			# marker and nothing else — its title is the decision being made, which is the one thing
+			# it must not announce. The author still sees what they named it in the builder.
+			if map_mode and JourneyData.fork_is_silent(item):
+				return "Fork"
 			var n3: String = item.get("title", "")
 			return n3 if n3 != "" else "Fork"
 		"checkpoint":

@@ -313,3 +313,45 @@ func test_round_video_explicit_and_folder_fallback() -> void:
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(folder) + "/clip.mp4")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(folder))
+
+
+# ── Silent forks in the catalogue preview ────────────────────────────
+# The preview's fork entry is rebuilt field by field, so anything not named there never reaches the
+# detail modal — which is how a silent fork ends up announcing its title and its choice names to a
+# player who is never meant to see the decision happen.
+
+
+func _fork_graph(fork_data: Dictionary) -> Dictionary:
+	return {
+		"start": "f",
+		"nodes":
+		{
+			"f": {"type": "fork", "data": fork_data, "out": [{"to": "a", "name": "Left"}]},
+			"a": {"type": "round", "data": {"name": "After"}, "out": []},
+		}
+	}
+
+
+func test_the_preview_entry_knows_a_fork_is_silent() -> void:
+	var seq: Dictionary = JourneyScanner._graph_catalogue_sequence(
+		_fork_graph({"title": "Does she spare him?", "resolution": "random", "silent": true})
+	)
+	var forks: Array = seq.get("forks", [])
+	assert_int(forks.size()).is_equal(1)
+	assert_bool(bool((forks[0] as Dictionary)["silent"])).is_true()
+
+
+func test_an_ordinary_fork_is_not_marked_silent() -> void:
+	var seq: Dictionary = JourneyScanner._graph_catalogue_sequence(
+		_fork_graph({"title": "Which way?", "resolution": "choice"})
+	)
+	assert_bool(bool((seq["forks"][0] as Dictionary)["silent"])).is_false()
+
+
+# The flag is resolved through fork_is_silent, not read raw — so a fork that cannot route without the
+# player is never treated as silent by the preview either, however its data got written.
+func test_a_player_choice_marked_silent_is_not_hidden_from_the_preview() -> void:
+	var seq: Dictionary = JourneyScanner._graph_catalogue_sequence(
+		_fork_graph({"title": "Which way?", "resolution": "choice", "silent": true})
+	)
+	assert_bool(bool((seq["forks"][0] as Dictionary)["silent"])).is_false()

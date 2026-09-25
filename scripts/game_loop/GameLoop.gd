@@ -628,7 +628,12 @@ func _load_current_item() -> void:
 	_resumed_from_save = false
 	match GameState.CurrentItemType():
 		"fork":
-			_show_fork_screen(GameState.CurrentFork())
+			var fork: Dictionary = GameState.CurrentFork()
+			if JourneyData.fork_is_silent(fork):
+				_resolve_silent_fork(fork)
+				_load_current_item()
+			else:
+				_show_fork_screen(fork)
 		"shop":
 			_show_shop_screen(GameState.CurrentShop())
 		"storyboard":
@@ -834,6 +839,63 @@ func _show_fork_screen(fork_data: Dictionary) -> void:
 		"conditional":
 			if auto_resolved:
 				fork_screen.reveal(_conditional_path(fork_data), _conditional_caption(fork_data))
+
+
+# A fork the player never sees: resolve it here and walk straight on, the way a Loop marker does.
+# No screen, no reveal, no music of its own — a silent fork is routing and nothing else, so its
+# backdrop, title and audio accent are simply never used.
+#
+# Everything the choice DOES still happens: its set/clear flags, counter changes and item removals run
+# in ResolveFork exactly as they would had the player picked it.
+func _resolve_silent_fork(fork: Dictionary) -> void:
+	var paths: Array = fork.get("paths", [])
+	var index: int = 0
+	match str(fork.get("resolution", "choice")):
+		"random":
+			index = _weighted_random_path(paths)
+		"conditional":
+			index = _conditional_path(fork)
+		"sacrifice":
+			index = _silent_sacrifice_path(paths, fork)
+	GameState.ResolveFork(index)
+
+
+# Which path an unseen sacrifice takes, and what it costs. Among those the player can afford, using
+# the same rule an interactive sacrifice falls back on when its timer runs out.
+#
+# When NOTHING is affordable it takes the default path and charges nothing. The interactive screen
+# can sit there until the player finds the coins; a silent fork has no such pause, and the one thing
+# it must never do is strand the run or leave a balance it took without asking.
+func _silent_sacrifice_path(paths: Array, fork: Dictionary) -> int:
+	var selectable: Array = []
+	for p: Dictionary in paths:
+		selectable.append(
+			ForkResolver.path_affordable(
+				int(p.get("cost", 0)),
+				str(p.get("required_item", "")),
+				CoinService.Balance,
+				Callable(InventoryService, "OwnsItem")
+			)
+		)
+	var index: int = ForkResolver.timeout_pick(
+		"sacrifice",
+		selectable,
+		int(fork.get("timeout_path", -1)),
+		int(fork.get("default_path", 0)),
+		randi()
+	)
+	if index < 0 or index >= paths.size():
+		return clampi(int(fork.get("default_path", 0)), 0, maxi(0, paths.size() - 1))
+	# Paid here rather than in ResolveFork, because that is where the interactive screen pays it too
+	# (ForkScreen._on_path_chosen) — the cost has never belonged to the resolution itself.
+	var chosen: Dictionary = paths[index]
+	var cost: int = int(chosen.get("cost", 0))
+	var req: String = str(chosen.get("required_item", ""))
+	if cost > 0:
+		CoinService.SpendCoins(cost)
+	if req != "":
+		InventoryService.ConsumeItem(req)
+	return index
 
 
 # Picks a path index by weight (per-path "weight", default 1). The weighting math

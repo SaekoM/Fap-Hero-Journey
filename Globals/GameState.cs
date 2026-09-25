@@ -430,6 +430,10 @@ public partial class GameState : Node
             ["title"] = data.ContainsKey("title") ? data["title"].AsString() : "",
             ["description"] = data.ContainsKey("description") ? data["description"].AsString() : "",
             ["resolution"] = data.ContainsKey("resolution") ? data["resolution"].AsString() : "choice",
+            // Routes without showing itself — GameLoop resolves it on arrival instead of opening the
+            // fork screen. Carried here because this dict is rebuilt field by field, so anything not
+            // named is dropped.
+            ["silent"] = data.ContainsKey("silent") && data["silent"].AsBool(),
             ["cond_metric"] = data.ContainsKey("cond_metric") ? data["cond_metric"].AsString() : "score",
             ["cond_counter"] = data.ContainsKey("cond_counter") ? data["cond_counter"].AsString() : "",
             ["cond_decider"] = data.ContainsKey("cond_decider") ? data["cond_decider"].AsString() : "game",
@@ -539,6 +543,19 @@ public partial class GameState : Node
 
     // Picks the fork's pathIndex-th out-edge and moves to its target. Out-of-range /
     // negative clamps to edge 0 (mirrors the old behaviour). No-op off a fork.
+    // Mirrors JourneyData.fork_is_silent: the flag counts only on a fork that can route without the
+    // player. Checked here as well as there so a hand-edited journey.json cannot hide a fork from the
+    // run breakdown that the player was actually shown and actually picked.
+    private static bool IsSilentFork(Dictionary data)
+    {
+        if (!(data.ContainsKey("silent") && data["silent"].AsBool())) return false;
+        var resolution = data.ContainsKey("resolution") ? data["resolution"].AsString() : "choice";
+        if (resolution == "random" || resolution == "sacrifice") return true;
+        if (resolution != "conditional") return false;
+        return (data.ContainsKey("cond_decider") ? data["cond_decider"].AsString() : "game") != "player";
+    }
+
+
     public void ResolveFork(int pathIndex)
     {
         var node = NodeOf(_currentId);
@@ -552,14 +569,18 @@ public partial class GameState : Node
 
         var edge = edges[pathIndex].AsGodotDictionary();
         var data = node["data"].AsGodotDictionary();
-        _playLog.Add(new Dictionary
-        {
-            ["type"] = "fork_choice",
-            ["fork_title"] = data.ContainsKey("title") ? data["title"].AsString() : "",
-            ["path_name"] = edge.ContainsKey("name") ? edge["name"].AsString() : "Path " + (pathIndex + 1),
-            ["path_index"] = pathIndex,
-            ["depth"] = node.ContainsKey("depth") ? node["depth"].AsInt32() : 0,
-        });
+        // A silent fork leaves no entry: the play log is what the end screen prints as the run
+        // breakdown, and a fork header naming the path taken would announce the decision the player
+        // was never shown. Its effects still apply below — only the telling is skipped.
+        if (!IsSilentFork(data))
+            _playLog.Add(new Dictionary
+            {
+                ["type"] = "fork_choice",
+                ["fork_title"] = data.ContainsKey("title") ? data["title"].AsString() : "",
+                ["path_name"] = edge.ContainsKey("name") ? edge["name"].AsString() : "Path " + (pathIndex + 1),
+                ["path_index"] = pathIndex,
+                ["depth"] = node.ContainsKey("depth") ? node["depth"].AsInt32() : 0,
+            });
 
         ApplyFlags(edge);        // the chosen choice's set_flags / clear_flags ("you chose X")
         ApplyCounters(edge);     // …its set_counters ("+1 notch for that choice")

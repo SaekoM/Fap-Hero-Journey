@@ -4,6 +4,16 @@ signal completed(coins: int)
 signal map_requested  # player tapped the "◇ MAP" button (GameLoop owns the map)
 
 const VN_BAR_HEIGHT: int = 210
+
+# The strip the continue hint and the auto-advance countdown sit in: a band of its own directly ABOVE
+# the dialogue bar rather than inside its bottom. They are meta-text about the controls, not part of
+# what the scene is saying, and below the line they read as the last thing said.
+#
+# Measured up from the bottom of the screen, since that is where the bar is anchored.
+const HINT_BAND_BOTTOM: int = VN_BAR_HEIGHT + 6
+const HINT_BAND_TOP: int = HINT_BAND_BOTTOM + 22
+# Matches the dialogue bar's own inner margin, so the hints line up with the text under them.
+const HINT_GUTTER: int = 48
 # Matches SettingMusic's crossfade, so a line that changes place moves its picture and its score over
 # the same span rather than one chasing the other.
 const BG_FADE_SECS: float = 0.4
@@ -428,20 +438,31 @@ func _finish() -> void:
 	)
 
 
-# A countdown pinned bottom-left (mirroring the "continue" hint on the right) when the journey arms
-# auto-advance. Only built when enabled; text/colour are filled by _update_countdown_label.
+# A countdown at the left of the hint band (mirroring the "continue" hint at its right) when the
+# journey arms auto-advance. Only built when enabled; text/colour are filled by
+# _update_countdown_label.
 func _add_countdown_label() -> void:
 	if auto_advance_secs <= 0:
 		return
 	_countdown_lbl = Label.new()
 	_countdown_lbl.anchor_top = 1.0
 	_countdown_lbl.anchor_bottom = 1.0
-	_countdown_lbl.offset_left = 48  # match the inner-margin gutter the hint uses on the right
-	_countdown_lbl.offset_top = -44
-	_countdown_lbl.offset_bottom = -22
+	_countdown_lbl.offset_left = HINT_GUTTER
+	_countdown_lbl.offset_top = -HINT_BAND_TOP
+	_countdown_lbl.offset_bottom = -HINT_BAND_BOTTOM
 	_countdown_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(11))
 	_countdown_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_countdown_lbl)
+	_add_hint_shadow(_countdown_lbl)
+
+
+# Above the bar these sit on the scene's own picture rather than on the bar's flat ground, so they
+# carry a shadow. Small grey text over an arbitrary photo is otherwise legible only by luck.
+func _add_hint_shadow(label: Label) -> void:
+	label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.85))
+	label.add_theme_constant_override("shadow_offset_x", 1)
+	label.add_theme_constant_override("shadow_offset_y", 1)
+	label.add_theme_constant_override("shadow_outline_size", 3)
 
 
 func _update_countdown_label() -> void:
@@ -538,10 +559,9 @@ func _apply_layout() -> void:
 	var vbox: VBoxContainer = $VNBar/Inner/VBox
 	vbox.add_theme_constant_override("separation", 12)
 
-	# Detach hint from the VBox so it no longer participates in the text flow.
-	# Re-parent it directly onto the root Control as an absolutely-positioned
-	# overlay pinned to the bottom-right corner — it will never move regardless
-	# of speaker visibility or dialogue line wrapping.
+	# Detach hint from the VBox so it no longer participates in the text flow. Re-parented onto the
+	# root Control as an absolutely-positioned overlay in the band above the bar — it will never move
+	# regardless of speaker visibility or dialogue line wrapping.
 	vbox.remove_child(_hint)
 	add_child(_hint)
 	_hint.anchor_left = 0.0
@@ -549,11 +569,12 @@ func _apply_layout() -> void:
 	_hint.anchor_top = 1.0
 	_hint.anchor_bottom = 1.0
 	_hint.offset_left = 0
-	_hint.offset_right = -48  # match inner right margin
-	_hint.offset_top = -44  # inner bottom margin (22) + label height (~22)
-	_hint.offset_bottom = -22  # inner bottom margin
+	_hint.offset_right = -HINT_GUTTER
+	_hint.offset_top = -HINT_BAND_TOP
+	_hint.offset_bottom = -HINT_BAND_BOTTOM
 	_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
 	_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_add_hint_shadow(_hint)
 
 	# Skip button — top-right corner, hidden until the opening fade completes.
 	_skip_btn = Button.new()

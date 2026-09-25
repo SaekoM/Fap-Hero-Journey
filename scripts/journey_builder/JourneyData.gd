@@ -874,6 +874,14 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["after_order"] = int(data.get("after_order", 0))
 			# Which counter a "counter" conditional fork gates on (blank for other metrics).
 			out["cond_counter"] = str(data.get("cond_counter", ""))
+			# Silent: resolve on arrival and walk straight through, with no screen, no reveal and no
+			# trace in the run breakdown. Written only where the fork can actually route without the
+			# player, so switching one to Player Choice drops the flag rather than leaving it lurking to
+			# take effect again if the resolution is ever switched back.
+			if bool(data.get("silent", false)) and fork_can_be_silent(out):
+				out["silent"] = true
+			else:
+				out.erase("silent")
 			# Any arrangement of its choices onto the setting's backdrop.
 			out["layout"] = normalize_layout_slots(data.get("layout", {}))
 			_carry_scene_override(out, data)
@@ -2489,6 +2497,25 @@ static func clean_counter_deltas(v: Variant) -> Dictionary:
 	return out
 
 
+# Whether a fork of this resolution can route without the player — which is what a silent fork has
+# to do. Random and game-decided conditional forks already resolve themselves; a sacrifice can too,
+# by taking an affordable path and paying for it unseen. A player choice cannot: there is nobody to
+# make it, so the toggle is not offered and a stray flag on one is ignored.
+static func fork_can_be_silent(data: Dictionary) -> bool:
+	match str(data.get("resolution", "choice")):
+		"random", "sacrifice":
+			return true
+		"conditional":
+			return str(data.get("cond_decider", "game")) != "player"
+		_:
+			return false
+
+
+# True when this fork should resolve on arrival and show nothing.
+static func fork_is_silent(data: Dictionary) -> bool:
+	return bool(data.get("silent", false)) and fork_can_be_silent(data)
+
+
 # ── Shop offer ───────────────────────────────────────────────────────────────
 
 
@@ -2897,6 +2924,7 @@ static func _build_fork_item(f: Dictionary) -> Dictionary:
 		"bgm": f.get("bgm", ""),
 		"bgm_volume": f.get("bgm_volume", DEFAULT_BGM_VOLUME),
 		"resolution": str(f.get("resolution", "choice")),
+		"silent": bool(f.get("silent", false)),
 		"cond_metric": str(f.get("cond_metric", "score")),
 		"default_path": int(f.get("default_path", 0)),
 		"timeout_path": int(f.get("timeout_path", -1)),

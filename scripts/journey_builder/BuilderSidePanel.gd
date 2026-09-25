@@ -4827,6 +4827,25 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		def_dd.item_selected.connect(func(i: int) -> void: data["default_path"] = i)
 		col.add_child(def_dd)
 
+	# Silent: resolve on arrival and show nothing. Offered only where the fork can route without the
+	# player — a choice fork has nobody to make it, so the toggle would be a promise it cannot keep.
+	if JourneyData.fork_can_be_silent(data):
+		var silent_chk: CheckButton = CheckButton.new()
+		silent_chk.text = "SILENT (NO FORK SCREEN)"
+		silent_chk.button_pressed = bool(data.get("silent", false))
+		silent_chk.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"Routes on arrival and walks straight on — no screen, no reveal, and nothing in the end-of-run breakdown. The choice still sets its flags, counters and item removals. This fork's own title, backdrop, music and audio accent are never used."
+			)
+		)
+		silent_chk.toggled.connect(
+			func(on: bool) -> void:
+				data["silent"] = on
+				reselect.call(0)
+		)
+		col.add_child(silent_chk)
+
 	var res_hint: Label = Label.new()
 	res_hint.text = _fork_resolution_hint(resolution, metric, data.get("cond_decider", "game"))
 	res_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)

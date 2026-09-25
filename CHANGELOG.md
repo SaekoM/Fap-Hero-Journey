@@ -176,6 +176,42 @@ is discarding most of what the journey adds to it. One that **never climbs past 
 range** was given a ceiling it cannot reach. Both look correct node by node and only show up when
 the whole journey is run.
 
+### ◆ Storyboard prompts moved off the dialogue
+
+“Click or space to continue” and the auto-advance countdown sat inside the bottom of the dialogue bar,
+below the line being spoken — close enough to the text to read as the last thing said. Both now sit in
+a band of their own directly above the bar: the countdown at the left, the prompt at the right, lined
+up with the text beneath them. They carry a shadow there, since they sit on the scene’s own picture
+rather than on the bar’s flat ground.
+
+### ◆ Silent forks
+
+A fork that routes without ever showing itself. Tick **SILENT (NO FORK SCREEN)** and the player walks
+straight through: no screen, no reveal, no pause — the journey simply continues down the path the
+fork chose, the way a Loop marker passes through.
+
+Offered on the three resolutions that need nobody to decide: **random**, **conditional resolved by
+the game**, and **sacrifice**, which takes an affordable path and pays its cost unseen. A player
+choice cannot be silent — there is nobody to make it — so the toggle is not offered there, and a flag
+left over from switching resolutions is dropped rather than left lurking.
+
+The choice still does everything it would have done: its flags, counter changes and item removals all
+apply. What it does not do is leave a trace — the end-of-run breakdown prints a header for every fork
+with the path taken, and a silent one is omitted entirely, so the debrief cannot give away a decision
+the player never saw. A silent fork is routing and nothing else, so its own title, backdrop, music
+and audio accent are never used.
+
+An unseen sacrifice that the player cannot afford takes the default path and charges nothing. The
+interactive screen can wait for them to find the coins; a silent fork has no such pause, and it must
+never strand a run or take a balance it did not ask for.
+
+It stays out of the two places a player reads the journey, too. The catalogue preview used to print a
+fork’s title and every choice name before the run began — for a silent fork that is the question and
+its answers, handed over in advance — so a silent one now lists its branches’ contents inline with no
+header of its own. On the in-play map it shows as a plain fork marker rather than under its authored
+title, which is usually the decision itself. The branch is still drawn: the map’s job is to show
+where the journey can go, and the shape of the graph is not a secret it can keep.
+
 ### ◆ Fixed: a pool entry’s own boss encounter was thrown away
 
 A pool (“encounter”) round can make each entry its own boss, and the builder offers the full encounter

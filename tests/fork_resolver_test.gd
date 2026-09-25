@@ -215,3 +215,79 @@ func test_timeout_no_selectable_returns_negative() -> void:
 # A negative random draw still lands on a valid pool index (defensive modulo).
 func test_timeout_tolerates_negative_r() -> void:
 	assert_int(ForkResolver.timeout_pick("choice", [true, true, true], -1, 0, -1)).is_equal(2)
+
+
+# ── Silent forks ──────────────────────────────────────────────
+# A fork that routes on arrival and shows nothing. Only the resolutions that can decide without the
+# player are eligible — the flag is ignored on the rest rather than trusted, so a stray one can never
+# turn an authored set of choices into a fixed route.
+
+
+func test_only_forks_that_need_no_player_can_be_silent() -> void:
+	assert_bool(JourneyData.fork_can_be_silent({"resolution": "random"})).is_true()
+	assert_bool(JourneyData.fork_can_be_silent({"resolution": "sacrifice"})).is_true()
+	assert_bool(JourneyData.fork_can_be_silent({"resolution": "conditional"})).is_true()
+	assert_bool(JourneyData.fork_can_be_silent({"resolution": "choice"})).is_false()
+
+
+# A conditional fork the PLAYER resolves is an interactive screen like any other — it is the decider,
+# not the resolution, that decides whether anyone has to be asked.
+func test_a_player_decided_conditional_cannot_be_silent() -> void:
+	(
+		assert_bool(
+			JourneyData.fork_can_be_silent({"resolution": "conditional", "cond_decider": "player"})
+		)
+		. is_false()
+	)
+	(
+		assert_bool(
+			JourneyData.fork_can_be_silent({"resolution": "conditional", "cond_decider": "game"})
+		)
+		. is_true()
+	)
+
+
+func test_fork_is_silent_needs_both_the_flag_and_the_eligibility() -> void:
+	assert_bool(JourneyData.fork_is_silent({"resolution": "random"})).is_false()  # not ticked
+	assert_bool(JourneyData.fork_is_silent({"resolution": "random", "silent": true})).is_true()
+	# Ticked but ineligible: ignored, so an authored choice screen still opens.
+	assert_bool(JourneyData.fork_is_silent({"resolution": "choice", "silent": true})).is_false()
+
+
+# The flag is written only where it can take effect. Switching a silent fork to Player Choice drops
+# it at save rather than leaving it lurking to take hold again if the resolution is switched back.
+func test_a_silent_flag_is_dropped_when_the_fork_stops_being_eligible() -> void:
+	var kept: Dictionary = JourneyData.coerce_node_save_data(
+		"fork", {"resolution": "random", "silent": true}
+	)
+	assert_bool(bool(kept["silent"])).is_true()
+
+	var dropped: Dictionary = JourneyData.coerce_node_save_data(
+		"fork", {"resolution": "choice", "silent": true}
+	)
+	assert_bool(dropped.has("silent")).is_false()
+
+
+# An ordinary fork carries no silent key at all, so the schema stays lean — the same rule set_flags
+# and the pool fields follow.
+func test_an_ordinary_fork_carries_no_silent_key() -> void:
+	(
+		assert_bool(
+			JourneyData.coerce_node_save_data("fork", {"resolution": "random"}).has("silent")
+		)
+		. is_false()
+	)
+
+
+# parse_journey rebuilds each fork field by field, so anything not named there is silently lost on
+# the way into the builder — which is how a saved flag comes back as unticked and gets written away.
+func test_parse_journey_forwards_the_silent_flag() -> void:
+	var parsed: Dictionary = JourneyData.parse_journey(
+		{"forks": [{"resolution": "random", "silent": true, "paths": []}]}
+	)
+	# Forks come back interleaved into the node sequence, not as a list of their own.
+	var items: Array = parsed.get("items", [])
+	assert_int(items.size()).is_equal(1)
+	var fork: Dictionary = items[0]
+	assert_str(str(fork["type"])).is_equal("fork")
+	assert_bool(bool(fork["silent"])).is_true()

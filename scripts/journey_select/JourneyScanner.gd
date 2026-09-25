@@ -900,14 +900,16 @@ static func _walk_level(
 						}
 					)
 				)
-			(lists["forks"] as Array).append(
-				{
-					"id": id,
-					"title": (n.get("data", {}) as Dictionary).get("title", ""),
-					"paths": paths,
-					"after_order": pos - 1
-				}
-			)
+			var fork_entry: Dictionary = {
+				"id": id,
+				"title": (n.get("data", {}) as Dictionary).get("title", ""),
+				"paths": paths,
+				"after_order": pos - 1,
+				# Resolved here, where the node's full data is to hand: this entry is rebuilt field by
+				# field, so the preview has no other way to know.
+				"silent": JourneyData.fork_is_silent(n.get("data", {})),
+			}
+			(lists["forks"] as Array).append(fork_entry)
 			id = merge
 		else:
 			_append_node(id, n, lists, pos)
