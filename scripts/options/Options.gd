@@ -123,6 +123,11 @@ var _vibe_slider: HSlider = null
 var _vibe_value_lbl: Label = null
 var _max_speed_slider: HSlider = null
 var _auto_twist_dd: OptionButton = null
+var _auto_twist_row: HBoxContainer = null
+var _auto_twist_note: Label = null
+var _device_profile_dd: OptionButton = null
+var _device_profile_row: HBoxContainer = null
+var _device_profile_note: Label = null
 var _max_speed_value_lbl: Label = null
 var _hud_delay_slider: HSlider = null
 var _hud_delay_value_lbl: Label = null
@@ -178,6 +183,9 @@ var _credits_section: VBoxContainer = null
 # per-axis levels are device tuning and live on DEVICE beside the T-code ranges.
 var _restim_section: VBoxContainer = null
 var _restim_axes_section: VBoxContainer = null
+var _restim_axes_toggle: Button = null
+var _restim_axis_count: int = 0
+var _restim_axes_body: VBoxContainer = null
 var _restim_server_input: LineEdit = null
 var _restim_path_input: LineEdit = null
 var _restim_auto_toggle: Button = null
@@ -830,6 +838,45 @@ func _apply_layout() -> void:
 	_style_label(hint, UITheme.SEPARATOR, 11, false)
 	range_section.add_child(hint)
 
+	# ── Your device (declared axis profile) ─────────────────────────────────
+	# Which motion axes the player owns, picked by the name on the box. It decides what the game offers
+	# (multi-axis curses and items, Auto Twist) and never what is sent — see DeviceProfile.
+	_device_profile_row = HBoxContainer.new()
+	_device_profile_row.add_theme_constant_override("separation", 16)
+	range_section.add_child(_device_profile_row)
+
+	var profile_lbl: Label = Label.new()
+	profile_lbl.text = "Your device"
+	profile_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(profile_lbl, UITheme.WHITE_SOFT, 14, false)
+	_device_profile_row.add_child(profile_lbl)
+
+	_device_profile_dd = OptionButton.new()
+	for preset: Dictionary in DeviceProfile.PRESETS:
+		_device_profile_dd.add_item(str(preset["name"]))
+	UITheme.style_option_button(_device_profile_dd)
+	_device_profile_row.add_child(_device_profile_dd)
+	_device_profile_dd.item_selected.connect(func(_i: int) -> void: _on_device_profile_selected())
+
+	var profile_hint: Label = Label.new()
+	profile_hint.text = (
+		"The device you own. Decides which multi-axis curses and items can turn up and whether Auto "
+		+ "Twist is offered, so you never get one you can't feel. It doesn't change what is sent."
+	)
+	profile_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(profile_hint, UITheme.SEPARATOR, 11, false)
+	range_section.add_child(profile_hint)
+
+	_device_profile_note = Label.new()
+	_device_profile_note.text = (
+		"Counting as Stroke only: the stroke isn't set to a serial device, and only serial carries the "
+		+ "other axes. Make Serial the stroker under Device Routing to use it."
+	)
+	_device_profile_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(_device_profile_note, UITheme.AMBER, 11, false)
+	_device_profile_note.visible = false
+	range_section.add_child(_device_profile_note)
+
 	# ── Secondary-axis ranges (one per positional T-code axis) ────────────────
 	# L1/L2/R0/R1/R2 → surge/sway/twist/roll/pitch. Each axis has its own travel
 	# window, independent of the stroke range. These are bipolar (home to centre
@@ -899,6 +946,7 @@ func _apply_layout() -> void:
 	var twist_row: HBoxContainer = HBoxContainer.new()
 	twist_row.add_theme_constant_override("separation", 16)
 	range_section.add_child(twist_row)
+	_auto_twist_row = twist_row
 
 	var twist_lbl: Label = Label.new()
 	twist_lbl.text = "Auto Twist (R0)"
@@ -922,6 +970,12 @@ func _apply_layout() -> void:
 	twist_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(twist_hint, UITheme.SEPARATOR, 11, false)
 	range_section.add_child(twist_hint)
+
+	_auto_twist_note = Label.new()
+	_auto_twist_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(_auto_twist_note, UITheme.AMBER, 11, false)
+	_auto_twist_note.visible = false
+	range_section.add_child(_auto_twist_note)
 
 	# ── Home Position row ────────────────────────────────────────────────────
 	var home_row: HBoxContainer = HBoxContainer.new()
@@ -1647,9 +1701,12 @@ func _load_settings() -> void:
 		_max_speed_value_lbl.text = ("Off" if max_speed <= 0 else "%d u/s" % max_speed)
 	FunscriptPlayer.SetMaxStrokeSpeed(max_speed)
 
+	if _device_profile_dd != null:
+		_device_profile_dd.selected = DeviceProfile.index_of(SettingsService.get_device_profile())
 	if _auto_twist_dd != null:
 		_auto_twist_dd.selected = SettingsService.get_auto_twist()
 	FunscriptPlayer.SetAutoTwist(SettingsService.get_auto_twist_gain())
+	_refresh_device_profile_state()
 
 	var hud_delay: float = SettingsService.get_hud_hide_delay()
 	if _hud_delay_slider != null:
@@ -1792,6 +1849,9 @@ func _save_settings() -> void:
 		SettingsService.set_max_stroke_speed(max_speed)
 		FunscriptPlayer.SetMaxStrokeSpeed(max_speed)
 
+	# The profile before Auto Twist: the gain pushed below is 0 unless the profile has twist.
+	if _device_profile_dd != null:
+		SettingsService.set_device_profile(DeviceProfile.id_at(_device_profile_dd.selected))
 	if _auto_twist_dd != null:
 		SettingsService.set_auto_twist(_auto_twist_dd.selected)
 		FunscriptPlayer.SetAutoTwist(SettingsService.get_auto_twist_gain())
@@ -2821,6 +2881,8 @@ func _build_restim_section() -> void:
 # Per-axis e-stim levels. Deliberately on the DEVICE tab rather than CONNECTION:
 # these are ongoing output tuning (the same kind of thing as the T-code ranges
 # above them), not part of getting connected. Each row seeds and saves itself.
+# Collapsed by default: it is 18 sliders only an e-stim owner needs, and left open it
+# buried everything below it on the tab.
 func _build_restim_axes_section() -> void:
 	var section: VBoxContainer = VBoxContainer.new()
 	section.add_theme_constant_override("separation", 10)
@@ -2836,19 +2898,53 @@ func _build_restim_axes_section() -> void:
 	divider.add_theme_stylebox_override("separator", _make_separator_style())
 	section.add_child(divider)
 
+	# Always visible, so a player without restim can tell at a glance this isn't for them.
+	var summary: Label = Label.new()
+	summary.text = (
+		"Output levels for restim: Volume, Alpha/Beta, Carrier, Pulse and Vibration. Only needed "
+		+ "with an e-stim device connected."
+	)
+	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(summary, UITheme.SEPARATOR, 11, false)
+	section.add_child(summary)
+
+	# Full-width and bordered — the builder's expander look — so the closed section is still obvious.
+	for group: Array in RESTIM_AXIS_GROUPS:
+		_restim_axis_count += (group[1] as Array).size()
+	_restim_axes_toggle = Button.new()
+	_restim_axes_toggle.toggle_mode = true
+	_restim_axes_toggle.focus_mode = Control.FOCUS_NONE
+	_restim_axes_toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_restim_axes_toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	section.add_child(_restim_axes_toggle)
+
+	_restim_axes_body = VBoxContainer.new()
+	_restim_axes_body.add_theme_constant_override("separation", 10)
+	section.add_child(_restim_axes_body)
+	_restim_axes_toggle.toggled.connect(_set_restim_axes_open)
+	_set_restim_axes_open(false)
+
 	var hint: Label = Label.new()
 	hint.text = "Motion axes (Alpha/Beta/Carrier/Pulse-freq/Vib1) follow their funscripts when a round provides them; these sliders set every other axis. Raise Volume — at 0 restim is silent. Changes apply live to a connected session."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(hint, UITheme.SEPARATOR, 11, false)
-	section.add_child(hint)
+	_restim_axes_body.add_child(hint)
 
 	for group: Array in RESTIM_AXIS_GROUPS:
 		var group_lbl: Label = Label.new()
 		group_lbl.text = str(group[0])
 		_style_label(group_lbl, UITheme.CYAN, 11, true)
-		section.add_child(group_lbl)
+		_restim_axes_body.add_child(group_lbl)
 		for entry: Array in group[1]:
-			_add_restim_axis_row(section, str(entry[0]), str(entry[1]))
+			_add_restim_axis_row(_restim_axes_body, str(entry[0]), str(entry[1]))
+
+
+func _set_restim_axes_open(open: bool) -> void:
+	_restim_axes_body.visible = open
+	_restim_axes_toggle.text = (
+		"▾  HIDE E-STIM LEVELS" if open else "▸  SHOW E-STIM LEVELS (%d)" % _restim_axis_count
+	)
+	UITheme.style_button(_restim_axes_toggle, UITheme.PURPLE_BRIGHT if open else UITheme.PURPLE_MID)
 
 
 func _add_restim_text_row(
@@ -3257,6 +3353,40 @@ func _set_stroker(target_id: String) -> void:
 	SettingsService.set_stroke_target("" if cur == target_id else target_id)
 	SettingsService.save()
 	_refresh_routing_cards()
+	# Only serial carries axes beyond the stroke, so moving the stroke on or off serial changes what the
+	# device profile counts as — and with it whether Auto Twist runs.
+	FunscriptPlayer.SetAutoTwist(SettingsService.get_auto_twist_gain())
+	_refresh_device_profile_state()
+
+
+func _on_device_profile_selected() -> void:
+	_save_settings()
+	_refresh_device_profile_state()
+
+
+# Grey out what the device profile rules out: the profile itself while the stroke isn't on serial, and
+# Auto Twist while the profile has no twist. The saved choices are kept — only what the game counts on
+# changes — so switching back restores them.
+func _refresh_device_profile_state() -> void:
+	if _device_profile_dd == null or _auto_twist_dd == null:
+		return
+	var limited: bool = DeviceProfile.is_limited_by_target(SettingsService.get_stroke_target())
+	_set_dropdown_row_enabled(_device_profile_row, _device_profile_dd, not limited)
+	_device_profile_note.visible = limited
+
+	var has_twist: bool = SettingsService.device_has_axis("R0")
+	_set_dropdown_row_enabled(_auto_twist_row, _auto_twist_dd, has_twist)
+	_auto_twist_note.visible = not has_twist
+	_auto_twist_note.text = (
+		"Off: only a serial device carries twist."
+		if limited
+		else "Off: needs a device with twist. Pick OSR2 + twist or SR6 under Your device."
+	)
+
+
+func _set_dropdown_row_enabled(row: Control, dropdown: OptionButton, enabled: bool) -> void:
+	dropdown.disabled = not enabled
+	row.modulate.a = 1.0 if enabled else 0.45
 
 
 func _on_vibe_source_selected(actuator_id: String, idx: int) -> void:

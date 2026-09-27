@@ -1,6 +1,8 @@
 using Godot;
 using System;
+using System.Collections.Generic;
 using System.IO.Ports;
+using System.Text;
 
 // Direct serial output for T-code devices (SR6, OSR2, etc.).
 // Bypasses Buttplug/Intiface — talks T-code v0.3 over a COM port.
@@ -14,6 +16,8 @@ public partial class SerialDeviceService : Node
     public const int DefaultBaudRate = 115200;
 
     private SerialPort _port;
+    // Reused by SendMoves, which runs every physics tick during play.
+    private readonly StringBuilder _line = new StringBuilder();
 
     public bool SerialConnected => _port?.IsOpen ?? false;
     public string ConnectedPortName => _port?.PortName ?? "";
@@ -92,9 +96,7 @@ public partial class SerialDeviceService : Node
         if (!SerialConnected)
             return;
 
-        int positionTicks = Math.Clamp((int)Math.Round(position * 9999.0), 0, 9999);
-
-        TryWrite($"L0{positionTicks:D4}I{durationMs}\n");
+        TryWrite($"L0{PositionTicks(position):D4}I{durationMs}\n");
     }
 
     // Send a command to any named T-code axis (e.g. "L1", "L2", "R0", "R1", "R2").
@@ -106,9 +108,42 @@ public partial class SerialDeviceService : Node
         if (!SerialConnected)
             return;
 
-        int positionTicks = Math.Clamp((int)Math.Round(position * 9999.0), 0, 9999);
-        TryWrite($"{tcodeAxis}{positionTicks:D4}I{durationMs}\n");
+        TryWrite($"{tcodeAxis}{PositionTicks(position):D4}I{durationMs}\n");
     }
+
+    // Several axes moved together, as one T-code line. The firmware starts every command on a line when
+    // the newline arrives, so the axes move in step — and it is one write per tick instead of one per
+    // axis, which matters when up to six axes stream at the physics rate. `axes` and `positions` are
+    // index-aligned; positions are 0.0–1.0. Nothing is written for an empty batch.
+    public void SendMoves(IReadOnlyList<string> axes, IReadOnlyList<double> positions, uint durationMs)
+    {
+        if (!SerialConnected || axes.Count == 0)
+            return;
+
+        TryWrite(BuildMoveLine(_line, axes, positions, durationMs));
+    }
+
+    /// The line SendMoves would write, without writing it. Public only so the gdUnit suite can check the
+    /// wire format — the same seam FunscriptPlayer.AutoTwistStep uses.
+    public string MoveLine(string[] axes, double[] positions, uint durationMs) =>
+        BuildMoveLine(new StringBuilder(), axes, positions, durationMs);
+
+    private static string BuildMoveLine(StringBuilder line, IReadOnlyList<string> axes,
+        IReadOnlyList<double> positions, uint durationMs)
+    {
+        line.Clear();
+        for (int i = 0; i < axes.Count; i++)
+        {
+            if (i > 0)
+                line.Append(' ');
+            line.Append(axes[i]).Append(PositionTicks(positions[i]).ToString("D4")).Append('I').Append(durationMs);
+        }
+        return line.Append('\n').ToString();
+    }
+
+    // T-code position resolution: 0.0–1.0 → 0000–9999.
+    private static int PositionTicks(double position) =>
+        Math.Clamp((int)Math.Round(position * 9999.0), 0, 9999);
 
     // Vibration channel V0 (T-code v0.3). intensity: 0.0-1.0.
     public void SendVibrate(double intensity)

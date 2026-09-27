@@ -282,8 +282,11 @@ func get_auto_twist() -> int:
 	return step if step >= 0 and step < AUTO_TWIST_STEPS.size() else DEFAULT_AUTO_TWIST
 
 
-# The gain FunscriptPlayer runs Auto Twist at, for the saved step.
+# The gain FunscriptPlayer runs Auto Twist at: the saved step's, or 0 while the device profile has no
+# twist. The step itself is kept either way, so switching back to a twist profile restores it.
 func get_auto_twist_gain() -> float:
+	if not device_has_axis("R0"):
+		return 0.0
 	return auto_twist_gain(get_auto_twist())
 
 
@@ -292,6 +295,22 @@ static func auto_twist_gain(step: int) -> float:
 	if step < 0 or step >= AUTO_TWIST_GAINS.size():
 		return 0.0
 	return float(AUTO_TWIST_GAINS[step])
+
+
+# The declared device profile id (a DeviceProfile preset). Unknown ids read as the default.
+func get_device_profile() -> String:
+	var profile_id: String = str(_config.get_value("device", "profile", DeviceProfile.DEFAULT))
+	return profile_id if DeviceProfile.index_of(profile_id) >= 0 else DeviceProfile.DEFAULT
+
+
+# The axes the game may count on right now — the profile's, held to Stroke only unless the stroke goes
+# to serial. Everything that decides by hardware (curses, items, the catalogue filter) asks this.
+func get_device_axes() -> Array:
+	return DeviceProfile.effective_axes(get_device_profile(), get_stroke_target())
+
+
+func device_has_axis(axis: String) -> bool:
+	return get_device_axes().has(axis)
 
 
 # Serial stroke smoothing factor, clamped to a sane band (a value < 1 would make the OSR finish each
@@ -684,6 +703,11 @@ func set_max_stroke_speed(value: int) -> void:
 
 func set_auto_twist(step: int) -> void:
 	_config.set_value("device", "auto_twist", clampi(step, 0, AUTO_TWIST_STEPS.size() - 1))
+
+
+func set_device_profile(profile_id: String) -> void:
+	var known: bool = DeviceProfile.index_of(profile_id) >= 0
+	_config.set_value("device", "profile", profile_id if known else DeviceProfile.DEFAULT)
 
 
 # ── Device routing ──

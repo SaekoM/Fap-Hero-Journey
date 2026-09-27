@@ -12,7 +12,11 @@ public partial class FunscriptPlayer : Node
     private class AxisState
     {
         public List<Action> Actions = new List<Action>();
+        // Keyframe cursor for the per-keyframe restim fan-out in _Process.
         public int Index = 0;
+        // Bracket cursor for the serial stream in _PhysicsProcess: the segment containing "now". Moves
+        // both ways, so a seek recovers on its own.
+        public int InterpIndex = 0;
     }
 
     // Per-channel vibrator script state.
@@ -171,6 +175,24 @@ public partial class FunscriptPlayer : Node
     private bool _autoTwistDriving = false;
     // The loaded main track is an e-stim ALPHA channel rather than a stroke: nothing to twist with.
     private bool _mainIsAlpha = false;
+
+    // ── Serial axis stream ──────────────────────────────────────────────────
+    // Every serial axis — stroke, authored secondary axes, Auto Twist — is sampled once per physics tick
+    // and sent as ONE T-code line (MULTIAXIS_DESIGN.md §7 step 2). One per-tick path is what lets the
+    // multi-axis modifiers act the moment they start, instead of at an axis's next keyframe, which on a
+    // slow pitch or roll script can be seconds away.
+
+    // This tick's batch, index-aligned. Reused every tick rather than allocated.
+    private readonly List<string> _tickAxes = new List<string>();
+    private readonly List<double> _tickPositions = new List<double>();
+    // Last position streamed per secondary axis, in T-code steps (0–9999). An axis that hasn't moved
+    // since is left out of the line — a held pitch costs nothing. Forgotten whenever something outside
+    // the stream moves the axes (a park, a home, an override swap), and every AxisResendTicks anyway, so
+    // a device that lost a command or reconnected is back in step within half a second.
+    private readonly System.Collections.Generic.Dictionary<string, int> _lastSentAxisSteps =
+        new System.Collections.Generic.Dictionary<string, int>();
+    private int _ticksSinceAxisResend = 0;
+    private const int AxisResendTicks = 60;
 
     // How fast synthesised twist may move, in units/sec. Only engages on fast, deep strokes at the upper
     // steps — a 150 ms full-depth stroke at Strong would otherwise ask for ~670 u/s, which is a shake.
@@ -377,11 +399,15 @@ public partial class FunscriptPlayer : Node
         _savedRestim = null;
 
         foreach (var kv in _axes)
+        {
             kv.Value.Index = 0;
+            kv.Value.InterpIndex = 0;
+        }
         foreach (var kv in _vibScripts)
             kv.Value.Index = 0;
         foreach (var kv in _restimScripts)
             kv.Value.Index = 0;
+        ForgetSentAxes();
 
         string absPath = ProjectSettings.GlobalizePath(path);
         using var funscriptFile = FileAccess.Open(absPath, FileAccess.ModeFlags.Read);
@@ -540,15 +566,82 @@ public partial class FunscriptPlayer : Node
         && !_mainIsAlpha
         && !(_axes.TryGetValue("R0", out var authored) && authored.Actions.Count > 0);
 
-    // One tick of Auto Twist, sent in the same interval as the stroke move it was derived from. Serial
-    // only: restim maps R0 to its carrier frequency, which a synthesised twist must never touch.
-    private void SendAutoTwist(SerialDeviceService serial, double stroke, double delta, uint intervalMs)
+    // One tick of Auto Twist, on the same line as the stroke move it was derived from. Serial only:
+    // restim maps R0 to its carrier frequency, which a synthesised twist must never touch.
+    private void QueueAutoTwist(double stroke, double delta)
     {
         _lastAutoTwist = AutoTwistStep(stroke, _lastAutoTwist, _autoTwistGain, MaxTwistSpeed * delta);
         (int axisMin, int axisMax) = GetAxisRange("R0");
-        int pos = RescaleToAxisRange((int)Math.Round(_lastAutoTwist), axisMin, axisMax);
-        serial.SendAxis("R0", intervalMs, Math.Clamp(pos, axisMin, axisMax) / 100.0);
+        QueueMove("R0", SecondaryAxisOutput(_lastAutoTwist, axisMin, axisMax, 1.0));
         _autoTwistDriving = true;
+    }
+
+    /// A secondary axis's script position (0–100) as sent: rescaled into the player's window for that
+    /// axis, blended in from centre by `easeBlend` (0 = centre, 1 = fully the script), then held inside
+    /// the window. Pure — public for the gdUnit suite, like AutoTwistStep.
+    ///
+    /// The order is the one the per-keyframe path always used, so a script plays exactly as before: the
+    /// window first (a symmetric window narrows the swing around centre), the ease from centre because
+    /// secondary axes home to centre, and the clamp last as a safety net — it is what keeps an ease from
+    /// 50 inside a window that excludes 50.
+    public double SecondaryAxisOutput(double scriptPos, int axisMin, int axisMax, double easeBlend)
+    {
+        double pos = axisMin + (axisMax - axisMin) * Math.Clamp(scriptPos, 0.0, 100.0) / 100.0;
+        if (easeBlend < 1.0)
+            pos = 50.0 + (pos - 50.0) * easeBlend;
+        return Math.Clamp(pos, axisMin, axisMax);
+    }
+
+    /// Where a script is at `nowMs`, interpolated between its keyframes; the first position before it
+    /// starts, the last after it ends. `points` is Array[Vector2(at_ms, pos)]. Test seam for SampleActions.
+    public double SampleScriptAt(Godot.Collections.Array points, double nowMs)
+    {
+        int cursor = 0;
+        return SampleActions(ActionsFromPoints(points), ref cursor, nowMs);
+    }
+
+    // The straight line between the two keyframes around `now` — the path the firmware would tween along
+    // anyway, sampled every tick. `cursor` is the bracket index, carried between calls so each tick only
+    // steps from where the last one was; it walks back as well as forward, so seeks recover.
+    private static double SampleActions(List<Action> actions, ref int cursor, double now)
+    {
+        cursor = Math.Clamp(cursor, 0, Math.Max(0, actions.Count - 1));
+        while (cursor + 1 < actions.Count && actions[cursor + 1].AtMs <= now)
+            cursor++;
+        while (cursor > 0 && actions[cursor].AtMs > now)
+            cursor--;
+
+        if (now <= actions[0].AtMs)
+            return actions[0].Pos;
+        if (cursor + 1 >= actions.Count)
+            return actions[actions.Count - 1].Pos;
+
+        double a = actions[cursor].AtMs;
+        double b = actions[cursor + 1].AtMs;
+        double frac = b > a ? Math.Clamp((now - a) / (b - a), 0.0, 1.0) : 0.0;
+        return actions[cursor].Pos + (actions[cursor + 1].Pos - actions[cursor].Pos) * frac;
+    }
+
+    // Adds one axis to this tick's line. `pos` is 0–100.
+    private void QueueMove(string axis, double pos)
+    {
+        _tickAxes.Add(axis);
+        _tickPositions.Add(pos / 100.0);
+    }
+
+    // Something outside the stream just moved the secondary axes, so the next tick must send every one
+    // of them again rather than trusting what it last sent.
+    private void ForgetSentAxes() => _lastSentAxisSteps.Clear();
+
+    // How far the round-start ease has got, as a smoothstep 0–1 (1 when not easing). The stroke and the
+    // secondary axes share it, so every axis blends in from neutral together.
+    private float EaseBlend()
+    {
+        if (!_easing)
+            return 1f;
+        double elapsed = _positionMs - _easeStartMs;
+        float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
+        return t * t * (3f - 2f * t);
     }
 
     /// Live-update the serial stroke-smoothing interval factor from Options. Clamped to the same
@@ -711,6 +804,7 @@ public partial class FunscriptPlayer : Node
             if (!_axes.ContainsKey(axis))
                 serial.SendAxis(axis, AxisParkMs, 0.5);
         }
+        ForgetSentAxes();
     }
 
     public void Play()
@@ -744,6 +838,7 @@ public partial class FunscriptPlayer : Node
         _clockPrimed = false;  // re-lock the smooth clock to the resumed video position
         _interpIndex = 0;
         _lastSerialTarget = _homePosition;
+        ForgetSentAxes();  // the pause homed the axes outside the stream
         SendRestimManualState();
         _StartEaseIn();
     }
@@ -771,7 +866,10 @@ public partial class FunscriptPlayer : Node
         _lastSerialTarget = _homePosition;
 
         foreach (var kv in _axes)
+        {
             kv.Value.Index = 0;
+            kv.Value.InterpIndex = 0;
+        }
         foreach (var kv in _vibScripts)
             kv.Value.Index = 0;
         foreach (var kv in _restimScripts)
@@ -881,6 +979,7 @@ public partial class FunscriptPlayer : Node
         _savedAxes = null;
         _savedVibs = null;
         _savedRestim = null;
+        ForgetSentAxes();  // the override parked or drove these axes; resend the round's positions
 
         _ExtractBeats();
 
@@ -942,6 +1041,8 @@ public partial class FunscriptPlayer : Node
                 if ((route.Source == "vibe1" && !_vibScripts.ContainsKey(0))
                     || (route.Source == "vibe2" && !_vibScripts.ContainsKey(1)))
                     bp.SendVibrateChannel(route.Index, route.Channel, 0.0);
+
+        ForgetSentAxes();
     }
 
     // Fast-forwards every channel's play cursor to `posMs` WITHOUT dispatching (no scoring, no sends),
@@ -951,7 +1052,10 @@ public partial class FunscriptPlayer : Node
         _actionIndex = SkipTo(_actions, posMs);
         _interpIndex = Math.Max(0, _actionIndex - 1);
         foreach (var kv in _axes)
+        {
             kv.Value.Index = SkipTo(kv.Value.Actions, posMs);
+            kv.Value.InterpIndex = Math.Max(0, kv.Value.Index - 1);
+        }
         foreach (var kv in _vibScripts)
             kv.Value.Index = SkipTo(kv.Value.Actions, posMs);
         foreach (var kv in _restimScripts)
@@ -1072,6 +1176,7 @@ public partial class FunscriptPlayer : Node
             serialAx.SendAxis("R0", _homeEaseMs, 0.5);
         _autoTwistDriving = false;
         _lastAutoTwist = 50.0;
+        ForgetSentAxes();
 
         // Silence every mapped vibe actuator.
         var bpv = _buttplug;
@@ -1156,63 +1261,34 @@ public partial class FunscriptPlayer : Node
                 _actionIndex++;
             }
 
-            // Secondary axes → the serial device and/or restim whenever either is connected. Same
-            // smoothstep ease-in as L0 so all axes blend in from neutral together at round start.
-            // Serial gets the game's own axis name (L1/L2/R0/R1/R2); restim gets the E-Stim Full
-            // mapped name (surge→L1, twist→C0, pitch→P0, sway→V1, roll→V2).
+            // Secondary axes → restim, one move per keyframe, under the E-Stim Full mapped name
+            // (surge→L1, twist→C0, pitch→P0, sway→V1, roll→V2). The SERIAL device gets these axes from
+            // the per-tick stream in _PhysicsProcess instead. The cursors advance whether or not restim
+            // is connected, so connecting mid-round never replays the keyframes that already passed.
             {
-                var serial = _serial;
                 var restim = _restim;
-                bool serialOn = serial != null && serial.SerialConnected;
                 bool restimOn = restim != null && restim.RestimConnected;
-                if (serialOn || restimOn)
+                double easeBlend = EaseBlend();
+                foreach (var multiaxis in _axes)
                 {
-                    // Compute ease blend factor once for this batch of axis commands. _easing is
-                    // cleared in _PhysicsProcess once its window elapses, so L0 and the secondary
-                    // axes stop easing together.
-                    float easeSmooth = 1f;
-                    if (_easing)
+                    string axis = multiaxis.Key;
+                    AxisState state = multiaxis.Value;
+                    while (state.Index < state.Actions.Count)
                     {
-                        double elapsed = _positionMs - _easeStartMs;
-                        float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
-                        easeSmooth = t * t * (3f - 2f * t); // smoothstep
-                    }
+                        if (state.Actions[state.Index].AtMs > _positionMs - _serialDelayMs)
+                            break;
 
-                    foreach (var multiaxis in _axes)
-                    {
-                        string axis = multiaxis.Key;
-                        AxisState state = multiaxis.Value;
-                        while (state.Index < state.Actions.Count)
+                        int idx = state.Index;
+                        if (restimOn && idx + 1 < state.Actions.Count
+                            && RestimService.MotionAxisMap.TryGetValue(axis, out string rax)
+                            && !_restimScripts.ContainsKey(rax))
                         {
-                            if (state.Actions[state.Index].AtMs > _positionMs - _serialDelayMs)
-                                break;
-
-                            int idx = state.Index;
-                            if (idx + 1 < state.Actions.Count)
-                            {
-                                int nextPos = state.Actions[idx + 1].Pos;
-                                // Each secondary axis has its OWN range window, independent of the
-                                // stroke axis. RESCALE 0–100 → [axisMin,axisMax] so a symmetric
-                                // range compresses the swing around centre. Before the ease, then a
-                                // safety clamp — mirrors ProcessedStrokePos's order.
-                                (int axisMin, int axisMax) = GetAxisRange(axis);
-                                nextPos = RescaleToAxisRange(nextPos, axisMin, axisMax);
-                                // Secondary axes always home to centre (50), so blend from 50.
-                                if (_easing || easeSmooth < 1f)
-                                    nextPos = (int)Math.Round(50f + (nextPos - 50f) * easeSmooth);
-                                // Safety net: never send out-of-window (mirrors ProcessedStrokePos).
-                                nextPos = Math.Clamp(nextPos, axisMin, axisMax);
-
-                                double targetNorm = nextPos / 100.0;
-                                uint durMs = (uint)Math.Max(1, (int)(state.Actions[idx + 1].AtMs - state.Actions[idx].AtMs));
-                                if (serialOn)
-                                    serial.SendAxis(axis, durMs, targetNorm);
-                                if (restimOn && RestimService.MotionAxisMap.TryGetValue(axis, out string rax)
-                                    && !_restimScripts.ContainsKey(rax))
-                                    restim.SendTCode(rax, targetNorm, durMs);
-                            }
-                            state.Index++;
+                            (int axisMin, int axisMax) = GetAxisRange(axis);
+                            double pos = SecondaryAxisOutput(state.Actions[idx + 1].Pos, axisMin, axisMax, easeBlend);
+                            uint durMs = (uint)Math.Max(1, (int)(state.Actions[idx + 1].AtMs - state.Actions[idx].AtMs));
+                            restim.SendTCode(rax, Math.Round(pos) / 100.0, durMs);
                         }
+                        state.Index++;
                     }
                 }
             }
@@ -1333,20 +1409,36 @@ public partial class FunscriptPlayer : Node
                 _easing = false;
         }
 
-        if (!_playing || _strokeBackend != StrokeBackend.Serial || _actions.Count == 0)
+        if (!_playing)
             return;
 
         var serial = _serial;
         if (serial == null || !serial.SerialConnected)
             return;
 
+        double now = _positionMs - _serialDelayMs;
+        _tickAxes.Clear();
+        _tickPositions.Clear();
+
+        if (_strokeBackend == StrokeBackend.Serial && _actions.Count > 0)
+            QueueStrokeTick(now, delta);
+        QueueAuthoredAxes(now);
+
+        // Interval a touch longer than the tick so the OSR is always still gliding toward a fresh
+        // target instead of finishing early and dwelling (which would re-introduce stepping).
+        uint intervalMs = (uint)Math.Max(1, Math.Round(delta * 1000.0 * _serialInterpFactor));
+        serial.SendMoves(_tickAxes, _tickPositions, intervalMs);
+    }
+
+    // The stroke, plus Auto Twist riding it. Only when the stroke's backend is serial and there is a main
+    // track; a block effect holds both where they are.
+    private void QueueStrokeTick(double now, double delta)
+    {
         var effects = ActiveEffectsForOutput();
         UpdateMirrorBlend(effects); // clock-driven; advance once per tick, even under block
 
         if (effects != null && HasBlockEffect(effects))
             return; // block suppresses output — hold position
-
-        double now = _positionMs - _serialDelayMs;
 
         // Move the bracket cursor to the segment containing `now` (both directions, so seeks recover).
         while (_interpIndex + 1 < _actions.Count && _actions[_interpIndex + 1].AtMs <= now)
@@ -1365,17 +1457,48 @@ public partial class FunscriptPlayer : Node
         }
         _lastSerialTarget = target;
 
-        // Interval a touch longer than the tick so the OSR is always still gliding toward a fresh
-        // target instead of finishing early and dwelling (which would re-introduce stepping).
-        uint intervalMs = (uint)Math.Max(1, Math.Round(delta * 1000.0 * _serialInterpFactor));
         double sent = Math.Clamp(target, 0.0, 100.0);
-        serial.SendLinear(intervalMs, sent / 100.0);
+        QueueMove("L0", sent);
 
         // Auto Twist rides the stroke it was derived from: the same value, after every effect and the
         // speed cap above, so anything that reshapes the stroke reshapes the twist. Block returned early,
         // so a blocked stroke holds the twist too.
         if (AutoTwistActive())
-            SendAutoTwist(serial, StrokeInScriptSpace(sent, _rangeMin, _rangeMax), delta, intervalMs);
+            QueueAutoTwist(StrokeInScriptSpace(sent, _rangeMin, _rangeMax), delta);
+    }
+
+    // Every authored secondary axis at `now`, whatever the stroke is doing: they play on under a block
+    // and with the stroke on another backend, exactly as the per-keyframe path they replace did. An axis
+    // whose position hasn't changed since it was last sent is left off the line.
+    private void QueueAuthoredAxes(double now)
+    {
+        if (_axes.Count == 0)
+            return;
+
+        if (++_ticksSinceAxisResend >= AxisResendTicks)
+        {
+            _ticksSinceAxisResend = 0;
+            ForgetSentAxes();
+        }
+
+        double easeBlend = EaseBlend();
+        foreach (var multiaxis in _axes)
+        {
+            AxisState state = multiaxis.Value;
+            if (state.Actions.Count == 0)
+                continue;
+
+            string axis = multiaxis.Key;
+            (int axisMin, int axisMax) = GetAxisRange(axis);
+            double scriptPos = SampleActions(state.Actions, ref state.InterpIndex, now);
+            double pos = SecondaryAxisOutput(scriptPos, axisMin, axisMax, easeBlend);
+
+            int steps = (int)Math.Round(pos / 100.0 * 9999.0);
+            if (_lastSentAxisSteps.TryGetValue(axis, out int lastSteps) && lastSteps == steps)
+                continue;
+            _lastSentAxisSteps[axis] = steps;
+            QueueMove(axis, pos);
+        }
     }
 
     // Send a single linear command to the device for the current filler direction.
@@ -1771,15 +1894,6 @@ public partial class FunscriptPlayer : Node
     {
         double n = Math.Clamp(pos, 0, 100) / 100.0;
         return (int)Math.Round(_rangeMin + (_rangeMax - _rangeMin) * n);
-    }
-
-    // Per-axis variant of RescaleToRange: maps a 0–100 script position into a
-    // secondary axis's own [min,max] window. Lets each positional axis have an
-    // independent travel range (see the multi-axis dispatch in _Process).
-    private static int RescaleToAxisRange(int pos, int min, int max)
-    {
-        double n = Math.Clamp(pos, 0, 100) / 100.0;
-        return (int)Math.Round(min + (max - min) * n);
     }
 
     private int TransformPos(int index, Godot.Collections.Array effects)

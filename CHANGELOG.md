@@ -17,8 +17,16 @@ that brings one; an override without one keeps the twist following its stroke. I
 speed well short of a shake, goes through your Twist range like any other twist, and is sent to the
 serial device only — never to restim, where the same axis controls carrier frequency.
 
-Serial devices only: Buttplug has no twist command and the Handy is a single axis. There is no device
-check — turning it on is how you tell the app your hardware has twist.
+Serial devices only: Buttplug has no twist command and the Handy is a single axis.
+
+### ◆ Your device
+
+**Options → Device → Your device** tells the app which motion axes you have — **Stroke only, OSR2,
+OSR2 + twist or SR6**, the name on the box. There is no reliable way to ask the hardware, so you say.
+It decides what the game offers you, never what it sends: Auto Twist is offered only on a profile with
+twist, and the multi-axis curses and items to come will only turn up for axes you can feel. It
+defaults to Stroke only, and counts as Stroke only whenever the stroke isn't going to a serial device,
+since serial is the only output that carries the other axes.
 
 ### ◆ The end-of-run map respects fog of war
 
