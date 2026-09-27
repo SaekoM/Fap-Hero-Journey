@@ -340,6 +340,11 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Deleting a journey or rendition takes everything built on it.** A rendition composes over what it
+  was made from, so once that is gone it can't play — yet deleting a rendition left the ones stacked on
+  it behind, and deleting a base left all of its renditions sitting on disk out of sight. Both now
+  delete the whole chain below, along with those renditions' saved progress, and the confirmation lists
+  by name every rendition that will go with it.
 - **Sync calibration can now show a large offset.** The ruler was a perfectly regular stroke, which
   looks identical one cycle later — so a device two seconds late read as perfectly synced, and that is
   more lag than the delay slider's whole range. The pattern is now a repeating bar of three phases that

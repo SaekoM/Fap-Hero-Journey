@@ -147,6 +147,19 @@ static func group_renditions(journeys: Array, renditions: Array) -> void:
 		((resolved["base"] as Dictionary)["renditions"] as Array).append(rend)
 
 
+# Every rendition in a base's flattened `renditions` list that builds on the rendition at `folder` —
+# directly, or through other renditions in between. Each of them composes over `folder`, so none can load
+# once it is gone: deleting a rendition deletes these with it. Read off `chain_folders`, which lists
+# every ancestor a rendition composes over.
+static func renditions_built_on(renditions: Array, folder: String) -> Array:
+	var dependents: Array = []
+	for rend: Dictionary in renditions:
+		var chain: Array = rend.get("chain_folders", [])
+		if str(rend.get("folder", "")) != folder and chain.has(folder):
+			dependents.append(rend)
+	return dependents
+
+
 # Walks a rendition's ParentId chain to its ultimate base journey. Returns {base, chain} where `chain` is
 # the ordered list of rendition FOLDERS to compose (base-ward first, ending with this rendition), or {} when
 # the chain doesn't reach an installed base (orphan) or loops.

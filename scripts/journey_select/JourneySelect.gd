@@ -616,13 +616,13 @@ func _on_delete_pressed() -> void:
 		'Permanently delete "%s"?\n\nAll videos, funscripts, and cover images in the journey folder will be removed. This cannot be undone.'
 		% title
 	)
-	# A base with renditions: warn that the overlays lose their parent. They're not deleted, but drop out of
-	# the catalogue (no base to attach to) until this journey is reinstalled by the same JourneyId.
+	# A base with renditions takes them with it: every one composes over this journey, so none can play
+	# without it.
 	var rends: Array = _current_journey.get("renditions", [])
 	if not rends.is_empty():
 		body += (
-			"\n\n⚠ %d rendition%s overlay this journey — they'll stop working and disappear from the catalogue until you reinstall the base. (They aren't deleted.)"
-			% [rends.size(), "s" if rends.size() != 1 else ""]
+			"\n\n⚠ %s built on this journey will be deleted too — they can't play without it:\n%s"
+			% [_rendition_count_text(rends), _rendition_name_list(rends)]
 		)
 	var dialog: ConfirmationDialog = ConfirmationDialog.new()
 	dialog.title = "Delete Journey"
@@ -640,6 +640,9 @@ func _on_delete_pressed() -> void:
 
 
 func _confirm_delete() -> void:
+	var base_folder_name: String = str(_current_journey.get("folder_name", ""))
+	for rend: Dictionary in _current_journey.get("renditions", []):
+		_delete_rendition_files(rend, base_folder_name)
 	var folder: String = _current_journey.get("folder", "")
 	if folder != "":
 		JourneyData.delete_dir_recursive(folder)
@@ -2431,17 +2434,26 @@ func _on_play_pressed_unguarded() -> void:
 	Transition.change_scene("res://scenes/game_loop/GameLoop.tscn")
 
 
-# Confirm-then-delete the selected rendition. The base journey is untouched.
+# Confirm-then-delete the selected rendition, and every rendition built on it. The base journey is untouched.
 func _confirm_delete_rendition() -> void:
 	if _selected_rendition.is_empty():
 		return
 	var name: String = str(_selected_rendition.get("name", "this rendition"))
+	var body: String = (
+		'Delete the rendition "%s"?\n\nIt and its saved progress are removed. The base journey is untouched. This can\'t be undone.'
+		% name
+	)
+	var dependents: Array = JourneyScanner.renditions_built_on(
+		_current_journey.get("renditions", []), str(_selected_rendition.get("folder", ""))
+	)
+	if not dependents.is_empty():
+		body += (
+			"\n\n⚠ %s built on it will be deleted too — they can't play without it:\n%s"
+			% [_rendition_count_text(dependents), _rendition_name_list(dependents)]
+		)
 	_themed_modal(
 		"Delete Rendition",
-		(
-			'Delete the rendition "%s"?\n\nIt and its saved progress are removed. The base journey is untouched. This can\'t be undone.'
-			% name
-		),
+		body,
 		[
 			{"text": "DELETE", "accent": UITheme.MAGENTA, "on_press": _do_delete_rendition},
 			{"text": "CANCEL", "accent": UITheme.PURPLE_MID},
@@ -2453,17 +2465,13 @@ func _do_delete_rendition() -> void:
 	if _selected_rendition.is_empty():
 		return
 	var rend: Dictionary = _selected_rendition
-	var folder: String = str(rend.get("folder", ""))
-	if folder != "":
-		JourneyData.delete_dir_recursive(folder)
-	# Clean the composed run's isolated save/scoreboard, keyed "<base>__rend_<rendition>".
-	var folder_name: String = str(rend.get("folder_name", ""))
-	if folder_name != "":
-		var run_key: String = JourneyData.sanitize_folder_name(
-			str(_current_journey.get("folder_name", "")) + "__rend_" + folder_name
-		)
-		JourneySaveService.delete_save(run_key)
-		ScoreboardService.clear(run_key)
+	var base_folder_name: String = str(_current_journey.get("folder_name", ""))
+	var dependents: Array = JourneyScanner.renditions_built_on(
+		_current_journey.get("renditions", []), str(rend.get("folder", ""))
+	)
+	for dependent: Dictionary in dependents:
+		_delete_rendition_files(dependent, base_folder_name)
+	_delete_rendition_files(rend, base_folder_name)
 	# Rescan, then keep the detail modal open by re-finding the base and rebuilding its VERSION list.
 	var base_id: String = str(_current_journey.get("journey_id", ""))
 	_selected_rendition = {}
@@ -2475,7 +2483,37 @@ func _do_delete_rendition() -> void:
 			_refresh_rendition_selector(j)
 			_update_node_view_for_selection()
 			break
-	_show_message("Rendition Deleted", 'Removed "%s".' % str(rend.get("name", "")))
+	var removed: String = 'Removed "%s".' % str(rend.get("name", ""))
+	if not dependents.is_empty():
+		removed += " Also removed %s built on it." % _rendition_count_text(dependents)
+	_show_message("Rendition Deleted", removed)
+
+
+# A rendition's folder plus the isolated save and scoreboard its composed runs kept, which are keyed
+# "<base>__rend_<rendition>".
+func _delete_rendition_files(rend: Dictionary, base_folder_name: String) -> void:
+	var folder: String = str(rend.get("folder", ""))
+	if folder != "":
+		JourneyData.delete_dir_recursive(folder)
+	var folder_name: String = str(rend.get("folder_name", ""))
+	if folder_name != "":
+		var run_key: String = JourneyData.sanitize_folder_name(
+			base_folder_name + "__rend_" + folder_name
+		)
+		JourneySaveService.delete_save(run_key)
+		ScoreboardService.clear(run_key)
+
+
+func _rendition_count_text(rends: Array) -> String:
+	return "%d rendition%s" % [rends.size(), "s" if rends.size() != 1 else ""]
+
+
+# One "• Name" line per rendition, for a delete warning to say exactly what goes.
+func _rendition_name_list(rends: Array) -> String:
+	var lines: PackedStringArray = PackedStringArray()
+	for rend: Dictionary in rends:
+		lines.append("• " + str(rend.get("name", rend.get("folder_name", "?"))))
+	return "\n".join(lines)
 
 
 # Feature #5: the composed entry node a Part-1 carryover resumes INTO for the currently selected rendition,
