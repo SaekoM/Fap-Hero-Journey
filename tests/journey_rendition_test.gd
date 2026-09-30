@@ -236,6 +236,40 @@ func test_group_renditions_resolves_a_chain() -> void:
 	)
 
 
+# Deleting a rendition deletes everything that composes over it — the whole chain below, not just the
+# direct children — and nothing beside or above it.
+func test_renditions_built_on_is_the_whole_chain_below() -> void:
+	var journeys := [{"journey_id": "j_base", "title": "Base"}]
+	var renditions := [
+		{"journey_id": "r_a", "parent_id": "j_base", "folder": "/A", "name": "A"},
+		{"journey_id": "r_b", "parent_id": "r_a", "folder": "/B", "name": "B on A"},
+		{"journey_id": "r_c", "parent_id": "r_b", "folder": "/C", "name": "C on B"},
+		{"journey_id": "r_d", "parent_id": "j_base", "folder": "/D", "name": "D beside A"},
+	]
+	JourneyScanner.group_renditions(journeys, renditions)
+	var family: Array = journeys[0]["renditions"]
+
+	var names: Array = []
+	for r: Dictionary in JourneyScanner.renditions_built_on(family, "/A"):
+		names.append(str(r["name"]))
+	names.sort()
+	assert_array(names).is_equal(["B on A", "C on B"])  # grandchild included; the sibling D is not
+
+	var below_b: Array = JourneyScanner.renditions_built_on(family, "/B")
+	assert_int(below_b.size()).is_equal(1)
+	assert_str(str((below_b[0] as Dictionary)["name"])).is_equal("C on B")  # A, above it, is untouched
+
+
+func test_a_rendition_nothing_builds_on_takes_nothing_with_it() -> void:
+	var journeys := [{"journey_id": "j_base", "title": "Base"}]
+	var renditions := [
+		{"journey_id": "r_a", "parent_id": "j_base", "folder": "/A", "name": "A"},
+		{"journey_id": "r_b", "parent_id": "r_a", "folder": "/B", "name": "B on A"},
+	]
+	JourneyScanner.group_renditions(journeys, renditions)
+	assert_array(JourneyScanner.renditions_built_on(journeys[0]["renditions"], "/B")).is_empty()
+
+
 func test_group_renditions_drops_a_cyclic_chain() -> void:
 	var journeys := [{"journey_id": "j_base", "title": "Base"}]
 	var renditions := [

@@ -51,6 +51,10 @@ const DEFAULT_SETTINGS: Dictionary = {
 # Weight floor so a just-used clip is deprioritized but never fully excluded.
 const FRESHNESS_FLOOR: float = 0.1
 
+# The finale boss is drawn from rounds at least this far up the target round-length range (or, when
+# clips aren't cut, this fraction of the longest clip) — a climax, not whatever happened to land last.
+const FINALE_LENGTH_FRACTION: float = 0.8
+
 # Target coin balance the player should have by each generated shop — enough for
 # ~2 typical modifier items (shop_items.json modifiers cluster at 20–50). Drives
 # the per-round coin payout when shops are enabled.
@@ -89,11 +93,24 @@ static func generate(entries: Array, settings: Dictionary = {}) -> Dictionary:
 	var ordered: Array = _weighted_order(pool, cfg, now, rng)
 	if bool(cfg["unique_sources"]):
 		ordered = _one_per_source(ordered)
-	var chosen: Array = _take_by_length(ordered, cfg)
+
+	# The finale is picked on purpose BEFORE the rest of the run, and the run fills around it. Left to
+	# fall out of the ordering, it was usually one of the SHORTEST rounds: intensity → length coupling
+	# cuts the hardest stretches shortest, and build-up ordering puts the hardest last.
+	var finale: Dictionary = {}
+	if bool(cfg["boss_finale"]):
+		var finale_idx: int = pick_finale(ordered, cfg)
+		if finale_idx >= 0:
+			finale = ordered[finale_idx]
+			ordered = ordered.duplicate()
+			ordered.remove_at(finale_idx)
+	var chosen: Array = _take_by_length(ordered, _budget_without(cfg, finale), finale.is_empty())
 	if cfg["intensity_order"]:
 		# Build-up: play mild → intense. Stable sort keeps the weighted order as the
 		# tie-break within an intensity band.
 		chosen = _stable_sort_by_intensity(chosen)
+	if not finale.is_empty():
+		chosen.append(finale)
 
 	# ── Assemble the node sequence (rounds + interleaved shops) ──────────────
 	var seq: Array = []  # ordered [{type, data}]
@@ -186,8 +203,7 @@ static func generate(entries: Array, settings: Dictionary = {}) -> Dictionary:
 # ── Selection ────────────────────────────────────────────────────────────────
 
 
-# Keeps entries matching the tag filter. include empty → all pass; else an entry
-# must share ≥1 tag with include. exclude drops any entry sharing ≥1 excluded tag.
+# Keeps entries matching the tag filter (see matches_tags), minus vibrator-only clips when they're off.
 static func _filter(entries: Array, cfg: Dictionary) -> Array:
 	var inc: Array = cfg["tags_include"]
 	var exc: Array = cfg["tags_exclude"]
@@ -196,13 +212,18 @@ static func _filter(entries: Array, cfg: Dictionary) -> Array:
 	for e: Dictionary in entries:
 		if not include_vib_only and bool(e.get("vib_only", false)):
 			continue
-		var tags: Array = e.get("tags", [])
-		if not inc.is_empty() and not _shares_tag(tags, inc):
-			continue
-		if not exc.is_empty() and _shares_tag(tags, exc):
-			continue
-		out.append(e)
+		if matches_tags(e.get("tags", []), inc, exc):
+			out.append(e)
 	return out
+
+
+# The tag rule, in one place for the generator and the run screen's live match count. Nothing
+# included → every clip passes; otherwise a clip needs at least one included tag. A clip with any
+# excluded tag is out, whatever else it has.
+static func matches_tags(tags: Array, include: Array, exclude: Array) -> bool:
+	if not include.is_empty() and not _shares_tag(tags, include):
+		return false
+	return exclude.is_empty() or not _shares_tag(tags, exclude)
 
 
 static func _shares_tag(a: Array, b: Array) -> bool:
@@ -291,7 +312,7 @@ static func _freshness(entry: Dictionary, now: int, halflife_hours: float) -> fl
 # single clip forced (a 0-round run is useless). Whole-video rounds can't be
 # trimmed, so the packed total lands at or just under the target — approximate by
 # design, but never wildly over/under.
-static func _take_by_length(ordered: Array, cfg: Dictionary) -> Array:
+static func _take_by_length(ordered: Array, cfg: Dictionary, force_one: bool = true) -> Array:
 	if str(cfg["length_mode"]) == "time":
 		var budget_ms: int = int(round(float(cfg["target_minutes"]) * 60000.0))
 		var out: Array = []
@@ -301,11 +322,67 @@ static func _take_by_length(ordered: Array, cfg: Dictionary) -> Array:
 			if acc + dur <= budget_ms:
 				out.append(e)
 				acc += dur
-		if out.is_empty() and not ordered.is_empty():
-			out.append(ordered[0])  # nothing fit — every clip exceeds the budget
+		# Nothing fit — every clip exceeds the budget. A run needs a round, so force one; unless the
+		# finale is already that round and this is only what fills in around it.
+		if out.is_empty() and not ordered.is_empty() and force_one:
+			out.append(ordered[0])
 		return out
 	var n: int = mini(int(cfg["round_count"]), ordered.size())
 	return ordered.slice(0, maxi(0, n))
+
+
+# Index in `ordered` of the round the finale boss should be: the most intense of those long enough to
+# be a climax, ties going to whichever the weighted order drew first (so weight and freshness still
+# count). Nothing long enough → simply the longest. -1 for an empty pool.
+#
+# "Long enough" is measured against the target round-length range when clips are cut into parts —
+# that range is what the player asked rounds to be — and against the longest clip on offer when
+# they aren't, since whole clips have no range.
+static func pick_finale(ordered: Array, cfg: Dictionary) -> int:
+	if ordered.is_empty():
+		return -1
+	var floor_ms: int = _finale_floor_ms(ordered, cfg)
+	var best: int = -1
+	var longest: int = 0
+	for i: int in ordered.size():
+		var e: Dictionary = ordered[i]
+		if _entry_length_ms(e) > _entry_length_ms(ordered[longest]):
+			longest = i
+		if _entry_length_ms(e) < floor_ms:
+			continue
+		if (
+			best < 0
+			or int(e.get("intensity", 3)) > int((ordered[best] as Dictionary).get("intensity", 3))
+		):
+			best = i
+	return best if best >= 0 else longest
+
+
+static func _finale_floor_ms(ordered: Array, cfg: Dictionary) -> int:
+	if bool(cfg.get("cut_parts", false)):
+		var lo: float = float(cfg.get("part_min_s", 0)) * 1000.0
+		var hi: float = float(cfg.get("part_max_s", 0)) * 1000.0
+		if hi > lo:
+			return int(lo + (hi - lo) * FINALE_LENGTH_FRACTION)
+	var longest_ms: int = 0
+	for e: Dictionary in ordered:
+		longest_ms = maxi(longest_ms, _entry_length_ms(e))
+	return int(longest_ms * FINALE_LENGTH_FRACTION)
+
+
+# The length settings for everything BUT the finale: one round fewer, or the finale's length off the
+# time budget. A finale that eats the whole budget leaves a run of just the finale.
+static func _budget_without(cfg: Dictionary, finale: Dictionary) -> Dictionary:
+	if finale.is_empty():
+		return cfg
+	var rest: Dictionary = cfg.duplicate()
+	if str(cfg["length_mode"]) == "time":
+		rest["target_minutes"] = maxf(
+			0.0, float(cfg["target_minutes"]) - _entry_length_ms(finale) / 60000.0
+		)
+	else:
+		rest["round_count"] = maxi(0, int(cfg["round_count"]) - 1)
+	return rest
 
 
 # Round length for the time budget / summary: the video duration, falling back to

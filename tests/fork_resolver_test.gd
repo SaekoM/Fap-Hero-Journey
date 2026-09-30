@@ -247,6 +247,37 @@ func test_a_player_decided_conditional_cannot_be_silent() -> void:
 	)
 
 
+# ── Arranging a fork on its background ──────────────────────────
+# Offered in the builder for exactly the forks ForkScreen applies an arrangement to. The builder once
+# offered it for choice and sacrifice only, so a player-decided conditional — which the game DOES
+# arrange — could keep an old arrangement but never be given a new one.
+
+
+func test_the_forks_a_player_resolves_can_be_arranged() -> void:
+	assert_bool(JourneyData.fork_player_resolves({"resolution": "choice"})).is_true()
+	assert_bool(JourneyData.fork_player_resolves({"resolution": "sacrifice"})).is_true()
+	(
+		assert_bool(
+			JourneyData.fork_player_resolves(
+				{"resolution": "conditional", "cond_decider": "player"}
+			)
+		)
+		. is_true()
+	)
+
+
+func test_a_fork_that_resolves_itself_has_nothing_to_arrange() -> void:
+	assert_bool(JourneyData.fork_player_resolves({"resolution": "random"})).is_false()
+	(
+		assert_bool(
+			JourneyData.fork_player_resolves({"resolution": "conditional", "cond_decider": "game"})
+		)
+		. is_false()
+	)
+	# The game decides a conditional unless the author says otherwise.
+	assert_bool(JourneyData.fork_player_resolves({"resolution": "conditional"})).is_false()
+
+
 func test_fork_is_silent_needs_both_the_flag_and_the_eligibility() -> void:
 	assert_bool(JourneyData.fork_is_silent({"resolution": "random"})).is_false()  # not ticked
 	assert_bool(JourneyData.fork_is_silent({"resolution": "random", "silent": true})).is_true()

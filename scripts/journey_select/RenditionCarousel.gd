@@ -26,7 +26,11 @@ const INHERITED_TINT: Color = Color(0.55, 0.55, 0.62, 1.0)  # a borrowed cover, 
 const STRIP_H: float = 34.0  # the name strip, laid OVER the image on a scrim
 const SCRIM: Color = Color(0.02, 0.0, 0.04, 0.82)
 const SLIDE_SECS: float = 0.16
-const ARROW_W: float = 30.0
+# Big enough to find at a glance over busy cover art. The first cut (30×60, a small triangle glyph
+# squeezed by a 16 px side padding) all but disappeared against the picture.
+const ARROW_W: float = 48.0
+const ARROW_H: float = 96.0
+const ARROW_FONT: int = 30
 const DOT_SIZE: float = 7.0
 const DOT_GAP: float = 6.0
 
@@ -46,8 +50,8 @@ func _ready() -> void:
 	clip_contents = true
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	resized.connect(_layout.bind(false))
-	_left = _make_arrow("◂", -1)
-	_right = _make_arrow("▸", 1)
+	_left = _make_arrow("◀", -1)
+	_right = _make_arrow("▶", 1)
 
 	_scrim = Panel.new()
 	var scrim_style: StyleBoxFlat = StyleBoxFlat.new()
@@ -162,8 +166,9 @@ func _make_arrow(glyph: String, delta: int) -> Button:
 	var b: Button = Button.new()
 	b.text = glyph
 	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(ARROW_W, 60)
-	UITheme.style_button(b, UITheme.PURPLE_MID)
+	b.custom_minimum_size = Vector2(ARROW_W, ARROW_H)
+	# Tight side padding so the glyph gets the button's width rather than losing it to margins.
+	UITheme.style_button(b, UITheme.PURPLE_MID, 4, 8, ARROW_FONT)
 	b.pressed.connect(_step.bind(delta))
 	add_child(b)
 	return b

@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.8.7
+
+### ◆ Randomizer runs can be built from tags
+
+Tags on randomizer clips were saved and then ignored — there was no way to tell a run to use them, so
+the only way to make a run of just CH, PMV or JOI clips was to clear the library and re-import. Tags
+now work as libraries inside the one library, and a clip can sit in as many as it fits:
+
+- **Clip tags**, under Presets in the run settings, has a chip for every tag with its clip count.
+  Click to cycle *any* → **✓ only** → **✕ never**; a line underneath says how many clips the run will
+  draw from. "Only" takes clips with any of the ticked tags, and "never" beats "only". A saved preset
+  remembers its tags, so a preset can *be* your CH library.
+- **Select, then tag.** Each clip has a tick box (shift-click for a range; SELECT SHOWN ticks
+  everything a search found), and a bar above the list tags the whole selection in one click. Its
+  chips show how many of the selected clips already carry each tag; a tag they all have is removed
+  instead. The selection survives searches, so a set can be gathered across several.
+- **Tags for new clips** tags everything you import from then on — import a folder already sorted.
+- **Search** narrows the list by name or tag.
+
+Re-importing a clip now keeps its tags and weight; it used to reset them to none and 1. Tags are
+stored in one spelling, so "PMV" and "pmv " are the same tag, and a clip's tag box saves when you
+click away as well as on Enter.
+
+### ◆ The randomizer's finale boss is a climax
+
+It was whatever round happened to land last — and since intense stretches are cut shortest and
+Intensity build-up plays them last, that was usually one of the shortest rounds of the run. The
+finale is now chosen first: the most intense round from the top fifth of your target round length
+(or, with Cut into parts off, clips at least 80% as long as the longest), falling back to the longest
+available. The rest of the run fills around it, one round fewer or its length off the time budget.
+
+### ◆ Conditional forks can be arranged on their background
+
+A conditional fork handed to the player (Resolved by: Player) is a screen of choices like any other,
+and the game has always placed its buttons on the background when it had an arrangement — but the
+builder only offered ARRANGE ON BACKGROUND on choice and sacrifice forks. A conditional fork could keep
+an arrangement from before its resolution was changed, but a new one could never be given one. It is
+now offered on every fork the player resolves. Forks the game resolves by itself still aren't
+arranged: their reveal plays on the cards.
+
+### 🩹 Fixes
+
+- **No more frozen frame between boss attempts.** When a failed attempt ended on a skipped section
+  that ran to the end of the clip, the fade back up from that skip still ran, showing the clip's last
+  frame just before the retry faded it out again. A skip that lands at the end now stays dark. The
+  retry itself also held its black too briefly — long enough to show the previous frame and then dip
+  again over the opening skip — and now waits until the new clip is really playing, so the opening is
+  skipped while the screen is still black. Skips that land back to back no longer each dip on their
+  own, either.
+- **Leaving the randomizer while it prepares a run no longer errors — or loses the run.** KEEP bakes
+  every clip before saving, and ← BACK stayed live throughout, so leaving mid-bake left ffmpeg calling
+  back into the closed screen (an error every fraction of a second) and the run was never saved.
+  KEEP and PLAY now show what they're doing on a progress card over the screen — clip N of M, the
+  clip's name, a bar for the whole job and why to wait — with CANCEL as the way out. Nothing behind
+  it can be clicked meanwhile, and a bake whose screen goes away by any other route stops cleanly.
+- **Bigger arrows on the rendition cover carousel.** The arrows were small enough to miss against
+  busy cover art, and their padding squeezed the arrowhead to a dash.
+
 ## v0.8.6
 
 ### ◆ Auto Twist
@@ -366,6 +424,11 @@ copy stays editable whatever you choose.
 
 ### 🩹 Fixes
 
+- **Deleting a journey or rendition takes everything built on it.** A rendition composes over what it
+  was made from, so once that is gone it can't play — yet deleting a rendition left the ones stacked on
+  it behind, and deleting a base left all of its renditions sitting on disk out of sight. Both now
+  delete the whole chain below, along with those renditions' saved progress, and the confirmation lists
+  by name every rendition that will go with it.
 - **Sync calibration can now show a large offset.** The ruler was a perfectly regular stroke, which
   looks identical one cycle later — so a device two seconds late read as perfectly synced, and that is
   more lag than the delay slider's whole range. The pattern is now a repeating bar of three phases that
