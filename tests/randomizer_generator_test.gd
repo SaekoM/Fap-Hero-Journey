@@ -353,3 +353,134 @@ func test_content_rels_cover_every_clip() -> void:
 	assert_int(rels.size()).is_equal(8)
 	for r: Dictionary in _rounds(res["journey"]):
 		assert_array(rels).contains([str((r["data"] as Dictionary)["video_path"])])
+
+
+# ── The finale boss ──────────────────────────────────────────────────────────
+# It used to be whatever landed last — and with intensity → length coupling cutting the hardest
+# stretches shortest, and build-up putting the hardest last, that was usually one of the SHORTEST
+# rounds in the run. It is now picked on purpose: long enough to be a climax, then the most intense.
+
+const CUT_60_TO_180: Dictionary = {"cut_parts": true, "part_min_s": 60, "part_max_s": 180}
+
+
+func _last_video(res: Dictionary) -> String:
+	var rounds: Array = _rounds(res["journey"])
+	return str(((rounds[rounds.size() - 1] as Dictionary)["data"] as Dictionary)["video_path"])
+
+
+# 60–180 s range → the finale needs ≥ 156 s (80% of the way up). Of the two that long, the harder wins.
+func test_the_finale_is_the_most_intense_of_the_long_rounds() -> void:
+	var ordered: Array = [
+		_entry("short_hard", 60000, 5),
+		_entry("long_mild", 170000, 2),
+		_entry("long_hard", 160000, 4),
+		_entry("mid_hard", 120000, 5),
+	]
+	assert_int(RandomizerGenerator.pick_finale(ordered, CUT_60_TO_180)).is_equal(2)
+
+
+func test_with_nothing_long_enough_the_finale_is_the_longest() -> void:
+	var ordered: Array = [_entry("a", 60000, 5), _entry("b", 100000, 1), _entry("c", 80000, 3)]
+	assert_int(RandomizerGenerator.pick_finale(ordered, CUT_60_TO_180)).is_equal(1)
+
+
+# Whole clips have no target range, so "long" is measured against the longest clip on offer.
+func test_uncut_clips_measure_long_against_the_longest_clip() -> void:
+	var ordered: Array = [
+		_entry("longest_mild", 300000, 1),
+		_entry("close_hard", 250000, 5),  # 83% of the longest — long enough, and harder
+		_entry("short_harder", 100000, 5),
+	]
+	assert_int(RandomizerGenerator.pick_finale(ordered, {})).is_equal(1)
+
+
+# Equal candidates go to whichever the weighted order drew first, so weight and freshness still count.
+func test_a_tie_goes_to_the_weighted_order() -> void:
+	var ordered: Array = [_entry("first", 170000, 4), _entry("second", 170000, 4)]
+	assert_int(RandomizerGenerator.pick_finale(ordered, CUT_60_TO_180)).is_equal(0)
+
+
+# The user report: build-up puts the hardest (and, coupled, shortest) round last. The finale must still
+# be the long hard one, and still be last.
+func test_build_up_still_ends_on_the_long_finale() -> void:
+	var lib: Array = [
+		_entry("short_hard", 60000, 5),
+		_entry("long_hard", 170000, 4),
+		_entry("mild", 90000, 1),
+		_entry("mid", 90000, 3),
+	]
+	var settings: Dictionary = {
+		"seed": 3, "round_count": 4, "boss_finale": true, "intensity_order": true
+	}
+	settings.merge(CUT_60_TO_180)
+	var res: Dictionary = RandomizerGenerator.generate(lib, settings)
+	assert_str(_last_video(res)).is_equal("content/m_long_hard.mp4")
+	var rounds: Array = _rounds(res["journey"])
+	assert_int(rounds.size()).is_equal(4)  # the finale is one of the count, not an extra
+	var last: Dictionary = (rounds[rounds.size() - 1] as Dictionary)["data"]
+	assert_str(str(last["round_type"])).is_equal("boss")
+
+
+# In time mode the finale's length comes off the budget, so the run still lands on the target.
+func test_the_finale_counts_toward_the_time_budget() -> void:
+	var lib: Array = [
+		_entry("finale", 170000, 5),
+		_entry("a", 60000, 2),
+		_entry("b", 60000, 2),
+		_entry("c", 60000, 2),
+	]
+	# 5 minutes = 300 s: the 170 s finale plus two 60 s rounds (290 s); a third would overshoot.
+	var settings: Dictionary = {
+		"seed": 5, "length_mode": "time", "target_minutes": 5.0, "boss_finale": true
+	}
+	settings.merge(CUT_60_TO_180)
+	var res: Dictionary = RandomizerGenerator.generate(lib, settings)
+	assert_int(_rounds(res["journey"]).size()).is_equal(3)
+	assert_str(_last_video(res)).is_equal("content/m_finale.mp4")
+
+
+# A finale longer than the whole budget is the whole run — not the finale plus a forced extra round.
+func test_a_finale_bigger_than_the_budget_is_the_whole_run() -> void:
+	var lib: Array = [_entry("finale", 170000, 5), _entry("a", 60000, 2)]
+	var settings: Dictionary = {
+		"seed": 5, "length_mode": "time", "target_minutes": 2.0, "boss_finale": true
+	}
+	settings.merge(CUT_60_TO_180)
+	var res: Dictionary = RandomizerGenerator.generate(lib, settings)
+	assert_int(_rounds(res["journey"]).size()).is_equal(1)
+
+
+# ── The tag rule ─────────────────────────────────────────────────────────────
+
+
+func test_no_tag_filter_passes_everything_even_untagged() -> void:
+	assert_bool(RandomizerGenerator.matches_tags([], [], [])).is_true()
+	assert_bool(RandomizerGenerator.matches_tags(["pmv"], [], [])).is_true()
+
+
+# "Only" is any-of: a CH + PMV run takes clips with either.
+func test_only_tags_need_any_one_of_them() -> void:
+	assert_bool(RandomizerGenerator.matches_tags(["ch"], ["ch", "pmv"], [])).is_true()
+	assert_bool(RandomizerGenerator.matches_tags(["joi"], ["ch", "pmv"], [])).is_false()
+	assert_bool(RandomizerGenerator.matches_tags([], ["ch"], [])).is_false()
+
+
+# "Never" wins over "only": a clip tagged both CH and JOI stays out of a CH-but-never-JOI run.
+func test_a_never_tag_overrides_an_only_tag() -> void:
+	assert_bool(RandomizerGenerator.matches_tags(["ch", "joi"], ["ch"], ["joi"])).is_false()
+	assert_bool(RandomizerGenerator.matches_tags(["ch"], ["ch"], ["joi"])).is_true()
+
+
+# ── Tag normalization ────────────────────────────────────────────────────────
+
+
+# "PMV" and " pmv" must be one tag, or a run filtered on one silently misses clips tagged the other.
+func test_tags_normalize_to_one_spelling() -> void:
+	assert_array(RandomizerLibrary.normalize_tags(["PMV", " pmv ", "", "CH", "ch"])).is_equal(
+		["pmv", "ch"]
+	)
+
+
+func test_non_list_tags_read_as_none() -> void:
+	assert_array(RandomizerLibrary.normalize_tags("pmv")).is_empty()
+	assert_array(RandomizerLibrary.normalize_tags(null)).is_empty()

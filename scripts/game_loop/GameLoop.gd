@@ -39,6 +39,12 @@ const CLIP_FADE_TIME: float = 0.4
 # Process frames the transition keeps the black up after the video reports a texture — see
 # _await_video_ready for why the texture alone isn't proof of a presented frame.
 const VIDEO_READY_SETTLE_FRAMES: int = 4
+# A playhead that moves further than this during the hold was MOVED (a start-of-clip region skipped),
+# not played — ordinary playback covers ~0.07 s in the settle frames.
+const VIDEO_READY_JUMP_SECS: float = 0.25
+# A clip this dark is already black to the eye. A skip that lands a frame into the fade back up from
+# the skip before it (regions chained end to start) must not dip AGAIN from 1% brightness.
+const CLIP_DARK_ENOUGH: float = 0.05
 
 # Boss rounds: the red frame pulses during the round's final stretch.
 const BOSS_CLIMAX_SECS: float = 30.0
@@ -323,6 +329,9 @@ var _clip_fade_started: bool = false
 # _delay_toast_tween below — so a premature round end or a very short clip can never leave two
 # tweens fighting over the same properties.
 var _clip_fade_tween: Tween = null
+# Set by _load_video the moment it hands the player a new clip; read and cleared by _await_video_ready,
+# which then waits for that clip to really open rather than trusting whatever the player shows now.
+var _awaiting_new_clip: bool = false
 const FINISH_HOLD_SECS: float = 1.2  # hold time to confirm FINISH
 var _effect_cleanse_cost: int = CLEANSE_COST_DEFAULT  # per-round, set on enter
 
@@ -2799,6 +2808,7 @@ func _load_video(path: String) -> void:
 		if stream and stream is VideoStream:
 			_video.stream = stream as VideoStream
 			_video.play()
+			_awaiting_new_clip = true
 			_fade_in_darkened_clip()
 			FunscriptPlayer.Play()
 			return
@@ -2821,6 +2831,7 @@ func _load_video(path: String) -> void:
 	stream.set("file", abs_path)
 	_video.stream = stream as VideoStream
 	_video.play()
+	_awaiting_new_clip = true
 	_fade_in_darkened_clip()
 
 	# EIRTeam.FFmpeg surfaces open/decode failures as C++-level push_errors
@@ -2838,6 +2849,7 @@ func _load_video(path: String) -> void:
 
 
 func _start_no_video_fallback() -> void:
+	_awaiting_new_clip = false  # nothing is coming for a transition to wait on
 	# No video: use funscript length to drive a timer so the round still advances.
 	FunscriptPlayer.Play()
 	var dur_ms: int = _active_round_length_ms
@@ -3029,8 +3041,11 @@ func _transition_swap(swap_action: Callable) -> void:
 	# black clears; it's faded back in below once we land on a round.
 	_hud.modulate.a = 0.0
 
-	# Hold on the black, then run the swap so the next round's video loads behind it.
+	# Hold on the black, then run the swap so the next round's video loads behind it. The clip flag is
+	# cleared first so only a clip THIS swap loads counts as new — one started outside a transition
+	# (a boss intro's BEGIN) would otherwise make the next fork or shop wait out the full cap.
 	await get_tree().create_timer(TRANSITION_HOLD_TIME).timeout
+	_awaiting_new_clip = false
 	swap_action.call()
 
 	# Hold the black until the next round's video actually has a frame, so the
@@ -3070,25 +3085,50 @@ func _transition_swap(swap_action: Callable) -> void:
 
 # Waits until the video player has produced a frame (or a short cap elapses), so
 # a round transition doesn't reveal the background before the video renders.
-# Returns immediately when no video is playing (no-video rounds / overlays).
+# Returns immediately when no video is playing and none was just loaded (no-video rounds / overlays).
 #
 # The texture size is a weak signal for the FFmpeg decoder: its output texture is allocated (and
 # cleared) at load, before any frame exists, so the check passes at once and the black used to lift
-# onto an empty or not-yet-current picture — the stale-frame moment on a boss retry. GDScript can't
-# see the decoder's frame count, so once the texture reports a size the hold continues for a few
-# process frames: enough for the decode threads to present the first frame at the (possibly just
-# seeked) position on any clip that isn't stalled. The head-of-clip fade then rises from black over
-# it, so anything still catching up is hidden under the ramp rather than shown.
+# onto an empty or not-yet-current picture. GDScript can't see the decoder's frame count, so once the
+# texture reports a size the hold continues for a few process frames: enough for the decode threads to
+# present the first frame at the (possibly just seeked) position on any clip that isn't stalled. The
+# head-of-clip fade then rises from black over it, so anything still catching up is hidden under the
+# ramp rather than shown.
+#
+# A clip _load_video has JUST handed over is waited for until it has really opened. On a boss replay
+# the swap returns before playback has begun, and this used to see "not playing" and return at once:
+# the black lifted onto the previous attempt's last frame (the player still draws it until the new
+# decoder presents one), and a start-of-clip region then skipped with a visible dip because the black
+# was already going. So a new clip must be playing and, on a round with a timeline, know its length —
+# the scheduler builds on the length, and its first tick is what decides a start-of-clip region. With
+# the black still opaque that skip is instant (see _jump_playhead_to), and a landing it moved to gets
+# its own settle frames before anything is shown.
 func _await_video_ready() -> void:
-	if not _video.is_playing():
+	var new_clip: bool = _awaiting_new_clip
+	_awaiting_new_clip = false
+	if not new_clip and not _video.is_playing():
 		return
 	for _i in 90:  # ~1.5s cap so a stalled or failed decode never hangs the fade
-		var tex: Texture2D = _video.get_video_texture()
-		if tex != null and tex.get_size().x > 0.0:
+		if _video_has_opened(new_clip):
 			break
 		await get_tree().process_frame
+	var before_settle: float = _video.stream_position
 	for _i in VIDEO_READY_SETTLE_FRAMES:
 		await get_tree().process_frame
+	if new_clip and _video.stream_position - before_settle > VIDEO_READY_JUMP_SECS:
+		for _i in VIDEO_READY_SETTLE_FRAMES:
+			await get_tree().process_frame
+
+
+func _video_has_opened(new_clip: bool) -> bool:
+	var tex: Texture2D = _video.get_video_texture()
+	if tex == null or tex.get_size().x <= 0.0:
+		return false
+	if not new_clip:
+		return true
+	if not _video.is_playing():
+		return false
+	return _timeline_data.is_empty() or _video.get_stream_length() > 0.0
 
 
 # Frees the overlay we're transitioning away from. Called from _transition_swap
@@ -4338,7 +4378,16 @@ func _jump_playhead_to(target: int) -> void:
 	# black, the 0.4 s fade-down is pure delay — and at round start it was a window in which the
 	# transition could clear and show the frame this jump exists to skip. Move immediately instead;
 	# the transition's own head-of-clip fade puts the picture back. A skip mid-scene keeps the dip.
-	if _transition.modulate.a >= 1.0 or _video.modulate == Color.BLACK:
+	#
+	# A landing at (or within a tail fade of) the clip's end ENDS the round instead of resuming it, so
+	# it never fades back up. That can't be left to _move_playhead_to's check: the clip does not always
+	# report finished inside the seek — landing PAST the end, it reports a frame later — and the fade
+	# back up then ran, lifting the clip's last frame into view just before the round transition faded
+	# it out again.
+	var ends_clip: bool = _landing_ends_clip(target)
+	if _transition.modulate.a >= 1.0 or _video.modulate.v <= CLIP_DARK_ENOUGH:
+		if ends_clip:
+			_hold_clip_dark()
 		_move_playhead_to(target)
 		return
 	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
@@ -4347,8 +4396,25 @@ func _jump_playhead_to(target: int) -> void:
 	_clip_fade_tween.tween_property(_video, "modulate", Color.BLACK, CLIP_FADE_TIME)
 	_clip_fade_tween.parallel().tween_property(_video, "volume_db", -40.0, CLIP_FADE_TIME)
 	_clip_fade_tween.tween_callback(_move_playhead_to.bind(target))
-	_clip_fade_tween.tween_property(_video, "modulate", Color.WHITE, CLIP_FADE_TIME)
-	_clip_fade_tween.parallel().tween_property(_video, "volume_db", 0.0, CLIP_FADE_TIME)
+	if not ends_clip:
+		_clip_fade_tween.tween_property(_video, "modulate", Color.WHITE, CLIP_FADE_TIME)
+		_clip_fade_tween.parallel().tween_property(_video, "volume_db", 0.0, CLIP_FADE_TIME)
+
+
+# Whether a jump to `target` leaves nothing worth showing: at or past the clip's end, or so close to it
+# that the tail fade would take the picture straight back down. Unknown length → assume it resumes.
+func _landing_ends_clip(target: int) -> bool:
+	var length_ms: int = int(_video.get_stream_length() * 1000.0)
+	return length_ms > 0 and target >= length_ms - int(CLIP_FADE_TIME * 1000.0)
+
+
+# Keeps the clip dark from here to the round's end — a fade back up already in flight (from an
+# earlier skip in a chain) would otherwise carry on over the landing.
+func _hold_clip_dark() -> void:
+	if _clip_fade_tween != null and _clip_fade_tween.is_valid():
+		_clip_fade_tween.kill()
+	_video.modulate = Color.BLACK
+	_video.volume_db = -40.0
 
 
 func _move_playhead_to(target: int) -> void:

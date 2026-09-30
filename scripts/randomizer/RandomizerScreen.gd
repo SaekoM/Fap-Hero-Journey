@@ -34,9 +34,20 @@ var _lib_list: VBoxContainer
 var _lib_count: Label
 var _status: Label
 var _generate_btn: Button
-var _cancel_btn: Button
+# The progress card over the screen while a run's clips are prepared ({} when none is up).
+var _prep_modal: Dictionary = {}
 var _busy: bool = false
-var _cancel_requested: bool = false
+# The Cancel flag lives in a Dictionary so a running encode can hold the DICTIONARY rather than this
+# screen: MediaPoolService polls its cancel check every 0.4 s from its own loop, and a check that reads
+# a member of a screen the player has since left errors on every poll ("lambda with an invalid
+# instance"). _exit_tree raises it, so leaving by any route stops the bake instead.
+var _cancel_flag: Dictionary = {"requested": false}
+var _cancel_requested: bool:
+	get:
+		return bool(_cancel_flag["requested"])
+	set(value):
+		_cancel_flag["requested"] = value
+var _back_btn: Button
 
 # The most recently generated run, held while the preview overlay is up (Play uses
 # it; Re-roll replaces it). Empty when no preview is open.
@@ -67,6 +78,32 @@ var _coupling_lbl: Label
 var _unique_sources_check: CheckButton
 var _include_vib_only_check: CheckButton
 
+# Tags are how a player keeps "libraries" (CH, PMV, JOI…) inside the one clip library: a run draws
+# from the tags it is told to, and a clip can sit in several at once. Each chip on the run settings
+# cycles either-way → only these → never these; a tag absent from this map is either-way.
+const TAG_ONLY: int = 1
+const TAG_NEVER: int = 2
+var _tag_filter: Dictionary = {}  # tag → TAG_ONLY | TAG_NEVER
+var _tag_chips: HFlowContainer
+var _tag_match_lbl: Label
+
+# Library column: narrow the list by name or tag, and tag imports on the way in.
+var _lib_search: LineEdit
+var _import_tags: LineEdit
+var _shown_ids: Array = []  # ids of the rows currently listed, in list order
+
+# Select-then-tag. Clips are ticked (shift-click for a range, or every shown clip at once) and the
+# selection bar tags them all in one click. The selection survives list rebuilds and searches, so a
+# set can be gathered across several searches before tagging.
+var _selected_ids: Dictionary = {}  # id → true
+var _last_checked_id: String = ""  # the anchor a shift-click range runs from
+var _row_checks: Dictionary = {}  # id → CheckBox, for the rows currently built
+var _select_shown_btn: Button
+var _selection_bar: PanelContainer
+var _selection_lbl: Label
+var _selection_chips: HFlowContainer
+var _selection_new_tag: LineEdit
+
 # Ids of library rows whose script-details panel is expanded. Persisted across the library refreshes
 # that follow every script edit, so editing a clip's channels doesn't collapse its panel each time.
 var _expanded_ids: Dictionary = {}
@@ -88,6 +125,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	_cancel_requested = true  # nothing is left to finish a bake still in flight — stop it
 	var vp: Viewport = get_viewport()
 	if vp and vp.files_dropped.is_connected(_on_files_dropped):
 		vp.files_dropped.disconnect(_on_files_dropped)
@@ -132,11 +170,13 @@ func _build_ui() -> void:
 	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 28, true)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
-	var back_btn := Button.new()
-	back_btn.text = "← BACK"
-	UITheme.style_button(back_btn, UITheme.PURPLE_MID)
-	back_btn.pressed.connect(func() -> void: Transition.change_scene("res://scenes/main/Main.tscn"))
-	header.add_child(back_btn)
+	_back_btn = Button.new()
+	_back_btn.text = "← BACK"
+	UITheme.style_button(_back_btn, UITheme.PURPLE_MID)
+	_back_btn.pressed.connect(
+		func() -> void: Transition.change_scene("res://scenes/main/Main.tscn")
+	)
+	header.add_child(_back_btn)
 	root.add_child(header)
 
 	# Two columns: library (left, wider) + settings (right).
@@ -153,14 +193,6 @@ func _build_ui() -> void:
 	UITheme.style_button(_generate_btn, UITheme.PURPLE_BRIGHT, 24, 14, 18)
 	_generate_btn.pressed.connect(_on_generate_pressed)
 	root.add_child(_generate_btn)
-
-	# Shown only while a run is transcoding its clips (see _prepare_used_media).
-	_cancel_btn = Button.new()
-	_cancel_btn.text = "✕ CANCEL"
-	UITheme.style_button(_cancel_btn, UITheme.MAGENTA)
-	_cancel_btn.visible = false
-	_cancel_btn.pressed.connect(func() -> void: _cancel_requested = true)
-	root.add_child(_cancel_btn)
 
 	_status = Label.new()
 	UITheme.style_label(_status, UITheme.DARK_TEXT, 13)
@@ -202,6 +234,33 @@ func _build_library_column() -> Control:
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(hint)
 
+	# Tags every clip added from here on carries — import a CH folder with "ch" typed here and the
+	# whole batch lands already sorted.
+	_import_tags = LineEdit.new()
+	_import_tags.placeholder_text = "e.g. ch, pmv"
+	_import_tags.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(_labeled("Tags for new clips", _import_tags))
+
+	# Search narrows the list; SELECT SHOWN then ticks exactly what it shows.
+	var search_row := HBoxContainer.new()
+	search_row.add_theme_constant_override("separation", 6)
+	_lib_search = LineEdit.new()
+	_lib_search.placeholder_text = "Search name or tag…"
+	_lib_search.clear_button_enabled = true
+	_lib_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lib_search.text_changed.connect(func(_t: String) -> void: _refresh_library())
+	search_row.add_child(_lib_search)
+	_select_shown_btn = Button.new()
+	_select_shown_btn.text = "SELECT SHOWN"
+	_select_shown_btn.tooltip_text = UITheme.wrap_tip(
+		"Tick every clip the list is showing (or untick them, if they all are)."
+	)
+	UITheme.style_button(_select_shown_btn, UITheme.CYAN, 12, 8, 12)
+	_select_shown_btn.pressed.connect(_on_select_shown_pressed)
+	search_row.add_child(_select_shown_btn)
+	col.add_child(search_row)
+	col.add_child(_build_selection_bar())
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -242,6 +301,22 @@ func _build_settings_column() -> Control:
 	preset_row.add_child(save_preset_btn)
 	preset_row.add_child(del_preset_btn)
 	col.add_child(_labeled("Presets", preset_row))
+
+	_tag_chips = HFlowContainer.new()
+	_tag_chips.add_theme_constant_override("h_separation", 6)
+	_tag_chips.add_theme_constant_override("v_separation", 6)
+	var tag_hint := Label.new()
+	tag_hint.text = "Click a tag: ✓ only clips with it · ✕ never clips with it · again to clear."
+	tag_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(tag_hint, UITheme.DARK_TEXT, 11)
+	_tag_match_lbl = Label.new()
+	_tag_match_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var tag_box := VBoxContainer.new()
+	tag_box.add_theme_constant_override("separation", 4)
+	tag_box.add_child(_tag_chips)
+	tag_box.add_child(tag_hint)
+	tag_box.add_child(_tag_match_lbl)
+	col.add_child(_labeled("Clip tags", tag_box))
 
 	# Length mode + values.
 	_mode_opt = OptionButton.new()
@@ -451,6 +526,14 @@ func _apply_settings(s: Dictionary) -> void:
 	_coupling_slider.value = float(s.get("intensity_length_coupling", 0.5)) * 100.0
 	_unique_sources_check.button_pressed = bool(s.get("unique_sources", false))
 	_include_vib_only_check.button_pressed = bool(s.get("include_vib_only", true))
+	# A preset saved before tags could be filtered has neither list, and so draws from everything —
+	# exactly what it did when it was saved.
+	_tag_filter.clear()
+	for t: Variant in RandomizerLibrary.normalize_tags(s.get("tags_include", [])):
+		_tag_filter[t] = TAG_ONLY
+	for t: Variant in RandomizerLibrary.normalize_tags(s.get("tags_exclude", [])):
+		_tag_filter[t] = TAG_NEVER
+	_refresh_tag_chips()
 	_sync_mode_rows()
 
 
@@ -543,16 +626,324 @@ func _refresh_library() -> void:
 	for c: Node in _lib_list.get_children():
 		c.queue_free()
 	var entries: Array = RandomizerLibrary.get_all()
-	_lib_count.text = "CLIP LIBRARY  (%d)" % entries.size()
-	if entries.is_empty():
+	_refresh_tag_chips()
+	_prune_selection(entries)
+	_row_checks.clear()
+	_shown_ids = []
+	var query: String = _lib_search.text.strip_edges().to_lower() if _lib_search != null else ""
+	var shown: Array = entries.filter(func(e: Dictionary) -> bool: return _matches_search(e, query))
+	for e: Dictionary in shown:
+		_shown_ids.append(str(e["id"]))
+	_lib_count.text = (
+		"CLIP LIBRARY  (%d)" % entries.size()
+		if shown.size() == entries.size()
+		else "CLIP LIBRARY  (%d of %d shown)" % [shown.size(), entries.size()]
+	)
+	if shown.is_empty():
 		var empty := Label.new()
-		empty.text = "No clips yet — add videos (their .funscript is paired automatically)."
+		empty.text = (
+			"No clips yet — add videos (their .funscript is paired automatically)."
+			if entries.is_empty()
+			else 'No clips match "%s".' % query
+		)
 		UITheme.style_label(empty, UITheme.DARK_TEXT, 13)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_lib_list.add_child(empty)
+		_refresh_selection_bar()
 		return
-	for entry: Dictionary in entries:
+	for entry: Dictionary in shown:
 		_lib_list.add_child(_make_row(entry))
+	_refresh_selection_bar()
+
+
+# A clip is shown when the search is empty, or appears in its name or any of its tags.
+func _matches_search(entry: Dictionary, query: String) -> bool:
+	if query == "" or str(entry.get("name", "")).to_lower().contains(query):
+		return true
+	for t: Variant in entry.get("tags", []):
+		if str(t).contains(query):
+			return true
+	return false
+
+
+# ── Tag filter (run settings) ────────────────────────────────────────────────
+
+
+# Rebuilds the chips from the library's tags. A tag the filter names but no clip carries any more
+# (a preset from before a retag) still gets a chip, at 0, so it can be seen and cleared rather than
+# silently emptying every run.
+func _refresh_tag_chips() -> void:
+	if _tag_chips == null:
+		return
+	for c: Node in _tag_chips.get_children():
+		c.queue_free()
+	var counts: Dictionary = RandomizerLibrary.tag_counts()
+	var tags: Array = counts.keys()
+	for t: Variant in _tag_filter:
+		if not tags.has(t):
+			tags.append(t)
+	tags.sort()
+	if tags.is_empty():
+		var none := Label.new()
+		none.text = "No tags yet — give clips tags in the library to build runs from them."
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		UITheme.style_label(none, UITheme.DARK_TEXT, 12)
+		_tag_chips.add_child(none)
+	for t: Variant in tags:
+		_tag_chips.add_child(_make_tag_chip(str(t), int(counts.get(t, 0))))
+	_update_tag_match()
+
+
+func _make_tag_chip(tag: String, count: int) -> Button:
+	var state: int = int(_tag_filter.get(tag, 0))
+	var chip := Button.new()
+	chip.focus_mode = Control.FOCUS_NONE
+	var mark: String = "✓ " if state == TAG_ONLY else ("✕ " if state == TAG_NEVER else "")
+	chip.text = "%s%s  %d" % [mark, tag, count]
+	var accent: Color = UITheme.PURPLE_MID
+	if state == TAG_ONLY:
+		accent = UITheme.CYAN
+	elif state == TAG_NEVER:
+		accent = UITheme.MAGENTA
+	UITheme.style_button_subtle(chip, accent, 10, 4, 12)
+	chip.pressed.connect(_cycle_tag.bind(tag))
+	return chip
+
+
+func _cycle_tag(tag: String) -> void:
+	match int(_tag_filter.get(tag, 0)):
+		0:
+			_tag_filter[tag] = TAG_ONLY
+		TAG_ONLY:
+			_tag_filter[tag] = TAG_NEVER
+		_:
+			_tag_filter.erase(tag)
+	_refresh_tag_chips()
+
+
+func _filtered_tags(state: int) -> Array:
+	var out: Array = []
+	for t: Variant in _tag_filter:
+		if int(_tag_filter[t]) == state:
+			out.append(t)
+	out.sort()
+	return out
+
+
+# How much of the library the current filter leaves — by the generator's own rule, so the number
+# here is the pool a run will actually draw from (before part cutting and the vibrator-only switch).
+func _update_tag_match() -> void:
+	var entries: Array = RandomizerLibrary.get_all()
+	if _tag_filter.is_empty():
+		_tag_match_lbl.text = "Runs draw from all %d clips." % entries.size()
+		UITheme.style_label(_tag_match_lbl, UITheme.DARK_TEXT, 12)
+		return
+	var include: Array = _filtered_tags(TAG_ONLY)
+	var exclude: Array = _filtered_tags(TAG_NEVER)
+	var matching: int = 0
+	for e: Dictionary in entries:
+		if RandomizerGenerator.matches_tags(e.get("tags", []), include, exclude):
+			matching += 1
+	_tag_match_lbl.text = "%d of %d clips match." % [matching, entries.size()]
+	UITheme.style_label(_tag_match_lbl, UITheme.AMBER if matching == 0 else UITheme.CYAN, 12)
+
+
+# ── Tagging (library) ────────────────────────────────────────────────────────
+
+
+# The panel that acts on the selection: how many clips are ticked, a chip per library tag showing how
+# many of them carry it, and a box for a brand-new tag. Hidden while nothing is ticked.
+func _build_selection_bar() -> Control:
+	_selection_bar = PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = UITheme.CARD_BG
+	style.border_color = UITheme.CYAN
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	style.set_content_margin_all(10)
+	_selection_bar.add_theme_stylebox_override("panel", style)
+	_selection_bar.visible = false
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	_selection_bar.add_child(box)
+
+	var head := HBoxContainer.new()
+	_selection_lbl = Label.new()
+	_selection_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(_selection_lbl, UITheme.CYAN, 13, true)
+	head.add_child(_selection_lbl)
+	var clear_btn := Button.new()
+	clear_btn.text = "CLEAR"
+	UITheme.style_button(clear_btn, UITheme.PURPLE_MID, 10, 4, 11)
+	clear_btn.pressed.connect(_clear_selection)
+	head.add_child(clear_btn)
+	box.add_child(head)
+
+	var hint := Label.new()
+	hint.text = "Click a tag to add it to every selected clip — or, if they all have it, to remove it."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(hint, UITheme.DARK_TEXT, 11)
+	box.add_child(hint)
+
+	_selection_chips = HFlowContainer.new()
+	_selection_chips.add_theme_constant_override("h_separation", 6)
+	_selection_chips.add_theme_constant_override("v_separation", 6)
+	box.add_child(_selection_chips)
+
+	_selection_new_tag = LineEdit.new()
+	_selection_new_tag.placeholder_text = "+ new tag for the selected clips (Enter)"
+	_selection_new_tag.text_submitted.connect(_on_selection_new_tag)
+	box.add_child(_selection_new_tag)
+	return _selection_bar
+
+
+# A row's tick. Shift-click ticks (or unticks) every listed clip between the last one clicked and this.
+func _on_row_checked(on: bool, id: String) -> void:
+	var ids: Array = [id]
+	if Input.is_key_pressed(KEY_SHIFT) and _shown_ids.has(_last_checked_id):
+		var a: int = _shown_ids.find(_last_checked_id)
+		var b: int = _shown_ids.find(id)
+		ids = _shown_ids.slice(mini(a, b), maxi(a, b) + 1)
+	for rid: Variant in ids:
+		_set_selected(str(rid), on)
+	_last_checked_id = id
+	_refresh_selection_bar()
+
+
+func _on_select_shown_pressed() -> void:
+	var select: bool = not _all_shown_selected()
+	for id: Variant in _shown_ids:
+		_set_selected(str(id), select)
+	_refresh_selection_bar()
+
+
+func _clear_selection() -> void:
+	for id: Variant in _selected_ids.keys():
+		_set_selected(str(id), false)
+	_refresh_selection_bar()
+
+
+func _set_selected(id: String, on: bool) -> void:
+	if on:
+		_selected_ids[id] = true
+	else:
+		_selected_ids.erase(id)
+	var check: CheckBox = _row_checks.get(id)
+	if check != null and is_instance_valid(check):
+		check.set_pressed_no_signal(on)
+
+
+func _all_shown_selected() -> bool:
+	if _shown_ids.is_empty():
+		return false
+	for id: Variant in _shown_ids:
+		if not _selected_ids.has(id):
+			return false
+	return true
+
+
+# A removed clip can't stay selected — it would count toward the bar and receive tags it can't hold.
+func _prune_selection(entries: Array) -> void:
+	var present: Dictionary = {}
+	for e: Dictionary in entries:
+		present[str(e["id"])] = true
+	for id: Variant in _selected_ids.keys():
+		if not present.has(id):
+			_selected_ids.erase(id)
+
+
+# Shows the bar when anything is ticked, with a chip per library tag: ✓ when every selected clip has
+# it (click removes it from all), "k/n" when some do and plain when none do (click adds it to all).
+func _refresh_selection_bar() -> void:
+	if _selection_bar == null:
+		return
+	var ids: Array = _selected_ids.keys()
+	_select_shown_btn.text = "DESELECT SHOWN" if _all_shown_selected() else "SELECT SHOWN"
+	_selection_bar.visible = not ids.is_empty()
+	if ids.is_empty():
+		return
+	var hidden: int = 0
+	for id: Variant in ids:
+		if not _shown_ids.has(id):
+			hidden += 1
+	_selection_lbl.text = (
+		"%d SELECTED" % ids.size()
+		if hidden == 0
+		else "%d SELECTED  (%d NOT SHOWN)" % [ids.size(), hidden]
+	)
+
+	for c: Node in _selection_chips.get_children():
+		c.queue_free()
+	var have: Dictionary = {}  # tag → how many selected clips carry it
+	for e: Dictionary in RandomizerLibrary.get_all():
+		if not _selected_ids.has(str(e["id"])):
+			continue
+		for t: Variant in e.get("tags", []):
+			have[t] = int(have.get(t, 0)) + 1
+	var tags: Array = RandomizerLibrary.tag_counts().keys()
+	tags.sort()
+	for t: Variant in tags:
+		_selection_chips.add_child(_make_selection_chip(str(t), int(have.get(t, 0)), ids.size()))
+
+
+func _make_selection_chip(tag: String, count: int, total: int) -> Button:
+	var chip := Button.new()
+	chip.focus_mode = Control.FOCUS_NONE
+	var everywhere: bool = count == total
+	if everywhere:
+		chip.text = "✓ %s" % tag
+		chip.tooltip_text = UITheme.wrap_tip('Remove "%s" from all %d selected.' % [tag, total])
+	else:
+		chip.text = tag if count == 0 else "%s  %d/%d" % [tag, count, total]
+		chip.tooltip_text = UITheme.wrap_tip('Add "%s" to all %d selected.' % [tag, total])
+	var accent: Color = UITheme.PURPLE_MID
+	if everywhere:
+		accent = UITheme.CYAN
+	elif count > 0:
+		accent = UITheme.PURPLE_BRIGHT
+	UITheme.style_button_subtle(chip, accent, 10, 4, 12)
+	chip.pressed.connect(_toggle_tag_on_selection.bind(tag, everywhere))
+	return chip
+
+
+func _toggle_tag_on_selection(tag: String, remove: bool) -> void:
+	var ids: Array = _selected_ids.keys()
+	if remove:
+		RandomizerLibrary.remove_tag(ids, tag)
+	else:
+		RandomizerLibrary.add_tag(ids, tag)
+	_status.text = (
+		'%s "%s" %s %d clip%s.'
+		% [
+			"Removed" if remove else "Added",
+			tag,
+			"from" if remove else "to",
+			ids.size(),
+			"" if ids.size() == 1 else "s",
+		]
+	)
+
+
+func _on_selection_new_tag(text: String) -> void:
+	var tags: Array = _parse_tags(text)
+	if tags.is_empty():
+		return
+	for t: Variant in tags:
+		_toggle_tag_on_selection(str(t), false)
+	_selection_new_tag.text = ""
+
+
+# Saves a row's tag box. Runs on Enter AND when the box loses focus: Enter alone meant tags typed and
+# then clicked away from were quietly dropped. update_entry doesn't refresh the list (that would free
+# the box mid-edit), so the chips are refreshed here.
+func _commit_row_tags(id: String, field: LineEdit) -> void:
+	var tags: Array = _parse_tags(field.text)
+	if tags == RandomizerLibrary.get_entry(id).get("tags", []):
+		return
+	RandomizerLibrary.update_entry(id, {"tags": tags})
+	field.text = ", ".join(PackedStringArray(tags))
+	_refresh_tag_chips()
 
 
 func _make_row(entry: Dictionary) -> Control:
@@ -574,6 +965,14 @@ func _make_row(entry: Dictionary) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	outer.add_child(row)
+
+	var check := CheckBox.new()
+	check.focus_mode = Control.FOCUS_NONE
+	check.button_pressed = _selected_ids.has(id)
+	check.tooltip_text = UITheme.wrap_tip("Select for tagging. Shift-click selects a range.")
+	check.toggled.connect(_on_row_checked.bind(id))
+	row.add_child(check)
+	_row_checks[id] = check
 
 	# Caret → reveal a panel to view AND edit the scripts attached to this video (per-channel drop +
 	# clear). Content is built on demand and the expanded/collapsed state survives a library refresh,
@@ -657,9 +1056,8 @@ func _make_row(entry: Dictionary) -> Control:
 	tags_field.placeholder_text = "tags,comma"
 	tags_field.text = ", ".join(PackedStringArray(entry.get("tags", [])))
 	tags_field.custom_minimum_size = Vector2(140, 0)
-	tags_field.text_submitted.connect(
-		func(t: String) -> void: RandomizerLibrary.update_entry(id, {"tags": _parse_tags(t)})
-	)
+	tags_field.text_submitted.connect(func(_t: String) -> void: _commit_row_tags(id, tags_field))
+	tags_field.focus_exited.connect(_commit_row_tags.bind(id, tags_field))
 	row.add_child(_labeled("tags", tags_field))
 
 	# Intensity 1-5.
@@ -779,12 +1177,7 @@ func _attach_scripts(id: String, paths: PackedStringArray) -> void:
 
 
 func _parse_tags(text: String) -> Array:
-	var out: Array = []
-	for raw: String in text.split(","):
-		var t: String = raw.strip_edges().to_lower()
-		if t != "" and not (t in out):
-			out.append(t)
-	return out
+	return RandomizerLibrary.normalize_tags(Array(text.split(",")))
 
 
 # ── Add clips ────────────────────────────────────────────────────────────────
@@ -880,7 +1273,7 @@ func _import_paths(paths: PackedStringArray) -> void:
 	# A modal with a progress bar: each add_clip probes the file (an ffprobe subprocess) and
 	# segments its funscript, which blocks the frame. Yielding a frame between clips lets the bar
 	# repaint and the Cancel button respond, so a big folder no longer freezes the whole app.
-	var modal: Dictionary = _show_import_modal(rounds.size())
+	var modal: Dictionary = _show_progress_modal("IMPORTING CLIPS", rounds.size())
 	var added: int = 0
 	var failed: int = 0
 	var cancelled: bool = false
@@ -899,7 +1292,7 @@ func _import_paths(paths: PackedStringArray) -> void:
 			str(r.get("funscript_path", "")),
 			r.get("axis_scripts", {}),
 			r.get("vib_scripts", {}),
-			[],
+			_parse_tags(_import_tags.text),
 			1.0,
 			3,
 			nm
@@ -911,7 +1304,7 @@ func _import_paths(paths: PackedStringArray) -> void:
 			push_warning("RandomizerScreen: add failed (%s): %s" % [nm, add_res["reason"]])
 
 	_update_import_modal(modal, rounds.size(), rounds.size(), "")
-	_close_import_modal(modal)
+	_close_progress_modal(modal)
 	_set_busy(false)
 	var msg: String = "Added %d clip%s" % [added, "" if added == 1 else "s"]
 	if failed > 0:
@@ -924,10 +1317,11 @@ func _import_paths(paths: PackedStringArray) -> void:
 	_status.text = msg + "."
 
 
-# Full-screen import-progress modal: a framed card with a bar, an N/total count, the current clip
-# name, and a Cancel button (sets _cancel_requested, checked at the loop head). Returns the node
-# refs the loop refreshes each clip.
-func _show_import_modal(total: int) -> Dictionary:
+# Full-screen progress card: a title, a bar over `total` steps, a count line, the current clip's name,
+# an optional line saying why to wait, and a Cancel button (sets _cancel_requested, checked by the
+# caller's loop). It covers the screen, so nothing behind it can be clicked while the work runs.
+# Shared by importing and by preparing a run. Returns the node refs the caller refreshes.
+func _show_progress_modal(title_text: String, total: int, hint_text: String = "") -> Dictionary:
 	var overlay := Control.new()
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -958,7 +1352,7 @@ func _show_import_modal(total: int) -> Dictionary:
 	panel.add_child(vbox)
 
 	var title := Label.new()
-	title.text = "IMPORTING CLIPS"
+	title.text = title_text
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_label(title, UITheme.PURPLE_BRIGHT, 20, true)
 	vbox.add_child(title)
@@ -993,6 +1387,15 @@ func _show_import_modal(total: int) -> Dictionary:
 	UITheme.style_label(name_lbl, UITheme.DARK_TEXT, 12, false)
 	vbox.add_child(name_lbl)
 
+	if hint_text != "":
+		var hint := Label.new()
+		hint.text = hint_text
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.custom_minimum_size = Vector2(420, 0)
+		UITheme.style_label(hint, UITheme.CYAN, 12, false)
+		vbox.add_child(hint)
+
 	var cancel := Button.new()
 	cancel.text = "✕ CANCEL"
 	UITheme.style_button(cancel, UITheme.MAGENTA)
@@ -1011,10 +1414,16 @@ func _update_import_modal(refs: Dictionary, done: int, total: int, nm: String) -
 	(refs["name"] as Label).text = nm
 
 
-func _close_import_modal(refs: Dictionary) -> void:
+func _close_progress_modal(refs: Dictionary) -> void:
 	var overlay: Variant = refs.get("overlay")
 	if is_instance_valid(overlay):
 		(overlay as Control).queue_free()
+
+
+# Takes the run-preparation card down, on every way out of a Play or Keep.
+func _close_prep_modal() -> void:
+	_close_progress_modal(_prep_modal)
+	_prep_modal = {}
 
 
 func _video_filters() -> PackedStringArray:
@@ -1091,6 +1500,7 @@ func _play_pending() -> void:
 
 	var play: Dictionary = JourneyScanner.parse_graph(mat["folder"], mat["folder_name"])
 	if play.is_empty():
+		_close_prep_modal()
 		_set_busy(false)
 		_status.text = "Generated run failed to load."
 		return
@@ -1119,6 +1529,7 @@ func _keep_pending() -> void:
 		return
 
 	var kept: Dictionary = RandomizerRun.keep(mat["folder"], run_name)
+	_close_prep_modal()
 	_set_busy(false)
 	if bool(kept["ok"]):
 		_status.text = 'Saved to your library as "%s".' % run_name
@@ -1137,8 +1548,20 @@ func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Diction
 	var ids: Array = all_ids
 	if partial:
 		ids = all_ids.slice(0, _buffer_round_count(all_ids))
-	if not await _prepare_used_media(ids):
-		return {}  # _prepare_used_media set the status + cleared busy
+	var title_text: String = "PREPARING RUN" if partial else "SAVING RUN"
+	var hint_text: String = (
+		"Encoding the first rounds — the rest keep encoding while you play."
+		if partial
+		else "Encoding every clip so the run can be saved. Stay on this screen — leaving cancels the save."
+	)
+	if not await _prepare_used_media(ids, title_text, hint_text):
+		return {}  # _prepare_used_media set the status, took the card down and cleared busy
+	# The copy below blocks for a moment; say so first, and let the card repaint.
+	if not _prep_modal.is_empty():
+		(_prep_modal["count"] as Label).text = "Writing the run…"
+		(_prep_modal["name"] as Label).text = ""
+		(_prep_modal["bar"] as ProgressBar).value = ids.size()
+	await get_tree().process_frame
 	RandomizerRun.clear_all()  # wipe prior temp runs
 	var mat: Dictionary = {}
 	if partial:
@@ -1150,6 +1573,7 @@ func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Diction
 			res["journey"], res["content_rels"], RandomizerLibrary.STORE_DIR
 		)
 	if not bool(mat["ok"]):
+		_close_prep_modal()
 		_set_busy(false)
 		_status.text = "Could not prepare the run (%s)." % str(mat["reason"])
 		return {}
@@ -1304,11 +1728,14 @@ func _summary_text(s: Dictionary) -> String:
 # aborts with a message naming the offenders (usually a moved/deleted source, since
 # pooling is deferred to now). Returns true when all are ready. Keeps _busy set on
 # success (the caller proceeds to launch); clears it on failure.
-func _prepare_used_media(used_ids: Array) -> bool:
+func _prepare_used_media(used_ids: Array, title_text: String, hint_text: String) -> bool:
 	_cancel_requested = false
-	_cancel_btn.visible = true
 	var failures: Array = []
 	var total: int = used_ids.size()
+	_prep_modal = _show_progress_modal(title_text, total, hint_text)
+	var bar_ref: WeakRef = weakref(_prep_modal["bar"])
+	var count_ref: WeakRef = weakref(_prep_modal["count"])
+	var name_ref: WeakRef = weakref(_prep_modal["name"])
 	for idx: int in total:
 		var uid: Variant = used_ids[idx]
 		if _cancel_requested:
@@ -1331,25 +1758,32 @@ func _prepare_used_media(used_ids: Array) -> bool:
 			failures.append("%s (unknown_id)" % sid)
 			continue
 		var nm: String = str(entry.get("name", ""))
-		var is_part: bool = not (entry.get("segments", []) as Array).is_empty()
-		_status.text = "Preparing %s…" % nm
+		_show_prep_step(idx, total, nm, 0.0)
+		# Both callbacks run from MediaPoolService's encode loop, which can outlive this screen, so
+		# neither may touch `self`: the card's controls are held weakly and the cancel check reads the
+		# shared flag. The bar runs over the WHOLE job (this clip's fraction on top of those done).
+		var cancel_flag: Dictionary = _cancel_flag
+		var on_progress: Callable = func(frac: float, _c: float, _t: float, _s: String) -> void:
+			var bar: ProgressBar = bar_ref.get_ref() as ProgressBar
+			var count: Label = count_ref.get_ref() as Label
+			if bar == null or count == null:
+				return
+			bar.value = idx + clampf(frac, 0.0, 1.0)
+			count.text = "Clip %d of %d  ·  %d%%" % [idx + 1, total, int(frac * 100.0)]
+		var should_cancel: Callable = func() -> bool: return bool(cancel_flag["requested"])
+		# The name is set here, once per clip, rather than from the callback (it doesn't change).
+		var name_lbl: Label = name_ref.get_ref() as Label
+		if name_lbl != null:
+			name_lbl.text = nm
 		var pr: Dictionary = await RandomizerLibrary.prepare_entry_media(
-			entry,
-			func(frac: float, _cur: float, _tot: float, _spd: String) -> void:
-				if is_part:
-					_status.text = (
-						"Baking part %d/%d — %s… %d%%" % [idx + 1, total, nm, int(frac * 100.0)]
-					)
-				else:
-					_status.text = "Transcoding %s… %d%%" % [nm, int(frac * 100.0)],
-			func() -> bool: return _cancel_requested
+			entry, on_progress, should_cancel
 		)
 		if _cancel_requested:
 			return _abort_prepare("Cancelled.")
 		if not bool(pr["ok"]):
 			failures.append("%s (%s)" % [nm, str(pr["reason"])])
-	_cancel_btn.visible = false
 	if not failures.is_empty():
+		_close_prep_modal()
 		_set_busy(false)
 		_status.text = (
 			"Couldn't prepare: %s. Remove or re-import those clips." % ", ".join(failures)
@@ -1358,10 +1792,19 @@ func _prepare_used_media(used_ids: Array) -> bool:
 	return true
 
 
-# Common exit when preparation is cancelled: hide the cancel button, clear busy,
+# Refreshes the card between clips: the bar at the clips already done, the count line, and the name.
+func _show_prep_step(idx: int, total: int, nm: String, frac: float) -> void:
+	if _prep_modal.is_empty():
+		return
+	(_prep_modal["bar"] as ProgressBar).value = idx + frac
+	(_prep_modal["count"] as Label).text = "Clip %d of %d" % [idx + 1, total]
+	(_prep_modal["name"] as Label).text = nm
+
+
+# Common exit when preparation is cancelled: take the card down, clear busy,
 # and show `msg`. Returns false so the caller bails out of the run.
 func _abort_prepare(msg: String) -> bool:
-	_cancel_btn.visible = false
+	_close_prep_modal()
 	_set_busy(false)
 	_status.text = msg
 	return false
@@ -1394,6 +1837,8 @@ func _read_settings() -> Dictionary:
 		"intensity_length_coupling": _coupling_slider.value / 100.0,
 		"unique_sources": _unique_sources_check.button_pressed,
 		"include_vib_only": _include_vib_only_check.button_pressed,
+		"tags_include": _filtered_tags(TAG_ONLY),
+		"tags_exclude": _filtered_tags(TAG_NEVER),
 	}
 
 
@@ -1402,7 +1847,10 @@ func _reason_text(reason: String) -> String:
 		"empty_library":
 			return "The library is empty."
 		"no_matches":
-			return "No clips match the current tag filter."
+			# Two filters can empty the pool; name the one that did.
+			if not _tag_filter.is_empty():
+				return "No clips match the tag filter — clear a ✓ or ✕ tag to widen it."
+			return 'Every clip is vibrator-only — switch on "Include vibrator-only clips".'
 		_:
 			return "Could not generate a run (%s)." % reason
 
@@ -1410,3 +1858,6 @@ func _reason_text(reason: String) -> String:
 func _set_busy(busy: bool) -> void:
 	_busy = busy
 	_generate_btn.disabled = busy
+	# Esc already refuses while busy; BACK didn't, so a Keep could be walked away from mid-bake and
+	# silently never save. CANCEL is the way out of a bake.
+	_back_btn.disabled = busy

@@ -4718,9 +4718,10 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	var col: VBoxContainer = VBoxContainer.new()
 	col.add_theme_constant_override("separation", 8)
 	col.add_child(_make_setting_picker(data))
-	# Only an interactive fork is worth arranging: a random or conditional one resolves itself while the
-	# player watches, so there is nothing on it to put anywhere.
-	if str(data.get("resolution", "choice")) in ["choice", "sacrifice"]:
+	# Only a fork the player resolves is worth arranging: a random one, or a conditional the game
+	# decides, resolves itself while the player watches, so there is nothing on it to put anywhere. A
+	# conditional handed to the PLAYER is a screen of choices like any other and arranges the same way.
+	if JourneyData.fork_player_resolves(data):
 		col.add_child(
 			_make_arrange_button(data, func() -> Array: return _fork_layout_elements(data, out))
 		)

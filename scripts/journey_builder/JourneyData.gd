@@ -2516,6 +2516,20 @@ static func fork_is_silent(data: Dictionary) -> bool:
 	return bool(data.get("silent", false)) and fork_can_be_silent(data)
 
 
+# Whether the PLAYER picks this fork's path on screen — a choice, a sacrifice, or a conditional the
+# author handed to the player. Only these have anything to click, so only these can be arranged on a
+# background: ForkScreen applies an arrangement to exactly these, and skips it for a fork that
+# resolves itself (random, or conditional decided by the game), whose reveal plays on the cards.
+static func fork_player_resolves(data: Dictionary) -> bool:
+	match str(data.get("resolution", "choice")):
+		"choice", "sacrifice":
+			return true
+		"conditional":
+			return str(data.get("cond_decider", "game")) == "player"
+		_:
+			return false
+
+
 # ── Shop offer ───────────────────────────────────────────────────────────────
 
 

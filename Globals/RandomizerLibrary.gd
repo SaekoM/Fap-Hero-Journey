@@ -143,7 +143,7 @@ static func _coerce_entry(e: Dictionary) -> Dictionary:
 		"action_count": int(e.get("action_count", 0)),
 		"length_ms": int(e.get("length_ms", 0)),
 		"duration_ms": int(e.get("duration_ms", 0)),
-		"tags": (e.get("tags", []) as Array).duplicate(),
+		"tags": normalize_tags(e.get("tags", [])),
 		"weight": float(e.get("weight", 1.0)),
 		"intensity": clampi(int(e.get("intensity", 3)), 1, 5),
 		# No main stroke funscript, but a vibration script IS present: a "vibrator only" clip. Its
@@ -158,6 +158,60 @@ static func _coerce_entry(e: Dictionary) -> Dictionary:
 		# a whole-clip entry decays on last_used, its parts decay individually.
 		"part_used": _coerce_part_used(e.get("part_used", {})),
 	}
+
+
+# Tags as the filter compares them: lower-case, trimmed, no blanks, no repeats, first-seen order.
+# "PMV" and "pmv " must be one tag, or a run filtered on one silently misses clips tagged the other.
+static func normalize_tags(raw: Variant) -> Array:
+	var out: Array = []
+	if not (raw is Array):
+		return out
+	for t: Variant in raw as Array:
+		var tag: String = str(t).strip_edges().to_lower()
+		if tag != "" and not out.has(tag):
+			out.append(tag)
+	return out
+
+
+# Every tag in the library with how many clips carry it, {tag: count}.
+func tag_counts() -> Dictionary:
+	var counts: Dictionary = {}
+	for e: Dictionary in _entries:
+		for t: Variant in e.get("tags", []):
+			counts[t] = int(counts.get(t, 0)) + 1
+	return counts
+
+
+# Adds `tag` to every clip in `ids` — the library screen's "tag shown" — in one save and one refresh.
+func add_tag(ids: Array, tag: String) -> void:
+	_retag(ids, tag, true)
+
+
+func remove_tag(ids: Array, tag: String) -> void:
+	_retag(ids, tag, false)
+
+
+func _retag(ids: Array, tag: String, add: bool) -> void:
+	var clean: Array = normalize_tags([tag])
+	if clean.is_empty():
+		return
+	var changed: bool = false
+	for id: Variant in ids:
+		var i: int = _index_of(str(id))
+		if i < 0:
+			continue
+		var tags: Array = (_entries[i]["tags"] as Array).duplicate()
+		if add and not tags.has(clean[0]):
+			tags.append(clean[0])
+		elif not add and tags.has(clean[0]):
+			tags.erase(clean[0])
+		else:
+			continue
+		_entries[i]["tags"] = tags
+		changed = true
+	if changed:
+		save_registry()
+		library_changed.emit()
 
 
 # Normalizes a persisted beat list. JSON hands numbers back as float, so every field
@@ -385,7 +439,12 @@ func add_clip(
 
 	var existing: int = _index_of(vfp)
 	if existing >= 0:
-		# Preserve last_used across a re-add; take the new tags/weight/intensity.
+		# A re-add refreshes what comes from the FILES (scripts, stats, parts, auto-rated intensity)
+		# and keeps what the player set by hand. Re-importing a folder used to reset every clip's tags
+		# to none and its weight to 1 — harmless while tags did nothing, but it would now silently
+		# empty a player's libraries. Tags given with the import are added to the ones already there.
+		entry["tags"] = normalize_tags((_entries[existing].get("tags", []) as Array) + tags)
+		entry["weight"] = float(_entries[existing].get("weight", weight))
 		entry["last_used"] = int(_entries[existing].get("last_used", 0))
 		# Same for part freshness: `parts` is recomputed from the script, but a beat
 		# that came out identical keeps its history. No pruning of orphaned keys — a
