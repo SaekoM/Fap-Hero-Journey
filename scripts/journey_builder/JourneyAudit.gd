@@ -87,6 +87,7 @@ static func audit(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 	findings.append_array(_cold_edge_findings(graph, visits))
 	findings.append_array(_counter_findings(graph, visits))
 	findings.append_array(_flag_findings(graph, ctx))
+	findings.append_array(_axis_effect_findings(graph))
 
 	return {
 		"findings": findings,
@@ -1605,6 +1606,36 @@ static func _counter_findings(graph: Dictionary, visits: Dictionary) -> Array:
 # A declared flag the journey never mentions. Almost always a name written two ways — the row says
 # "spared_boss", the fork asks for "spared_bos" — which reads as a branch the player never unlocked,
 # with both halves looking right. The counter registry has the same check for the same reason.
+# A round using multi-axis modifiers plays differently on a device without those axes — each one becomes
+# its stroke twin there. Not a fault, so INFO; but an author testing on an SR6 would never see it.
+static func _axis_effect_findings(graph: Dictionary) -> Array:
+	var out: Array = []
+	var nodes: Dictionary = graph.get("nodes", {})
+	for id: String in nodes:
+		var node: Dictionary = nodes[id]
+		if str(node.get("type", "")) != "round":
+			continue
+		var used: Array = JourneyData.axis_effects_in_round(node.get("data", {}))
+		if used.is_empty():
+			continue
+		(
+			out
+			. append(
+				_finding(
+					SEV_INFO,
+					"axis_effects",
+					id,
+					-1,
+					(
+						"Uses multi-axis modifiers (%s). A player whose device lacks those axes, or who plays this round without axis scripts or Auto Twist, gets the stroke version instead."
+						% ", ".join(PackedStringArray(used))
+					)
+				)
+			)
+		)
+	return out
+
+
 static func _flag_findings(graph: Dictionary, ctx: Dictionary) -> Array:
 	var out: Array = []
 	var used: Array = JourneyData.flag_names_in_graph(graph)

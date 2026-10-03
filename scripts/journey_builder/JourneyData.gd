@@ -123,6 +123,40 @@ const CURSE_CATALOG: Array = [
 	},
 	{"kind": "reverse", "name": "Inverted", "desc": "Up and down are flipped."},
 	{"kind": "block", "name": "Numbed", "desc": "The device ignores the script entirely."},
+	# Multi-axis curses (MULTIAXIS_DESIGN.md §3): the stroke curses mirrored onto every axis but the
+	# stroke. The turning axes (twist, roll, pitch) take the `rotary_` values — they're subtler than the
+	# sliding ones, so the same ×0.6 would barely register. `substitute` is the stroke curse a player
+	# gets instead when this round gives them no such axis to feel (see express_effects).
+	{
+		"kind": "axis_scale",
+		"factor": 0.6,
+		"rotary_factor": 0.4,
+		"name": "Stiffened",
+		"desc": "Twist, roll and pitch move 40% as far; surge and sway 60%.",
+		"substitute": "Shrunken",
+	},
+	{
+		"kind": "axis_clamp",
+		"min": 40,
+		"max": 60,
+		"rotary_min": 45,
+		"rotary_max": 55,
+		"name": "Braced",
+		"desc": "Every axis but the stroke is held close to centre.",
+		"substitute": "Choked",
+	},
+	{
+		"kind": "axis_reverse",
+		"name": "Contrary",
+		"desc": "Every axis but the stroke moves the opposite way.",
+		"substitute": "Inverted",
+	},
+	{
+		"kind": "axis_block",
+		"name": "Stilled",
+		"desc": "Every axis but the stroke freezes where it is.",
+		"substitute": "Numbed",
+	},
 	{
 		"kind": "coin_penalty",
 		"factor": 0.5,
@@ -367,6 +401,14 @@ const BLESSING_CATALOG: Array = [
 		"desc": "Double the coins earned this round."
 	},
 	{"kind": "scale", "factor": 1.35, "name": "Surge", "desc": "Stronger, longer strokes."},
+	{
+		"kind": "axis_scale",
+		"factor": 1.35,
+		"rotary_factor": 1.6,
+		"name": "Limber",
+		"desc": "Every axis but the stroke swings wider — the turns and tilts most of all.",
+		"substitute": "Surge",
+	},
 	{"kind": "gift", "name": "Gift", "desc": "Start the round holding a free item."},
 	{
 		"kind": "lingering",
@@ -473,6 +515,109 @@ static func is_stroke_effect(kind: String) -> bool:
 	return kind in STROKE_EFFECT_KINDS
 
 
+# Multi-axis modifier kinds, each with the stroke kind it stands in for. Every axis but the stroke, as
+# one group; applied by FunscriptPlayer to the serial axis stream only — never to restim, where these
+# axes drive carrier frequency and pulse settings a motion curse was never meant to touch.
+const AXIS_EFFECT_TWINS: Dictionary = {
+	"axis_scale": "scale",
+	"axis_clamp": "clamp",
+	"axis_reverse": "reverse",
+	"axis_block": "block",
+}
+# The keys only an axis effect carries — dropped when it becomes its stroke twin.
+const AXIS_ONLY_KEYS: Array = ["rotary_factor", "rotary_min", "rotary_max", "substitute"]
+
+
+static func is_axis_effect(kind: String) -> bool:
+	return AXIS_EFFECT_TWINS.has(kind)
+
+
+# Whether a round gives an axis modifier anything to act on, for THIS player: a script on an axis
+# their device has, or Auto Twist moving the twist. Without one, every axis modifier plays as its
+# stroke twin (express_effects) — a curse the player can't feel is no curse at all. `device_axes` is
+# SettingsService.get_device_axes() (already held to the stroke alone off serial); `scripted_axes` the
+# round's loaded axis scripts; `auto_twist_on` whether Auto Twist will drive the twist this round.
+static func round_has_axis_motion(
+	device_axes: Array, scripted_axes: Array, auto_twist_on: bool
+) -> bool:
+	for axis: Variant in scripted_axes:
+		if str(axis) != "L0" and device_axes.has(str(axis)):
+			return true
+	return auto_twist_on and device_axes.has("R0")
+
+
+# A round's effects as this player will get them: each axis modifier kept when the round has axis
+# motion for them, otherwise swapped for its stroke twin. Everything else passes untouched.
+static func express_effects(effects: Array, axis_motion: bool) -> Array:
+	var out: Array = []
+	for e: Variant in effects:
+		if not (e is Dictionary):
+			continue
+		var effect: Dictionary = e
+		if axis_motion or not is_axis_effect(str(effect.get("kind", ""))):
+			out.append(effect)
+		else:
+			out.append(stroke_twin(effect))
+	return out
+
+
+# Readable names for the raw axis kinds (boss forced modifiers and timeline windows carry kinds, not
+# catalog names).
+const AXIS_EFFECT_LABELS: Dictionary = {
+	"axis_scale": "Axes scale",
+	"axis_clamp": "Axes clamp",
+	"axis_reverse": "Axes reverse",
+	"axis_block": "Axes stilled",
+}
+
+
+# Every multi-axis modifier a round can apply, by name: catalog entries it ticks, raw kinds among its
+# boss forced modifiers, and raw kinds in its timeline windows (its own and each pool entry's). In
+# first-seen order, no repeats — what the audit lists so an author knows which rounds play differently
+# on a stroke-only device.
+static func axis_effects_in_round(data: Dictionary) -> Array:
+	var names: Array = []
+	for n: Variant in data.get("effects", []):
+		var entry: Dictionary = effect_entry(str(n))
+		if is_axis_effect(str(entry.get("kind", ""))) and not names.has(str(n)):
+			names.append(str(n))
+	var raw: Array = (data.get("boss_modifiers", []) as Array).duplicate()
+	var holders: Array = [data]
+	for pool_entry: Variant in data.get("pool_entries", []) as Array:
+		if pool_entry is Dictionary:
+			holders.append(pool_entry)
+	for holder: Dictionary in holders:
+		var timeline: Variant = holder.get("timeline", {})
+		if not (timeline is Dictionary):
+			continue
+		for event: Variant in (timeline as Dictionary).get("events", []) as Array:
+			if event is Dictionary:
+				raw.append_array((event as Dictionary).get("effects", []) as Array)
+	for e: Variant in raw:
+		if not (e is Dictionary):
+			continue
+		var label: String = str(AXIS_EFFECT_LABELS.get(str((e as Dictionary).get("kind", "")), ""))
+		if label != "" and not names.has(label):
+			names.append(label)
+	return names
+
+
+# The stroke modifier an axis modifier becomes on a device that can't feel it. Keeps the author's
+# LINEAR values — an axis_scale ×0.6 becomes a stroke scale ×0.6 — and, for a catalog entry, takes on
+# its named substitute's name and description, so the effect card names a curse that really exists.
+static func stroke_twin(effect: Dictionary) -> Dictionary:
+	var twin: Dictionary = effect.duplicate(true)
+	twin["kind"] = AXIS_EFFECT_TWINS.get(str(effect.get("kind", "")), effect.get("kind", ""))
+	var named: Dictionary = effect_entry(str(effect.get("substitute", "")))
+	if not named.is_empty():
+		twin["name"] = named["name"]
+		twin["desc"] = named.get("desc", "")
+		twin["_ref"] = named["name"]
+	for key: String in AXIS_ONLY_KEYS:
+		twin.erase(key)
+	return twin
+
+
 # The tunable numeric parameter(s) for an effect kind, each a spec the authoring controls
 # read: {key, label, ctl, min, max, step}. `ctl` picks the control style — "pct" (0–1 shown
 # as %), "mult" (× multiplier), "coins" (whole coins), "pos" (0–100 stroke position). Empty
@@ -494,6 +639,60 @@ static func effect_param_specs(kind: String) -> Array:
 			return [
 				{"key": "min", "label": "Range min", "ctl": "pos", "min": 0, "max": 100, "step": 1},
 				{"key": "max", "label": "Range max", "ctl": "pos", "min": 0, "max": 100, "step": 1},
+			]
+		"axis_scale":
+			return [
+				{
+					"key": "factor",
+					"label": "Surge + sway travel",
+					"ctl": "pct",
+					"min": 0.1,
+					"max": 2.0,
+					"step": 0.05
+				},
+				{
+					"key": "rotary_factor",
+					"label": "Twist, roll + pitch travel",
+					"ctl": "pct",
+					"min": 0.1,
+					"max": 2.0,
+					"step": 0.05
+				},
+			]
+		"axis_clamp":
+			return [
+				{
+					"key": "min",
+					"label": "Surge + sway min",
+					"ctl": "pos",
+					"min": 0,
+					"max": 100,
+					"step": 1
+				},
+				{
+					"key": "max",
+					"label": "Surge + sway max",
+					"ctl": "pos",
+					"min": 0,
+					"max": 100,
+					"step": 1
+				},
+				{
+					"key": "rotary_min",
+					"label": "Twist, roll + pitch min",
+					"ctl": "pos",
+					"min": 0,
+					"max": 100,
+					"step": 1
+				},
+				{
+					"key": "rotary_max",
+					"label": "Twist, roll + pitch max",
+					"ctl": "pos",
+					"min": 0,
+					"max": 100,
+					"step": 1
+				},
 			]
 		"coin_penalty":
 			return [
@@ -591,6 +790,12 @@ static func resolved_effect(name: String, overrides: Dictionary) -> Dictionary:
 	return out
 
 
+static func _without_axis_effects(catalog: Array) -> Array:
+	return catalog.filter(
+		func(e: Dictionary) -> bool: return not is_axis_effect(str(e.get("kind", "")))
+	)
+
+
 # All names in `catalog`, in order. Used to bake a legacy round's "empty = full random
 # pool" into an explicit effects list at migration, so the roll scope (hindrances-only /
 # boons-only) survives the drop of the theme concept.
@@ -629,7 +834,9 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 		"cursed":
 			var curses: Array = src.get("curses", [])
 			if curses.is_empty():
-				effects = _catalog_names(CURSE_CATALOG)  # was "empty = full curse pool"
+				# Was "empty = full curse pool" — the pool as it stood then, so the axis curses added
+				# since don't quietly change the odds of a journey nobody has re-tuned.
+				effects = _catalog_names(_without_axis_effects(CURSE_CATALOG))
 			else:
 				for n: Variant in curses:
 					effects.append(str(n))
@@ -647,7 +854,8 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 				if str(n) != "Ward":  # retired boon — dropped on migration
 					effects.append(str(n))
 			if effects.is_empty():
-				effects = _catalog_names(BLESSING_CATALOG)  # was "empty = full boon pool"
+				# Was "empty = full boon pool" — as it stood then (see the curse branch above).
+				effects = _catalog_names(_without_axis_effects(BLESSING_CATALOG))
 			effect_random = bool(src.get("boon_random", true))
 			resolvable = false
 			endure_reward = 0

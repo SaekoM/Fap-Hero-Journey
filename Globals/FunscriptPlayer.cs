@@ -250,6 +250,14 @@ public partial class FunscriptPlayer : Node
     private double _mirrorClockMs = double.NaN; // last clock the blend advanced from
     private const double MirrorEaseMs = 700.0;
 
+    // The same ease for the multi-axis reverse (Contrary), kept apart from the stroke's so the two curses
+    // can come and go independently.
+    private float _axisMirrorBlend = 0f;
+    private double _axisMirrorClockMs = double.NaN;
+
+    // The turning axes, which axis modifiers drive with their stronger `rotary_` values.
+    private static readonly string[] RotaryAxes = { "R0", "R1", "R2" };
+
     public bool Playing => _playing;
     public int ActionCount => _actions.Count;
 
@@ -568,11 +576,14 @@ public partial class FunscriptPlayer : Node
 
     // One tick of Auto Twist, on the same line as the stroke move it was derived from. Serial only:
     // restim maps R0 to its carrier frequency, which a synthesised twist must never touch.
-    private void QueueAutoTwist(double stroke, double delta)
+    private void QueueAutoTwist(double stroke, double delta, Godot.Collections.Array effects)
     {
         _lastAutoTwist = AutoTwistStep(stroke, _lastAutoTwist, _autoTwistGain, MaxTwistSpeed * delta);
         (int axisMin, int axisMax) = GetAxisRange("R0");
-        QueueMove("R0", SecondaryAxisOutput(_lastAutoTwist, axisMin, axisMax, 1.0));
+        // Axis modifiers reshape what is SENT, not the follow itself — so the speed ceiling keeps
+        // measuring the honest twist, and a curse lifting doesn't leave it anywhere it has to catch up from.
+        double twist = AxisModifiedPos("R0", _lastAutoTwist, effects, _axisMirrorBlend);
+        QueueMove("R0", SecondaryAxisOutput(twist, axisMin, axisMax, 1.0));
         _autoTwistDriving = true;
     }
 
@@ -1420,9 +1431,15 @@ public partial class FunscriptPlayer : Node
         _tickAxes.Clear();
         _tickPositions.Clear();
 
+        var effects = ActiveEffectsForOutput();
+        UpdateAxisMirrorBlend(effects); // clock-driven; advance once per tick, even while axes are held
+        // Stilled: every axis but the stroke holds where it is — the axis twin of the stroke's block.
+        bool axesHeld = CountKind(effects, "axis_block") > 0;
+
         if (_strokeBackend == StrokeBackend.Serial && _actions.Count > 0)
-            QueueStrokeTick(now, delta);
-        QueueAuthoredAxes(now);
+            QueueStrokeTick(now, delta, effects, axesHeld);
+        if (!axesHeld)
+            QueueAuthoredAxes(now, effects);
 
         // Interval a touch longer than the tick so the OSR is always still gliding toward a fresh
         // target instead of finishing early and dwelling (which would re-introduce stepping).
@@ -1432,9 +1449,8 @@ public partial class FunscriptPlayer : Node
 
     // The stroke, plus Auto Twist riding it. Only when the stroke's backend is serial and there is a main
     // track; a block effect holds both where they are.
-    private void QueueStrokeTick(double now, double delta)
+    private void QueueStrokeTick(double now, double delta, Godot.Collections.Array effects, bool axesHeld)
     {
-        var effects = ActiveEffectsForOutput();
         UpdateMirrorBlend(effects); // clock-driven; advance once per tick, even under block
 
         if (effects != null && HasBlockEffect(effects))
@@ -1463,14 +1479,14 @@ public partial class FunscriptPlayer : Node
         // Auto Twist rides the stroke it was derived from: the same value, after every effect and the
         // speed cap above, so anything that reshapes the stroke reshapes the twist. Block returned early,
         // so a blocked stroke holds the twist too.
-        if (AutoTwistActive())
-            QueueAutoTwist(StrokeInScriptSpace(sent, _rangeMin, _rangeMax), delta);
+        if (AutoTwistActive() && !axesHeld)
+            QueueAutoTwist(StrokeInScriptSpace(sent, _rangeMin, _rangeMax), delta, effects);
     }
 
     // Every authored secondary axis at `now`, whatever the stroke is doing: they play on under a block
     // and with the stroke on another backend, exactly as the per-keyframe path they replace did. An axis
     // whose position hasn't changed since it was last sent is left off the line.
-    private void QueueAuthoredAxes(double now)
+    private void QueueAuthoredAxes(double now, Godot.Collections.Array effects)
     {
         if (_axes.Count == 0)
             return;
@@ -1491,7 +1507,8 @@ public partial class FunscriptPlayer : Node
             string axis = multiaxis.Key;
             (int axisMin, int axisMax) = GetAxisRange(axis);
             double scriptPos = SampleActions(state.Actions, ref state.InterpIndex, now);
-            double pos = SecondaryAxisOutput(scriptPos, axisMin, axisMax, easeBlend);
+            double modified = AxisModifiedPos(axis, scriptPos, effects, _axisMirrorBlend);
+            double pos = SecondaryAxisOutput(modified, axisMin, axisMax, easeBlend);
 
             int steps = (int)Math.Round(pos / 100.0 * 9999.0);
             if (_lastSentAxisSteps.TryGetValue(axis, out int lastSteps) && lastSteps == steps)
@@ -1848,28 +1865,84 @@ public partial class FunscriptPlayer : Node
     // of "reverse" effects are active (even counts cancel), else 0. Driven by the
     // playback clock so the ease freezes with playback and never jumps across a
     // pause; seeks / clock resets snap straight to the target.
-    private void UpdateMirrorBlend(Godot.Collections.Array effects)
+    private void UpdateMirrorBlend(Godot.Collections.Array effects) =>
+        AdvanceMirror(CountKind(effects, "reverse"), ref _mirrorBlend, ref _mirrorClockMs);
+
+    private void UpdateAxisMirrorBlend(Godot.Collections.Array effects) =>
+        AdvanceMirror(CountKind(effects, "axis_reverse"), ref _axisMirrorBlend, ref _axisMirrorClockMs);
+
+    // Moves a mirror blend toward 1 while an odd number of reverses is active (even counts cancel), else
+    // toward 0, on the playback clock.
+    private void AdvanceMirror(int reverseCount, ref float blend, ref double clockMs)
     {
-        int reverseCount = 0;
-        if (effects != null)
-        {
-            foreach (var effectVariant in effects)
-            {
-                var effect = effectVariant.AsGodotDictionary();
-                if (effect.ContainsKey("kind") && effect["kind"].AsString() == "reverse")
-                    reverseCount++;
-            }
-        }
         float target = (reverseCount % 2 != 0) ? 1f : 0f;
 
-        double dt = double.IsNaN(_mirrorClockMs) ? 0.0 : _positionMs - _mirrorClockMs;
-        _mirrorClockMs = _positionMs;
+        double dt = double.IsNaN(clockMs) ? 0.0 : _positionMs - clockMs;
+        clockMs = _positionMs;
         // A negative or larger-than-ease-window gap is a seek/reset — treat the
         // ease as already elapsed so the blend snaps rather than crawling.
         if (dt < 0.0 || dt > MirrorEaseMs)
             dt = MirrorEaseMs;
 
-        _mirrorBlend = Mathf.MoveToward(_mirrorBlend, target, (float)(dt / MirrorEaseMs));
+        blend = Mathf.MoveToward(blend, target, (float)(dt / MirrorEaseMs));
+    }
+
+    private static int CountKind(Godot.Collections.Array effects, string kind)
+    {
+        int count = 0;
+        if (effects == null)
+            return 0;
+        foreach (var effectVariant in effects)
+        {
+            var effect = effectVariant.AsGodotDictionary();
+            if (effect.ContainsKey("kind") && effect["kind"].AsString() == kind)
+                count++;
+        }
+        return count;
+    }
+
+    /// One secondary axis's script position (0–100) with the multi-axis modifiers applied: the eased
+    /// reverse first, then every axis_scale multiplied together around centre, then each axis_clamp
+    /// remapping into its band — the stroke's own order (TransformPos). The turning axes read the
+    /// `rotary_` values where an effect has them. Block is not here: it holds output rather than moving
+    /// it (see _PhysicsProcess). Pure — public for the gdUnit suite, like AutoTwistStep.
+    public double AxisModifiedPos(string axis, double pos, Godot.Collections.Array effects, double mirrorBlend)
+    {
+        if (mirrorBlend > 0.0)
+            pos += (100.0 - 2.0 * pos) * mirrorBlend;  // toward 100 - pos, through centre at 0.5
+        if (effects == null || effects.Count == 0)
+            return Math.Clamp(pos, 0.0, 100.0);
+
+        bool rotary = System.Array.IndexOf(RotaryAxes, axis) >= 0;
+        double factor = 1.0;
+        foreach (var effectVariant in effects)
+        {
+            var effect = effectVariant.AsGodotDictionary();
+            if (effect.ContainsKey("kind") && effect["kind"].AsString() == "axis_scale")
+                factor *= AxisParam(effect, "factor", rotary, 1.0);
+        }
+        // Around centre rather than each stroke's own midpoint: these axes rest at 50 and swing both ways.
+        pos = 50.0 + (pos - 50.0) * factor;
+
+        foreach (var effectVariant in effects)
+        {
+            var effect = effectVariant.AsGodotDictionary();
+            if (!effect.ContainsKey("kind") || effect["kind"].AsString() != "axis_clamp")
+                continue;
+            double min = AxisParam(effect, "min", rotary, 0.0);
+            double max = AxisParam(effect, "max", rotary, 100.0);
+            pos = min + Math.Clamp(pos, 0.0, 100.0) / 100.0 * (max - min);
+        }
+        return Math.Clamp(pos, 0.0, 100.0);
+    }
+
+    // An axis modifier's value for one axis: the `rotary_` one on a turning axis when the effect has it,
+    // else the plain one, else the fallback.
+    private static double AxisParam(Godot.Collections.Dictionary effect, string key, bool rotary, double fallback)
+    {
+        if (rotary && effect.ContainsKey("rotary_" + key))
+            return effect["rotary_" + key].AsDouble();
+        return effect.ContainsKey(key) ? effect[key].AsDouble() : fallback;
     }
 
     // Applies the eased mirror flip to a single position (toward 100 - v).

@@ -133,12 +133,21 @@ func test_gameplay_effects_merges_both() -> void:
 
 # A legacy round with an EMPTY selection (old "roll the whole pool") migrates to an
 # explicit full names list, so its roll scope survives the drop of the theme concept:
-# cursed → every hindrance name, blessed → every boon name.
+# cursed → every hindrance name, blessed → every boon name — as the pool stood THEN, so the
+# multi-axis entries added since are left out rather than quietly changing a journey's odds.
 func test_normalize_bakes_empty_legacy_pool() -> void:
 	var cursed := JD.normalize_effect_round({"round_type": "cursed", "curse_random": true})
-	assert_int((cursed["effects"] as Array).size()).is_equal(JD.CURSE_CATALOG.size())
+	assert_int((cursed["effects"] as Array).size()).is_equal(_non_axis_count(JD.CURSE_CATALOG))
 	var blessed := JD.normalize_effect_round({"round_type": "blessed"})
-	assert_int((blessed["effects"] as Array).size()).is_equal(JD.BLESSING_CATALOG.size())
+	assert_int((blessed["effects"] as Array).size()).is_equal(_non_axis_count(JD.BLESSING_CATALOG))
+
+
+func _non_axis_count(catalog: Array) -> int:
+	return (
+		catalog
+		. filter(func(e: Dictionary) -> bool: return not JD.is_axis_effect(str(e.get("kind", ""))))
+		. size()
+	)
 
 
 # Ward is gone from the boon catalog entirely.

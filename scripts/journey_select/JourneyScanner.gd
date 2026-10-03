@@ -1221,6 +1221,11 @@ static func _parse_boss_modifier(raw_mod: Dictionary) -> Dictionary:
 		mod["min"] = raw_mod.get("Min", raw_mod.get("min", 0))
 	if raw_mod.has("Max") or raw_mod.has("max"):
 		mod["max"] = raw_mod.get("Max", raw_mod.get("max", 100))
+	# A multi-axis modifier's values for the turning axes — listed like the rest, or they'd be dropped.
+	for key: String in ["rotary_factor", "rotary_min", "rotary_max"]:
+		var pascal: String = key.to_pascal_case()
+		if raw_mod.has(pascal) or raw_mod.has(key):
+			mod[key] = raw_mod.get(pascal, raw_mod.get(key))
 	return mod
 
 

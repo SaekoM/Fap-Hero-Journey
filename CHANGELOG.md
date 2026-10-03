@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### ◆ Curses for the other axes
+
+Four new curses and a blessing act on every axis but the stroke — surge, sway, twist, roll and pitch —
+the way the stroke curses act on the stroke:
+
+- **Stiffened** — the axes move less far.
+- **Braced** — the axes are held close to centre.
+- **Contrary** — the axes move the opposite way, easing through centre as Inverted does.
+- **Stilled** — the axes freeze where they are.
+- **Limber** *(blessing)* — the axes swing wider.
+
+Twist, roll and pitch get stronger values than surge and sway, which are easier to feel. They can go on
+effect rounds, on a boss as forced modifiers, and in a boss's timeline windows, and they act on Auto
+Twist as well as on scripted axes — never on restim.
+
+A curse you can't feel is no curse, so a player whose device (see *Your device*) has none of the round's
+moving axes gets the stroke version instead: Shrunken, Choked, Inverted, Numbed or Surge. The effect
+card names what you actually get. The builder says so under each one — louder when the round has no
+axis scripts at all — and the audit lists every round that uses them.
+
+### ◆ Auto Twist
+
+An SR6, or an OSR2 with the twist add-on, has sat with its twist axis idle through almost every
+journey — nearly all content is scripted for the stroke alone. **Options → Device → Auto Twist** gives
+it something to do: the twist follows the stroke, turning where the stroke turns, and swings further
+the deeper the stroke goes. **Subtle / Medium / Strong** reach ±5 / ±25 / ±50 either side of centre
+on a full-depth stroke; Off by default.
+
+It follows the stroke your device is actually sent, so every effect on the stroke reaches the twist
+too — a curse that freezes the stroke freezes the twist, one that makes strokes shallow makes the twist
+gentle. A round with its own twist script always plays that instead, and so does an override item
+that brings one; an override without one keeps the twist following its stroke. It is capped at a
+speed well short of a shake, goes through your Twist range like any other twist, and is sent to the
+serial device only — never to restim, where the same axis controls carrier frequency.
+
+Serial devices only: Buttplug has no twist command and the Handy is a single axis.
+
+### ◆ Your device
+
+**Options → Device → Your device** tells the app which motion axes you have — **Stroke only, OSR2,
+OSR2 + twist or SR6**, the name on the box. There is no reliable way to ask the hardware, so you say.
+It decides what the game offers you, never what it sends: Auto Twist is offered only on a profile with
+twist, and the multi-axis curses and items to come will only turn up for axes you can feel. It
+defaults to Stroke only, and counts as Stroke only whenever the stroke isn't going to a serial device,
+since serial is the only output that carries the other axes.
+
 ## v0.8.7
 
 ### ◆ Randomizer runs can be built from tags
@@ -59,32 +107,6 @@ arranged: their reveal plays on the cards.
   busy cover art, and their padding squeezed the arrowhead to a dash.
 
 ## v0.8.6
-
-### ◆ Auto Twist
-
-An SR6, or an OSR2 with the twist add-on, has sat with its twist axis idle through almost every
-journey — nearly all content is scripted for the stroke alone. **Options → Device → Auto Twist** gives
-it something to do: the twist follows the stroke, turning where the stroke turns, and swings further
-the deeper the stroke goes. **Subtle / Medium / Strong** reach ±5 / ±25 / ±50 either side of centre
-on a full-depth stroke; Off by default.
-
-It follows the stroke your device is actually sent, so every effect on the stroke reaches the twist
-too — a curse that freezes the stroke freezes the twist, one that makes strokes shallow makes the twist
-gentle. A round with its own twist script always plays that instead, and so does an override item
-that brings one; an override without one keeps the twist following its stroke. It is capped at a
-speed well short of a shake, goes through your Twist range like any other twist, and is sent to the
-serial device only — never to restim, where the same axis controls carrier frequency.
-
-Serial devices only: Buttplug has no twist command and the Handy is a single axis.
-
-### ◆ Your device
-
-**Options → Device → Your device** tells the app which motion axes you have — **Stroke only, OSR2,
-OSR2 + twist or SR6**, the name on the box. There is no reliable way to ask the hardware, so you say.
-It decides what the game offers you, never what it sends: Auto Twist is offered only on a profile with
-twist, and the multi-axis curses and items to come will only turn up for axes you can feel. It
-defaults to Stroke only, and counts as Stroke only whenever the stroke isn't going to a serial device,
-since serial is the only output that carries the other axes.
 
 ### ◆ The end-of-run map respects fog of war
 

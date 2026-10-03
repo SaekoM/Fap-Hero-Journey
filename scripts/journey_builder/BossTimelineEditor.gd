@@ -3602,7 +3602,15 @@ func _build_attack_bundle(event: Dictionary) -> OverrideBundle:
 # (they compose with the round's script exactly as a boss modifier does); SENSORY kinds come from the
 # shared catalogue, so the encounter offers the same visual/audio palette the rest of the app does.
 const STROKE_EFFECT_KINDS: Array[String] = [
-	"scale", "clamp", "reverse", "block", "score_multiplier"
+	"scale",
+	"clamp",
+	"reverse",
+	"block",
+	"score_multiplier",
+	"axis_scale",
+	"axis_clamp",
+	"axis_reverse",
+	"axis_block",
 ]
 
 
@@ -3674,6 +3682,8 @@ func _fill_effect_picker(picker: OptionButton) -> void:
 
 
 static func _effect_label(kind: String) -> String:
+	if JourneyData.AXIS_EFFECT_LABELS.has(kind):
+		return str(JourneyData.AXIS_EFFECT_LABELS[kind]).to_upper()
 	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
 		if str(entry.get("kind", "")) == kind:
 			return str(entry.get("name", kind)).to_upper()
@@ -3690,6 +3700,10 @@ static func _default_effect(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 50}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
+		"axis_scale":
+			return {"kind": "axis_scale", "factor": 0.6, "rotary_factor": 0.4}
+		"axis_clamp":
+			return {"kind": "axis_clamp", "min": 40, "max": 60, "rotary_min": 45, "rotary_max": 55}
 	# Sensory kinds carry an intensity when their catalogue entry defines a default for one, and a
 	# rate when they have a beat of their own (both 0–1, as the round stores them).
 	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
@@ -3725,6 +3739,18 @@ func _make_effect_row(event: Dictionary, index: int) -> Control:
 		row.add_child(_labeled("Min", _make_float_spin(effect, "min", 0.0, 100.0, 1.0)))
 	if effect.has("max"):
 		row.add_child(_labeled("Max", _make_float_spin(effect, "max", 0.0, 100.0, 1.0)))
+	# An axis modifier's values for the turning axes (twist, roll, pitch); the plain ones above are surge
+	# and sway's.
+	if effect.has("rotary_factor"):
+		row.add_child(_labeled("Turns ×", _make_float_spin(effect, "rotary_factor", 0.1, 5.0, 0.1)))
+	if effect.has("rotary_min"):
+		row.add_child(
+			_labeled("Turns min", _make_float_spin(effect, "rotary_min", 0.0, 100.0, 1.0))
+		)
+	if effect.has("rotary_max"):
+		row.add_child(
+			_labeled("Turns max", _make_float_spin(effect, "rotary_max", 0.0, 100.0, 1.0))
+		)
 	if effect.has("intensity"):
 		# Label beside the spin box rather than stacked above it: the row is already tight, and a
 		# stacked caption made the whole strip twice as tall for one number.

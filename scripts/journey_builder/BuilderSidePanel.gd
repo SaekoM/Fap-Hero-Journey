@@ -51,7 +51,16 @@ const VIB_CHANNELS_INFO: Array = [
 # saved data, LABELS feeds the editor dropdown.
 # Gameplay forced-modifier kinds a boss round can impose. Visual/audio effects
 # (incl. the old BLACKOUT) now live in the "Non-gameplay modifiers" picker.
-const BOSS_MODIFIER_KINDS: Array = ["scale", "clamp", "reverse", "score_multiplier"]
+const BOSS_MODIFIER_KINDS: Array = [
+	"scale",
+	"clamp",
+	"reverse",
+	"score_multiplier",
+	"axis_scale",
+	"axis_clamp",
+	"axis_reverse",
+	"axis_block",
+]
 
 # A list modal sized to its contents: chrome (title, footer buttons, padding) plus a row each, clamped so
 # a long list still scrolls and a short one does not open onto a void.
@@ -66,6 +75,10 @@ const BOSS_MODIFIER_LABELS: Array = [
 	"CLAMP  —  POSITION RANGE",
 	"REVERSE  —  MIRROR",
 	"SCORE MULTIPLIER",
+	"AXES SCALE  —  ALL BUT THE STROKE",
+	"AXES CLAMP  —  HOLD NEAR CENTRE",
+	"AXES REVERSE  —  OPPOSITE WAY",
+	"AXES STILLED  —  FREEZE",
 ]
 
 var _owner: JourneyBuilder
@@ -8615,6 +8628,8 @@ func _make_effect_row(arr: Array, idx: int, entry: Dictionary, selected: Array) 
 	else:
 		for spec: Dictionary in JourneyData.effect_param_specs(kind):
 			editor.add_child(_effect_override_number(arr, idx, nm, spec, entry))
+	if JourneyData.is_axis_effect(kind):
+		editor.add_child(_axis_effect_note(arr[idx], str(entry.get("substitute", ""))))
 
 	cb.toggled.connect(
 		func(on: bool) -> void:
@@ -9067,8 +9082,74 @@ func _default_boss_modifier(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 50}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
+		"axis_scale":
+			return {"kind": "axis_scale", "factor": 0.6, "rotary_factor": 0.4}
+		"axis_clamp":
+			return {"kind": "axis_clamp", "min": 40, "max": 60, "rotary_min": 45, "rotary_max": 55}
 		_:
 			return {"kind": kind}
+
+
+# One labelled number on a forced modifier, written straight into its dict. Positions are whole 0–100;
+# factors are free (≥ 0).
+func _boss_modifier_number(
+	arr: Array, idx: int, m_idx: int, key: String, label: String, is_position: bool
+) -> Control:
+	var box: HBoxContainer = HBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	box.add_child(_side_field_label(label))
+	var edit: LineEdit = LineEdit.new()
+	edit.text = str(arr[idx]["boss_modifiers"][m_idx].get(key, ""))
+	edit.custom_minimum_size = Vector2(56, 0)
+	UITheme.style_line_edit(edit)
+	edit.text_changed.connect(
+		func(val: String) -> void:
+			arr[idx]["boss_modifiers"][m_idx][key] = (
+				clampi(val.to_int(), 0, 100) if is_position else maxf(0.0, val.to_float())
+			)
+	)
+	box.add_child(edit)
+	return box
+
+
+# The warning under a multi-axis modifier: who doesn't get it, and what they get instead. Louder when
+# the round has no axis scripts at all, because then nobody feels it but an Auto Twist player — and an
+# author testing on a fully kitted device would never notice.
+func _axis_effect_note(round_data: Dictionary, substitute: String) -> Label:
+	var note: Label = Label.new()
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_font_size_override("font_size", 10)
+	if _round_scripted_axes(round_data).is_empty():
+		note.text = (
+			"⚠ This round has no axis scripts, so only players running Auto Twist feel this, on "
+			+ "twist. Everyone else gets %s." % substitute
+		)
+		note.add_theme_color_override("font_color", UITheme.AMBER)
+	else:
+		note.text = (
+			"Needs a device with these axes — players without them get %s instead." % substitute
+		)
+		note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	return note
+
+
+# The axes a round carries scripts for: its own entries plus sibling files next to its funscript, the
+# same set the game loads (GameLoop._round_channel_scripts).
+func _round_scripted_axes(round_data: Dictionary) -> Array:
+	var axes: Array = []
+	var explicit: Dictionary = round_data.get("axis_scripts", {})
+	for axis: Variant in explicit:
+		if str(explicit[axis]) != "":
+			axes.append(str(axis))
+	var main: String = str(round_data.get("funscript_path", ""))
+	if main != "":
+		var sib: Dictionary = ImportScanner.find_sibling_scripts(
+			main.get_base_dir(), ImportScanner.strip_script_suffix(main)
+		)
+		for axis: Variant in sib["axis"]:
+			if not axes.has(str(axis)):
+				axes.append(str(axis))
+	return axes
 
 
 # Rebuilds the forced-modifier rows from scratch — called on add / remove / kind
@@ -9182,6 +9263,33 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 			)
 			crow.add_child(max_edit)
 			col.add_child(crow)
+		"axis_scale":
+			var srow: HBoxContainer = HBoxContainer.new()
+			srow.add_theme_constant_override("separation", 6)
+			srow.add_child(_boss_modifier_number(arr, idx, m_idx, "factor", "SURGE/SWAY ×", false))
+			srow.add_child(
+				_boss_modifier_number(arr, idx, m_idx, "rotary_factor", "TURNS ×", false)
+			)
+			col.add_child(srow)
+			col.add_child(_axis_effect_note(arr[idx], "Shrunken"))
+		"axis_clamp":
+			var lin_row: HBoxContainer = HBoxContainer.new()
+			lin_row.add_theme_constant_override("separation", 6)
+			lin_row.add_child(_boss_modifier_number(arr, idx, m_idx, "min", "SURGE/SWAY MIN", true))
+			lin_row.add_child(_boss_modifier_number(arr, idx, m_idx, "max", "MAX", true))
+			col.add_child(lin_row)
+			var rot_row: HBoxContainer = HBoxContainer.new()
+			rot_row.add_theme_constant_override("separation", 6)
+			rot_row.add_child(
+				_boss_modifier_number(arr, idx, m_idx, "rotary_min", "TURNS MIN", true)
+			)
+			rot_row.add_child(_boss_modifier_number(arr, idx, m_idx, "rotary_max", "MAX", true))
+			col.add_child(rot_row)
+			col.add_child(_axis_effect_note(arr[idx], "Choked"))
+		"axis_reverse":
+			col.add_child(_axis_effect_note(arr[idx], "Inverted"))
+		"axis_block":
+			col.add_child(_axis_effect_note(arr[idx], "Numbed"))
 		_:
 			var none_lbl: Label = Label.new()
 			none_lbl.text = "NO PARAMETERS"

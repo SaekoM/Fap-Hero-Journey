@@ -53,6 +53,10 @@ const BOSS_EFFECT_NAMES: Dictionary = {
 	"scale": "SCALE",
 	"clamp": "CLAMP",
 	"reverse": "REVERSE",
+	"axis_scale": "AXES SCALE",
+	"axis_clamp": "AXES CLAMP",
+	"axis_reverse": "AXES REVERSE",
+	"axis_block": "AXES STILLED",
 	"blackout": "BLACKOUT",
 	"score_multiplier": "SCORE ×",
 }
@@ -197,6 +201,10 @@ var _boss_frame: Panel = null
 # into the boss-effects list so they surface as named HUD chips and lift together on
 # cleanse. Set when the round loads, cleared at round end.
 var _is_effect_round: bool = false
+# Whether this round gives multi-axis modifiers anything to act on for this player (MULTIAXIS_DESIGN.md
+# §3). Decided once at round load — before the boss intro card names its effects — and read wherever an
+# effect is installed, so a card, its round and its timeline windows all agree on what the player gets.
+var _round_axis_motion: bool = false
 var _effect_resolvable: bool = false  # the round carries the cleanse/endure layer
 # Effective length (ms) of the round currently playing. For a pool round this is
 # the CHOSEN entry's length, not the round's own (empty) length_ms — read by the
@@ -1055,6 +1063,8 @@ func _load_current_round() -> void:
 	# A non-pool round's fight is the node's own; a pool round set this to the drawn entry above.
 	if _boss_progress_id == "":
 		_boss_progress_id = GameState.CurrentNodeId()
+	# After the pool draw (the drawn entry's media is the round's now), before anything names an effect.
+	_round_axis_motion = _round_has_axis_motion(round)
 
 	var rtype: String = round.get("round_type", "normal")
 	_is_boss_round = rtype == "boss"
@@ -1137,23 +1147,11 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	# FINISH is available during every round when the journey opts in.
 	_show_finish_button()
 
-	var fs_path: String = round.get("funscript_path", "")
+	var fs_path: String = _main_track_path(round)
 	# The stroke meter reads these; cleared here so a round without a script can't show the last one's.
 	_round_fs_path = ""
 	_round_points = []
-	# Prefer a sibling ".alpha" funscript for the main (L0 / position) channel when it exists —
-	# that's the true alpha of an alpha/beta pair. Fall back to the plain funscript otherwise.
 	if fs_path != "":
-		var a_dir: String = fs_path.get_base_dir()
-		var a_base: String = ImportScanner.strip_script_suffix(fs_path)
-		var a_ext: String = fs_path.get_extension()
-		for a_cand: String in [
-			"%s/%s.alpha.%s" % [a_dir, a_base, a_ext],
-			"%s/%s_alpha.%s" % [a_dir, a_base, a_ext],
-		]:
-			if FileAccess.file_exists(a_cand):
-				fs_path = a_cand
-				break
 		FunscriptPlayer.LoadFunscript(fs_path)
 		_round_fs_path = fs_path
 		ScoreService.SetRoundActions(FunscriptPlayer.ActionCount)
@@ -1161,22 +1159,9 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 			_beat_bar.set_beats(FunscriptPlayer.GetBeats())
 	_update_round_timer(true)  # this round's full length, before the first frame ticks
 
-	# Auto-detect sibling scripts sitting next to the main funscript on disk — e.g. a per-round
-	# folder holding <name>.beta / <name>.carrier_frequency next to <name>.funscript. This lets
-	# EXISTING journeys (whose journey.json has empty AxisScripts) drive restim without a
-	# re-import. Explicit journey.json entries always win over an auto-detected sibling.
-	var axis_scripts: Dictionary = (round.get("axis_scripts", {}) as Dictionary).duplicate()
-	var estim_scripts: Dictionary = (round.get("estim_scripts", {}) as Dictionary).duplicate()
-	if fs_path != "":
-		var sib: Dictionary = ImportScanner.find_sibling_scripts(
-			fs_path.get_base_dir(), ImportScanner.strip_script_suffix(fs_path)
-		)
-		for ax: String in sib["axis"]:
-			if not axis_scripts.has(ax):
-				axis_scripts[ax] = sib["axis"][ax]
-		for eax: String in sib["estim"]:
-			if not estim_scripts.has(eax):
-				estim_scripts[eax] = sib["estim"][eax]
+	var channel_scripts: Dictionary = _round_channel_scripts(round, fs_path)
+	var axis_scripts: Dictionary = channel_scripts["axis"]
+	var estim_scripts: Dictionary = channel_scripts["estim"]
 
 	# Load secondary axis scripts (serial + restim motion axes). Clear first so stale axes
 	# from a prior round are never replayed.
@@ -1751,7 +1736,9 @@ func _enter_boss_mode(round: Dictionary) -> void:
 
 	# Inject the designer's forced modifiers as boss effects.
 	var boss_effects: Array = []
-	for mod: Dictionary in round.get("boss_modifiers", []):
+	for mod: Dictionary in JourneyData.express_effects(
+		round.get("boss_modifiers", []), _round_axis_motion
+	):
 		boss_effects.append(_make_boss_effect(mod))
 	if not boss_effects.is_empty():
 		InventoryService.AddBossEffects(boss_effects)
@@ -1848,7 +1835,9 @@ func _resolve_gameplay_effects(round: Dictionary, entries: Array) -> Array:
 		var r: Dictionary = JourneyData.resolved_effect(str(e.get("name", "")), overrides)
 		if not r.is_empty():
 			resolved.append(r)
-	return resolved
+	# As the player will get them: an axis curse they can't feel this round becomes its stroke twin —
+	# on the card that names it as well as on the device.
+	return JourneyData.express_effects(resolved, _round_axis_motion)
 
 
 # Applies already-resolved effects as boss effects: into the shared effect pipeline, chip
@@ -2599,12 +2588,12 @@ func _make_boss_effect(mod: Dictionary) -> Dictionary:
 		"kind": kind,
 		"boss": true,
 	}
-	if mod.has("factor"):
-		effect["factor"] = mod["factor"]
-	if mod.has("min"):
-		effect["min"] = mod["min"]
-	if mod.has("max"):
-		effect["max"] = mod["max"]
+	# Every parameter a modifier can carry. Listed rather than copied wholesale (a catalog entry also
+	# holds name/desc/substitute bookkeeping), so a NEW parameter must be added here — the rotary ones
+	# were, after an axis curse's twist/roll/pitch values silently fell back to its surge/sway ones.
+	for key: String in ["factor", "min", "max", "rotary_factor", "rotary_min", "rotary_max"]:
+		if mod.has(key):
+			effect[key] = mod[key]
 	return effect
 
 
@@ -2846,6 +2835,62 @@ func _load_video(path: String) -> void:
 		_start_no_video_fallback()
 		return
 	FunscriptPlayer.Play()
+
+
+# The round's main (L0 / position) track: a sibling ".alpha" funscript when one exists — the true alpha
+# of an alpha/beta pair — else the round's own funscript. "" for a round with none.
+func _main_track_path(round: Dictionary) -> String:
+	var fs_path: String = str(round.get("funscript_path", ""))
+	if fs_path == "":
+		return ""
+	var a_dir: String = fs_path.get_base_dir()
+	var a_base: String = ImportScanner.strip_script_suffix(fs_path)
+	var a_ext: String = fs_path.get_extension()
+	for a_cand: String in [
+		"%s/%s.alpha.%s" % [a_dir, a_base, a_ext],
+		"%s/%s_alpha.%s" % [a_dir, a_base, a_ext],
+	]:
+		if FileAccess.file_exists(a_cand):
+			return a_cand
+	return fs_path
+
+
+# The round's axis and e-stim scripts, {axis: {axis: path}, estim: {axis: path}}: its journey.json
+# entries plus any sibling files sitting next to the main track on disk — e.g. a per-round folder
+# holding <name>.beta / <name>.carrier_frequency next to <name>.funscript. That lets EXISTING journeys
+# (whose journey.json has empty AxisScripts) drive restim and multi-axis devices without a re-import.
+# Explicit entries always win over an auto-detected sibling.
+func _round_channel_scripts(round: Dictionary, main_track: String) -> Dictionary:
+	var axis_scripts: Dictionary = (round.get("axis_scripts", {}) as Dictionary).duplicate()
+	var estim_scripts: Dictionary = (round.get("estim_scripts", {}) as Dictionary).duplicate()
+	if main_track != "":
+		var sib: Dictionary = ImportScanner.find_sibling_scripts(
+			main_track.get_base_dir(), ImportScanner.strip_script_suffix(main_track)
+		)
+		for ax: String in sib["axis"]:
+			if not axis_scripts.has(ax):
+				axis_scripts[ax] = sib["axis"][ax]
+		for eax: String in sib["estim"]:
+			if not estim_scripts.has(eax):
+				estim_scripts[eax] = sib["estim"][eax]
+	return {"axis": axis_scripts, "estim": estim_scripts}
+
+
+# Whether multi-axis modifiers can act this round, for this player: a script on an axis their device
+# has, or Auto Twist moving the twist. Auto Twist doesn't run on an e-stim alpha main track (nothing to
+# follow), so an alpha swap counts as no twist.
+func _round_has_axis_motion(round: Dictionary) -> bool:
+	var main_track: String = _main_track_path(round)
+	var scripted: Array = []
+	var axis_scripts: Dictionary = _round_channel_scripts(round, main_track)["axis"]
+	for axis: Variant in axis_scripts:
+		if str(axis_scripts[axis]) != "":
+			scripted.append(str(axis))
+	var main_is_alpha: bool = main_track != str(round.get("funscript_path", ""))
+	var auto_twist_on: bool = SettingsService.get_auto_twist_gain() > 0.0 and not main_is_alpha
+	return JourneyData.round_has_axis_motion(
+		SettingsService.get_device_axes(), scripted, auto_twist_on
+	)
 
 
 func _start_no_video_fallback() -> void:
@@ -4799,7 +4844,7 @@ func _begin_timeline_window(event: Dictionary) -> void:
 	if str(event.get("track", "")) == RoundTimeline.TRACK_REGION:
 		_gate_region(event)
 		return
-	var effects: Array = event.get("effects", [])
+	var effects: Array = JourneyData.express_effects(event.get("effects", []), _round_axis_motion)
 	if effects.is_empty():
 		return
 	var source_id: String = str(event.get("id", ""))
