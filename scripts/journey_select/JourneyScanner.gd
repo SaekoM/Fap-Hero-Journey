@@ -269,13 +269,16 @@ static func compose_play_journey(
 	# Rebuild the catalogue preview (round/fork/shop/storyboard lists + totals) from the MERGED graph so
 	# the detail modal and stats reflect base ⊕ rendition, not just the base.
 	var mgraph: Dictionary = {"start": base["start"], "nodes": base["nodes"]}
-	var seq: Dictionary = _graph_catalogue_sequence(mgraph)
+	# Recomputed for the MERGED graph: a rendition can add aftercare (and so the button) of its own.
+	var aftercare: Dictionary = _summary_aftercare_ids(mgraph, base)
+	base["offers_finish"] = not aftercare.is_empty()
+	var seq: Dictionary = _graph_catalogue_sequence(mgraph, aftercare)
 	base["rounds"] = seq["rounds"]
 	base["shops"] = seq["shops"]
 	base["storyboards"] = seq["storyboards"]
 	base["forks"] = seq["forks"]
 	base["total_rounds"] = JourneyGraph.longest_round_path(mgraph, str(mgraph["start"]))
-	var totals: Dictionary = _graph_node_totals(mgraph)
+	var totals: Dictionary = _graph_node_totals(mgraph, aftercare)
 	base["total_actions"] = totals["actions"]
 	base["total_length_ms"] = totals["length_ms"]
 	# Backdrops STACK through the chain: the base's layers (bottom, resolved against the base folder) plus
@@ -336,6 +339,9 @@ static func parse_journey(path: String, folder: String) -> Dictionary:
 		# aftercare node (any type — a gentle round or a storyboard; off the main graph) before the end.
 		"allow_finish": bool(data.get("AllowFinish", false)),
 		"finish_node": str(data.get("FinishNode", "")),
+		# What the give-up button says ("" = JourneyData.DEFAULT_FINISH_LABEL).
+		"finish_label": str(data.get("FinishLabel", "")),
+		"finish_hold_text": str(data.get("FinishHoldText", "")),
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
@@ -541,7 +547,11 @@ static func parse_graph(path: String, folder: String) -> Dictionary:
 		# forks-with-paths) from the graph — Format-2 journeys carry their structure in nodes (the
 		# nested arrays _graph_meta leaves empty). Each fork's branches are walked up to their rejoin,
 		# so the modal shows the real fork structure (see _graph_catalogue_sequence).
-		var seq_lists: Dictionary = _graph_catalogue_sequence(graph)
+		# Aftercare (what "I came" plays) is an optional ending, not part of the run: kept out of the
+		# preview's list and totals — a boss's defeat scene shouldn't be spoiled or inflate the length.
+		var aftercare: Dictionary = _summary_aftercare_ids(graph, result)
+		result["offers_finish"] = not aftercare.is_empty()
+		var seq_lists: Dictionary = _graph_catalogue_sequence(graph, aftercare)
 		result["rounds"] = seq_lists["rounds"]
 		result["shops"] = seq_lists["shops"]
 		result["storyboards"] = seq_lists["storyboards"]
@@ -549,7 +559,7 @@ static func parse_graph(path: String, folder: String) -> Dictionary:
 		# DAG totals: the longest round path is the most a player can hit; node sums
 		# feed the catalogue (see _graph_node_totals for the Phase-3 refinement note).
 		result["total_rounds"] = JourneyGraph.longest_round_path(graph, str(graph["start"]))
-		var totals: Dictionary = _graph_node_totals(graph)
+		var totals: Dictionary = _graph_node_totals(graph, aftercare)
 		result["total_actions"] = totals["actions"]
 		# Prefer the saved EXPECTED single-playthrough runtime — the builder's balance audit resolves loop
 		# repeats, fork path-selection and pool picks into one number. Fall back to the node-length sum for
@@ -727,6 +737,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# aftercare node (any type — a gentle round or a storyboard; off the main graph) before the end.
 		"allow_finish": bool(data.get("AllowFinish", false)),
 		"finish_node": str(data.get("FinishNode", "")),
+		# What the give-up button says ("" = JourneyData.DEFAULT_FINISH_LABEL).
+		"finish_label": str(data.get("FinishLabel", "")),
+		"finish_hold_text": str(data.get("FinishHoldText", "")),
 		# Version stamps (absent on pre-0.6.0 journeys → blank, which always passes the gate).
 		"min_version": str(data.get("MinVersion", "")),
 		"created_with": str(data.get("CreatedWith", "")),
@@ -801,15 +814,32 @@ static func _parse_groups(data: Dictionary) -> Array:
 	return out
 
 
+# The summary's aftercare nodes: every node inside an aftercare sequence that the journey itself doesn't
+# reach — the optional endings "I came" plays. Matches the runtime (GameLoop._played_aftercare_ids): the
+# default aftercare counts only when the journey has it active. Non-empty = some round offers "I came".
+static func _summary_aftercare_ids(graph: Dictionary, meta: Dictionary) -> Dictionary:
+	var nodes: Dictionary = graph.get("nodes", {})
+	var start: String = str(graph.get("start", ""))
+	var journey: Dictionary = JourneyGraph.reachable_ids(graph, start) if nodes.has(start) else {}
+	var default_entry: String = (
+		str(meta.get("finish_node", "")) if bool(meta.get("allow_finish", false)) else ""
+	)
+	var ids: Dictionary = {}
+	for id: String in JourneyGraph.aftercare_ids(graph, default_entry):
+		if not journey.has(id):
+			ids[id] = true
+	return ids
+
+
 # Catalogue action/length totals for a graph journey. Phase-2 placeholder: sums EVERY
 # round node (an overestimate vs. any single traversal). Phase 3 should swap this for the
 # longest-by-length path once the catalogue reads the graph directly.
-static func _graph_node_totals(graph: Dictionary) -> Dictionary:
+static func _graph_node_totals(graph: Dictionary, skip: Dictionary = {}) -> Dictionary:
 	var actions: int = 0
 	var length: int = 0
 	for id: String in graph.get("nodes", {}):
 		var n: Dictionary = graph["nodes"][id]
-		if n.get("type", "") != "round":
+		if n.get("type", "") != "round" or skip.has(id):
 			continue
 		var data: Dictionary = n.get("data", {})
 		# A pool round has no funscript of its own — the runtime rolls one entry by weight — so it would
@@ -853,7 +883,7 @@ static func _pool_avg_totals(entries: Array) -> Dictionary:
 # so the preview shows the real fork structure. Each fork's branches are walked up to their rejoin
 # (the earliest node ≥2 branches reach), which becomes the post-fork continuation. graph→tree is
 # lossy where branches share nodes, so this is best-effort: every node is placed exactly once.
-static func _graph_catalogue_sequence(graph: Dictionary) -> Dictionary:
+static func _graph_catalogue_sequence(graph: Dictionary, skip: Dictionary = {}) -> Dictionary:
 	var depth: Dictionary = _longest_depths(graph)
 	var visited: Dictionary = {}
 	var lists: Dictionary = _walk_level(graph, str(graph.get("start", "")), {}, visited, depth)
@@ -864,7 +894,7 @@ static func _graph_catalogue_sequence(graph: Dictionary) -> Dictionary:
 	leftover.sort()
 	var extra: int = 100000
 	for id: String in leftover:
-		if not visited.has(id):
+		if not visited.has(id) and not skip.has(id):  # aftercare is left out on purpose — see callers
 			visited[id] = true
 			_append_node(id, nodes[id], lists, extra)
 			extra += 1

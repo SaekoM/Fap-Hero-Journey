@@ -41,6 +41,9 @@ var _route_box: VBoxContainer = null
 var _route_view: Control = null  # GraphView in map_mode
 var _hs_label: Label = null
 var _run_rank: int = 0  # 1-based scoreboard rank of this run (0 = off-board)
+# Set when the run ended with "I came" ({title, round, total}, from GameLoop — the title is the hold text
+# written for that round, else the button label): shown instead of "JOURNEY COMPLETE"; nothing celebrates.
+var _gave_in: Dictionary = {}
 
 # Reveal targets — the final values the count-up animations climb to.
 var _score_target: int = 0
@@ -62,7 +65,20 @@ func _ready() -> void:
 
 func _populate() -> void:
 	var journey: Dictionary = GameState.Journey
-	_title_lbl.text = "JOURNEY COMPLETE"
+	_gave_in = GameState.get_meta("_run_gave_in", {})
+	if GameState.has_meta("_run_gave_in"):
+		GameState.remove_meta("_run_gave_in")
+	if _gave_in.is_empty():
+		_title_lbl.text = "JOURNEY COMPLETE"
+	else:
+		_title_lbl.text = (
+			"%s — ROUND %d OF %d"
+			% [
+				str(_gave_in.get("title", "")).to_upper(),
+				int(_gave_in.get("round", 0)),
+				int(_gave_in.get("total", 0)),
+			]
+		)
 	_journey_lbl.text = (journey.get("title", "Journey") as String).to_upper()
 
 	# Use the actual played rounds from the log (fork paths may differ from
@@ -344,8 +360,9 @@ func _play_reveal() -> void:
 	await t3.finished
 	_hero_score.text = "%d PTS" % _score_target
 
-	# Confetti + a punchy pop on the final number.
-	_confetti.restart()
+	# Confetti + a punchy pop on the final number. A run ended with "I came" gets the pop, not the party.
+	if _gave_in.is_empty():
+		_confetti.restart()
 	_hero_score.pivot_offset = _hero_score.size / 2.0
 	var t3b: Tween = create_tween()
 	t3b.tween_property(_hero_score, "scale", Vector2(1.12, 1.12), 0.12)

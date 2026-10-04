@@ -68,8 +68,8 @@ var _video_path: String = ""
 var _funscript_path: String = ""
 var _characters: Array = []  # the journey's cast, so a cue can name a character and preview their art
 var _items: Array = []  # the journey's custom items — an override among them can seed an attack
-# Whether the journey lets the player press FINISH. Defeat events are the response to that press, so
-# with it off they are authorable but unreachable — worth saying plainly rather than letting someone
+# Whether this round offers "I came" (its own aftercare link, or a journey default). Defeat events are the
+# response to that press, so without it they are authorable but unreachable — worth saying plainly rather than letting someone
 # build an ending that silently never plays.
 var _allow_finish: bool = false
 
@@ -1852,8 +1852,8 @@ func _build_outcome_block(
 				. add_child(
 					_make_quiet_note(
 						(
-							"This journey's FINISH button is off, so a player can never give in. Turn on "
-							+ "ALLOW FINISH BUTTON in the journey settings before writing this ending."
+							'"I came" is not offered in this round, so a player can never give in. Link '
+							+ "this round's aftercare (or pick a journey default) before writing this ending."
 						),
 						9
 					)
@@ -2403,8 +2403,8 @@ func _all_tags() -> Array:
 func _make_finish_warning() -> Control:
 	return _make_amber_callout(
 		(
-			"⚠  This journey's FINISH button is off, so the player can never give in — nothing in this "
-			+ 'section can play. Turn on "ALLOW FINISH BUTTON" in the journey settings to use it.'
+			'⚠  "I came" is not offered in this round, so the player can never give in — nothing in this '
+			+ "section can play. Link this round's aftercare, or pick a journey default, to use it."
 		),
 		10
 	)

@@ -300,7 +300,7 @@ func show_journey_info_panel() -> void:
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(
 		_make_collapsible_group(
-			"finish", "AFTERCARE FINISH", "🏁", show_journey_info_panel, _build_finish_section
+			"finish", "AFTERCARE", "🏁", show_journey_info_panel, _build_finish_section
 		)
 	)
 
@@ -828,30 +828,64 @@ const _ITEM_EFFECT_KINDS: Array = [
 ]
 
 
-# AFTERCARE FINISH — a journey opt-in for an always-available hold-to-confirm button that ends the run
-# early, optionally into a designated aftercare storyboard (off-graph) before the end screen.
+# AFTERCARE — the "I came" button, which ends the run early from a round into an aftercare sequence
+# (off-graph) before the end screen. There is no on/off switch: a round offers the button when it links
+# its own aftercare (the rose handle on its right side) or when a DEFAULT aftercare is picked here.
 func _build_finish_section(box: VBoxContainer) -> void:
 	var hint: Label = Label.new()
 	hint.text = (
-		"An always-available hold-to-confirm button that ends the run early — optionally into an "
-		+ "aftercare SEQUENCE (e.g. a winding-down storyboard → a gentle round) before the end screen. "
-		+ "Pick the FIRST node; wire the rest off the main graph, ending in a node with no exit."
+		'A button the player can press during a round to end the run early ("I came" — the F key). '
+		+ "It plays an aftercare SEQUENCE (e.g. a winding-down storyboard → a gentle round) before the "
+		+ "end screen. A round with its own aftercare link (drag the rose handle on its right side) "
+		+ "offers it and plays that. Pick a DEFAULT below and every other round offers it too. A round "
+		+ "with neither has no button. Aftercare sits off the main graph and ends in a node with no exit."
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
-	var toggle: CheckButton = CheckButton.new()
-	toggle.text = "ALLOW FINISH BUTTON"
-	toggle.add_theme_font_size_override("font_size", 12)
-	toggle.button_pressed = _owner._journey_allow_finish
-	box.add_child(toggle)
+	box.add_child(
+		_side_field_label(
+			"BUTTON LABEL  (OPTIONAL)",
+			(
+				'What the button and its confirm card say. Blank says "%s".'
+				% JourneyData.DEFAULT_FINISH_LABEL
+			)
+		)
+	)
+	var label_edit: LineEdit = LineEdit.new()
+	label_edit.placeholder_text = JourneyData.DEFAULT_FINISH_LABEL
+	label_edit.text = _owner._journey_finish_label
+	label_edit.max_length = 24  # it sits in the HUD bar beside the other buttons
+	UITheme.style_line_edit(label_edit)
+	label_edit.text_changed.connect(func(v: String) -> void: _owner._journey_finish_label = v)
+	box.add_child(label_edit)
 
-	box.add_child(_side_field_label("AFTERCARE — FIRST NODE  (OPTIONAL)"))
+	box.add_child(
+		_side_field_label(
+			"HOLD TEXT  (OPTIONAL)",
+			(
+				"What the overlay says while the player holds the button. A round's own aftercare "
+				+ (
+					'link can say something else. Blank says "%s".'
+					% JourneyData.DEFAULT_FINISH_HOLD_TEXT
+				)
+			)
+		)
+	)
+	var hold_edit: LineEdit = LineEdit.new()
+	hold_edit.placeholder_text = JourneyData.DEFAULT_FINISH_HOLD_TEXT
+	hold_edit.text = _owner._journey_finish_hold_text
+	hold_edit.max_length = 40
+	UITheme.style_line_edit(hold_edit)
+	hold_edit.text_changed.connect(func(v: String) -> void: _owner._journey_finish_hold_text = v)
+	box.add_child(hold_edit)
+
+	box.add_child(_side_field_label("DEFAULT AFTERCARE — FIRST NODE  (OPTIONAL)"))
 	var dd: OptionButton = OptionButton.new()
 	var node_ids: Array = [""]  # index 0 = None
-	dd.add_item("None — straight to end screen")
+	dd.add_item("None — only rounds with their own link offer it")
 	# The ENTRY to the aftercare sequence — a round or storyboard. Whatever the author wires off it (a
 	# chain of rounds/storyboards, off the main graph) plays in turn until a node with no exit → the end
 	# screen. Numbered per type in insertion order, with an identifying stub to spot the node.
@@ -870,19 +904,27 @@ func _build_finish_section(box: VBoxContainer) -> void:
 	dd.selected = maxi(0, node_ids.find(_owner._journey_finish_node))
 	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(dd)
-	dd.disabled = not _owner._journey_allow_finish
+
+	# The default aftercare has no edge leading to it — nothing in the journey connects to it — so it
+	# can sit anywhere, far from the main graph. This finds it: selects it and centres the canvas on it.
+	var locate_btn: Button = UITheme.make_icon_btn("◎ SHOW", false, UITheme.AFTERCARE_EDGE)
+	locate_btn.tooltip_text = "Select the default aftercare node and centre the graph on it"
+	locate_btn.disabled = _owner._journey_finish_node == ""
+	locate_btn.pressed.connect(
+		func() -> void: _owner._locate_graph_node(_owner._journey_finish_node)
+	)
+
 	dd.item_selected.connect(
 		func(i: int) -> void:
 			_owner._journey_finish_node = str(node_ids[i])
-			_owner._refresh_graph()  # move the 🏁 FINISH badge to the new node live
+			locate_btn.disabled = _owner._journey_finish_node == ""
+			_owner._refresh_graph()  # move the 🏁 DEFAULT badge to the new node live
 	)
-	box.add_child(dd)
-
-	toggle.toggled.connect(
-		func(on: bool) -> void:
-			_owner._journey_allow_finish = on
-			dd.disabled = not on
-	)
+	var dd_row: HBoxContainer = HBoxContainer.new()
+	dd_row.add_theme_constant_override("separation", 6)
+	dd_row.add_child(dd)
+	dd_row.add_child(locate_btn)
+	box.add_child(dd_row)
 
 
 # A short identifying stub for a finish-node dropdown entry: a round's name, or a storyboard's first
@@ -3724,7 +3766,9 @@ func show_graph_node_editor(node_id: String) -> void:
 		# (connect / duplicate / delete / add) below.
 		side_vbox.add_child(_side_divider_line())
 		# Edge wiring (slice 3c): connect this node's flow to a target, or disconnect (end here).
-		var connecting: bool = _owner._connecting_from == node_id
+		var connecting: bool = (
+			_owner._connecting_from == node_id and _owner._connecting_edge_idx == -1
+		)
 		var conn_btn: Button = UITheme.make_icon_btn(
 			"✕ CANCEL CONNECT" if connecting else "🔗 CONNECT TO…", false, UITheme.AMBER
 		)
@@ -4451,6 +4495,10 @@ func _make_rendition_round_editor(node_id: String, node: Dictionary) -> Control:
 		clear_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		clear_btn.pressed.connect(func() -> void: _owner._clear_round_slot_fills(node_id))
 		col.add_child(clear_btn)
+	var aftercare_block: Control = _make_aftercare_link_block(node_id)
+	if aftercare_block != null:
+		col.add_child(_side_section_separator())
+		col.add_child(aftercare_block)
 	return col
 
 
@@ -5116,6 +5164,108 @@ func _make_graph_choice_block(
 		sub.add_child(clear_btn)
 
 	return panel
+
+
+# Whether `node_id` can carry an aftercare link: a journey round — not one inside an aftercare sequence,
+# which never shows the "I came" button.
+func _round_takes_aftercare(node_id: String) -> bool:
+	var graph: Dictionary = _owner._graph_model
+	var node: Dictionary = (graph.get("nodes", {}) as Dictionary).get(node_id, {})
+	if str(node.get("type", "")) != "round":
+		return false
+	return not JourneyGraph.aftercare_ids(graph, _owner._journey_finish_node).has(node_id)
+
+
+# The round editor's own collapsible AFTERCARE group (between POOL and TEMPLATES), ✓ when the round links
+# its own aftercare. null where the round can't take one (see _round_takes_aftercare).
+func _make_aftercare_group(node_id: String, rebuild: Callable) -> Control:
+	if not _round_takes_aftercare(node_id):
+		return null
+	var linked: bool = JourneyGraph.aftercare_of(_owner._graph_model, node_id) != ""
+	return _make_collapsible_group(
+		"round_aftercare",
+		'AFTERCARE ("I CAME")' + ("  ✓" if linked else ""),
+		"💧",
+		rebuild,
+		func(body: VBoxContainer) -> void:
+			body.add_child(_make_aftercare_link_block(node_id, false))
+	)
+
+
+# A round's AFTERCARE link — what "I came" plays from it — with the click-to-connect twin of its rose
+# canvas handle and a remove button. null for anything but a journey round: a round inside an aftercare
+# sequence never shows the button. On a ghosted parent round only this rendition's overlay link can go.
+func _make_aftercare_link_block(node_id: String, with_title: bool = true) -> Control:
+	if not _round_takes_aftercare(node_id):
+		return null
+	var graph: Dictionary = _owner._graph_model
+	var node: Dictionary = (graph.get("nodes", {}) as Dictionary).get(node_id, {})
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	if with_title:  # inside the round editor's AFTERCARE group, the group header is the title
+		var tip: String = (
+			'What plays if the player presses "I came" during this round. Without a link of its own '
+			+ "the round uses the journey's default aftercare (Journey settings → AFTERCARE)."
+		)
+		box.add_child(_side_field_label('AFTERCARE  ("I CAME" HERE)', tip))
+	var own: String = JourneyGraph.aftercare_of(graph, node_id)
+	var target_lbl: Label = Label.new()
+	if own != "":
+		target_lbl.text = _graph_node_label(own)
+	elif _owner._journey_finish_node != "":
+		target_lbl.text = "(default — %s)" % _graph_node_label(_owner._journey_finish_node)
+	else:
+		# No link and no journey default: there's no aftercare to play, so no button in this round.
+		target_lbl.text = '(none — "I came" is not offered in this round)'
+	target_lbl.add_theme_color_override(
+		"font_color", UITheme.AFTERCARE_EDGE if own != "" else UITheme.DARK_TEXT
+	)
+	target_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(target_lbl)
+
+	var connecting: bool = (
+		_owner._connecting_from == node_id
+		and _owner._connecting_edge_idx == GraphView.AFTERCARE_EDGE_IDX
+	)
+	var link_btn: Button = UITheme.make_icon_btn(
+		"✕ CANCEL CONNECT" if connecting else "💧 LINK AFTERCARE…", false, UITheme.AFTERCARE_EDGE
+	)
+	link_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	link_btn.pressed.connect(func() -> void: _owner._begin_connect_aftercare(node_id))
+	box.add_child(link_btn)
+	var removable: bool = (
+		node.has(JourneyGraph.AFTERCARE_PARENT_MARK)
+		if _owner._rendition_parent_ids.has(node_id)
+		else own != ""
+	)
+	if removable:
+		# The link's own hold text — editable wherever the link is (a parent's own link is the parent's).
+		var journey_text: String = _owner._journey_finish_hold_text.strip_edges()
+		box.add_child(
+			_side_field_label(
+				"HOLD TEXT  (OPTIONAL)",
+				"What the hold overlay says in this round. Blank uses the journey's hold text."
+			)
+		)
+		var hold_edit: LineEdit = LineEdit.new()
+		hold_edit.placeholder_text = (
+			journey_text if journey_text != "" else JourneyData.DEFAULT_FINISH_HOLD_TEXT
+		)
+		hold_edit.text = JourneyGraph.aftercare_text_of(_owner._graph_model, node_id)
+		hold_edit.max_length = 40
+		UITheme.style_line_edit(hold_edit)
+		hold_edit.text_changed.connect(
+			func(v: String) -> void: _owner._set_aftercare_text(node_id, v)
+		)
+		box.add_child(hold_edit)
+
+		var remove_btn: Button = UITheme.make_icon_btn(
+			"✂ REMOVE AFTERCARE LINK", false, UITheme.PURPLE_MID
+		)
+		remove_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		remove_btn.pressed.connect(func() -> void: _owner._remove_aftercare_link(node_id))
+		box.add_child(remove_btn)
+	return box
 
 
 # Short readable label for a graph node (used by the fork choice "LEADS TO" line).
@@ -5957,6 +6107,12 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 
 	col.add_child(_side_section_separator())
 	col.add_child(_make_pool_expander(arr, idx, reselect))
+
+	# ── Aftercare (what "I came" plays from this round) ──────────────────────────
+	var aftercare_group: Control = _make_aftercare_group(_shown_node_id, reselect.bind(idx))
+	if aftercare_group != null:
+		col.add_child(_side_section_separator())
+		col.add_child(aftercare_group)
 
 	# ── Templates (save this round's definition for reuse; apply a saved one) ─────
 	col.add_child(_side_divider_line())
@@ -7718,6 +7874,13 @@ func _make_chrome_toggle(arr: Array, idx: int, key: String, label: String, tip: 
 	return toggle
 
 
+# Whether "I came" is offered in the round being edited — its own aftercare link, or a journey default.
+# Feeds the encounter editor's note on give-in endings.
+func _round_offers_finish() -> bool:
+	var own: String = JourneyGraph.aftercare_of(_owner._graph_model, _shown_node_id)
+	return own != "" or _owner._journey_finish_node != ""
+
+
 # The round's authored encounter, type-checked. Read fresh every time it is needed.
 func _round_timeline(data: Dictionary) -> Dictionary:
 	var raw: Variant = data.get("timeline", {})
@@ -7779,7 +7942,7 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 					str(arr[idx].get("funscript_path", "")),
 					_owner._journey_characters,
 					_owner._journey_items,
-					_owner._journey_allow_finish,
+					_round_offers_finish(),
 					_owner._journey_flags,
 					_declare_flag_for
 				)

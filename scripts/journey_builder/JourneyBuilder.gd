@@ -50,6 +50,7 @@ const CAUSE_NO_START: String = "no_start"
 const CAUSE_DANGLING_EDGE: String = "dangling_edge"
 const CAUSE_CYCLE: String = "cycle"
 const CAUSE_UNREACHABLE: String = "unreachable"
+const CAUSE_AFTERCARE_IN_JOURNEY: String = "aftercare_in_journey"
 const CAUSE_LOOP_UNSATISFIABLE: String = "loop_unsatisfiable"
 const CAUSE_LOOP_UNPAIRED: String = "loop_unpaired"
 const CAUSE_SETTING_MISSING: String = "setting_missing"
@@ -145,8 +146,9 @@ var _journey_auto_advance_storyboard_secs: int = 20  # per-line storyboard count
 var _journey_auto_advance_fork_secs: int = 45  # fork-decision countdown when enabled
 var _journey_counters: Array = []  # Array[Dictionary] — declared counters: bounds, start, label, shown
 var _journey_flags: Array = []  # Array[Dictionary] — declared flags: name, label, note
-var _journey_allow_finish: bool = false  # author opt-in: the player FINISH button ends the run early
-var _journey_finish_node: String = ""  # entry node of the off-graph aftercare sequence played on FINISH (round/storyboard; optional)
+var _journey_finish_node: String = ""  # DEFAULT aftercare entry — played on "I came" by rounds with no aftercare link of their own (round/storyboard; optional)
+var _journey_finish_label: String = ""  # what the give-up button says; "" = JourneyData.DEFAULT_FINISH_LABEL
+var _journey_finish_hold_text: String = ""  # what its hold overlay says; "" = JourneyData.DEFAULT_FINISH_HOLD_TEXT
 var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
 var _journey_characters: Array = []  # storyboard cast (runtime dicts: id/name/portraits[]/placements[])
 # Reusable places: {id, name, backgrounds[{id,name,path}], bgm, bgm_volume}. Referenced by id from
@@ -363,7 +365,7 @@ func _setup_graph_view() -> void:
 	_graph.canvas_context_menu_requested.connect(_on_canvas_context_menu_requested)
 	_graph.node_context_menu_requested.connect(_on_node_context_menu_requested)
 	_graph.warning_provider = _compute_node_warnings  # GraphView pulls soft-validation badges each layout
-	_graph.finish_id_provider = func() -> String: return _journey_finish_node  # badges the FINISH node
+	_graph.finish_id_provider = func() -> String: return _journey_finish_node  # badges the default aftercare
 	# Drag-to-reposition a backdrop layer writes its new offset back (mapping the combined-stack index to
 	# this journey's editable list) so the placement persists.
 	_graph.backdrop_moved.connect(
@@ -537,6 +539,12 @@ func _structural_warning_text(kind: String) -> String:
 			return "A connection points to a node that no longer exists."
 		"cycle":
 			return "Part of a loop — a journey must flow forward (no cycles)."
+		"aftercare_in_journey":
+			return "Its aftercare link points at a node the journey already plays."
+		"default_aftercare_in_journey":
+			return "This is the default aftercare, but the journey already plays it."
+		"aftercare_rejoins":
+			return "Aftercare leads back into the journey — aftercare must end the run."
 	return ""
 
 
@@ -1559,12 +1567,12 @@ func _show_node_context_menu(node_id: String) -> void:
 	)
 	vbox.add_child(start_b)
 
-	# FINISH (aftercare-sequence entry) — only a round or storyboard can be the entry.
+	# Default aftercare entry — only a round or storyboard can be one.
 	var node_type: String = str((_graph_model["nodes"][node_id] as Dictionary).get("type", ""))
 	if node_type == "round" or node_type == "storyboard":
 		var already_finish: bool = _journey_finish_node == node_id
 		var finish_b: Button = _ctx_menu_button(
-			"✓ FINISH NODE  (clear)" if already_finish else "🏁 SET AS FINISH",
+			"✓ DEFAULT AFTERCARE  (clear)" if already_finish else "🏁 SET AS DEFAULT AFTERCARE",
 			UITheme.MAGENTA,
 			func() -> void:
 				popup.queue_free()
@@ -1617,22 +1625,31 @@ func _set_node_as_start(node_id: String) -> void:
 	_show_status("Start set — the journey now begins at this node.", false)
 
 
-# Sets (or clears, if already set) `node_id` as the FINISH aftercare-sequence entry. Setting also flips
-# on the journey's "allow finish" so a right-click is all it takes for the button to appear. Not undoable
-# — it's a journey setting (like the map toggle / the finish dropdown), not a graph-structure change. The
-# refresh re-badges the node and re-evaluates reachability (the finish subtree is exempt from unreachable).
+# Sets (or clears, if already set) `node_id` as the journey's DEFAULT aftercare entry — which alone is what
+# offers "I came" on rounds without a link of their own. Not undoable — it's a journey setting (like the
+# map toggle / the default dropdown), not a graph-structure change. The refresh re-badges the node and
+# re-evaluates reachability (aftercare is exempt from unreachable).
 func _toggle_node_as_finish(node_id: String) -> void:
 	if _journey_finish_node == node_id:
 		_journey_finish_node = ""
 		_refresh_graph()
-		_show_status("Finish node cleared.", false)
+		_show_status("Default aftercare cleared.", false)
 	else:
 		_journey_finish_node = node_id
-		_journey_allow_finish = true
 		_refresh_graph()
 		_show_status(
-			"Finish set — the FINISH button plays the aftercare sequence from here.", false
+			'Default aftercare set — "I came" plays from here unless a round links its own.', false
 		)
+
+
+# Finds a node on the canvas for the author: selects it (its editor opens) and centres the view on it.
+# Used where a node has no visible connection to follow — e.g. the default aftercare, which nothing in
+# the journey leads to and so can sit anywhere.
+func _locate_graph_node(node_id: String) -> void:
+	if node_id == "" or not (_graph_model.get("nodes", {}) as Dictionary).has(node_id):
+		return
+	_graph.select_graph_node(node_id)
+	_graph.center_on(node_id)
 
 
 # One left-aligned, full-width button for the canvas context menu.
@@ -3182,8 +3199,13 @@ func _load_graph(journey: Dictionary) -> void:
 	_journey_auto_advance_enabled = bool(parsed.get("auto_advance_enabled", false))
 	_journey_auto_advance_storyboard_secs = int(parsed.get("auto_advance_storyboard_secs", 20))
 	_journey_auto_advance_fork_secs = int(parsed.get("auto_advance_fork_secs", 45))
-	_journey_allow_finish = bool(parsed.get("allow_finish", false))
 	_journey_finish_node = str(parsed.get("finish_node", ""))
+	# The old on/off toggle is gone: a picked default IS the switch now. A journey saved with it OFF kept a
+	# default that never played — drop it, so the journey plays exactly as it did.
+	if not bool(parsed.get("allow_finish", false)):
+		_journey_finish_node = ""
+	_journey_finish_label = str(parsed.get("finish_label", ""))
+	_journey_finish_hold_text = str(parsed.get("finish_hold_text", ""))
 	if (parsed["cover_path"] as String) != "":
 		_cover_path = parsed["cover_path"]
 		_update_cover_preview()
@@ -3309,6 +3331,8 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 			choice["_slot"] = slot
 		else:
 			anchor_out.append(edge)
+	# Its aftercare links onto the parent's rounds, marked so they re-extract on save.
+	_apply_overlay_aftercare_links(delta.get("aftercare_links", []))
 	# Channel overlays — paths are absolute after the resolve; the dialog edits them, save re-pools them.
 	_rendition_slot_fills = (delta.get("slot_fills", []) as Array).duplicate(true)
 	# The rendition's OWN places and people, after the locked base set it was shown with. Skipping an
@@ -3531,6 +3555,7 @@ func _delete_graph_node(node_id: String) -> void:
 			if not doomed.has(str(e.get("to", ""))):
 				kept.append(e)
 		(nodes[id] as Dictionary)["out"] = kept
+	_drop_aftercare_links_to(doomed)
 	if doomed.has(str(_graph_model.get("start", ""))):
 		_graph_model["start"] = (nodes.keys()[0] as String) if not nodes.is_empty() else ""
 	_deselect_node()
@@ -3561,13 +3586,17 @@ func _delete_selected_nodes() -> void:
 			doomed.append(partner)
 	for nid: String in doomed:
 		nodes.erase(nid)
-	# Strip every edge that pointed at a deleted node.
+	# Strip every edge (and aftercare link) that pointed at a deleted node.
+	var doomed_set: Dictionary = {}
+	for nid: String in doomed:
+		doomed_set[nid] = true
 	for id: String in nodes:
 		var kept: Array = []
 		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
-			if str(e.get("to", "")) not in doomed:
+			if not doomed_set.has(str(e.get("to", ""))):
 				kept.append(e)
 		(nodes[id] as Dictionary)["out"] = kept
+	_drop_aftercare_links_to(doomed_set)
 	if str(_graph_model.get("start", "")) in doomed:
 		_graph_model["start"] = (nodes.keys()[0] as String) if not nodes.is_empty() else ""
 	_remove_comments_by_index(_graph.get_selected_comments())  # marquee-selected notes go with the nodes
@@ -3916,6 +3945,9 @@ func _finish_connect(target_id: String) -> void:
 	var nodes: Dictionary = _graph_model.get("nodes", {})
 	if source == "" or not nodes.has(source):
 		return
+	if edge_idx == GraphView.AFTERCARE_EDGE_IDX:
+		_finish_aftercare_link(source, target_id)
+		return
 	# Rendition ANCHOR: dragging from a ghosted base node attaches a new overlay path here. It's ADDITIVE
 	# (appended, never replacing the base's own edges) and the base is never re-saved, so it can't be
 	# corrupted. The delta save extracts these `_anchor` edges (later slice).
@@ -3928,6 +3960,11 @@ func _finish_connect(target_id: String) -> void:
 		return
 	if JourneyGraph.reachable_ids(_graph_model, target_id).has(source):
 		_show_status("Can't connect — that would create a loop.", true)
+		_graph.select_graph_node(source)
+		return
+	var crossing: String = _aftercare_crossing_text(source, target_id)
+	if crossing != "":
+		_show_status(crossing, true)
 		_graph.select_graph_node(source)
 		return
 	# A fork can't point two of its choices at the same node — one choice per target.
@@ -3967,6 +4004,10 @@ func _finish_anchor(source: String, target_id: String, edge_idx: int = -1) -> vo
 		return
 	if JourneyGraph.reachable_ids(_graph_model, target_id).has(source):
 		_show_status("Can't anchor — that would create a loop.", true)
+		return
+	var crossing: String = _aftercare_crossing_text(source, target_id)
+	if crossing != "":
+		_show_status(crossing, true)
 		return
 	var out: Array = (nodes[source] as Dictionary).get("out", [])
 	# A fork choice handle. Two cases, distinguished by whether this out-edge is already an overlay anchor:
@@ -4018,6 +4059,128 @@ func _finish_anchor(source: String, target_id: String, edge_idx: int = -1) -> vo
 		anchor_edge["to"] = target_id  # re-point the existing anchor to the new target
 		_refresh_graph()
 		_show_status("Anchor re-pointed to the new node.", false)
+
+
+# ── Aftercare links (a round's "I came" target) ──────────────────────────────
+
+
+# The nodes the main journey plays ({} without a valid start) — aftercare may not sit among them.
+func _journey_node_ids() -> Dictionary:
+	var start: String = str(_graph_model.get("start", ""))
+	if not (_graph_model.get("nodes", {}) as Dictionary).has(start):
+		return {}
+	return JourneyGraph.reachable_ids(_graph_model, start)
+
+
+# Why a regular edge source → target may not be drawn, or "" when it may. Aftercare sequences are the
+# run's ending rounds: "I came" is their only way in, and they never lead back into the journey.
+func _aftercare_crossing_text(source: String, target_id: String) -> String:
+	var journey: Dictionary = _journey_node_ids()
+	var aftercare: Dictionary = JourneyGraph.aftercare_ids(_graph_model, _journey_finish_node)
+	if journey.has(source) and aftercare.has(target_id) and not journey.has(target_id):
+		return 'Can\'t connect — that node is aftercare, which only "I came" leads into.'
+	if aftercare.has(source) and not journey.has(source) and journey.has(target_id):
+		return "Can't connect — aftercare is the ending, so it can't lead back into the journey."
+	return ""
+
+
+# Links `round_id`'s "I came" button to `target_id`, the entry of its own aftercare sequence (a round or
+# storyboard the journey doesn't play). The link offers "I came" in THIS round only — it never turns the
+# button on journey-wide; the journey toggle and the default aftercare do that. On a parent round during
+# rendition authoring the link is this rendition's overlay; the parent's own value is kept (marked) so
+# removing the overlay link restores it.
+func _finish_aftercare_link(round_id: String, target_id: String) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var round_node: Dictionary = nodes.get(round_id, {})
+	if str(round_node.get("type", "")) != "round" or target_id == round_id:
+		return
+	var target_type: String = str((nodes.get(target_id, {}) as Dictionary).get("type", ""))
+	if target_type not in ["round", "storyboard"]:
+		_show_status("Aftercare starts with a round or a storyboard.", true)
+		return
+	if _journey_node_ids().has(target_id):
+		_show_status(
+			"Aftercare must sit off the journey — link to a node the journey doesn't play.", true
+		)
+		return
+	if str(round_node.get(JourneyGraph.AFTERCARE_KEY, "")) == target_id:
+		return
+	_push_undo()
+	if _rendition_parent_ids.has(round_id):
+		JourneyGraph.mark_parent_aftercare(round_node)
+	# Re-pointing keeps the round's hold text — it's the author's words for this round, not for the target.
+	var text: String = str(round_node.get(JourneyGraph.AFTERCARE_TEXT_KEY, ""))
+	JourneyGraph.set_aftercare_link(round_node, target_id, text)
+	_graph.select_graph_node(round_id)
+	_show_status('Aftercare linked — this round offers "I came" and plays that sequence.', false)
+
+
+# Removes `round_id`'s own aftercare link, so "I came" there falls back to the journey's default (or is no
+# longer offered there, when the journey doesn't turn it on everywhere). On a
+# parent round during rendition authoring only this rendition's overlay link can go (the parent's returns).
+func _remove_aftercare_link(round_id: String) -> void:
+	var round_node: Dictionary = (_graph_model.get("nodes", {}) as Dictionary).get(round_id, {})
+	var removable: bool = (
+		round_node.has(JourneyGraph.AFTERCARE_PARENT_MARK)
+		if _rendition_parent_ids.has(round_id)
+		else round_node.has(JourneyGraph.AFTERCARE_KEY)
+	)
+	if not removable:
+		return
+	_push_undo()
+	JourneyGraph.drop_aftercare_link(round_node)
+	_graph.select_graph_node(round_id)
+	_show_status(
+		(
+			"Aftercare link removed — this round uses the journey's default aftercare."
+			if _journey_finish_node != ""
+			else 'Aftercare link removed — this round no longer offers "I came".'
+		),
+		false
+	)
+
+
+# Sets the hold text `round_id`'s own aftercare link brings (blank = the journey's hold text). Typed live
+# from the side panel, so no undo step per keystroke — like the other text fields there. On a ghosted
+# parent round only this rendition's overlay link carries text it may edit.
+func _set_aftercare_text(round_id: String, text: String) -> void:
+	var round_node: Dictionary = (_graph_model.get("nodes", {}) as Dictionary).get(round_id, {})
+	var to: String = str(round_node.get(JourneyGraph.AFTERCARE_KEY, ""))
+	if to == "":
+		return
+	if (
+		_rendition_parent_ids.has(round_id)
+		and not round_node.has(JourneyGraph.AFTERCARE_PARENT_MARK)
+	):
+		return
+	JourneyGraph.set_aftercare_link(round_node, to, text)
+
+
+# Drops every aftercare link that points at a node in `doomed` (being deleted), so none dangles.
+func _drop_aftercare_links_to(doomed: Dictionary) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for id: String in nodes:
+		var n: Dictionary = nodes[id]
+		if doomed.has(str(n.get(JourneyGraph.AFTERCARE_KEY, ""))):
+			JourneyGraph.drop_aftercare_link(n)
+
+
+# Graph editor: arm/cancel connect mode for a round's AFTERCARE link — the click-to-connect twin of
+# dragging its aftercare handle. The next node click picks the aftercare entry.
+func _begin_connect_aftercare(round_id: String) -> void:
+	if _connecting_from == round_id and _connecting_edge_idx == GraphView.AFTERCARE_EDGE_IDX:
+		_connecting_from = ""
+		_connecting_edge_idx = -1
+		_graph.set_connect_mode(false)
+		_show_status("Connect cancelled.", false)
+	else:
+		_connecting_from = round_id
+		_connecting_edge_idx = GraphView.AFTERCARE_EDGE_IDX
+		_graph.set_connect_mode(true)
+		_show_status(
+			"Aftercare: click the round or storyboard it starts with (or press Cancel).", false
+		)
+	_side_renderer.show_graph_node_editor(round_id)
 
 
 # Drops an armed click-to-connect (the Escape shortcut), restoring the source node's editor.
@@ -4625,6 +4788,12 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 		"comments": notes["moved"]["comments"],
 		"groups": notes["moved"]["groups"],
 	}
+	# Base rounds whose aftercare was extracted keep it as the child's overlay link. Extracting from inside
+	# a rendition, that rendition's own links are part of the child's PARENT now — unmark them first so
+	# only the extracted ones save into the child.
+	for id: String in authoring:
+		(authoring[id] as Dictionary).erase(JourneyGraph.AFTERCARE_PARENT_MARK)
+	_apply_overlay_aftercare_links(delta.get("aftercare_links", []))
 	_rendition_mode = true
 	_rendition_parent_id = snap_id
 	_rendition_parent_folder = snap_folder
@@ -4745,9 +4914,13 @@ func _begin_merge_to_base(node_id: String) -> void:
 	)
 
 
-# True if a base node anchors `node_id` directly (a base node with an `_anchor` edge pointing at it).
+# True if a base node anchors `node_id` directly (a base node with an `_anchor` edge pointing at it, or a
+# base round whose overlay aftercare link starts there).
 func _has_base_anchor(node_id: String) -> bool:
 	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for link: Dictionary in _extract_aftercare_links():
+		if str(link["to"]) == node_id:
+			return true
 	for bid: String in _rendition_parent_ids:
 		if not nodes.has(bid):
 			continue
@@ -4809,6 +4982,11 @@ func _do_merge_to_base(node_id: String) -> void:
 				be.erase("_anchor")
 				be.erase("_slot")
 				edge_injections.append({"anchor": bid, "edge": be, "slot": slot})
+	# Overlay aftercare links onto the branch become the parent's own links the same way.
+	var aftercare_injections: Array = []
+	for link: Dictionary in _extract_aftercare_links():
+		if branch.has(str(link["to"])):
+			aftercare_injections.append(link)
 
 	# 3) What the branch brings along. Settings and characters the rendition added and the branch uses
 	#    move to the base — it would otherwise reference places and people it doesn't have. One that
@@ -4866,6 +5044,7 @@ func _do_merge_to_base(node_id: String) -> void:
 	merge_inject = {
 		"nodes": node_injections,
 		"edges": edge_injections,
+		"aftercare_links": aftercare_injections,
 		"settings": settings_move["entries"],
 		"characters": cast_move["entries"],
 		"comments": notes["moved"]["comments"],
@@ -4920,6 +5099,20 @@ func _apply_merge_inject(inj: Dictionary) -> void:
 			out_arr[slot] = edge  # fill the base fork's open slot in place
 		else:
 			out_arr.append(edge)
+	# Aftercare links onto the branch: plain links in a base, still overlay links (marked) when the
+	# round they sit on is a ghosted node of a parent rendition.
+	for link: Variant in inj.get("aftercare_links", []):
+		if not (link is Dictionary):
+			continue
+		var round_id: String = str((link as Dictionary).get("node", ""))
+		if _rendition_mode and _rendition_parent_ids.has(round_id):
+			_apply_overlay_aftercare_links([link])
+		elif nodes.has(round_id):
+			JourneyGraph.set_aftercare_link(
+				nodes[round_id],
+				str((link as Dictionary).get("to", "")),
+				str((link as Dictionary).get("text", ""))
+			)
 	# The branch's own places, people, notes and frames come with it (see _do_merge_to_base). A setting
 	# or character the base already has by id is the base's — the rendition's copy is dropped.
 	_journey_settings = JourneyData.merge_by_id(_journey_settings, inj.get("settings", []))
@@ -4989,6 +5182,12 @@ func _rewrite_rendition_without_subtree(
 		if not drop:
 			new_anchors.append(a)
 	data["Anchors"] = new_anchors
+	# Likewise every aftercare link onto a branch node — the parent now holds it as a plain link.
+	var new_links: Array = []
+	for l: Variant in data.get("AftercareLinks", []):
+		if not (l is Dictionary and branch.has(str((l as Dictionary).get("To", "")))):
+			new_links.append(l)
+	data["AftercareLinks"] = new_links
 	# The branch's own places / people left with it unless another rendition node still uses them; its
 	# notes and frames are replaced by the ones that stayed (decided on the full canvas at merge time).
 	if not remainder.is_empty():
@@ -5191,6 +5390,7 @@ func _write_rendition_pack() -> Dictionary:
 		"nodes": pooled["nodes"],
 		"anchors": anchors,
 		"slot_fills": _pool_slot_fills(paths["abs_dir"]),  # channel scripts pooled after the nodes above
+		"aftercare_links": _extract_aftercare_links(),
 		"settings": settings,
 		"characters": characters,
 		"counters": _rendition_owned_counters(),
@@ -5319,6 +5519,37 @@ func _extract_anchors() -> Array:
 				edge.erase("_anchor")
 				anchors.append({"anchor": id, "edge": edge})
 	return anchors
+
+
+# The aftercare links this rendition set on its parent's rounds — the ones carrying the parent-value
+# mark (see _finish_aftercare_link). Links on the rendition's OWN rounds travel inside its nodes.
+func _extract_aftercare_links() -> Array:
+	var links: Array = []
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for id: String in _rendition_parent_ids:
+		var n: Dictionary = nodes.get(id, {})
+		var to: String = JourneyGraph.aftercare_of(_graph_model, id)
+		if n.has(JourneyGraph.AFTERCARE_PARENT_MARK) and to != "":
+			links.append(
+				{"node": id, "to": to, "text": JourneyGraph.aftercare_text_of(_graph_model, id)}
+			)
+	return links
+
+
+# Marks `links` ([{node, to}]) onto the ghosted parent rounds of a rendition being authored, remembering
+# each parent value so the overlay link can be removed again and is re-extracted on save.
+func _apply_overlay_aftercare_links(links: Array) -> void:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for link: Variant in links:
+		if not (link is Dictionary):
+			continue
+		var n: Dictionary = nodes.get(str((link as Dictionary).get("node", "")), {})
+		if n.is_empty():
+			continue
+		JourneyGraph.mark_parent_aftercare(n)
+		JourneyGraph.set_aftercare_link(
+			n, str((link as Dictionary).get("to", "")), str((link as Dictionary).get("text", ""))
+		)
 
 
 # Pools the card image on any overlay fork-choice anchor edge into the rendition's media folder, then
@@ -5974,8 +6205,10 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		# Written alongside the registry purely so a build older than 0.8.6 still surfaces the same
 		# counters to the player. Derived, never read back — the registry is the one source of truth.
 		"ShownCounters": JourneyData.shown_counter_names(_journey_counters),
-		"AllowFinish": _journey_allow_finish,
+		"AllowFinish": _journey_finish_node != "",  # written for older builds; this one reads FinishNode
 		"FinishNode": _journey_finish_node,
+		"FinishLabel": _journey_finish_label.strip_edges(),
+		"FinishHoldText": _journey_finish_hold_text.strip_edges(),
 		"Items": JourneyData.coerce_journey_items(items_for_save),
 		"Characters": JourneyData.coerce_journey_characters(characters_for_save),
 		"Settings": JourneyData.coerce_journey_settings(settings_for_save),
@@ -6148,6 +6381,11 @@ func _pool_graph_nodes(paths: Dictionary, modal: Control, skip_ids: Dictionary =
 		var saved_node: Dictionary = {"type": node_type, "data": saved_data, "out": saved_out}
 		if node.has("pos"):
 			saved_node["pos"] = node["pos"]
+		var aftercare_to: String = JourneyGraph.aftercare_of(_graph_model, id)
+		if aftercare_to != "":
+			JourneyGraph.set_aftercare_link(
+				saved_node, aftercare_to, JourneyGraph.aftercare_text_of(_graph_model, id)
+			)
 		out_nodes[id] = saved_node
 
 	return {"ok": true, "nodes": out_nodes}
@@ -7730,6 +7968,32 @@ func _structural_issue_to_presave(gi: Dictionary) -> Dictionary:
 				"detail":
 				"This node can't be reached from the start, so it would never play — and its media would bloat the saved journey.",
 				"hint": "Connect it into the flow (wire an earlier node to it), or delete it.",
+			}
+		"aftercare_in_journey":
+			return {
+				"cause": CAUSE_AFTERCARE_IN_JOURNEY,
+				"item": _graph_issue_label(str(gi.get("id", ""))),
+				"detail":
+				'Its "I came" aftercare link points at a node the journey already plays. Aftercare is the ending, so it has to sit off the journey.',
+				"hint":
+				"Link this round to aftercare that nothing in the journey leads to, or remove the link.",
+			}
+		"default_aftercare_in_journey":
+			return {
+				"cause": CAUSE_AFTERCARE_IN_JOURNEY,
+				"item": _graph_issue_label(str(gi.get("id", ""))),
+				"detail":
+				"This is the journey's default aftercare, but the journey already plays it. Aftercare is the ending, so it has to sit off the journey.",
+				"hint":
+				"Pick a default aftercare that nothing in the journey leads to (Journey settings → AFTERCARE).",
+			}
+		"aftercare_rejoins":
+			return {
+				"cause": CAUSE_AFTERCARE_IN_JOURNEY,
+				"item": _graph_issue_label(str(gi.get("id", ""))),
+				"detail":
+				"This aftercare node leads back into the journey. Aftercare is the ending — it must finish the run, not continue it.",
+				"hint": "Remove that connection so the aftercare sequence ends on its own.",
 			}
 	return {}
 

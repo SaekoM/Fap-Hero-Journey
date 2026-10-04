@@ -14,6 +14,7 @@ extends RefCounted
 ##     "Format": 2, "Start": "", "Nodes": [ …new nodes… ],   # reuses the journey Nodes format
 ##     "Anchors": [ {"Anchor": <existing node id>, "Edge": {to, …}, "Slot"?: <fork choice idx>} ],
 ##     "SlotFills": [ {"Node", "Field", "Channel"?, "Path"} ],
+##     "AftercareLinks": [ {"Node": <existing round id>, "To": <node id>, "Text"?: <hold text>} ],
 ##     "Settings": [ …the rendition's OWN places… ], "Characters": [ …its OWN cast… ],
 ##     "Counters": [ …its OWN declared counters… ], "Flags": [ …its OWN declared flags… ],
 ##   }
@@ -52,6 +53,7 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 		"nodes": graph["nodes"],
 		"anchors": _parse_anchors(data.get("Anchors", [])),
 		"slot_fills": _parse_slot_fills(data.get("SlotFills", [])),
+		"aftercare_links": _parse_aftercare_links(data.get("AftercareLinks", [])),
 		"settings": JourneyData.parse_journey_settings(data.get("Settings", [])),
 		"counters": JourneyData.parse_counter_defs(data.get("Counters", [])),
 		"flags": JourneyData.parse_flag_defs(data.get("Flags", [])),
@@ -64,6 +66,7 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 # rendition is itself dedupe-able and distributable.
 #   rendition: {journey_id?, name, author, description, parent_id, parent_min_version,
 #               nodes:{id:node}, anchors:[{anchor, edge}], slot_fills:[{node, field, channel, path}],
+#               aftercare_links?:[{node, to}],
 #               settings?:[…runtime settings…], characters?:[…runtime characters…]}
 static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 	var node_block: Dictionary = JourneyGraph.to_json(
@@ -81,6 +84,7 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 		"Nodes": node_block["Nodes"],
 		"Anchors": _coerce_anchors(rendition.get("anchors", [])),
 		"SlotFills": _coerce_slot_fills(rendition.get("slot_fills", [])),
+		"AftercareLinks": _coerce_aftercare_links(rendition.get("aftercare_links", [])),
 		"Settings": JourneyData.coerce_journey_settings(rendition.get("settings", [])),
 		"Counters": JourneyData.coerce_counter_defs(rendition.get("counters", [])),
 		"Flags": JourneyData.coerce_flag_defs(rendition.get("flags", [])),
@@ -217,4 +221,34 @@ static func _coerce_slot_fills(slot_fills: Array) -> Array:
 					}
 				)
 			)
+	return out
+
+
+static func _parse_aftercare_links(raw: Array) -> Array:
+	var out: Array = []
+	for l: Variant in raw:
+		if l is Dictionary:
+			var d: Dictionary = l
+			(
+				out
+				. append(
+					{
+						"node": str(d.get("Node", "")),
+						"to": str(d.get("To", "")),
+						"text": str(d.get("Text", "")),
+					}
+				)
+			)
+	return out
+
+
+static func _coerce_aftercare_links(links: Array) -> Array:
+	var out: Array = []
+	for l: Variant in links:
+		if l is Dictionary:
+			var d: Dictionary = l
+			var rec: Dictionary = {"Node": str(d.get("node", "")), "To": str(d.get("to", ""))}
+			if str(d.get("text", "")) != "":
+				rec["Text"] = str(d["text"])
+			out.append(rec)
 	return out

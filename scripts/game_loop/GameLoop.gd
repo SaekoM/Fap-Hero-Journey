@@ -133,11 +133,14 @@ var _current_overlay: Control = null
 var _map_enabled: bool = true  # journey-level: author allows the player map
 var _show_fork_counts: bool = true  # journey-level: show the "N ROUNDS" tag on fork choices
 var _show_loops_on_map: bool = false  # journey-level: show Loop markers on the player map (off = hide)
-# Aftercare finish — journey-level opt-in. When on, an always-available hold-to-confirm button ends the
-# run early; if a finish node (any type — a gentle round or a storyboard) is designated it plays as
-# aftercare before the end screen.
+# "I came" — during rounds a HUD-bar button (and the F key) stops play at once and asks to confirm;
+# confirming ends the run into aftercare before the end screen: the round's own aftercare link if it has
+# one, else the journey's default aftercare. A round with neither doesn't offer the button at all.
+# `_allow_finish` is the saved AllowFinish: the builder writes it as "a default is picked", and a journey
+# saved by an older build with its toggle OFF keeps its (then-inactive) default inactive here.
 var _allow_finish: bool = false
-var _finish_node_id: String = ""
+var _finish_node_id: String = ""  # the journey's DEFAULT aftercare entry
+var _finish_label: String = JourneyData.DEFAULT_FINISH_LABEL  # the author's name for the button
 # Auto-advance (journey-level opt-in): a countdown on storyboards (per line) and interactive forks
 # so a player can't linger to "rest". Separate durations — a dialogue line needs far less time than a
 # fork decision. Passed to those overlays; 0 secs = off (either the feature or that surface).
@@ -249,9 +252,21 @@ const ENCOUNTER_HOLD_SECS: float = 1.2
 var _effect_resolved: bool = false
 var _effect_cleanse_btn: Button = null
 var _warmup_skip_btn: Button = null  # free ⏭ skip on an author-marked warmup round
-var _finish_btn: Button = null  # hold-to-confirm FINISH button, shown during rounds when enabled
-var _finish_hold_tween: Tween = null  # fills while FINISH is held; fires _finish_journey at completion
-var _finishing: bool = false  # set once FINISH is confirmed, so a late button_up can't re-trigger
+var _finish_btn: Button = null  # the HUD-bar "I came" button, shown during rounds when enabled
+var _finish_hold_tween: Tween = null  # fills while "I came" is held; _finish_journey at completion
+var _finish_hold_layer: CanvasLayer = null  # the hold card, while held
+var _finish_hold_fill: Label = null
+var _finish_hold_journey_text: String = ""  # the journey's authored hold text ("" = none written)
+var _finish_btn_floating: bool = false  # moved out of the HUD bar to a screen corner while Fog hides it
+var _finishing: bool = false  # set once "I came" is confirmed; hides the button for the aftercare rounds
+var _finish_tearing_down: bool = false  # from "I came" confirmed until the aftercare node takes over
+# Nodes of the played graph inside an aftercare sequence (and not in the journey itself) — asked of the
+# GRAPH rather than remembered, so a run resumed or test-played inside aftercare still knows it's there.
+var _aftercare_node_ids: Dictionary = {}
+# Where the run stood when the player gave in — recorded on the scoreboard like a quit at that round.
+var _finish_rounds_done: int = 0
+var _finish_title: String = ""  # the end screen's title for a given-in run (see _mark_run_given_in)
+var _finish_rounds_total: int = 0
 # True only while an authored OUTCOME moment is holding. Deliberately NOT `_finishing`, which latches for
 # the rest of the run: gating the round-end path on that flag would also block every aftercare round from
 # ever ending. This one covers exactly the await and no more.
@@ -311,6 +326,7 @@ const ATTACK_OVERRIDE_SOURCE: String = "boss_attack"
 # Exit-to-menu is hold-to-confirm (Esc key held, or the MENU button held) so a stray press can't dump a
 # run. A centered overlay fills while held; release cancels, completion leaves to the menu.
 const EXIT_HOLD_SECS: float = 1.0
+const FINISH_HOLD_SECS: float = 1.0  # "I came" — the same hold as exit
 var _exit_hold_tween: Tween = null
 var _exit_hold_layer: CanvasLayer = null
 var _exit_hold_fill: Label = null
@@ -332,7 +348,9 @@ var _clip_fade_tween: Tween = null
 # Set by _load_video the moment it hands the player a new clip; read and cleared by _await_video_ready,
 # which then waits for that clip to really open rather than trusting whatever the player shows now.
 var _awaiting_new_clip: bool = false
-const FINISH_HOLD_SECS: float = 1.2  # hold time to confirm FINISH
+# Where the "I came" button floats while Fog hides the bar: the bar's own content corner (its right and
+# bottom padding in _apply_theme), so it reads as staying put while the rest of the bar vanishes.
+const FINISH_FLOAT_MARGIN: Vector2 = Vector2(20, 14)
 var _effect_cleanse_cost: int = CLEANSE_COST_DEFAULT  # per-round, set on enter
 
 # Optional beat-bar visualiser — created only when the setting is enabled.
@@ -376,6 +394,14 @@ func _ready() -> void:
 	# Journey-level: auto-advance countdown on storyboards / interactive forks.
 	_allow_finish = bool(GameState.Journey.get("allow_finish", false))
 	_finish_node_id = str(GameState.Journey.get("finish_node", ""))
+	var finish_label: String = str(GameState.Journey.get("finish_label", "")).strip_edges()
+	if finish_label != "":
+		_finish_label = finish_label
+	var hold_text: String = str(GameState.Journey.get("finish_hold_text", "")).strip_edges()
+	if hold_text != "":
+		_finish_hold_journey_text = hold_text
+	_aftercare_node_ids = _played_aftercare_ids()
+	_build_finish_button()  # after the set above: a round's own link may be the only reason it exists
 	_auto_advance_enabled = bool(GameState.Journey.get("auto_advance_enabled", false))
 	_auto_advance_storyboard_secs = int(GameState.Journey.get("auto_advance_storyboard_secs", 20))
 	_auto_advance_fork_secs = int(GameState.Journey.get("auto_advance_fork_secs", 45))
@@ -635,6 +661,8 @@ func _load_current_item() -> void:
 	# node the save landed on — a checkpoint there is skipped; later checkpoints show normally.
 	var just_resumed: bool = _resumed_from_save
 	_resumed_from_save = false
+	if _aftercare_node_ids.has(GameState.CurrentNodeId()):
+		_mark_run_given_in()  # a no-op after "I came"; catches a resume or test play landing in aftercare
 	match GameState.CurrentItemType():
 		"fork":
 			var fork: Dictionary = GameState.CurrentFork()
@@ -1049,6 +1077,7 @@ func _load_current_round() -> void:
 
 	_progress.value = 0.0
 	_paused = false
+	_end_timer.paused = false
 	_pause_btn.text = "|| PAUSE"
 	_update_muffle()  # a new round never starts muffled (e.g. paused → next round)
 
@@ -1134,8 +1163,6 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 
 	if bool(round.get("is_warmup", false)):
 		_show_warmup_skip_button()
-	# FINISH is available during every round when the journey opts in.
-	_show_finish_button()
 
 	var fs_path: String = round.get("funscript_path", "")
 	# The stroke meter reads these; cleared here so a round without a script can't show the last one's.
@@ -1243,6 +1270,9 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	# explicit. Scoring + beat bar stay on FunscriptPlayer's clock regardless.
 	#
 	_handy_begin_round(fs_path)
+	# "I came" appears only once playback has been started — a hold completed during the reveal card or the
+	# clip load would stop a round that the rest of this function then starts.
+	_show_finish_button()
 
 	# The effect reveal card held over the (opaque) video load; now the round is playing, fade it out so
 	# it reveals the round rather than hard-cutting from black.
@@ -2209,42 +2239,72 @@ func _remove_warmup_skip_button() -> void:
 	_warmup_skip_btn = null
 
 
-const _FINISH_IDLE_TEXT: String = "✔ HOLD TO FINISH"
-
-
-# The FINISH button — a hold-to-confirm floating button (a tap can't end the session), shown
-# only during rounds when the journey opts in. Sits just ABOVE the HUD bar, hugging the RIGHT edge (like
-# the cleanse button but right-aligned). Fades with the HUD's idle cycle — when the UI fades out it does
-# too — but stays clickable at rest so a hold started as it fades isn't broken.
-func _show_finish_button() -> void:
-	_remove_finish_button()
-	if not _allow_finish or _finishing:
+# The "I came" button — a HUD-bar button beside MENU, built once when the journey has any aftercare to
+# offer and shown only in rounds that have one. Hold-to-confirm, like MENU / Esc: holding it (or F) fills
+# a centred card, and letting go early cancels. Play carries on during the hold — nothing pauses — and
+# stops only once the hold completes (see _finish_journey).
+func _build_finish_button() -> void:
+	# Needed only if "I came" can lead somewhere: a journey default aftercare or a round's own link
+	# (exactly what _aftercare_node_ids holds — see _played_aftercare_ids).
+	if _aftercare_node_ids.is_empty():
 		return
 	var btn: Button = Button.new()
-	btn.text = _FINISH_IDLE_TEXT
+	btn.text = "💧 %s" % _finish_label.to_upper()
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.tooltip_text = UITheme.wrap_tip(
-		"Hold to finish the session. Ends the run and shows the finale."
-	)
-	UITheme.style_button(btn, UITheme.MAGENTA)
-	btn.anchor_left = 1.0
-	btn.anchor_right = 1.0
-	btn.anchor_top = 1.0
-	btn.anchor_bottom = 1.0
-	btn.offset_left = -232
-	btn.offset_right = -20
-	btn.offset_top = -(HUD_BAR_HEIGHT + 48)  # 40px tall, an 8px gap above the bar
-	btn.offset_bottom = -(HUD_BAR_HEIGHT + 8)
-	btn.button_down.connect(_on_finish_hold_start)
-	btn.button_up.connect(_on_finish_hold_cancel)
-	add_child(btn)
+	btn.tooltip_text = UITheme.wrap_tip("Hold to end the run (or hold F).")
+	_style_button(btn, UITheme.AFTERCARE_EDGE)
+	btn.visible = false
+	_hud_layout.add_child(btn)
+	_hud_layout.move_child(btn, _menu_btn.get_index())
+	btn.button_down.connect(_begin_finish_hold)
+	btn.button_up.connect(_cancel_finish_hold)
+	btn.mouse_entered.connect(_show_hud)
 	_finish_btn = btn
 
 
-# Fades the FINISH button with the HUD's idle cycle (alpha only) — it disappears when the UI does. Kept
-# clickable at rest (alpha, not visibility) so a hold in progress as it fades still resolves on release.
+# Offered only where "I came" leads to aftercare: a round that links its own, or any round when the journey
+# has a default aftercare. Never as a bare "end the run" — with no aftercare to play, there's no button.
+func _show_finish_button() -> void:
+	if is_instance_valid(_finish_btn):
+		_finish_btn.visible = _aftercare_entry() != "" and not _finishing
+
+
+# Fog hides the whole HUD bar, but "I came" must always be reachable — so while Fog is up the SAME button
+# moves out of the bar to the bottom-right corner (roughly where it sat in the bar), and moves back when
+# Fog lifts. Only its parent and placement change; its handlers and the F key don't.
+func _set_finish_button_floating(floating: bool) -> void:
+	if not is_instance_valid(_finish_btn) or floating == _finish_btn_floating:
+		return
+	_finish_btn_floating = floating
+	_finish_btn.get_parent().remove_child(_finish_btn)
+	if floating:
+		add_child(_finish_btn)
+		# Zero-size anchor at the corner, growing up and left to the button's own size.
+		_finish_btn.anchor_left = 1.0
+		_finish_btn.anchor_right = 1.0
+		_finish_btn.anchor_top = 1.0
+		_finish_btn.anchor_bottom = 1.0
+		_finish_btn.offset_left = -FINISH_FLOAT_MARGIN.x
+		_finish_btn.offset_right = -FINISH_FLOAT_MARGIN.x
+		_finish_btn.offset_top = -FINISH_FLOAT_MARGIN.y
+		_finish_btn.offset_bottom = -FINISH_FLOAT_MARGIN.y
+		_finish_btn.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		_finish_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		# Solid over the video; the bar's subtle style relies on the bar behind it.
+		UITheme.style_button(_finish_btn, UITheme.AFTERCARE_EDGE)
+		_finish_btn.modulate.a = 1.0
+	else:
+		_hud_layout.add_child(_finish_btn)
+		_hud_layout.move_child(_finish_btn, _menu_btn.get_index())
+		_style_button(_finish_btn, UITheme.AFTERCARE_EDGE)
+		_finish_btn.modulate.a = 1.0
+
+
+# While floating, the button fades on the HUD's idle cycle like the warmup skip: alpha only, never gated
+# on Fog, and clickable even faded so a player reaching for it mid-fade isn't refused. Docked in the bar,
+# it simply goes with the bar.
 func _fade_finish_button(shown: bool) -> void:
-	if not is_instance_valid(_finish_btn):
+	if not _finish_btn_floating or not is_instance_valid(_finish_btn):
 		return
 	var to: float = 1.0 if shown else 0.0
 	if is_equal_approx(_finish_btn.modulate.a, to):
@@ -2252,74 +2312,164 @@ func _fade_finish_button(shown: bool) -> void:
 	create_tween().tween_property(_finish_btn, "modulate:a", to, 0.3)
 
 
-func _remove_finish_button() -> void:
-	_cancel_finish_hold()
+# Round over (or "I came" confirmed): the button is a during-round affordance and doesn't carry into
+# overlays. A hold still in progress goes with it.
+func _hide_finish_button() -> void:
 	if is_instance_valid(_finish_btn):
-		_finish_btn.queue_free()
-	_finish_btn = null
-
-
-func _on_finish_hold_start() -> void:
-	if _finishing:
-		return
+		_finish_btn.visible = false
 	_cancel_finish_hold()
+
+
+# Whether an "I came" hold may start right now. Never while Options is up (its text fields take an "f"),
+# while an authored outcome moment holds, or once the round has started ending — each of those runs its
+# own teardown, and a second one racing it would play the wrong node.
+func _finish_available() -> bool:
+	return (
+		is_instance_valid(_finish_btn)
+		and _finish_btn.visible
+		and not _finishing
+		and not _options_open
+		and not _outcome_playing
+		and not _round_ended_guard
+	)
+
+
+# Hold started (button down / F down). Not alongside the exit hold — the two would race to end the run.
+func _begin_finish_hold() -> void:
+	if not _finish_available() or _finish_hold_tween != null or _exit_hold_tween != null:
+		return
+	var parts: Dictionary = _make_hold_card(_finish_hold_text(), UITheme.AFTERCARE_EDGE)
+	_finish_hold_layer = parts["layer"]
+	_finish_hold_fill = parts["fill"]
 	_finish_hold_tween = create_tween()
-	_finish_hold_tween.tween_method(_set_finish_fill, 0.0, 1.0, FINISH_HOLD_SECS)
-	_finish_hold_tween.finished.connect(_finish_journey)
+	_finish_hold_tween.tween_method(
+		func(t: float) -> void: _set_hold_fill(_finish_hold_fill, t), 0.0, 1.0, FINISH_HOLD_SECS
+	)
+	_finish_hold_tween.finished.connect(_complete_finish_hold)
 
 
-func _on_finish_hold_cancel() -> void:
-	if _finishing:
-		return
-	_cancel_finish_hold()
-	_set_finish_fill(0.0)  # reset the fill label
-
-
+# Released early (button up / F up), or the round moved on underneath it: nothing happens.
 func _cancel_finish_hold() -> void:
 	if _finish_hold_tween != null and _finish_hold_tween.is_valid():
 		_finish_hold_tween.kill()
 	_finish_hold_tween = null
+	_hide_finish_hold_card()
 
 
-# Draws the hold progress into the button label as a small filling bar.
-func _set_finish_fill(t: float) -> void:
-	if not is_instance_valid(_finish_btn):
-		return
-	if t <= 0.0:
-		_finish_btn.text = _FINISH_IDLE_TEXT
-		return
-	var filled: int = clampi(int(round(t * 6.0)), 0, 6)
-	_finish_btn.text = "%s%s" % ["▰".repeat(filled), "▱".repeat(6 - filled)]
+func _complete_finish_hold() -> void:
+	_finish_hold_tween = null
+	_hide_finish_hold_card()
+	# Re-checked: Options opening or the round starting to end during the hold voids it.
+	if _finish_available():
+		_finish_journey()
 
 
-# FINISH confirmed: discard the in-progress round (no payout — the skip semantic), tear down any round
-# effects, then JUMP to the designated aftercare node and play it through the normal pipeline. That
-# node is the ENTRY to an off-graph aftercare SEQUENCE — its out-edges advance through the chain like
-# any node, so a "you lose" storyboard → aftercare round → … plays in turn until a node with no exit
-# reaches "done" → the end screen. No node designated → straight to the end screen. `_finishing` guards
-# against a re-trigger from a late button_up (and suppresses the button on the aftercare rounds, so it
-# can't loop).
-func _finish_journey() -> void:
+func _hide_finish_hold_card() -> void:
+	if is_instance_valid(_finish_hold_layer):
+		_finish_hold_layer.queue_free()
+	_finish_hold_layer = null
+	_finish_hold_fill = null
+
+
+# What the hold card says this round: the round's own aftercare link's text, else the journey's hold text,
+# else the stock line.
+func _finish_hold_text() -> String:
+	var text: String = _authored_hold_text()
+	return (text if text != "" else JourneyData.DEFAULT_FINISH_HOLD_TEXT).to_upper()
+
+
+# The hold text an author actually wrote for the current round — its own link's, else the journey's —
+# or "" when neither did. The end screen titles a given-in run with it (falling back to the button label,
+# since the stock "HOLD TO FINISH" makes no sense as a title).
+func _authored_hold_text() -> String:
+	var item: Dictionary = GameState.CurrentItem()
+	var text: String = ""
+	if str(item.get(JourneyGraph.AFTERCARE_KEY, "")) == _aftercare_entry():
+		text = str(item.get(JourneyGraph.AFTERCARE_TEXT_KEY, "")).strip_edges()
+	return text if text != "" else _finish_hold_journey_text
+
+
+# Where "I came" leads from the current round: its own aftercare link, else the journey's default
+# aftercare, else "" — no button in that round. Only real aftercare entries count, so a stale link falls
+# through to the default rather than nowhere.
+func _aftercare_entry() -> String:
+	var own: String = str(GameState.CurrentItem().get(JourneyGraph.AFTERCARE_KEY, ""))
+	for entry: String in [own, _finish_node_id]:
+		# Only a real aftercare entry: a link that points into the journey itself (a hand-edited or
+		# drifted rendition) would otherwise turn "I came" into a jump to any node.
+		if entry != "" and _aftercare_node_ids.has(entry):
+			return entry
+	return ""
+
+
+# The played graph's aftercare nodes, minus anything the journey itself reaches — so an entry that sits on
+# the main path never makes journey rounds count as aftercare. The default aftercare counts only when the
+# saved journey has it active (`_allow_finish`); otherwise rounds' own links are the only way in.
+func _played_aftercare_ids() -> Dictionary:
+	var nodes: Dictionary = GameState.Journey.get("nodes", {})
+	var graph: Dictionary = {"start": str(GameState.Journey.get("start", "")), "nodes": nodes}
+	var journey: Dictionary = {}
+	if nodes.has(graph["start"]):
+		journey = JourneyGraph.reachable_ids(graph, graph["start"])
+	var ids: Dictionary = {}
+	var default_entry: String = _finish_node_id if _allow_finish else ""
+	for id: String in JourneyGraph.aftercare_ids(graph, default_entry):
+		if not journey.has(id):
+			ids[id] = true
+	return ids
+
+
+# The run is over by the player's own hand: from here no "I came" button, aftercare banks no score, and the
+# run records like a quit at this round. Entered by completing the hold, or by loading a node that is
+# aftercare (a resume or a test play landing inside it) — the latter can't know the round given in at, so
+# it records where the run stands.
+func _mark_run_given_in() -> void:
 	if _finishing:
 		return
 	_finishing = true
-	_cancel_finish_hold()
-	_remove_finish_button()
-	# Played while the round is still on screen behind it, before anything is torn down.
+	# Read now, while the round given in at is still current — its own link's text names the ending.
+	var authored: String = _authored_hold_text()
+	_finish_title = authored if authored != "" else _finish_label
+	_finish_rounds_total = GameState.TotalRounds()
+	_finish_rounds_done = clampi(GameState.RoundNumber, 0, _finish_rounds_total)
+
+
+# "I came" held through: stop the round FIRST, one way — the clip freezes on its frame, the script and the
+# device stop now — then play the authored gave-in moment over it, discard the round (no payout, the skip
+# semantic), tear down its effects, and JUMP to the aftercare entry (see _aftercare_entry). That node is the
+# ENTRY to an off-graph aftercare SEQUENCE — its out-edges advance through the chain like any node, until
+# a node with no exit reaches "done" → the end screen. Nothing ever resumes the stopped round, so there is
+# no pause state to keep. `_finishing` guards a re-trigger (and hides the button in aftercare).
+func _finish_journey() -> void:
+	if _finishing:
+		return
+	var entry: String = _aftercare_entry()  # read while the round is still the current node
+	_mark_run_given_in()
+	_finish_tearing_down = true
+	# A natural end (clip finish / end timer) must not run alongside this teardown.
+	_round_ended_guard = true
+	_hide_finish_button()
+	_video.paused = true
+	_end_timer.stop()
+	FunscriptPlayer.Stop()
+	_handy_stop()
+	# The effect clock runs again for whatever plays next, and a pause the player was already in doesn't
+	# muffle the gave-in moment (see _update_muffle).
+	InventoryService.SetPaused(_effect_lingering)
+	_update_muffle()
 	await _play_outcome(RoundTimeline.ON_GAVE_IN)
 	# Same flag as running out of attempts raises: losing is losing, however it happened.
 	_apply_outcome_flag("lost_flag")
 	_finish_round_timeline()  # this path never reaches _on_round_ended, so the encounter is dropped here
 	_video.stop()
-	_end_timer.stop()
-	FunscriptPlayer.Stop()
 	ScoreService.DiscardRound()  # the in-progress round banks nothing (same as a skip)
 	# Same hold as the natural round end: this clears a Fog effect, and the restore belongs
 	# under the transition rather than in front of the player.
 	_hud_held_for_transition = true
 	_exit_boss_mode()  # drop any active round effects / frames before leaving
-	if _finish_node_id != "" and GameState.JumpToFinish(_finish_node_id):
+	if entry != "" and GameState.JumpToFinish(entry):
 		await _transition_swap(_load_current_item)  # fade into the aftercare node
+		_finish_tearing_down = false  # the aftercare node owns pausing now
 	else:
 		_transition_to_end_screen()
 
@@ -2329,6 +2479,7 @@ func _finish_journey() -> void:
 func _begin_exit_hold() -> void:
 	if _exiting:
 		return
+	_cancel_finish_hold()  # one hold at a time — both would end the run
 	_cancel_exit_hold()
 	_show_exit_hold_overlay()
 	_exit_hold_tween = create_tween()
@@ -2355,9 +2506,16 @@ func _confirm_exit() -> void:
 # A centered "keep holding to exit" card with a filling bar, on its own layer above the HUD.
 func _show_exit_hold_overlay() -> void:
 	_hide_exit_hold_overlay()
+	var parts: Dictionary = _make_hold_card("HOLD TO EXIT TO MENU", UITheme.MAGENTA)
+	_exit_hold_layer = parts["layer"]
+	_exit_hold_fill = parts["fill"]
+
+
+# The centred hold-to-confirm card both holds share (exit, "I came"): a line of text over a filling bar,
+# on its own layer above the HUD, ignoring the mouse so it never eats the release. Returns {layer, fill}.
+func _make_hold_card(text: String, accent: Color) -> Dictionary:
 	var layer: CanvasLayer = CanvasLayer.new()
 	layer.layer = 4
-	_exit_hold_layer = layer
 	add_child(layer)
 	var center: CenterContainer = CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -2366,7 +2524,7 @@ func _show_exit_hold_overlay() -> void:
 	var card: PanelContainer = PanelContainer.new()
 	var sb: StyleBoxFlat = StyleBoxFlat.new()
 	sb.bg_color = Color(0.04, 0.0, 0.06, 0.92)
-	sb.border_color = UITheme.MAGENTA
+	sb.border_color = accent
 	sb.set_border_width_all(1)
 	sb.set_corner_radius_all(10)
 	sb.content_margin_left = 22
@@ -2379,16 +2537,16 @@ func _show_exit_hold_overlay() -> void:
 	vb.add_theme_constant_override("separation", 10)
 	card.add_child(vb)
 	var lbl: Label = Label.new()
-	lbl.text = "HOLD TO EXIT TO MENU"
+	lbl.text = text
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UITheme.style_label(lbl, UITheme.MAGENTA, 15, true)
+	UITheme.style_label(lbl, accent, 15, true)
 	vb.add_child(lbl)
 	var fill: Label = Label.new()
 	fill.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	UITheme.style_label(fill, UITheme.WHITE_SOFT, 18, false)
 	vb.add_child(fill)
-	_exit_hold_fill = fill
-	_set_exit_hold_fill(0.0)
+	_set_hold_fill(fill, 0.0)
+	return {"layer": layer, "fill": fill}
 
 
 func _hide_exit_hold_overlay() -> void:
@@ -2399,10 +2557,15 @@ func _hide_exit_hold_overlay() -> void:
 
 
 func _set_exit_hold_fill(t: float) -> void:
-	if not is_instance_valid(_exit_hold_fill):
+	_set_hold_fill(_exit_hold_fill, t)
+
+
+# Draws a hold card's progress (0..1) as a small filling bar.
+func _set_hold_fill(fill: Label, t: float) -> void:
+	if not is_instance_valid(fill):
 		return
 	var filled: int = clampi(int(round(t * 8.0)), 0, 8)
-	_exit_hold_fill.text = "%s%s" % ["▰".repeat(filled), "▱".repeat(8 - filled)]
+	fill.text = "%s%s" % ["▰".repeat(filled), "▱".repeat(8 - filled)]
 
 
 # Same exit as the Bail Out item: no payout, marked on the route. One skip semantic, not two.
@@ -2559,8 +2722,10 @@ func _reconcile_hud_hide() -> void:
 	if want_hidden == _curse_hud_hidden:
 		return
 	_curse_hud_hidden = want_hidden
+	_set_finish_button_floating(want_hidden)  # "I came" stays reachable through Fog
 	if want_hidden:
 		_hud.visible = false
+		_hide_timer.start(SettingsService.get_hud_hide_delay())  # the floating button's idle fade
 	else:
 		_show_hud()  # restore + rejoin the idle-fade cycle
 
@@ -2846,12 +3011,16 @@ func _load_video(path: String) -> void:
 		_start_no_video_fallback()
 		return
 	FunscriptPlayer.Play()
+	if _paused:
+		FunscriptPlayer.Pause()  # paused during that frame — the script must not start behind it
 
 
 func _start_no_video_fallback() -> void:
 	_awaiting_new_clip = false  # nothing is coming for a transition to wait on
 	# No video: use funscript length to drive a timer so the round still advances.
 	FunscriptPlayer.Play()
+	if _paused:
+		FunscriptPlayer.Pause()  # paused while the clip was failing to open
 	var dur_ms: int = _active_round_length_ms
 	if dur_ms > 0:
 		_end_timer.wait_time = dur_ms / 1000.0
@@ -2874,6 +3043,9 @@ func _on_round_ended(skipped: bool = false) -> void:
 	if _round_ended_guard or _outcome_playing:
 		return
 	_round_ended_guard = true
+	# Before the defeat moment below, not after it: during that hold "I came" would start a second
+	# teardown racing this one. (_finish_available also refuses once the guard is up.)
+	_hide_finish_button()
 
 	# The fight's verdict is read HERE, before anything is torn down. _finish_round_timeline() below
 	# drops the timeline and the scheduler, and _exit_boss_mode() clears _is_boss_round — so asking
@@ -2888,7 +3060,6 @@ func _on_round_ended(skipped: bool = false) -> void:
 		_bank_boss_progress()
 
 	_remove_warmup_skip_button()
-	_remove_finish_button()  # FINISH is a during-round affordance; it doesn't carry into overlays
 	_finish_round_timeline()  # drop anything the authored encounter still holds
 	_handy_stop()  # the device would otherwise keep playing into the transition
 	# Extract the name here in GDScript where Dictionary access is reliable,
@@ -2909,7 +3080,8 @@ func _on_round_ended(skipped: bool = false) -> void:
 	GameState.set_meta("_round_names", _names)
 	# A skipped round banks nothing: the partial score is discarded rather than added, so
 	# LastRoundScore still reports the last round actually played (score-based forks read it).
-	if skipped:
+	# Neither does an aftercare round: the score froze when the player gave in.
+	if skipped or _finishing:
 		ScoreService.DiscardRound()
 	else:
 		ScoreService.EndRound()
@@ -3347,7 +3519,10 @@ func _go_to_menu() -> void:
 	# Quitting mid-journey is an abandoned run — unless we already accounted for
 	# this run (completed it, or left via Save & Quit to resume later).
 	if not _run_accounted:
-		_record_run(false)
+		if _finishing:
+			_record_run(false, _finish_rounds_done, _finish_rounds_total)  # left during aftercare
+		else:
+			_record_run(false)
 	Transition.change_scene("res://scenes/main/Main.tscn")
 
 
@@ -3365,8 +3540,18 @@ func _transition_to_end_screen() -> void:
 	# (marker included) and is cleared by the next generate or the next app start.
 	if RandomizerBaker.active():
 		RandomizerBaker.session_ended()
-	_record_run(true)  # completed run → scoreboard
-	_capture_completion_carryover()  # feature #5: stash Part-1 end-state so an installed sequel can resume
+	if _finishing:
+		# "I came" ended this run, whatever aftercare played since: it records like a quit at the round
+		# given in at — never a completion — and leaves any Part-1 carryover alone (neither written nor
+		# consumed), so giving up can neither unlock a sequel nor spend one.
+		_record_run(false, _finish_rounds_done, _finish_rounds_total)
+		GameState.set_meta(
+			"_run_gave_in",
+			{"title": _finish_title, "round": _finish_rounds_done, "total": _finish_rounds_total}
+		)
+	else:
+		_record_run(true)  # completed run → scoreboard
+		_capture_completion_carryover()  # feature #5: stash Part-1 end-state so an installed sequel can resume
 	JourneySaveService.delete_save(GameState.Journey.get("folder_name", ""))
 	Transition.change_scene("res://scenes/end_screen/EndScreen.tscn")
 
@@ -3403,8 +3588,10 @@ func _capture_completion_carryover() -> void:
 # Records this run's outcome to the journey's local scoreboard. `completed` is
 # true when the journey reached the end screen, false for an abandoned (quit)
 # run — which logs the score-so-far and how far the player got. No-op in test
-# mode; sets _run_accounted so a later menu exit can't double-record.
-func _record_run(completed: bool) -> void:
+# mode; sets _run_accounted so a later menu exit can't double-record. `rounds_done` / `rounds_total`
+# (≥ 0) override where the run is said to have stopped — "I came" records the round it was pressed in,
+# not wherever its aftercare ended up.
+func _record_run(completed: bool, rounds_done: int = -1, rounds_total: int = -1) -> void:
 	_run_accounted = true
 	if _test_mode:
 		return
@@ -3414,8 +3601,10 @@ func _record_run(completed: bool) -> void:
 	# Persist the nodes reached this run into the journey's permanent discovered set (drives the mystery
 	# preview's reveal). Accumulates across every run, completed or abandoned.
 	ScoreboardService.merge_discovered(folder, GameState.DiscoveredNodes())
-	var total: int = GameState.TotalRounds()
-	var reached: int = total if completed else clampi(GameState.RoundNumber, 0, total)
+	var total: int = rounds_total if rounds_total >= 0 else GameState.TotalRounds()
+	var reached: int = total
+	if not completed:
+		reached = clampi(rounds_done if rounds_done >= 0 else GameState.RoundNumber, 0, total)
 	var rank: int = (
 		ScoreboardService
 		. add_run(
@@ -3802,12 +3991,24 @@ func _on_options_closed() -> void:
 
 
 func _toggle_pause() -> void:
+	# The round "I came" ended is past pausing.
+	if _finish_tearing_down:
+		return
 	# A "Restless" curse forbids pausing this round.
 	if _curse_no_pause and not _paused:
 		_show_toast("✕  RESTLESS — CAN'T PAUSE")
 		return
-	_paused = not _paused
+	_set_paused(not _paused)
+
+
+# Pauses or resumes everything the round drives — video, end timer, scripts, device, effect clock —
+# with no curse check: the "I came" card stops play through here too, and it isn't a rest.
+func _set_paused(on: bool) -> void:
+	if on == _paused:
+		return
+	_paused = on
 	_video.paused = _paused
+	_end_timer.paused = _paused  # funscript-only rounds end on this timer, not the video clock
 	# Freeze the active-effect clock while paused — or for the whole round under a
 	# Lingering boon, so unpausing doesn't restart the countdown.
 	InventoryService.SetPaused(_paused or _effect_lingering)
@@ -3914,6 +4115,10 @@ func _handy_begin_round(fs_path: String) -> void:
 		_show_toast("✕  HANDY SYNC FAILED — ROUND PLAYS WITHOUT IT", 5.0)
 		return
 	_handy_ready = true
+	# The setup above takes network round-trips; a pause that landed meanwhile found _handy_ready false
+	# and couldn't reach the device, so honour it now rather than leave the Handy stroking behind it.
+	if _paused:
+		_handy_pause()
 	await HandyService.set_slider(SettingsService.get_range_min(), SettingsService.get_range_max())
 
 
@@ -5037,7 +5242,9 @@ var _muffle_tween: Tween = null
 
 
 func _update_muffle() -> void:
-	var want: bool = _paused or _options_open
+	# Not while "I came" tears its round down: that round is held paused, but the gave-in moment plays
+	# over it and must be heard.
+	var want: bool = (_paused or _options_open) and not _finish_tearing_down
 	if want == _muffle_on:
 		return
 	_muffle_on = want
@@ -5131,12 +5338,16 @@ func _show_hud(fade: bool = false) -> void:
 	# The warmup skip fades in and out with the HUD, but is NOT subject to the curse below: a
 	# player told they can leave a round must always be able to.
 	_fade_warmup_skip_button(true)
-	_fade_finish_button(true)  # fades in with the HUD (stays clickable at rest for an in-progress hold)
+	_fade_finish_button(true)  # only acts while Fog has it floating — likewise never Fog-gated
 	# A "Fog" curse hides the HUD for the whole round — don't let hover / timers
 	# reveal it. A shop does the same for as long as it is open, and round teardown does
 	# until the transition is opaque.
 	if _curse_hud_hidden or _hud_suppressed or _hud_held_for_transition:
 		_hud.visible = false
+		# Under Fog the idle timer still runs, so what floats outside the bar (warmup skip, "I came")
+		# and the cursor fade back out after activity instead of staying up for the rest of the round.
+		if _curse_hud_hidden:
+			_hide_timer.start(SettingsService.get_hud_hide_delay())
 		return
 	_hud.visible = true
 	if fade:
@@ -5268,6 +5479,11 @@ func _input(event: InputEvent) -> void:
 					if not _is_overlay_open:
 						_toggle_pause()
 						get_viewport().set_input_as_handled()
+				KEY_F:
+					# F: hold for "I came" (rounds that offer it) — released early, it cancels (key-up below).
+					if not _is_overlay_open and _finish_available():
+						_begin_finish_hold()
+						get_viewport().set_input_as_handled()
 				KEY_TAB:
 					# Tab: toggle inventory panel. Boss rounds allow it once they carry an authored
 					# encounter that permits it — see _items_allowed_here.
@@ -5342,6 +5558,8 @@ func _input(event: InputEvent) -> void:
 		elif not key_event.pressed and key_event.keycode == KEY_ESCAPE:
 			# Esc released — abort an in-progress hold-to-exit (a no-op when none is running).
 			_cancel_exit_hold()
+		elif not key_event.pressed and key_event.keycode == KEY_F:
+			_cancel_finish_hold()  # F released before the "I came" hold filled
 
 
 # ---------------------------------------------------------------------------
@@ -5362,6 +5580,8 @@ var _counter_tweens: Dictionary = {}
 
 
 func _on_score_changed(total: int) -> void:
+	if _finishing:
+		return  # frozen at "I came": aftercare strokes score nothing, so the HUD mustn't count them up
 	_animate_counter(_score_lbl, _score_shown, total, "%d PTS", UITheme.MAGENTA, false)
 	_score_shown = total
 
