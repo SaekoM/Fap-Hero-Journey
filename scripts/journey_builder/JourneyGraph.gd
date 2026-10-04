@@ -12,6 +12,8 @@ extends RefCounted
 #     "data": Dictionary,   # item payload — the round/shop/storyboard fields, or for
 #                           #   a fork: title/description/resolution/cond_metric/default_path
 #     "out":  Array,        # outgoing edges; 0 = an end, 1 = linear, N = fork choices
+#     "aftercare": <id>,    # OPTIONAL, rounds only — the entry of this round's own aftercare
+#                           #   sequence, played when the player presses "I came" here
 #   }
 #   Edge = { "to": <id>, ...fork-choice config: name/description/image_path/
 #                            weight/threshold/required_item/cost }
@@ -29,6 +31,17 @@ extends RefCounted
 # ---------------------------------------------------------------------------
 
 const FORK_TYPE := "fork"
+# Node-level key (beside `out`) holding a round's aftercare link. Deliberately NOT an out-edge: the main
+# walk never follows it — only the "I came" button does — so it can't make an aftercare node look
+# reachable to anything that walks the journey.
+const AFTERCARE_KEY := "aftercare"
+# Optional text that link brings with it: what the "I came" hold overlay says in this round (blank = the
+# journey's hold text). Belongs to the link — set, carried and dropped together with AFTERCARE_KEY.
+const AFTERCARE_TEXT_KEY := "aftercare_text"
+# Builder-only marker on a PARENT round whose aftercare link a rendition being authored has set: its value
+# is the parent's own link, {to, text} ("" = none), restored if the overlay link is removed. Its presence
+# is what makes the link the rendition's to save. Never serialized (to_json writes only the link keys).
+const AFTERCARE_PARENT_MARK := "_aftercare_parent"
 
 
 # Migrates a scanned (nested tree) journey — JourneyScanner.parse_journey output with
@@ -244,6 +257,76 @@ static func reachable_ids(graph: Dictionary, from_id: String = "") -> Dictionary
 	return seen
 
 
+# The aftercare entry a round links to itself ("" when it has none, or `id` isn't a round). Only rounds
+# carry one: the "I came" button only exists during rounds.
+static func aftercare_of(graph: Dictionary, id: String) -> String:
+	var n: Dictionary = node(graph, id)
+	if str(n.get("type", "")) != "round":
+		return ""
+	return str(n.get(AFTERCARE_KEY, ""))
+
+
+# The hold text a round's own aftercare link brings ("" when it has none, or `id` isn't a round).
+static func aftercare_text_of(graph: Dictionary, id: String) -> String:
+	if aftercare_of(graph, id) == "":
+		return ""
+	return str((node(graph, id) as Dictionary).get(AFTERCARE_TEXT_KEY, ""))
+
+
+# Sets a round's aftercare link and its hold text, in place ("" text = the journey's hold text).
+static func set_aftercare_link(n: Dictionary, to: String, text: String) -> void:
+	n[AFTERCARE_KEY] = to
+	if text.strip_edges() != "":
+		n[AFTERCARE_TEXT_KEY] = text
+	else:
+		n.erase(AFTERCARE_TEXT_KEY)
+
+
+# Remembers a PARENT round's own link before a rendition being authored overrides it — once, so a second
+# override still restores the parent's, not the first override's.
+static func mark_parent_aftercare(n: Dictionary) -> void:
+	if not n.has(AFTERCARE_PARENT_MARK):
+		n[AFTERCARE_PARENT_MARK] = {
+			"to": str(n.get(AFTERCARE_KEY, "")), "text": str(n.get(AFTERCARE_TEXT_KEY, ""))
+		}
+
+
+# Removes a round's aftercare link and its text, in place. A link a rendition being authored set on its
+# PARENT's round carries the parent's own link (AFTERCARE_PARENT_MARK) — that comes back instead of none.
+static func drop_aftercare_link(n: Dictionary) -> void:
+	var parent: Variant = n.get(AFTERCARE_PARENT_MARK, {})
+	n.erase(AFTERCARE_PARENT_MARK)
+	n.erase(AFTERCARE_KEY)
+	n.erase(AFTERCARE_TEXT_KEY)
+	if parent is Dictionary and str((parent as Dictionary).get("to", "")) != "":
+		set_aftercare_link(
+			n, str((parent as Dictionary)["to"]), str((parent as Dictionary).get("text", ""))
+		)
+
+
+# Every aftercare ENTRY in the graph that resolves to a node: each round's own link, plus the journey's
+# default (`default_id`, used by rounds without a link). Deduplicated — several rounds often share one.
+static func aftercare_entries(graph: Dictionary, default_id: String = "") -> Array:
+	var nodes: Dictionary = graph.get("nodes", {})
+	var seen: Dictionary = {}
+	if default_id != "" and nodes.has(default_id):
+		seen[default_id] = true
+	for id: String in nodes:
+		var to: String = aftercare_of(graph, id)
+		if to != "" and nodes.has(to):
+			seen[to] = true
+	return seen.keys()
+
+
+# The set of nodes that belong to an aftercare sequence: every entry and everything its out-edges lead
+# to. These are the run's ending rounds — they sit off the main journey and never lead back into it.
+static func aftercare_ids(graph: Dictionary, default_id: String = "") -> Dictionary:
+	var ids: Dictionary = {}
+	for entry: String in aftercare_entries(graph, default_id):
+		ids.merge(reachable_ids(graph, entry))
+	return ids
+
+
 # Rewires nodes' out-edges per a redirect map {node_id: target_id} — the runtime side of
 # the "skip / converge" authoring (a fork path's tail, or any node, pointing somewhere
 # other than its default successor). `target_id == ""` makes the node an end. No-op on
@@ -305,6 +388,11 @@ static func _skip_markers(to: String, redirect: Dictionary) -> String:
 #   "dangling"    — node `id` has an out-edge whose target `to` is not a node
 #   "cycle"       — node `id` is closed onto by a back-edge (it participates in a loop)
 #   "unreachable" — node `id` can't be reached from start (it would never play)
+#   "aftercare_in_journey" — round `id` links its aftercare to `to`, a node the journey already plays
+#   "default_aftercare_in_journey" — the journey's default aftercare entry `id` is played by the journey
+#   "aftercare_rejoins" — aftercare node `id` has an out-edge back into the journey (to `to`)
+# Aftercare sequences are the run's ending rounds: they sit off the main journey and must never lead
+# back into it, so the last three block a save. `finish_id` is the journey's default aftercare entry.
 static func validate_graph(graph: Dictionary, finish_id: String = "") -> Array:
 	var issues: Array = []
 	var nodes: Dictionary = graph.get("nodes", {})
@@ -314,27 +402,64 @@ static func validate_graph(graph: Dictionary, finish_id: String = "") -> Array:
 	var start_ok: bool = start != "" and nodes.has(start)
 	if not start_ok:
 		issues.append({"kind": "no_start", "id": start})
-	# Dangling out-edges (a non-empty target that isn't a node).
+	# Dangling out-edges (a non-empty target that isn't a node), and aftercare links likewise.
 	for id: String in nodes:
 		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
 			var to: String = str(e.get("to", ""))
 			if to != "" and not nodes.has(to):
 				issues.append({"kind": "dangling", "id": id, "to": to})
+		var aftercare_to: String = aftercare_of(graph, id)
+		if aftercare_to != "" and not nodes.has(aftercare_to):
+			issues.append({"kind": "dangling", "id": id, "to": aftercare_to})
 	# Cycles (DFS three-colouring; report each node a back-edge closes onto).
 	for id: String in _find_cycle_nodes(graph):
 		issues.append({"kind": "cycle", "id": id})
-	# Unreachable nodes (only meaningful with a valid start).
-	if start_ok:
-		var reach: Dictionary = reachable_ids(graph, start)
-		# The designated finish/aftercare node lives off the main graph — reachable only via the FINISH
-		# button — so treat it (and anything it leads to) as reachable rather than flagging an island.
-		if finish_id != "" and nodes.has(finish_id):
-			for id: String in reachable_ids(graph, finish_id):
-				reach[id] = true
-		for id: String in nodes:
-			if not reach.has(id):
-				issues.append({"kind": "unreachable", "id": id})
+	if not start_ok:
+		return issues  # reachability (and so the aftercare rules) needs a valid start
+	var journey_reach: Dictionary = reachable_ids(graph, start)
+	_check_aftercare_separation(graph, finish_id, journey_reach, issues)
+	# Unreachable nodes. Aftercare sequences live off the main graph — reachable only via the "I came"
+	# button — so they count as reachable rather than being flagged as islands.
+	var reach: Dictionary = journey_reach.duplicate()
+	reach.merge(aftercare_ids(graph, finish_id))
+	for id: String in nodes:
+		if not reach.has(id):
+			issues.append({"kind": "unreachable", "id": id})
 	return issues
+
+
+# Aftercare sequences and the main journey must stay apart: no aftercare entry the journey already
+# plays, and no edge out of an aftercare sequence back into the journey. An entry that is itself in the
+# journey is reported once, at its link — the nodes after it are journey nodes too, so their edges are
+# not reported again.
+static func _check_aftercare_separation(
+	graph: Dictionary, finish_id: String, journey_reach: Dictionary, issues: Array
+) -> void:
+	var nodes: Dictionary = graph.get("nodes", {})
+	var clean_entries: Array = []
+	for id: String in nodes:
+		var to: String = aftercare_of(graph, id)
+		if to == "" or not nodes.has(to):
+			continue
+		if journey_reach.has(to):
+			issues.append({"kind": "aftercare_in_journey", "id": id, "to": to})
+		elif to not in clean_entries:
+			clean_entries.append(to)
+	if finish_id != "" and nodes.has(finish_id):
+		if journey_reach.has(finish_id):
+			issues.append({"kind": "default_aftercare_in_journey", "id": finish_id})
+		elif finish_id not in clean_entries:
+			clean_entries.append(finish_id)
+	var aftercare: Dictionary = {}
+	for entry: String in clean_entries:
+		aftercare.merge(reachable_ids(graph, entry))
+	for id: String in aftercare:
+		if journey_reach.has(id) or not nodes.has(id):
+			continue  # past the rejoin (reported at its source), or a dangling target (reported above)
+		for e: Dictionary in (nodes[id] as Dictionary).get("out", []):
+			var to: String = str(e.get("to", ""))
+			if journey_reach.has(to):
+				issues.append({"kind": "aftercare_rejoins", "id": id, "to": to})
 
 
 # The set of node ids that a back-edge closes onto — i.e. nodes that participate in a cycle.
@@ -447,6 +572,12 @@ static func to_json(graph: Dictionary) -> Dictionary:
 		if n.has("pos"):
 			var p: Vector2 = n["pos"]
 			entry["pos"] = [p.x, p.y]
+		# A round's own aftercare link; written only when set, so an unlinked node stays as it was.
+		var aftercare_to: String = str(n.get(AFTERCARE_KEY, ""))
+		if aftercare_to != "":
+			entry[AFTERCARE_KEY] = aftercare_to
+			if str(n.get(AFTERCARE_TEXT_KEY, "")) != "":
+				entry[AFTERCARE_TEXT_KEY] = str(n[AFTERCARE_TEXT_KEY])
 		nodes_arr.append(entry)
 	return {"Format": FORMAT_GRAPH, "Start": graph.get("start", ""), "Nodes": nodes_arr}
 
@@ -466,6 +597,9 @@ static func from_json(data: Dictionary) -> Dictionary:
 			var p: Array = raw["pos"]
 			if p.size() >= 2:
 				node["pos"] = Vector2(float(p[0]), float(p[1]))
+		var aftercare_to: String = str(raw.get(AFTERCARE_KEY, ""))
+		if aftercare_to != "":
+			set_aftercare_link(node, aftercare_to, str(raw.get(AFTERCARE_TEXT_KEY, "")))
 		nodes[str(raw.get("id", ""))] = node
 	var graph: Dictionary = {"start": str(data.get("Start", "")), "nodes": nodes}
 	_migrate_checkpoint_flags(graph)

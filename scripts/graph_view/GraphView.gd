@@ -129,6 +129,20 @@ var _connect_drag_to: Vector2 = Vector2.ZERO  # canvas-space cursor position (li
 var _connect_drag_target: String = ""  # node under the cursor (the drop target), or ""
 var _connect_drag_invalid: Dictionary = {}  # node ids that can't be targets (source + ancestors → would cycle)
 
+# Aftercare links (a round's "I came" target — JourneyGraph.AFTERCARE_KEY). Each round gets a second handle
+# on its RIGHT side for them, revealed on hover / selection and kept once wired; the links draw dashed
+# rose and faint, lighting up while either end is hovered or selected. Editor only — never on the map.
+const AFTERCARE_EDGE_IDX: int = -2  # edge_drawn's edge_idx for a drag from an aftercare handle
+const AFTERCARE_FAINT_ALPHA: float = 0.25  # an unfocused aftercare link's opacity
+var _aftercare_handles: Dictionary = {}  # round id -> its aftercare handle (rebuilt each layout)
+# node id -> the aftercare link edges touching it, as either end (rebuilt with the edges each layout), so a
+# hover change restyles just those instead of scanning every edge on the canvas.
+var _aftercare_edges_of: Dictionary = {}
+var _hovered_node: String = ""  # node under the cursor — reveals its handle, lights its links
+var _hovered_aftercare_handle: String = ""  # round whose aftercare handle is under the cursor
+var _journey_ids: Dictionary = {}  # nodes the main journey reaches (rebuilt each layout)
+var _aftercare_set: Dictionary = {}  # nodes inside an aftercare sequence (rebuilt each layout)
+
 # Marquee (box-select) state, in GraphView-local (screen) space.
 var _marquee_active: bool = false
 var _marquee_additive: bool = false  # Ctrl/Shift held at drag start → add to the selection
@@ -146,7 +160,7 @@ signal connect_target_picked(node_id: String)
 signal nodes_drag_started
 # An out-handle was dragged onto a target node — the builder wires source→target (edge_idx = fork
 # choice, or -1 for a regular node's single out-edge), reusing its connect validation + undo.
-signal edge_drawn(source_id: String, edge_idx: int, target_id: String)
+signal edge_drawn(source_id: String, edge_idx: int, target_id: String)  # edge_idx AFTERCARE_EDGE_IDX = an aftercare link
 
 # A sticky-note comment was clicked (a press with no drag) — the builder shows its editor.
 signal comment_clicked(index: int)
@@ -236,6 +250,11 @@ func refresh() -> void:
 	for c in _canvas.get_children():
 		c.queue_free()
 	_edges.clear()
+	# The controls that reported the hover are being freed and won't report leaving.
+	_hovered_node = ""
+	_hovered_aftercare_handle = ""
+	_aftercare_handles = {}
+	_aftercare_edges_of = {}
 
 	# Onboarding hint only while the graph has no nodes (else it overlays the graph).
 	if _empty_hint:
@@ -301,6 +320,17 @@ func _layout_graph() -> void:
 	var finish_node_id: String = (
 		str(finish_id_provider.call()) if (not map_mode and finish_id_provider.is_valid()) else ""
 	)
+	# Which side of the journey/aftercare divide each node is on — drives where the aftercare handles go
+	# and which drop targets a connect-drag refuses. The map draws no aftercare, so it skips this.
+	_journey_ids = {}
+	_aftercare_set = {}
+	_aftercare_handles = {}
+	_aftercare_edges_of = {}
+	if not map_mode:
+		var start_id: String = str(_graph_model.get("start", ""))
+		if nodes.has(start_id):
+			_journey_ids = JourneyGraph.reachable_ids(_graph_model, start_id)
+		_aftercare_set = JourneyGraph.aftercare_ids(_graph_model, finish_node_id)
 	# Group frames render at the very back, then sticky-note comments, then the nodes on top. Both are
 	# editor furniture the player map never has; image export shows them static (map_mode → no gui_input).
 	_frame_ctrls = []
@@ -362,6 +392,9 @@ func _layout_graph() -> void:
 			ctrl.gui_input.connect(_on_graph_node_gui_input.bind(id))
 		elif not map_mode and str(n.get("type", "")) in ["fork", "round"]:
 			ctrl.gui_input.connect(_on_ghost_node_gui_input.bind(id))
+		if not map_mode:
+			ctrl.mouse_entered.connect(_set_hovered_node.bind(id))
+			ctrl.mouse_exited.connect(_clear_hovered_node.bind(id))
 		_canvas.add_child(ctrl)
 		_node_ctrls[id] = ctrl
 		if _ghost_nodes.has(id):
@@ -380,6 +413,7 @@ func _layout_graph() -> void:
 		for id: String in nodes:
 			if _node_ctrls.has(id):
 				_add_out_handles(id, nodes[id], (_node_ctrls[id] as Control).position)
+				_add_aftercare_handle(id, nodes[id], (_node_ctrls[id] as Control).position)
 	var drawn: Dictionary = {}  # dedup edges that resolve to the same control pair (collapsed bars)
 	for id: String in nodes:
 		# In fog mode, hidden nodes have no control so _edge_endpoint_ctrl returns null and their edges
@@ -441,6 +475,8 @@ func _layout_graph() -> void:
 		if not map_mode:  # the region band is an editor aid — skip it on the player's (fogged) map
 			_add_loop_band(back, id, nodes)
 		_add_edge_between(lsrc, ltgt, UITheme.TOXIC_GREEN, 2.0, true)
+	if not map_mode:
+		_add_aftercare_edges(nodes)
 	_canvas.set_bands(_bands)
 	_canvas.set_edges(_edges)
 	_resize_canvas_to_content(_graph_content_size(_node_ctrls))
@@ -641,13 +677,17 @@ func _add_out_handles(node_id: String, node: Dictionary, node_pos: Vector2) -> v
 	_make_handle(node_id, -1, node_pos + Vector2(NODE_WIDTH * 0.5, NODE_HEIGHT), UITheme.EDGE)
 
 
-# One out-handle nub (a small circle straddling the bottom edge). Dragging it starts a connect-drag.
-func _make_handle(node_id: String, edge_idx: int, center: Vector2, color: Color) -> void:
+# One out-handle nub (a small circle straddling a node edge). Dragging it starts a connect-drag.
+func _make_handle(node_id: String, edge_idx: int, center: Vector2, color: Color) -> Panel:
 	var h: Panel = Panel.new()
 	h.size = Vector2(HANDLE_SIZE, HANDLE_SIZE)
 	h.position = center - Vector2(HANDLE_SIZE * 0.5, HANDLE_SIZE * 0.5)
 	h.mouse_filter = Control.MOUSE_FILTER_STOP
-	h.tooltip_text = "Drag to connect this node to another"
+	h.tooltip_text = (
+		'Drag onto this round\'s aftercare — what "I came" plays from here'
+		if edge_idx == AFTERCARE_EDGE_IDX
+		else "Drag to connect this node to another"
+	)
 	var s: StyleBoxFlat = StyleBoxFlat.new()
 	s.bg_color = Color(0.04, 0.0, 0.06, 0.98)
 	s.border_color = color
@@ -663,6 +703,147 @@ func _make_handle(node_id: String, edge_idx: int, center: Vector2, color: Color)
 	h.add_theme_stylebox_override("panel", s)
 	h.gui_input.connect(_on_handle_gui_input.bind(node_id, edge_idx, center))
 	_canvas.add_child(h)
+	return h
+
+
+# The aftercare handle on a round's RIGHT edge — where its "I came" link starts. Only journey rounds get
+# one: a round inside an aftercare sequence never shows the button (the run is already ending). Invisible
+# (alpha 0, still hoverable) until the round is hovered or selected; always shown once wired.
+func _add_aftercare_handle(node_id: String, node: Dictionary, node_pos: Vector2) -> void:
+	if str(node.get("type", "")) != "round" or _aftercare_set.has(node_id):
+		return
+	var center: Vector2 = node_pos + Vector2(NODE_WIDTH, NODE_HEIGHT * 0.5)
+	var h: Panel = _make_handle(node_id, AFTERCARE_EDGE_IDX, center, UITheme.AFTERCARE_EDGE)
+	h.mouse_entered.connect(_set_hovered_aftercare_handle.bind(node_id))
+	h.mouse_exited.connect(_clear_hovered_aftercare_handle.bind(node_id))
+	_aftercare_handles[node_id] = h
+	_update_aftercare_handle(node_id)
+
+
+func _update_aftercare_handle(node_id: String) -> void:
+	var h: Variant = _aftercare_handles.get(node_id)
+	if not is_instance_valid(h):
+		return
+	var shown: bool = (
+		JourneyGraph.aftercare_of(_graph_model, node_id) != ""
+		or _aftercare_focused(node_id)
+		or (_connect_drag_active and _connect_drag_source == node_id)
+	)
+	var handle: Panel = h
+	handle.modulate.a = 1.0 if shown else 0.0
+
+
+# Hovered or selected — the state that reveals a round's aftercare handle and lights the links at it.
+func _aftercare_focused(node_id: String) -> bool:
+	return (
+		node_id == _hovered_node
+		or node_id == _hovered_aftercare_handle
+		or _selected_ids.has(node_id)
+	)
+
+
+func _set_hovered_node(node_id: String) -> void:
+	var previous: String = _hovered_node
+	_hovered_node = node_id
+	_refresh_aftercare_focus([previous, node_id])
+
+
+func _clear_hovered_node(node_id: String) -> void:
+	if _hovered_node == node_id:
+		_hovered_node = ""
+		_refresh_aftercare_focus([node_id])
+
+
+func _set_hovered_aftercare_handle(node_id: String) -> void:
+	var previous: String = _hovered_aftercare_handle
+	_hovered_aftercare_handle = node_id
+	_refresh_aftercare_focus([previous, node_id])
+
+
+func _clear_hovered_aftercare_handle(node_id: String) -> void:
+	if _hovered_aftercare_handle == node_id:
+		_hovered_aftercare_handle = ""
+		_refresh_aftercare_focus([node_id])
+
+
+# Re-applies hover focus for just the nodes whose hover state changed (`ids`): their handles, and the
+# aftercare links touching them. Hover changes far too often to rebuild the canvas for — or even to walk
+# it — so this only redraws when one of those nodes actually has a link to restyle. Selection changes
+# relayout anyway, which restyles everything from scratch.
+func _refresh_aftercare_focus(ids: Array) -> void:
+	var restyled: bool = false
+	for id: String in ids:
+		if id == "":
+			continue
+		_update_aftercare_handle(id)
+		for e: Dictionary in _aftercare_edges_of.get(id, []):
+			e["color"] = _aftercare_edge_color(str(e["aftercare_from"]), str(e["aftercare_to"]))
+			restyled = true
+	if restyled:
+		_canvas.queue_redraw()
+
+
+func _aftercare_edge_color(from_id: String, to_id: String) -> Color:
+	var c: Color = UITheme.AFTERCARE_EDGE
+	if not (_aftercare_focused(from_id) or _aftercare_focused(to_id)):
+		c.a *= AFTERCARE_FAINT_ALPHA
+	return c
+
+
+# One dashed link per round that has an aftercare entry, leaving from its right-side handle.
+func _add_aftercare_edges(nodes: Dictionary) -> void:
+	for id: String in nodes:
+		var to: String = JourneyGraph.aftercare_of(_graph_model, id)
+		if to == "":
+			continue
+		var src_ctrl: Control = _edge_endpoint_ctrl(id)
+		var tgt_ctrl: Control = _edge_endpoint_ctrl(to)
+		if src_ctrl == null or tgt_ctrl == null or src_ctrl == tgt_ctrl:
+			continue
+		var route: Dictionary = _aftercare_route(src_ctrl, tgt_ctrl)
+		var edge: Dictionary = {
+			"points": route["points"],
+			"arrow_dir": route["arrow_dir"],
+			"color": _aftercare_edge_color(id, to),
+			"width": 2.0,
+			"dashed": true,
+			"aftercare_from": id,
+			"aftercare_to": to,
+		}
+		_edges.append(edge)
+		# Indexed under both ends — hovering either one lights the link.
+		for end_id: String in [id, to]:
+			if not _aftercare_edges_of.has(end_id):
+				_aftercare_edges_of[end_id] = []
+			(_aftercare_edges_of[end_id] as Array).append(edge)
+
+
+# Orthogonal route for an aftercare link: out of the source's right side, then into the target's left
+# face when it lies to the right, otherwise down (or up) a lane beside the source and into its top (or
+# bottom) face. Same {points, arrow_dir} shape as _edge_route.
+func _aftercare_route(src: Control, tgt: Control) -> Dictionary:
+	var stub: float = 24.0  # how far the link runs out of the handle before its first turn
+	var approach: float = 20.0  # how far before the entry face the route makes its final turn
+	var from: Vector2 = Vector2(src.position.x + src.size.x, src.position.y + src.size.y * 0.5)
+	var tc: Vector2 = tgt.position + tgt.size * 0.5
+	var pts: PackedVector2Array = PackedVector2Array([from])
+	var lane_x: float = from.x + stub
+	if tgt.position.x - approach >= lane_x:
+		var to: Vector2 = Vector2(tgt.position.x, tc.y)
+		var bend_x: float = to.x - approach
+		pts.append(Vector2(bend_x, from.y))
+		pts.append(Vector2(bend_x, to.y))
+		pts.append(to)
+		return {"points": pts, "arrow_dir": Vector2(1, 0)}
+	var target_above: bool = tc.y < from.y
+	var entry_y: float = tgt.position.y + (tgt.size.y if target_above else 0.0)
+	var dir_y: float = -1.0 if target_above else 1.0
+	var turn_y: float = entry_y - dir_y * approach
+	pts.append(Vector2(lane_x, from.y))
+	pts.append(Vector2(lane_x, turn_y))
+	pts.append(Vector2(tc.x, turn_y))
+	pts.append(Vector2(tc.x, entry_y))
+	return {"points": pts, "arrow_dir": Vector2(0, dir_y)}
 
 
 # Press on an out-handle → begin a connect-drag from it. _input then tracks the rubber-band.
@@ -678,7 +859,13 @@ func _on_handle_gui_input(
 			_connect_drag_from = center
 			_connect_drag_to = center
 			_connect_drag_target = ""
+			if edge_idx == AFTERCARE_EDGE_IDX:
+				_connect_drag_invalid = _aftercare_drop_invalid(node_id)
+				_update_aftercare_handle(node_id)  # keep it visible while dragging off it
+				accept_event()
+				return
 			_connect_drag_invalid = _ancestors_and_self(node_id)
+			_connect_drag_invalid.merge(_cross_divide_targets(node_id))
 			# A fork can't point two choices at the same node — block any node another of this fork's
 			# choices already targets (one choice per target).
 			if edge_idx >= 0:
@@ -692,6 +879,34 @@ func _on_handle_gui_input(
 						if t != "":
 							_connect_drag_invalid[t] = true
 			accept_event()
+
+
+# Drop targets an aftercare link refuses: the round itself, every node the main journey plays (aftercare
+# sits off the journey), and anything that isn't a round or storyboard (the entry types the default
+# aftercare allows too).
+func _aftercare_drop_invalid(source: String) -> Dictionary:
+	var invalid: Dictionary = _journey_ids.duplicate()
+	invalid[source] = true
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	for id: String in nodes:
+		if str((nodes[id] as Dictionary).get("type", "")) not in ["round", "storyboard"]:
+			invalid[id] = true
+	return invalid
+
+
+# A regular edge may not cross between the journey and an aftercare sequence: a journey node can't lead
+# into aftercare (it would play it as part of the run), and aftercare can't lead back into the journey.
+# Nodes on neither side (unwired islands) stay valid targets from both.
+func _cross_divide_targets(source: String) -> Dictionary:
+	if _journey_ids.has(source):
+		var blocked: Dictionary = {}
+		for id: String in _aftercare_set:
+			if not _journey_ids.has(id):
+				blocked[id] = true
+		return blocked
+	if _aftercare_set.has(source):
+		return _journey_ids.duplicate()
+	return {}
 
 
 # Drives the connect-drag (global, so it survives leaving the handle): tracks the cursor for the
@@ -711,6 +926,7 @@ func _handle_connect_drag_input(event: InputEvent) -> void:
 			_connect_drag_active = false
 			_connect_drag_source = ""
 			_connect_drag_target = ""
+			_update_aftercare_handle(src)  # an unwired handle hides again once the drag ends
 			queue_redraw()
 			# Valid drop only: a node, not the source, not an ancestor (which would form a cycle).
 			if target != "" and target != src and not _connect_drag_invalid.has(target):
@@ -989,7 +1205,7 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 	# FINISH marker — the aftercare-sequence entry played by the FINISH button (off the main graph).
 	if item.get("is_finish", false):
 		var finish_lbl: Label = Label.new()
-		finish_lbl.text = "🏁 FINISH"
+		finish_lbl.text = "🏁 DEFAULT"  # the journey's default aftercare entry
 		finish_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 		finish_lbl.add_theme_font_size_override("font_size", 11)
 		finish_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -2071,11 +2287,13 @@ func _draw() -> void:
 				or _connect_drag_invalid.has(_connect_drag_target)
 			)
 		)
-		var col: Color = (
-			UITheme.ERROR_SOFT
-			if bad
-			else (UITheme.FORK_EDGE if _connect_drag_edge_idx >= 0 else UITheme.EDGE)
-		)
+		var col: Color = UITheme.EDGE
+		if bad:
+			col = UITheme.ERROR_SOFT
+		elif _connect_drag_edge_idx == AFTERCARE_EDGE_IDX:
+			col = UITheme.AFTERCARE_EDGE
+		elif _connect_drag_edge_idx >= 0:
+			col = UITheme.FORK_EDGE
 		var from_s: Vector2 = _canvas.position + _connect_drag_from * _zoom
 		var to_s: Vector2 = _canvas.position + _connect_drag_to * _zoom
 		draw_line(from_s, to_s, col, 2.0)

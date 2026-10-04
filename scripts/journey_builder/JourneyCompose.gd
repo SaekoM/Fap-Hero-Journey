@@ -19,11 +19,15 @@ extends RefCounted
 ##     "nodes": { id: {type, data, out, pos?} },              # NEW nodes the rendition introduces
 ##     "anchors": [ {anchor: <existing node id>, edge: {to: <node id>, …}, slot?: <fork choice idx>} ],  # attach to the base
 ##     "slot_fills": [ {node: <id>, field: "video_path"|"axis_scripts"|…, channel?: "L0", path: "content/…"} ],
+##     "aftercare_links": [ {node: <existing round id>, to: <node id>, text?: <hold text>} ],
 ##   }
 ##
-## Two overlay ops: anchors extend an ending / add a fork choice (an out-edge on an existing node);
+## Three overlay ops: anchors extend an ending / add a fork choice (an out-edge on an existing node);
 ## slot_fills populate an EMPTY slot (a round's video, main script, boss image, or an axis/vib channel) —
-## how the free-video rendition and the paid multi-axis rendition attach without rewriting the parent.
+## how the free-video rendition and the paid multi-axis rendition attach without rewriting the parent;
+## aftercare_links set which aftercare a parent round's "I came" button plays. That one may REPLACE the
+## parent's link: it is a pointer to an ending, not content, and a later layer re-pointing it is the
+## whole use (a rendition adding its own aftercare for a base boss).
 
 # Scalar media slots on a round (a single path). CHANNEL slots are {channel: path} maps.
 const SCALAR_SLOTS: Array[String] = ["video_path", "funscript_path", "boss_image"]
@@ -45,6 +49,7 @@ static func compose_graph(parent: Dictionary, rendition: Dictionary) -> Dictiona
 	_add_nodes(nodes, rendition.get("nodes", {}), errors)
 	_apply_anchors(nodes, rendition.get("anchors", []), errors)
 	_apply_slot_fills(nodes, rendition.get("slot_fills", []), errors)
+	_apply_aftercare_links(nodes, rendition.get("aftercare_links", []), errors)
 	return {"graph": merged, "errors": errors}
 
 
@@ -130,3 +135,22 @@ static func _apply_slot_fills(nodes: Dictionary, slot_fills: Array, errors: Arra
 				(data[field] as Dictionary)[channel] = path
 		else:
 			errors.append({"kind": "unknown_slot_field", "field": field})
+
+
+# Aftercare links: point an existing ROUND's "I came" button at an aftercare entry. Both ends must exist
+# post-merge (the target is usually one of this rendition's new nodes, but may be a parent node). Unlike a
+# slot fill this replaces whatever the parent linked — see the class note.
+static func _apply_aftercare_links(nodes: Dictionary, links: Array, errors: Array) -> void:
+	for link: Dictionary in links:
+		var node_id: String = str(link.get("node", ""))
+		var to_id: String = str(link.get("to", ""))
+		if not nodes.has(node_id):
+			errors.append({"kind": "missing_aftercare_node", "id": node_id})
+			continue
+		if str((nodes[node_id] as Dictionary).get("type", "")) != "round":
+			errors.append({"kind": "aftercare_not_round", "id": node_id})
+			continue
+		if not nodes.has(to_id):
+			errors.append({"kind": "missing_aftercare_target", "id": to_id})
+			continue
+		JourneyGraph.set_aftercare_link(nodes[node_id], to_id, str(link.get("text", "")))

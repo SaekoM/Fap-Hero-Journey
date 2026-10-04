@@ -72,6 +72,9 @@ var _stat_rounds: Label = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/Stat
 var _stat_actions: Label = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/StatsRow/StatActions
 @onready
 var _stat_length: Label = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/StatsRow/StatLength
+# One line under the stats when the journey offers "I came" — the early ending exists, without saying what
+# it plays (aftercare is kept out of the round list so it isn't spoiled). Built in code, below StatsRow.
+var _stat_finish: Label = null
 @onready var _rounds_hdr: Label = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/RoundsHeader
 @onready
 var _round_scroll: ScrollContainer = $DetailModal/ModalPanel/ModalLayout/DetailsColumn/RoundListScroll
@@ -376,6 +379,12 @@ func _apply_theme() -> void:
 	_style_label(_stat_rounds, UITheme.WHITE_SOFT, 13, true)
 	_style_label(_stat_actions, UITheme.WHITE_SOFT, 13, true)
 	_style_label(_stat_length, UITheme.WHITE_SOFT, 13, true)
+	_stat_finish = Label.new()
+	_style_label(_stat_finish, UITheme.AFTERCARE_EDGE, 11, true)
+	_stat_finish.visible = false
+	var stats_row: Control = _stat_length.get_parent()
+	stats_row.get_parent().add_child(_stat_finish)
+	stats_row.get_parent().move_child(_stat_finish, stats_row.get_index() + 1)
 
 	_style_label(_rounds_hdr, UITheme.SEPARATOR, 11, true)
 
@@ -2039,6 +2048,11 @@ func _update_node_view(journey: Dictionary) -> void:
 	_stat_actions.text = str(journey.get("total_actions", 0)) + " ACTIONS"
 	var total_secs: int = (journey.get("total_length_ms", 0) as int) / 1000
 	_stat_length.text = "~" + _format_duration(total_secs)  # expected runtime — an estimate
+	var finish_label: String = str(journey.get("finish_label", "")).strip_edges()
+	if finish_label == "":
+		finish_label = JourneyData.DEFAULT_FINISH_LABEL
+	_stat_finish.text = "💧  %s available — you can end the run early" % finish_label
+	_stat_finish.visible = bool(journey.get("offers_finish", false))
 
 	# Mystery preview: load the persistent discovered set and blur the totals until every round is seen.
 	_preview_mystery = bool(journey.get("mystery_preview", false))

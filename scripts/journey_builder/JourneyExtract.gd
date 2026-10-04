@@ -15,8 +15,10 @@ extends RefCounted
 ##                 (indices into its choices) are remapped past the removed choices.
 ## Exit edges (selected → kept) stay on the rendition node — compose's merged graph has both ends. Internal
 ## edges (selected → selected) ride along inside the rendition unchanged.
+## Aftercare links work the same way: a KEPT round whose aftercare is a SELECTED node loses the link in the
+## base and the rendition carries it as an aftercare link (which also counts as an attachment point).
 ##
-## Returns {base: {start, nodes}, rendition: {nodes, anchors, slot_fills:[]}, errors: []}. `rendition` is the
+## Returns {base: {start, nodes}, rendition: {nodes, anchors, slot_fills:[], aftercare_links}, errors: []}. `rendition` is the
 ## runtime delta shape JourneyRendition.coerce_rendition consumes; the caller stamps parent_id / name / author.
 
 
@@ -55,21 +57,41 @@ static func extract_rendition(graph: Dictionary, selection: Array) -> Dictionary
 
 	# Entry edges (kept → selected) become anchors; the kept node is adjusted so it no longer dangles.
 	var anchors: Array = []
+	var aftercare_links: Array = []
 	for u: String in base_nodes:
 		var node: Dictionary = base_nodes[u]
 		if str(node.get("type", "")) == "fork":
 			_extract_fork_entries(u, node, sel, anchors, errors)
 		else:
 			_extract_regular_entry(u, node, sel, anchors)
+		var aftercare_to: String = str(node.get(JourneyGraph.AFTERCARE_KEY, ""))
+		if aftercare_to != "" and sel.has(aftercare_to):
+			(
+				aftercare_links
+				. append(
+					{
+						"node": u,
+						"to": aftercare_to,
+						"text": str(node.get(JourneyGraph.AFTERCARE_TEXT_KEY, "")),
+					}
+				)
+			)
+			JourneyGraph.drop_aftercare_link(node)
 
-	if anchors.is_empty():
+	if anchors.is_empty() and aftercare_links.is_empty():
 		errors.append({"kind": "no_anchor"})  # nothing in the base reaches the selection — it can't attach
 	if not errors.is_empty():
 		return _fail(errors)
 
 	return {
 		"base": {"start": start, "nodes": base_nodes},
-		"rendition": {"nodes": rend_nodes, "anchors": anchors, "slot_fills": []},
+		"rendition":
+		{
+			"nodes": rend_nodes,
+			"anchors": anchors,
+			"slot_fills": [],
+			"aftercare_links": aftercare_links,
+		},
 		"errors": [],
 	}
 

@@ -1505,6 +1505,10 @@ const PLACEMENT_BUILTINS: Dictionary = {
 # Matches the storyboard line BGM default, so a setting's music arrives at the level authors already
 # expect from the field it replaces.
 const DEFAULT_BGM_VOLUME: float = 0.6
+# What the give-up button and its confirm card say when the journey doesn't name it (FinishLabel blank).
+const DEFAULT_FINISH_LABEL: String = "I came"
+# What its hold overlay says when neither the journey (FinishHoldText) nor the round's aftercare link names it.
+const DEFAULT_FINISH_HOLD_TEXT: String = "HOLD TO FINISH"
 # A placed element can never be smaller than this fraction of the image, so it stays grabbable in the
 # editor and clickable in play. Mirrors PLACEMENT_MIN_SIZE's reasoning for cast boxes.
 const LAYOUT_SLOT_MIN: float = 0.04
@@ -3087,6 +3091,8 @@ static func parse_journey(journey: Dictionary) -> Dictionary:
 		"auto_advance_fork_secs": int(journey.get("auto_advance_fork_secs", 45)),
 		"allow_finish": bool(journey.get("allow_finish", false)),
 		"finish_node": str(journey.get("finish_node", "")),
+		"finish_label": str(journey.get("finish_label", "")),
+		"finish_hold_text": str(journey.get("finish_hold_text", "")),
 		"redirects": journey.get("redirects", {}),
 		"items": items,
 		"characters": journey.get("characters", []),

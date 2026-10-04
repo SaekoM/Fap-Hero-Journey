@@ -147,6 +147,7 @@ const STORYBOARD: Color = Color(0.0, 0.78, 0.88, 1.0)  # used by JourneyBuilder
 const GRID: Color = Color(0.10, 0.04, 0.18, 0.4)
 const EDGE: Color = Color(0.55, 0.30, 0.85, 0.85)
 const FORK_EDGE: Color = Color(0.88, 0.0, 0.88, 0.85)
+const AFTERCARE_EDGE: Color = Color(1.0, 0.45, 0.65, 0.95)  # rose — a round's "I came" aftercare link (dashed)
 
 # ── Shape ────────────────────────────────────────────────────────────────────
 # Standard corner radius for the app's controls and free-floating panels — one knob for UI rounding.
