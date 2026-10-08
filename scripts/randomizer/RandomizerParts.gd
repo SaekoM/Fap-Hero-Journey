@@ -33,6 +33,8 @@ const PART_ID_SEP: String = "#"
 #   jitter_pct:float           spread as a fraction of (max-min)
 #   intensity_tolerance:int    coherence brake: a bigger step ends the part
 #   max_merge_gap_ms:int       never merge across a hole wider than this
+#   max_merge_gap_under_min_ms:int  ...unless the part is still under part_min_s: then holes up to
+#                              this are bridged, so a patchy script doesn't end a round at 10 s
 #   intensity_length_coupling:float  how hard intensity pulls the target length (see
 #                              target_length_ms): +1 hard→short, 0 no effect, −1 hard→long
 const DEFAULT_CFG: Dictionary = {
@@ -42,6 +44,9 @@ const DEFAULT_CFG: Dictionary = {
 	"jitter_pct": 0.15,
 	"intensity_tolerance": 1,
 	"max_merge_gap_ms": 5000,
+	# A round still short of the low handle may bridge a longer pause to reach it — a slow script's
+	# pauses otherwise ended rounds at a single 8–15 s stretch. Past the floor the 5 s rule applies.
+	"max_merge_gap_under_min_ms": 20000,
 	# Softened default: hard rounds aim shorter, but only halfway to the low handle, so a run
 	# of intense clips is punchy without pinning every hard round to the minimum length.
 	"intensity_length_coupling": 0.5,
@@ -106,6 +111,7 @@ static func _tile(
 	var jitter_pct: float = float(c["jitter_pct"])
 	var tolerance: int = int(c["intensity_tolerance"])
 	var max_gap: int = int(c["max_merge_gap_ms"])
+	var max_gap_under_min: int = maxi(max_gap, int(c["max_merge_gap_under_min_ms"]))
 	var coupling: float = float(c["intensity_length_coupling"])
 
 	var parts: Array = []
@@ -131,7 +137,8 @@ static func _tile(
 			var run_intensity: int = FunscriptIntensity.bucket(wsum / maxf(1.0, wlen))
 			if absi(int(nxt["intensity"]) - run_intensity) > tolerance:
 				break  # coherence brake: an intensity step is a round boundary
-			if int(nxt["in_ms"]) - out_ms > max_gap:
+			var gap_limit: int = max_gap_under_min if out_ms - in_ms < min_ms else max_gap
+			if int(nxt["in_ms"]) - out_ms > gap_limit:
 				break  # a part is ONE window, so a big hole would be baked in
 			if int(nxt["out_ms"]) - in_ms > max_ms:
 				break  # slider ceiling
