@@ -85,6 +85,10 @@ const TAG_ONLY: int = 1
 const TAG_NEVER: int = 2
 var _tag_filter: Dictionary = {}  # tag → TAG_ONLY | TAG_NEVER
 var _tag_chips: HFlowContainer
+# Shown in place of the chips while no clip has a tag. Its own row, NOT a child of _tag_chips: a
+# word-wrapping Label inside a flow container gets almost no width, wraps after every letter and grows
+# hundreds of pixels tall — which pushed every setting below it off the screen.
+var _no_tags_lbl: Label
 var _tag_match_lbl: Label
 
 # Library column: narrow the list by name or tag, and tag imports on the way in.
@@ -185,7 +189,20 @@ func _build_ui() -> void:
 	cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_child(cols)
 	cols.add_child(_build_library_column())
-	cols.add_child(_build_settings_column())
+	# The settings column is taller than a 1080p window. Unscrolled, it forced the whole page taller
+	# than the window and pushed GENERATE (below the columns) off the bottom — so it scrolls on its own,
+	# and the page always fits.
+	var settings_scroll := ScrollContainer.new()
+	settings_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	settings_scroll.size_flags_stretch_ratio = 1.0
+	settings_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	# Right-hand gutter so the scrollbar sits clear of the controls instead of over their edge.
+	var settings_gutter := MarginContainer.new()
+	settings_gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	settings_gutter.add_theme_constant_override("margin_right", 16)
+	settings_gutter.add_child(_build_settings_column())
+	settings_scroll.add_child(settings_gutter)
+	cols.add_child(settings_scroll)
 
 	# Footer: generate + status.
 	_generate_btn = Button.new()
@@ -311,8 +328,13 @@ func _build_settings_column() -> Control:
 	UITheme.style_label(tag_hint, UITheme.DARK_TEXT, 11)
 	_tag_match_lbl = Label.new()
 	_tag_match_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_no_tags_lbl = Label.new()
+	_no_tags_lbl.text = "No tags yet — give clips tags in the library to build runs from them."
+	_no_tags_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	UITheme.style_label(_no_tags_lbl, UITheme.DARK_TEXT, 12)
 	var tag_box := VBoxContainer.new()
 	tag_box.add_theme_constant_override("separation", 4)
+	tag_box.add_child(_no_tags_lbl)
 	tag_box.add_child(_tag_chips)
 	tag_box.add_child(tag_hint)
 	tag_box.add_child(_tag_match_lbl)
@@ -340,6 +362,9 @@ func _build_settings_column() -> Control:
 
 	_part_range = RangeSlider.new()
 	_part_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# The handles show SECONDS — their raw 0–100 track positions (e.g. "38" for 60 s) read as a
+	# different range from the "Aim" line beneath them.
+	_part_range.value_format = func(v: float) -> String: return "%d s" % _slider_to_secs(v)
 	_part_range.range_changed.connect(_on_part_range_changed)
 	_part_range_lbl = Label.new()
 	UITheme.style_label(_part_range_lbl, UITheme.DARK_TEXT, 12)
@@ -355,7 +380,12 @@ func _build_settings_column() -> Control:
 	# the intense ones aim shorter, so actual length varies. Say so, so "15 s" that lands at 45 s
 	# reads as expected behaviour rather than a bug.
 	var part_range_hint := Label.new()
-	part_range_hint.text = "Rounds are built from whole script beats and aim shorter when intense, so length varies."
+	part_range_hint.text = (
+		"A target, not a cut: rounds are built from whole stretches of script and aim shorter when "
+		+ "intense, so length varies. A round can end early where the intensity changes or the script "
+		+ "pauses (over 5 s — or 20 s while it's still under the low handle), and a video's last round "
+		+ "can be short."
+	)
 	part_range_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_label(part_range_hint, UITheme.DARK_TEXT, 11)
 	part_range_box.add_child(part_range_hint)
@@ -683,12 +713,7 @@ func _refresh_tag_chips() -> void:
 		if not tags.has(t):
 			tags.append(t)
 	tags.sort()
-	if tags.is_empty():
-		var none := Label.new()
-		none.text = "No tags yet — give clips tags in the library to build runs from them."
-		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		UITheme.style_label(none, UITheme.DARK_TEXT, 12)
-		_tag_chips.add_child(none)
+	_no_tags_lbl.visible = tags.is_empty()
 	for t: Variant in tags:
 		_tag_chips.add_child(_make_tag_chip(str(t), int(counts.get(t, 0))))
 	_update_tag_match()

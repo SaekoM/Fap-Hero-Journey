@@ -9,6 +9,9 @@ signal range_changed(lo: float, hi: float)
 var lo: float = 0.0
 ## Current high-end clamp value (0–100).
 var hi: float = 100.0
+## Optional (value: float) -> String for the handle labels, for a slider whose 0–100 track stands for
+## something else (the randomizer's log-mapped seconds). Unset = the raw 0–100 value.
+var value_format: Callable = Callable()
 
 const HANDLE_R: float = 8.0  # handle circle radius
 const TRACK_H: float = 5.0  # track rect height
@@ -76,9 +79,13 @@ func _x_to_val(x: float) -> float:
 func _update() -> void:
 	if _lo_lbl == null:
 		return
-	_lo_lbl.text = "%d" % roundi(lo)
-	_hi_lbl.text = "%d" % roundi(hi)
+	_lo_lbl.text = _value_text(lo)
+	_hi_lbl.text = _value_text(hi)
 	queue_redraw()
+
+
+func _value_text(v: float) -> String:
+	return str(value_format.call(v)) if value_format.is_valid() else "%d" % roundi(v)
 
 
 func _draw() -> void:

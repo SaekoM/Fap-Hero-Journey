@@ -321,9 +321,11 @@ func test_merge_stops_at_large_hole() -> void:
 
 # The hole check is `in_ms - out_ms > max_merge_gap_ms`, so a hole EXACTLY on the
 # limit still merges and one millisecond more does not. Both beats are speed 50 and
-# the target for an intensity-1 opener is ≥ 162 s, so nothing else can cut here.
+# the target for an intensity-1 opener is well past 45 s, so nothing else can cut here.
+# The floor is set low (10 s) so the first 20 s beat is already PAST it and the 5 s rule
+# applies — under the floor a longer pause is bridged (see the test below).
 func test_max_merge_gap_boundary() -> void:
-	var cfg: Dictionary = {"max_merge_gap_ms": 5000}
+	var cfg: Dictionary = {"max_merge_gap_ms": 5000, "part_min_s": 10}
 	# 25000 - 20000 = 5000, not > 5000 → merged into one part.
 	var exact: Array = [_beat(0, 20000, SPEED_I1), _beat(25000, 45000, SPEED_I1)]
 	var merged: Array = _expand_one(_video("gapok", exact), 4, cfg)
@@ -334,6 +336,22 @@ func test_max_merge_gap_boundary() -> void:
 	var split: Array = _expand_one(_video("gapno", over), 4, cfg)
 	assert_int(split.size()).is_equal(2)
 	assert_int(int(_seg_of(split[0])["out_ms"])).is_equal(20000)
+
+
+# Under the floor (part_min_s, 60 s by default) a round bridges a pause up to
+# max_merge_gap_under_min_ms (20 s) rather than ending at one short stretch; past the
+# floor, or across a longer pause, the round still ends. Same slow beats throughout.
+func test_pause_bridged_only_below_the_floor() -> void:
+	# 20 s beat, 12 s pause, 20 s beat: the round is 20 s (< 60 s floor) at the pause → bridged.
+	var short_round: Array = [_beat(0, 20000, SPEED_I1), _beat(32000, 52000, SPEED_I1)]
+	var bridged: Array = _expand_one(_video("bridge", short_round), 4)
+	assert_int(bridged.size()).is_equal(1)
+	# 70 s beat, then the same 12 s pause: already past the floor → the 5 s rule ends it.
+	var past_floor: Array = [_beat(0, 70000, SPEED_I1), _beat(82000, 102000, SPEED_I1)]
+	assert_int(_expand_one(_video("pastfloor", past_floor), 4).size()).is_equal(2)
+	# A 21 s pause is longer than the under-floor limit → ends even a short round.
+	var long_pause: Array = [_beat(0, 20000, SPEED_I1), _beat(41000, 61000, SPEED_I1)]
+	assert_int(_expand_one(_video("longpause", long_pause), 4).size()).is_equal(2)
 
 
 # The brake check is `absi(Δ) > intensity_tolerance`, so a step of exactly one level
