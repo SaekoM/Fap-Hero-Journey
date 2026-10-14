@@ -3611,6 +3611,8 @@ const STROKE_EFFECT_KINDS: Array[String] = [
 	"axis_clamp",
 	"axis_reverse",
 	"axis_block",
+	"pose",
+	"vortex",
 ]
 
 
@@ -3704,6 +3706,10 @@ static func _default_effect(kind: String) -> Dictionary:
 			return {"kind": "axis_scale", "factor": 0.6, "rotary_factor": 0.4}
 		"axis_clamp":
 			return {"kind": "axis_clamp", "min": 40, "max": 60, "rotary_min": 45, "rotary_max": 55}
+		"pose":
+			return {"kind": "pose", "pitch": 25, "roll": 0}
+		"vortex":
+			return {"kind": "vortex", "gain": 0.5}
 	# Sensory kinds carry an intensity when their catalogue entry defines a default for one, and a
 	# rate when they have a beat of their own (both 0–1, as the round stores them).
 	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
@@ -3751,6 +3757,13 @@ func _make_effect_row(event: Dictionary, index: int) -> Control:
 		row.add_child(
 			_labeled("Turns max", _make_float_spin(effect, "rotary_max", 0.0, 100.0, 1.0))
 		)
+	# Pose's tilts from centre, and the size of Vortex's circle.
+	if effect.has("pitch"):
+		row.add_child(_labeled("Pitch tilt", _make_float_spin(effect, "pitch", -50.0, 50.0, 1.0)))
+	if effect.has("roll"):
+		row.add_child(_labeled("Roll tilt", _make_float_spin(effect, "roll", -50.0, 50.0, 1.0)))
+	if effect.has("gain"):
+		row.add_child(_labeled("Circle ×", _make_float_spin(effect, "gain", 0.1, 1.0, 0.05)))
 	if effect.has("intensity"):
 		# Label beside the spin box rather than stacked above it: the row is already tight, and a
 		# stacked caption made the whole strip twice as tall for one number.

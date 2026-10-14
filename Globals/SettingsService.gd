@@ -51,11 +51,11 @@ const DEFAULT_VIBE_INTENSITY: int = 100
 const DEFAULT_MAX_STROKE_SPEED: int = 0  # 0 = unlimited (units/sec)
 # Auto Twist: R0 synthesised from the stroke for content with no twist script. The player picks a named
 # step — nobody can judge a number for motion they haven't felt — and each step is a gain on the stroke:
-# ±5 / ±25 / ±50 around centre at a full 0–100 stroke. The two lists are index-aligned; Options builds
+# ±10 / ±25 / ±50 around centre at a full 0–100 stroke (Subtle was ±5 — too faint to feel on hardware). The two lists are index-aligned; Options builds
 # its dropdown from AUTO_TWIST_STEPS so the order can't drift from the gains.
 const DEFAULT_AUTO_TWIST: int = 0
 const AUTO_TWIST_STEPS: Array = ["Off", "Subtle", "Medium", "Strong"]
-const AUTO_TWIST_GAINS: Array = [0.0, 0.1, 0.5, 1.0]
+const AUTO_TWIST_GAINS: Array = [0.0, 0.2, 0.5, 1.0]
 # Serial (T-code) stroke smoothing: the interval FunscriptPlayer streams with, as a multiple of the
 # output tick. >1 keeps the OSR gliding toward a fresh target instead of finishing early and
 # dwelling. Best value varies by device/firmware, so it's tunable. See FunscriptPlayer._PhysicsProcess.

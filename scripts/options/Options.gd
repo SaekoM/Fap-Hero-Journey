@@ -955,6 +955,7 @@ func _apply_layout() -> void:
 	twist_row.add_child(twist_lbl)
 
 	_auto_twist_dd = OptionButton.new()
+	_auto_twist_dd.custom_minimum_size = Vector2(160, 0)  # room for "Medium" / "Strong" untruncated
 	for step_name: String in SettingsService.AUTO_TWIST_STEPS:
 		_auto_twist_dd.add_item(step_name)
 	UITheme.style_option_button(_auto_twist_dd)

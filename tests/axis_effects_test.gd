@@ -1,8 +1,9 @@
 extends GdUnitTestSuite
 
 # Multi-axis modifiers (MULTIAXIS_DESIGN.md §3, step 3): the stroke curses mirrored onto every axis but
-# the stroke — Stiffened, Braced, Contrary, Stilled and the Limber blessing — and the substitution that
-# hands a player without those axes the stroke twin instead.
+# the stroke — Stiffened, Braced, Contrary, Stilled and the Limber blessing — the two that create motion
+# (Posed and the Vortex blessing), and the substitution that hands a player without those axes the
+# stroke twin instead.
 
 # ── The catalog ──────────────────────────────────────────────────────────────
 
@@ -31,9 +32,10 @@ func test_turning_axes_get_the_stronger_values() -> void:
 	assert_float(float(limber["rotary_factor"])).is_greater(float(limber["factor"]))
 
 
-func test_limber_is_a_blessing_and_the_rest_are_curses() -> void:
+func test_limber_and_vortex_are_blessings_and_the_rest_are_curses() -> void:
 	assert_bool(JourneyData.effect_is_benefit("Limber")).is_true()
-	for name: String in ["Stiffened", "Braced", "Contrary", "Stilled"]:
+	assert_bool(JourneyData.effect_is_benefit("Vortex")).is_true()
+	for name: String in ["Stiffened", "Braced", "Contrary", "Stilled", "Posed"]:
 		assert_bool(JourneyData.effect_is_benefit(name)).is_false()
 
 
@@ -41,11 +43,11 @@ func test_limber_is_a_blessing_and_the_rest_are_curses() -> void:
 # added since must not quietly join it and change the odds of a journey nobody re-tuned.
 func test_a_legacy_full_pool_round_keeps_its_old_pool() -> void:
 	var cursed: Dictionary = JourneyData.normalize_effect_round({"round_type": "cursed"})
-	for name: String in ["Stiffened", "Braced", "Contrary", "Stilled"]:
+	for name: String in ["Stiffened", "Braced", "Contrary", "Stilled", "Posed"]:
 		assert_array(cursed["effects"]).not_contains([name])
 	assert_array(cursed["effects"]).contains(["Shrunken", "Numbed"])
 	var blessed: Dictionary = JourneyData.normalize_effect_round({"round_type": "blessed"})
-	assert_array(blessed["effects"]).not_contains(["Limber"])
+	assert_array(blessed["effects"]).not_contains(["Limber", "Vortex"])
 
 
 # ── Does this round give an axis curse anything to act on? ──────────────────
@@ -73,17 +75,49 @@ func test_a_stroke_only_device_never_has_axis_motion() -> void:
 	assert_bool(JourneyData.round_has_axis_motion(STROKE_ONLY, ["R0", "R1", "L1"], true)).is_false()
 
 
+# ── What Pose and Vortex would drive ───────────────────────────────────────
+
+
+func _context(device: Array, scripted: Array, has_stroke: bool = true) -> Dictionary:
+	return JourneyData.axis_context(device, scripted, false, has_stroke)
+
+
+# Pose holds roll and pitch whether or not the round scripts them — it replaces the script.
+func test_pose_drives_the_roll_and_pitch_the_device_has() -> void:
+	assert_array(_context(SR6, ["R1", "R2"])["pose_axes"]).is_equal(["R1", "R2"])
+	assert_array(_context(STROKE_ONLY, [])["pose_axes"]).is_empty()
+
+
+# A script always wins, so Vortex only takes the turning axes the round leaves free — and never surge
+# or sway, which would push the device diagonally.
+func test_vortex_drives_only_unscripted_turning_axes() -> void:
+	assert_array(_context(SR6, ["R1"])["vortex_axes"]).is_equal(["R0", "R2"])
+	assert_array(_context(OSR2, [])["vortex_axes"]).is_equal(["R1", "R2"])
+	assert_array(_context(SR6, ["R0", "R1", "R2"])["vortex_axes"]).is_empty()
+
+
+# An e-stim alpha main track is no stroke to follow.
+func test_vortex_needs_a_stroke() -> void:
+	assert_array(_context(SR6, [], false)["vortex_axes"]).is_empty()
+
+
 # ── Substitution ─────────────────────────────────────────────────────────────
+
+
+func _motion(on: bool) -> Dictionary:
+	return {"motion": on}
 
 
 func test_with_axis_motion_the_axis_curse_is_kept() -> void:
 	var stiffened: Dictionary = JourneyData.effect_entry("Stiffened")
-	var out: Array = JourneyData.express_effects([stiffened], true)
+	var out: Array = JourneyData.express_effects([stiffened], _motion(true))
 	assert_str(str((out[0] as Dictionary)["kind"])).is_equal("axis_scale")
 
 
 func test_without_it_the_named_twin_takes_its_place() -> void:
-	var out: Array = JourneyData.express_effects([JourneyData.effect_entry("Braced")], false)
+	var out: Array = JourneyData.express_effects(
+		[JourneyData.effect_entry("Braced")], _motion(false)
+	)
 	var twin: Dictionary = out[0]
 	assert_str(str(twin["kind"])).is_equal("clamp")
 	assert_str(str(twin["name"])).is_equal("Choked")  # the card names a curse that exists
@@ -103,14 +137,72 @@ func test_the_twin_keeps_the_authors_linear_values() -> void:
 
 # Raw kinds (boss forced modifiers, timeline windows) carry no catalog name, and swap by kind alone.
 func test_a_raw_axis_kind_swaps_to_its_stroke_kind() -> void:
-	var out: Array = JourneyData.express_effects([{"kind": "axis_block"}], false)
+	var out: Array = JourneyData.express_effects([{"kind": "axis_block"}], _motion(false))
 	assert_dict(out[0] as Dictionary).is_equal({"kind": "block"})
 
 
 func test_other_effects_pass_through_untouched() -> void:
 	var shrunken: Dictionary = JourneyData.effect_entry("Shrunken")
 	var fog: Dictionary = JourneyData.effect_entry("Fog")
-	assert_array(JourneyData.express_effects([shrunken, fog], false)).is_equal([shrunken, fog])
+	assert_array(JourneyData.express_effects([shrunken, fog], _motion(false))).is_equal(
+		[shrunken, fog]
+	)
+
+
+# A kept Pose carries the axes it drives, so the player needs no device profile of its own — and the
+# catalog entry it came from is left untouched.
+func test_a_kept_pose_is_stamped_with_its_axes() -> void:
+	var posed: Dictionary = JourneyData.effect_entry("Posed")
+	var out: Array = JourneyData.express_effects([posed], _context(OSR2, []))
+	assert_str(str((out[0] as Dictionary)["kind"])).is_equal("pose")
+	assert_array((out[0] as Dictionary)["axes"]).is_equal(["R1", "R2"])
+	assert_bool(posed.has("axes")).is_false()
+
+
+# A tilt means nothing on the stroke: the twin plays its substitute exactly as catalogued.
+func test_pose_without_roll_or_pitch_becomes_choked() -> void:
+	var out: Array = JourneyData.express_effects(
+		[JourneyData.effect_entry("Posed")], _context(STROKE_ONLY, [])
+	)
+	var twin: Dictionary = out[0]
+	var choked: Dictionary = JourneyData.effect_entry("Choked")
+	assert_str(str(twin["kind"])).is_equal("clamp")
+	assert_str(str(twin["name"])).is_equal("Choked")
+	assert_int(int(twin["min"])).is_equal(int(choked["min"]))
+	assert_int(int(twin["max"])).is_equal(int(choked["max"]))
+	assert_bool(twin.has("pitch")).is_false()
+
+
+func test_vortex_with_nothing_to_move_becomes_surge() -> void:
+	var out: Array = JourneyData.express_effects(
+		[JourneyData.effect_entry("Vortex")], _context(SR6, ["R0", "R1", "R2"])
+	)
+	var twin: Dictionary = out[0]
+	assert_str(str(twin["kind"])).is_equal("scale")
+	assert_str(str(twin["name"])).is_equal("Surge")
+	assert_float(float(twin["factor"])).is_equal_approx(
+		float(JourneyData.effect_entry("Surge")["factor"]), 0.0001
+	)
+	assert_bool(twin.has("gain")).is_false()
+
+
+# A forced Pose (a raw kind, no catalog name) still lands on a real curse.
+func test_a_raw_pose_falls_back_to_its_default_substitute() -> void:
+	var out: Array = JourneyData.express_effects(
+		[{"kind": "pose", "pitch": 10, "roll": 0}], _context(STROKE_ONLY, [])
+	)
+	assert_str(str((out[0] as Dictionary)["name"])).is_equal("Choked")
+
+
+# Pose and Vortex create motion, so a round with no axis scripts doesn't stop them.
+func test_creating_kinds_ignore_whether_the_round_has_axis_motion() -> void:
+	var context: Dictionary = _context(OSR2, [])
+	assert_bool(bool(context["motion"])).is_false()
+	var out: Array = JourneyData.express_effects(
+		[JourneyData.effect_entry("Vortex"), JourneyData.effect_entry("Stiffened")], context
+	)
+	assert_str(str((out[0] as Dictionary)["kind"])).is_equal("vortex")
+	assert_str(str((out[1] as Dictionary)["kind"])).is_equal("scale")
 
 
 # ── What the audit lists ─────────────────────────────────────────────────────
@@ -182,3 +274,75 @@ func test_reverse_flips_through_centre() -> void:
 func test_stroke_curses_leave_the_axes_alone() -> void:
 	var fx: Array = [{"kind": "scale", "factor": 0.3}, {"kind": "clamp", "min": 0, "max": 10}]
 	assert_float(_mod("R0", 90.0, fx)).is_equal_approx(90.0, 0.0001)
+
+
+# ── Pose and Vortex on the device ──────────────────────────────────────────
+
+
+func _created(base: float, follow: float, lock: float, pose: float, pose_blend: float) -> float:
+	return FunscriptPlayer.CreatedMotionPos(base, follow, lock, pose, pose_blend)
+
+
+func test_pose_tilts_from_centre() -> void:
+	assert_float(FunscriptPlayer.PoseTarget(25.0)).is_equal_approx(75.0, 0.0001)
+	assert_float(FunscriptPlayer.PoseTarget(-50.0)).is_equal_approx(0.0, 0.0001)
+	assert_float(FunscriptPlayer.PoseTarget(80.0)).is_equal_approx(100.0, 0.0001)
+
+
+# Fully in, Pose replaces whatever the axis was doing; halfway, it is halfway there — the ease that
+# keeps it from snapping the device to its tilt.
+func test_pose_replaces_the_axis_as_it_blends_in() -> void:
+	assert_float(_created(20.0, NAN, 0.0, 75.0, 1.0)).is_equal_approx(75.0, 0.0001)
+	assert_float(_created(20.0, NAN, 0.0, 75.0, 0.5)).is_equal_approx(47.5, 0.0001)
+	assert_float(_created(20.0, NAN, 0.0, 75.0, 0.0)).is_equal_approx(20.0, 0.0001)
+
+
+# Vortex takes over from Auto Twist on the twist rather than adding to it.
+func test_vortex_takes_over_from_what_was_there() -> void:
+	assert_float(_created(60.0, 75.0, 1.0, NAN, 0.0)).is_equal_approx(75.0, 0.0001)
+	assert_float(_created(60.0, 75.0, 0.5, NAN, 0.0)).is_equal_approx(67.5, 0.0001)
+
+
+# A held axis is held: Pose wins over Vortex where both reach it.
+func test_pose_wins_over_vortex() -> void:
+	assert_float(_created(50.0, 90.0, 1.0, 30.0, 1.0)).is_equal_approx(30.0, 0.0001)
+
+
+func test_neither_leaves_the_axis_alone() -> void:
+	assert_float(_created(42.0, NAN, 1.0, NAN, 1.0)).is_equal_approx(42.0, 0.0001)
+
+
+# Vortex's circle, read at a stroke that last turned at 100 and 0, at the default radius (±25).
+func _circle(stroke: float, direction: int, top: float = 100.0, bottom: float = 0.0) -> Vector2:
+	return FunscriptPlayer.VortexTilt(stroke, top, bottom, direction, 0.5)
+
+
+# Top, side, bottom, other side: pitch rides the stroke's height, roll leans one way going down and the
+# other going up.
+func test_vortex_circles_once_per_down_and_up() -> void:
+	assert_vector(_circle(100.0, -1)).is_equal_approx(Vector2(75, 50), Vector2(0.01, 0.01))
+	assert_vector(_circle(50.0, -1)).is_equal_approx(Vector2(50, 75), Vector2(0.01, 0.01))
+	assert_vector(_circle(0.0, 1)).is_equal_approx(Vector2(25, 50), Vector2(0.01, 0.01))
+	assert_vector(_circle(50.0, 1)).is_equal_approx(Vector2(50, 25), Vector2(0.01, 0.01))
+
+
+# Every point is on the circle, so the tip travels round it rather than cutting corners.
+func test_vortex_stays_on_its_circle() -> void:
+	for stroke: float in [10.0, 30.0, 70.0, 90.0]:
+		var p: Vector2 = _circle(stroke, -1) - Vector2(50, 50)
+		assert_float(p.length()).is_equal_approx(25.0, 0.01)
+
+
+# A shallow stroke is measured between its own turns, so it still makes a whole loop.
+func test_a_shallow_stroke_still_makes_a_whole_loop() -> void:
+	assert_vector(_circle(60.0, -1, 60.0, 40.0)).is_equal_approx(
+		Vector2(75, 50), Vector2(0.01, 0.01)
+	)
+	assert_vector(_circle(50.0, -1, 60.0, 40.0)).is_equal_approx(
+		Vector2(50, 75), Vector2(0.01, 0.01)
+	)
+
+
+# Before the stroke has moved far enough to have a direction, roll stays at centre.
+func test_no_lean_before_the_stroke_has_a_direction() -> void:
+	assert_float(_circle(50.0, 0).y).is_equal_approx(50.0, 0.01)

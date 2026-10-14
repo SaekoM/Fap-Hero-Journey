@@ -157,6 +157,16 @@ const CURSE_CATALOG: Array = [
 		"desc": "Every axis but the stroke freezes where it is.",
 		"substitute": "Numbed",
 	},
+	# Pose and Vortex CREATE motion rather than reshaping it, so they need only the axis on the
+	# device, not a script for it. Pose's `pitch` and `roll` are tilts from centre, −50 to +50.
+	{
+		"kind": "pose",
+		"pitch": 25,
+		"roll": 0,
+		"name": "Posed",
+		"desc": "Held at a tilt all round — roll and pitch stop following the video.",
+		"substitute": "Choked",
+	},
 	{
 		"kind": "coin_penalty",
 		"factor": 0.5,
@@ -409,6 +419,14 @@ const BLESSING_CATALOG: Array = [
 		"desc": "Every axis but the stroke swings wider — the turns and tilts most of all.",
 		"substitute": "Surge",
 	},
+	# `gain` sizes the motion: the circle's radius, and how far the twist follows the stroke — 0.5 is ±25.
+	{
+		"kind": "vortex",
+		"gain": 0.5,
+		"name": "Vortex",
+		"desc": "Roll and pitch circle once with every stroke, and the twist turns with it.",
+		"substitute": "Surge",
+	},
 	{"kind": "gift", "name": "Gift", "desc": "Start the round holding a free item."},
 	{
 		"kind": "lingering",
@@ -523,9 +541,21 @@ const AXIS_EFFECT_TWINS: Dictionary = {
 	"axis_clamp": "clamp",
 	"axis_reverse": "reverse",
 	"axis_block": "block",
+	"pose": "clamp",
+	"vortex": "scale",
 }
 # The keys only an axis effect carries — dropped when it becomes its stroke twin.
-const AXIS_ONLY_KEYS: Array = ["rotary_factor", "rotary_min", "rotary_max", "substitute"]
+const AXIS_ONLY_KEYS: Array = [
+	"rotary_factor", "rotary_min", "rotary_max", "substitute", "pitch", "roll", "gain", "axes"
+]
+# The kinds that create motion on an axis rather than reshape what is there, with the stroke curse each
+# becomes by default. Their own values (a tilt, a follow gain) mean nothing on the stroke, so the twin
+# takes the substitute's values as well as its name.
+const AXIS_CREATING_SUBSTITUTES: Dictionary = {"pose": "Choked", "vortex": "Surge"}
+# The axes each creating kind drives, when the device has them. Vortex moves the turning axes only:
+# surge and sway moving with the stroke push it diagonally, which reads as a fault, not a gift.
+const POSE_AXES: Array = ["R1", "R2"]
+const VORTEX_AXES: Array = ["R0", "R1", "R2"]
 
 
 static func is_axis_effect(kind: String) -> bool:
@@ -546,19 +576,60 @@ static func round_has_axis_motion(
 	return auto_twist_on and device_axes.has("R0")
 
 
-# A round's effects as this player will get them: each axis modifier kept when the round has axis
-# motion for them, otherwise swapped for its stroke twin. Everything else passes untouched.
-static func express_effects(effects: Array, axis_motion: bool) -> Array:
+# What this round and this player's device give the multi-axis modifiers to act on, worked out once per
+# round: `motion` for the four that reshape (round_has_axis_motion), and for the two that create, the
+# axes each would drive. Pose holds whichever of roll and pitch the device has, scripted or not. Vortex
+# needs a stroke to circle with (not an e-stim alpha track) and drives only the turning axes the round
+# leaves unscripted, because a script on an axis always wins — with one of roll and pitch scripted, the
+# other plays its half of the circle.
+static func axis_context(
+	device_axes: Array, scripted_axes: Array, auto_twist_on: bool, has_stroke: bool
+) -> Dictionary:
+	var pose_axes: Array = []
+	for axis: String in POSE_AXES:
+		if device_axes.has(axis):
+			pose_axes.append(axis)
+	var vortex_axes: Array = []
+	if has_stroke:
+		for axis: String in VORTEX_AXES:
+			if device_axes.has(axis) and not scripted_axes.has(axis):
+				vortex_axes.append(axis)
+	return {
+		"motion": round_has_axis_motion(device_axes, scripted_axes, auto_twist_on),
+		"pose_axes": pose_axes,
+		"vortex_axes": vortex_axes,
+	}
+
+
+# A round's effects as this player will get them, for an `axis_context`: each axis modifier kept when it
+# has something to act on, otherwise swapped for its stroke twin. A kept Pose or Vortex is stamped with
+# the axes it drives, so the player needs no device profile of its own. Everything else passes untouched.
+static func express_effects(effects: Array, context: Dictionary) -> Array:
 	var out: Array = []
 	for e: Variant in effects:
 		if not (e is Dictionary):
 			continue
 		var effect: Dictionary = e
-		if axis_motion or not is_axis_effect(str(effect.get("kind", ""))):
+		var kind: String = str(effect.get("kind", ""))
+		if not is_axis_effect(kind):
 			out.append(effect)
+		elif not AXIS_CREATING_SUBSTITUTES.has(kind):
+			out.append(effect if bool(context.get("motion", false)) else stroke_twin(effect))
 		else:
-			out.append(stroke_twin(effect))
+			var drives: Array = _created_axes(kind, context)
+			if drives.is_empty():
+				out.append(stroke_twin(effect))
+			else:
+				var kept: Dictionary = effect.duplicate(true)
+				kept["axes"] = drives
+				out.append(kept)
 	return out
+
+
+# The axes Pose or Vortex would drive in `context`; empty when the device gives it none.
+static func _created_axes(kind: String, context: Dictionary) -> Array:
+	var key: String = "pose_axes" if kind == "pose" else "vortex_axes"
+	return context.get(key, []) as Array
 
 
 # Readable names for the raw axis kinds (boss forced modifiers and timeline windows carry kinds, not
@@ -568,6 +639,8 @@ const AXIS_EFFECT_LABELS: Dictionary = {
 	"axis_clamp": "Axes clamp",
 	"axis_reverse": "Axes reverse",
 	"axis_block": "Axes stilled",
+	"pose": "Pose",
+	"vortex": "Vortex",
 }
 
 
@@ -606,9 +679,16 @@ static func axis_effects_in_round(data: Dictionary) -> Array:
 # LINEAR values — an axis_scale ×0.6 becomes a stroke scale ×0.6 — and, for a catalog entry, takes on
 # its named substitute's name and description, so the effect card names a curse that really exists.
 static func stroke_twin(effect: Dictionary) -> Dictionary:
+	var kind: String = str(effect.get("kind", ""))
 	var twin: Dictionary = effect.duplicate(true)
-	twin["kind"] = AXIS_EFFECT_TWINS.get(str(effect.get("kind", "")), effect.get("kind", ""))
-	var named: Dictionary = effect_entry(str(effect.get("substitute", "")))
+	twin["kind"] = AXIS_EFFECT_TWINS.get(kind, kind)
+	var substitute: String = str(effect.get("substitute", AXIS_CREATING_SUBSTITUTES.get(kind, "")))
+	var named: Dictionary = effect_entry(substitute)
+	if AXIS_CREATING_SUBSTITUTES.has(kind):
+		# A tilt or a follow gain has no stroke meaning: play the substitute exactly as catalogued.
+		for key: Variant in named:
+			if not (str(key) in ["name", "desc"]):
+				twin[key] = named[key]
 	if not named.is_empty():
 		twin["name"] = named["name"]
 		twin["desc"] = named.get("desc", "")
@@ -620,7 +700,7 @@ static func stroke_twin(effect: Dictionary) -> Dictionary:
 
 # The tunable numeric parameter(s) for an effect kind, each a spec the authoring controls
 # read: {key, label, ctl, min, max, step}. `ctl` picks the control style — "pct" (0–1 shown
-# as %), "mult" (× multiplier), "coins" (whole coins), "pos" (0–100 stroke position). Empty
+# as %), "mult" (× multiplier), "coins" (whole coins), "pos" (0–100 stroke position), "tilt" (−50 to +50 from centre). Empty
 # for binary kinds (reverse/block/hud_hide/no_pause/gift/lingering).
 static func effect_param_specs(kind: String) -> Array:
 	match kind:
@@ -693,6 +773,36 @@ static func effect_param_specs(kind: String) -> Array:
 					"max": 100,
 					"step": 1
 				},
+			]
+		"pose":
+			return [
+				{
+					"key": "pitch",
+					"label": "Pitch tilt",
+					"ctl": "tilt",
+					"min": -50,
+					"max": 50,
+					"step": 1
+				},
+				{
+					"key": "roll",
+					"label": "Roll tilt",
+					"ctl": "tilt",
+					"min": -50,
+					"max": 50,
+					"step": 1
+				},
+			]
+		"vortex":
+			return [
+				{
+					"key": "gain",
+					"label": "Circle size",
+					"ctl": "pct",
+					"min": 0.1,
+					"max": 1.0,
+					"step": 0.05
+				}
 			]
 		"coin_penalty":
 			return [

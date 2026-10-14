@@ -4,7 +4,7 @@
 
 ### ◆ Curses for the other axes
 
-Four new curses and a blessing act on every axis but the stroke — surge, sway, twist, roll and pitch —
+Five new curses and two blessings act on every axis but the stroke — surge, sway, twist, roll and pitch —
 the way the stroke curses act on the stroke:
 
 - **Stiffened** — the axes move less far.
@@ -12,22 +12,31 @@ the way the stroke curses act on the stroke:
 - **Contrary** — the axes move the opposite way, easing through centre as Inverted does.
 - **Stilled** — the axes freeze where they are.
 - **Limber** *(blessing)* — the axes swing wider.
+- **Posed** — roll and pitch are held at a tilt for the round, whatever the video does. The author sets
+  the pitch and roll tilts.
+- **Vortex** *(blessing)* — roll and pitch trace a circle once with every stroke: pitched one way at the
+  top, leaning to one side on the way down, pitched the other way at the bottom, the other side on the
+  way up. The twist
+  turns with the stroke, taking over from Auto Twist while it lasts. Only axes the video leaves
+  unscripted join in, and the author sets the circle's size.
 
-Twist, roll and pitch get stronger values than surge and sway, which are easier to feel. They can go on
-effect rounds, on a boss as forced modifiers, and in a boss's timeline windows, and they act on Auto
-Twist as well as on scripted axes — never on restim.
+Twist, roll and pitch get stronger values than surge and sway, which are easier to feel. Posed and
+Vortex ease in and out rather than snapping the device to a new angle. They can go on effect rounds,
+on a boss as forced modifiers, and in a boss's timeline windows, and they act on Auto Twist as well as
+on scripted axes — never on restim.
 
-A curse you can't feel is no curse, so a player whose device (see *Your device*) has none of the round's
-moving axes gets the stroke version instead: Shrunken, Choked, Inverted, Numbed or Surge. The effect
-card names what you actually get. The builder says so under each one — louder when the round has no
-axis scripts at all — and the audit lists every round that uses them.
+A curse you can't feel is no curse, so a player whose device (see *Your device*) has none of the axes
+an effect needs gets the stroke version instead: Shrunken, Choked, Inverted, Numbed or Surge, with
+Posed becoming Choked and Vortex becoming Surge. The effect card names what you actually get. The
+builder says so under each one — louder when the round has no axis scripts at all — and the audit lists
+every round that uses them.
 
 ### ◆ Auto Twist
 
 An SR6, or an OSR2 with the twist add-on, has sat with its twist axis idle through almost every
 journey — nearly all content is scripted for the stroke alone. **Options → Device → Auto Twist** gives
 it something to do: the twist follows the stroke, turning where the stroke turns, and swings further
-the deeper the stroke goes. **Subtle / Medium / Strong** reach ±5 / ±25 / ±50 either side of centre
+the deeper the stroke goes. **Subtle / Medium / Strong** reach ±10 / ±25 / ±50 either side of centre
 on a full-depth stroke; Off by default.
 
 It follows the stroke your device is actually sent, so every effect on the stroke reaches the twist

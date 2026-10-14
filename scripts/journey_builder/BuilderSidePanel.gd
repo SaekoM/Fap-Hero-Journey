@@ -60,6 +60,8 @@ const BOSS_MODIFIER_KINDS: Array = [
 	"axis_clamp",
 	"axis_reverse",
 	"axis_block",
+	"pose",
+	"vortex",
 ]
 
 # A list modal sized to its contents: chrome (title, footer buttons, padding) plus a row each, clamped so
@@ -79,6 +81,8 @@ const BOSS_MODIFIER_LABELS: Array = [
 	"AXES CLAMP  —  HOLD NEAR CENTRE",
 	"AXES REVERSE  —  OPPOSITE WAY",
 	"AXES STILLED  —  FREEZE",
+	"POSE  —  HOLD ROLL + PITCH AT A TILT",
+	"VORTEX  —  ROLL + PITCH CIRCLE EACH STROKE",
 ]
 
 var _owner: JourneyBuilder
@@ -87,6 +91,10 @@ var _owner: JourneyBuilder
 # _make_pool_expander and consumed by try_handle_pool_drop (JourneyBuilder routes OS drops to
 # it). Cleared whenever the panel is rebuilt, so it never points at a freed control.
 var _pool_drop: Dictionary = {}
+# Effect picker rows whose editor the author left open, by effect name — kept across panel rebuilds.
+var _effect_editors_open: Dictionary = {}
+# The add-effect menu's scrolling list area: room for a few groups without covering the whole builder.
+const ADD_EFFECT_MENU_SIZE: Vector2 = Vector2(340, 380)
 
 # The custom-items list container, tracked so the editor modal can refresh it after the
 # side panel is rebuilt underneath it (e.g. a save mid-edit frees the old container). The
@@ -8564,7 +8572,7 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	wrapper.add_child(_wrap_group_body(body, UITheme.PURPLE_MID))
 
 	var hint: Label = Label.new()
-	hint.text = "Applies a mix of gameplay effects (hindrances and/or boons) plus optional sensory modifiers at the start. Items stay usable. Tick nothing for a pure visual round (intro card + border only)."
+	hint.text = "Applies a mix of gameplay effects (hindrances and/or boons) plus optional sensory modifiers at the start. Items stay usable. Add no effects for a pure visual round (intro card + border only)."
 	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
@@ -8634,6 +8642,15 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	rand_toggle.button_pressed = bool(arr[idx].get("effect_random", true))
 	rand_toggle.toggled.connect(func(on: bool) -> void: arr[idx]["effect_random"] = on)
 	body.add_child(rand_toggle)
+	var rand_hint: Label = Label.new()
+	rand_hint.text = (
+		"Random rolls only from the effects you add below — add at least one, or the round "
+		+ "applies no effect."
+	)
+	rand_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rand_hint.add_theme_font_size_override("font_size", 10)
+	rand_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(rand_hint)
 
 	body.add_child(_build_effect_catalog_picker(arr, idx))
 
@@ -8656,29 +8673,160 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	return wrapper
 
 
-# The gameplay-effect selection list: hindrances + boons, each tickable (and, once ticked,
-# renamable / reflavorable / tunable via _make_effect_row), plus the Gift-boon item picker.
-# Shared by the effect expander and the boss expander — a boss now carries the full catalog on
-# top of its raw modifiers. Reads/writes arr[idx]["effects"] (+ effect_overrides / gift_item).
+# The gameplay-effect picker: only the effects this round uses take up rows, each with an editor that
+# opens to rename, reflavor or tune it, and an "add effect" button that opens a grouped, searchable menu
+# of the rest (_show_add_effect_menu). The list used to show every catalog entry as a row whether ticked
+# or not, and grew with the catalog; now the panel holds what the round does. Shared by the effect
+# expander and the boss expander — a boss carries the full catalog on top of its raw modifiers.
+# Reads/writes arr[idx]["effects"] (+ effect_overrides / gift_item).
 func _build_effect_catalog_picker(arr: Array, idx: int) -> Control:
 	var box: VBoxContainer = VBoxContainer.new()
 	box.add_theme_constant_override("separation", 6)
 
-	var selected: Array = arr[idx].get("effects", [])
-	var custom_hint: Label = Label.new()
-	custom_hint.text = "Tick an effect to rename it, reflavor it, or tune its strength."
-	custom_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
-	custom_hint.add_theme_font_size_override("font_size", 10)
-	custom_hint.uppercase = true
-	custom_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(custom_hint)
-	box.add_child(_side_field_label("HINDRANCES  (NONE TICKED = NO EFFECT)"))
-	for entry: Dictionary in JourneyData.CURSE_CATALOG:
-		box.add_child(_make_effect_row(arr, idx, entry, selected))
-	box.add_child(_side_field_label("BOONS"))
-	for entry: Dictionary in JourneyData.BLESSING_CATALOG:
-		box.add_child(_make_effect_row(arr, idx, entry, selected))
+	var hint: Label = Label.new()
+	hint.text = "Add the effects this round uses. Open one to rename it, reflavor it, or tune its strength."
+	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.uppercase = true
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(hint)
 
+	var list: VBoxContainer = VBoxContainer.new()
+	list.add_theme_constant_override("separation", 4)
+	box.add_child(list)
+
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD EFFECT"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	box.add_child(add_btn)
+
+	var gift_box: VBoxContainer = _make_gift_item_field(arr, idx)
+	box.add_child(gift_box)
+
+	var refill: Callable = func() -> void: _fill_effect_list(arr, idx, list, gift_box)
+	add_btn.pressed.connect(func() -> void: _show_add_effect_menu(arr, idx, add_btn, refill))
+	refill.call()
+	return box
+
+
+# Rebuilds the picker's rows in place — not the whole side panel, so adding or removing an effect
+# doesn't throw the author back to the top of a long panel.
+func _fill_effect_list(arr: Array, idx: int, list: VBoxContainer, gift_box: Control) -> void:
+	for c: Node in list.get_children():
+		c.queue_free()
+	var selected: Array = arr[idx].get("effects", [])
+	if selected.is_empty():
+		var none: Label = Label.new()
+		none.text = "No effects yet."
+		none.add_theme_color_override("font_color", UITheme.DARK_TEXT)
+		none.add_theme_font_size_override("font_size", 11)
+		list.add_child(none)
+	var refill: Callable = func() -> void: _fill_effect_list(arr, idx, list, gift_box)
+	for nm: Variant in selected:
+		list.add_child(_make_selected_effect_row(arr, idx, str(nm), refill))
+	# The gift item only means something once the Gift boon is in the round.
+	gift_box.visible = "Gift" in selected
+
+
+# One added effect: its name (with tags for a boon / an other-axes effect), a toggle that opens its
+# editor, and a remove button. The editor holds what the old ticked row did: name + flavor overrides,
+# a magnitude for the non-stroke numeric kinds, the preview hint for stroke kinds, and the axis note.
+func _make_selected_effect_row(arr: Array, idx: int, nm: String, refill: Callable) -> Control:
+	var entry: Dictionary = JourneyData.effect_entry(nm)
+	var kind: String = str(entry.get("kind", ""))
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 2)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	col.add_child(row)
+
+	var open: bool = bool(_effect_editors_open.get(nm, false))
+	var toggle: Button = Button.new()
+	toggle.text = "%s  %s" % ["▾" if open else "▸", _effect_display_name(arr, idx, nm)]
+	toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toggle.tooltip_text = UITheme.wrap_tip(str(entry.get("desc", "")))
+	UITheme.style_button_subtle(
+		toggle, UITheme.PURPLE_BRIGHT if open else UITheme.PURPLE_MID, 8, 6, 11
+	)
+	row.add_child(toggle)
+
+	if JourneyData.effect_is_benefit(nm):
+		row.add_child(_effect_tag("BOON", UITheme.SUCCESS))
+	if JourneyData.is_axis_effect(kind):
+		row.add_child(_effect_tag("AXES", UITheme.CYAN))
+
+	var remove_btn: Button = Button.new()
+	remove_btn.text = "✕"
+	remove_btn.tooltip_text = "Remove this effect from the round"
+	UITheme.style_button_subtle(remove_btn, UITheme.ERROR_SOFT, 8, 6, 11)
+	remove_btn.pressed.connect(
+		func() -> void:
+			_toggle_effect(arr, idx, nm, false)
+			_effect_editors_open.erase(nm)
+			refill.call()
+	)
+	row.add_child(remove_btn)
+
+	var indent: MarginContainer = MarginContainer.new()
+	indent.add_theme_constant_override("margin_left", 16)
+	indent.visible = open
+	col.add_child(indent)
+	var editor: VBoxContainer = VBoxContainer.new()
+	editor.add_theme_constant_override("separation", 3)
+	indent.add_child(editor)
+	if not entry.is_empty():
+		editor.add_child(_effect_override_text(arr, idx, nm, "name", "NAME", nm))
+		editor.add_child(
+			_effect_override_text(arr, idx, nm, "desc", "FLAVOR", str(entry.get("desc", "")))
+		)
+		if JourneyData.is_stroke_effect(kind):
+			if not JourneyData.effect_param_specs(kind).is_empty():
+				var h: Label = _side_field_label("↳ tune magnitude in the funscript preview")
+				h.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				editor.add_child(h)
+		else:
+			for spec: Dictionary in JourneyData.effect_param_specs(kind):
+				editor.add_child(_effect_override_number(arr, idx, nm, spec, entry))
+		if JourneyData.is_axis_effect(kind):
+			editor.add_child(_axis_effect_note(arr[idx], kind, str(entry.get("substitute", ""))))
+
+	toggle.pressed.connect(
+		func() -> void:
+			var now_open: bool = not indent.visible
+			_effect_editors_open[nm] = now_open
+			indent.visible = now_open
+			toggle.text = "%s  %s" % ["▾" if now_open else "▸", _effect_display_name(arr, idx, nm)]
+			UITheme.style_button_subtle(
+				toggle, UITheme.PURPLE_BRIGHT if now_open else UITheme.PURPLE_MID, 8, 6, 11
+			)
+	)
+	return col
+
+
+# The name an added effect shows in the list: the author's rename, with the catalog name after it so
+# the effect stays recognisable, or just the catalog name.
+func _effect_display_name(arr: Array, idx: int, nm: String) -> String:
+	var custom: String = str(_stored_override(arr, idx, nm, "name", "")).strip_edges()
+	return "%s  (%s)" % [custom, nm] if custom != "" and custom != nm else nm
+
+
+# A small coloured tag beside an effect's name.
+func _effect_tag(text: String, color: Color) -> Label:
+	var tag: Label = Label.new()
+	tag.text = text
+	tag.add_theme_color_override("font_color", color)
+	tag.add_theme_font_size_override("font_size", 9)
+	tag.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return tag
+
+
+# The Gift boon's item picker, as its own block so the picker can show it only while Gift is added.
+func _make_gift_item_field(arr: Array, idx: int) -> VBoxContainer:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
 	box.add_child(_side_field_label("GIFT ITEM  (FOR THE GIFT BOON)"))
 	var values: Array = [""]
 	var gift_dd: OptionButton = OptionButton.new()
@@ -8693,6 +8841,126 @@ func _build_effect_catalog_picker(arr: Array, idx: int) -> Control:
 	gift_dd.item_selected.connect(func(i: int) -> void: arr[idx]["gift_item"] = values[i])
 	box.add_child(gift_dd)
 	return box
+
+
+# The "add effect" menu: every effect the round doesn't have yet, grouped as hindrances and boons, each
+# split into stroke-and-general and other-axes, with a one-line description under each and a search
+# box that filters by name or description. Picking one adds it, opens its editor, and closes the menu.
+func _show_add_effect_menu(arr: Array, idx: int, anchor: Control, refill: Callable) -> void:
+	var popup: PopupPanel = PopupPanel.new()
+	_owner.add_child(popup)
+	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
+	panel_style.bg_color = UITheme.PANEL_BG
+	panel_style.border_color = UITheme.PURPLE_BRIGHT
+	panel_style.set_border_width_all(2)
+	panel_style.set_content_margin_all(10)
+	popup.add_theme_stylebox_override("panel", panel_style)
+	popup.popup_hide.connect(popup.queue_free)
+
+	var vbox: VBoxContainer = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	popup.add_child(vbox)
+
+	var search: LineEdit = LineEdit.new()
+	search.placeholder_text = "Search effects…"
+	search.clear_button_enabled = true
+	UITheme.style_line_edit(search)
+	vbox.add_child(search)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(ADD_EFFECT_MENU_SIZE.x, ADD_EFFECT_MENU_SIZE.y)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(scroll)
+	var items: VBoxContainer = VBoxContainer.new()
+	items.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	items.add_theme_constant_override("separation", 2)
+	scroll.add_child(items)
+
+	var pick: Callable = func(nm: String) -> void:
+		_toggle_effect(arr, idx, nm, true)
+		_effect_editors_open[nm] = true  # straight into its editor — tuning is usually next
+		popup.hide()
+		refill.call()
+	var fill: Callable = func(query: String) -> void:
+		_fill_add_effect_menu(arr, idx, items, query.strip_edges().to_lower(), pick)
+	search.text_changed.connect(fill)
+	fill.call("")
+
+	# Under the button, kept on screen: a picker low in a long panel would otherwise open off the bottom.
+	var view: Vector2 = _owner.get_viewport_rect().size
+	popup.reset_size()
+	var pos: Vector2 = anchor.global_position + Vector2(0, anchor.size.y + 4)
+	pos.x = clampf(pos.x, 0.0, maxf(0.0, view.x - popup.size.x))
+	if pos.y + popup.size.y > view.y:
+		pos.y = maxf(0.0, anchor.global_position.y - popup.size.y - 4)  # flip above the button
+	popup.position = Vector2i(pos)
+	popup.popup()
+	search.grab_focus()
+
+
+# Fills the add menu with the effects not yet in the round that match `query` (lower-cased; "" = all).
+func _fill_add_effect_menu(
+	arr: Array, idx: int, items: VBoxContainer, query: String, pick: Callable
+) -> void:
+	for c: Node in items.get_children():
+		c.queue_free()
+	var selected: Array = arr[idx].get("effects", [])
+	var shown: int = 0
+	for section: Array in [
+		["HINDRANCES", JourneyData.CURSE_CATALOG], ["BOONS", JourneyData.BLESSING_CATALOG]
+	]:
+		for axes: bool in [false, true]:
+			var group: Array = []
+			for entry: Dictionary in section[1]:
+				var nm: String = str(entry.get("name", ""))
+				if nm in selected or JourneyData.is_axis_effect(str(entry.get("kind", ""))) != axes:
+					continue
+				var hay: String = (nm + " " + str(entry.get("desc", ""))).to_lower()
+				if query == "" or hay.contains(query):
+					group.append(entry)
+			if group.is_empty():
+				continue
+			var heading: Label = _side_field_label(
+				"%s · %s" % [section[0], "OTHER AXES" if axes else "STROKE & GENERAL"]
+			)
+			heading.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+			items.add_child(heading)
+			for entry: Dictionary in group:
+				items.add_child(_make_add_effect_item(entry, pick))
+				shown += 1
+	if shown == 0:
+		var none: Label = Label.new()
+		none.text = (
+			"Every effect is already in this round." if query == "" else "No matching effects."
+		)
+		none.add_theme_color_override("font_color", UITheme.DARK_TEXT)
+		none.add_theme_font_size_override("font_size", 11)
+		items.add_child(none)
+
+
+# One menu item: the effect's name as the button, its description underneath.
+func _make_add_effect_item(entry: Dictionary, pick: Callable) -> Control:
+	var nm: String = str(entry.get("name", ""))
+	var col: VBoxContainer = VBoxContainer.new()
+	col.add_theme_constant_override("separation", 0)
+	var btn: Button = Button.new()
+	btn.text = nm
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button_subtle(btn, UITheme.PURPLE_MID, 8, 6, 12)
+	btn.pressed.connect(func() -> void: pick.call(nm))
+	col.add_child(btn)
+	var desc: Label = Label.new()
+	desc.text = str(entry.get("desc", ""))
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc.add_theme_color_override("font_color", UITheme.DARK_TEXT)
+	desc.add_theme_font_size_override("font_size", 10)
+	var indent: MarginContainer = MarginContainer.new()
+	indent.add_theme_constant_override("margin_left", 8)
+	indent.add_theme_constant_override("margin_bottom", 4)
+	indent.add_child(desc)
+	col.add_child(indent)
+	return col
 
 
 # Labeled int SpinBox bound to arr[idx][key]. Used by the effect-round fields.
@@ -8753,55 +9021,6 @@ func _make_effect_color_field(
 	return box
 
 
-# One effect row: a tick bound to the round's effects list and, while ticked, an indented
-# sub-editor to customize it — a name + flavor override (all kinds) and a magnitude control
-# for the non-stroke numeric kinds (coin/score/toll/interest). STROKE kinds (scale/clamp)
-# show a hint pointing to the funscript preview, where their magnitude is tuned live.
-func _make_effect_row(arr: Array, idx: int, entry: Dictionary, selected: Array) -> Control:
-	var nm: String = str(entry.get("name", ""))
-	var kind: String = str(entry.get("kind", ""))
-	var col: VBoxContainer = VBoxContainer.new()
-	col.add_theme_constant_override("separation", 2)
-
-	var cb: CheckButton = CheckButton.new()
-	cb.text = nm
-	cb.tooltip_text = UITheme.wrap_tip(str(entry.get("desc", "")))
-	cb.add_theme_font_size_override("font_size", 11)
-	cb.button_pressed = nm in selected
-	col.add_child(cb)
-
-	# Indented sub-editor, shown only while the effect is ticked.
-	var indent: MarginContainer = MarginContainer.new()
-	indent.add_theme_constant_override("margin_left", 28)
-	indent.visible = cb.button_pressed
-	col.add_child(indent)
-	var editor: VBoxContainer = VBoxContainer.new()
-	editor.add_theme_constant_override("separation", 3)
-	indent.add_child(editor)
-
-	editor.add_child(_effect_override_text(arr, idx, nm, "name", "NAME", nm))
-	editor.add_child(
-		_effect_override_text(arr, idx, nm, "desc", "FLAVOR", str(entry.get("desc", "")))
-	)
-	if JourneyData.is_stroke_effect(kind):
-		if not JourneyData.effect_param_specs(kind).is_empty():
-			var h: Label = _side_field_label("↳ tune magnitude in the funscript preview")
-			h.add_theme_color_override("font_color", UITheme.PURPLE_MID)
-			editor.add_child(h)
-	else:
-		for spec: Dictionary in JourneyData.effect_param_specs(kind):
-			editor.add_child(_effect_override_number(arr, idx, nm, spec, entry))
-	if JourneyData.is_axis_effect(kind):
-		editor.add_child(_axis_effect_note(arr[idx], str(entry.get("substitute", ""))))
-
-	cb.toggled.connect(
-		func(on: bool) -> void:
-			_toggle_effect(arr, idx, nm, on)
-			indent.visible = on
-	)
-	return col
-
-
 # Free-text override (name / flavor) for one effect. Blank clears the override (the catalog
 # default, shown as placeholder, is used). Kept as a diff in effect_overrides[name].
 func _effect_override_text(
@@ -8850,7 +9069,7 @@ func _effect_override_number(
 	spin.value_changed.connect(
 		func(v: float) -> void:
 			var real: float = v / view_scale
-			var store_val: Variant = int(round(real)) if ctl == "coins" else real
+			var store_val: Variant = int(round(real)) if ctl in ["coins", "tilt"] else real
 			if is_equal_approx(float(store_val), default_val):
 				_set_effect_override(arr, idx, effect_name, key, null)  # back to default → drop
 			else:
@@ -9249,6 +9468,10 @@ func _default_boss_modifier(kind: String) -> Dictionary:
 			return {"kind": "axis_scale", "factor": 0.6, "rotary_factor": 0.4}
 		"axis_clamp":
 			return {"kind": "axis_clamp", "min": 40, "max": 60, "rotary_min": 45, "rotary_max": 55}
+		"pose":
+			return {"kind": "pose", "pitch": 25, "roll": 0}
+		"vortex":
+			return {"kind": "vortex", "gain": 0.5}
 		_:
 			return {"kind": kind}
 
@@ -9275,14 +9498,53 @@ func _boss_modifier_number(
 	return box
 
 
+# One tilt on a forced Pose, whole steps from centre (−50 to +50), written straight into its dict.
+func _boss_modifier_tilt(arr: Array, idx: int, m_idx: int, key: String, label: String) -> Control:
+	var box: HBoxContainer = HBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	box.add_child(_side_field_label(label))
+	var edit: LineEdit = LineEdit.new()
+	edit.text = str(arr[idx]["boss_modifiers"][m_idx].get(key, 0))
+	edit.custom_minimum_size = Vector2(56, 0)
+	UITheme.style_line_edit(edit)
+	edit.text_changed.connect(
+		func(val: String) -> void:
+			arr[idx]["boss_modifiers"][m_idx][key] = clampi(val.to_int(), -50, 50)
+	)
+	box.add_child(edit)
+	return box
+
+
 # The warning under a multi-axis modifier: who doesn't get it, and what they get instead. Louder when
-# the round has no axis scripts at all, because then nobody feels it but an Auto Twist player — and an
-# author testing on a fully kitted device would never notice.
-func _axis_effect_note(round_data: Dictionary, substitute: String) -> Label:
+# the round leaves it nothing to act on — the reshaping kinds with no axis scripts, where only an Auto
+# Twist player feels them; Vortex when every turning axis is scripted — because an author testing on a
+# fully kitted device would never notice. Pose needs no script at all, only roll or pitch on the device.
+func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String) -> Label:
 	var note: Label = Label.new()
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 10)
-	if _round_scripted_axes(round_data).is_empty():
+	note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	var scripted: Array = _round_scripted_axes(round_data)
+	if kind == "pose":
+		note.text = (
+			"Needs a device with roll or pitch — players without them get %s instead." % substitute
+		)
+	elif kind == "vortex":
+		var free_turns: bool = JourneyData.VORTEX_AXES.any(
+			func(axis: String) -> bool: return not scripted.has(axis)
+		)
+		if free_turns:
+			note.text = (
+				"Needs a device with twist, roll or pitch this round leaves unscripted — players "
+				+ "without one get %s instead." % substitute
+			)
+		else:
+			note.text = (
+				"⚠ This round scripts twist, roll and pitch, so Vortex has nothing to move. "
+				+ "Everyone gets %s." % substitute
+			)
+			note.add_theme_color_override("font_color", UITheme.AMBER)
+	elif scripted.is_empty():
 		note.text = (
 			"⚠ This round has no axis scripts, so only players running Auto Twist feel this, on "
 			+ "twist. Everyone else gets %s." % substitute
@@ -9292,7 +9554,6 @@ func _axis_effect_note(round_data: Dictionary, substitute: String) -> Label:
 		note.text = (
 			"Needs a device with these axes — players without them get %s instead." % substitute
 		)
-		note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
 	return note
 
 
@@ -9434,7 +9695,7 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 				_boss_modifier_number(arr, idx, m_idx, "rotary_factor", "TURNS ×", false)
 			)
 			col.add_child(srow)
-			col.add_child(_axis_effect_note(arr[idx], "Shrunken"))
+			col.add_child(_axis_effect_note(arr[idx], "axis_scale", "Shrunken"))
 		"axis_clamp":
 			var lin_row: HBoxContainer = HBoxContainer.new()
 			lin_row.add_theme_constant_override("separation", 6)
@@ -9448,11 +9709,21 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 			)
 			rot_row.add_child(_boss_modifier_number(arr, idx, m_idx, "rotary_max", "MAX", true))
 			col.add_child(rot_row)
-			col.add_child(_axis_effect_note(arr[idx], "Choked"))
+			col.add_child(_axis_effect_note(arr[idx], "axis_clamp", "Choked"))
 		"axis_reverse":
-			col.add_child(_axis_effect_note(arr[idx], "Inverted"))
+			col.add_child(_axis_effect_note(arr[idx], "axis_reverse", "Inverted"))
 		"axis_block":
-			col.add_child(_axis_effect_note(arr[idx], "Numbed"))
+			col.add_child(_axis_effect_note(arr[idx], "axis_block", "Numbed"))
+		"pose":
+			var tilt_row: HBoxContainer = HBoxContainer.new()
+			tilt_row.add_theme_constant_override("separation", 6)
+			tilt_row.add_child(_boss_modifier_tilt(arr, idx, m_idx, "pitch", "PITCH TILT"))
+			tilt_row.add_child(_boss_modifier_tilt(arr, idx, m_idx, "roll", "ROLL TILT"))
+			col.add_child(tilt_row)
+			col.add_child(_axis_effect_note(arr[idx], "pose", "Choked"))
+		"vortex":
+			col.add_child(_boss_modifier_number(arr, idx, m_idx, "gain", "CIRCLE SIZE ×", false))
+			col.add_child(_axis_effect_note(arr[idx], "vortex", "Surge"))
 		_:
 			var none_lbl: Label = Label.new()
 			none_lbl.text = "NO PARAMETERS"

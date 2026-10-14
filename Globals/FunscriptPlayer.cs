@@ -170,9 +170,6 @@ public partial class FunscriptPlayer : Node
     private double _autoTwistGain = 0.0;
     // The last twist sent, which the per-tick speed ceiling measures from. Centre when idle.
     private double _lastAutoTwist = 50.0;
-    // Whether Auto Twist has moved R0 since it was last homed, so a pause only re-centres a twist
-    // this code actually moved.
-    private bool _autoTwistDriving = false;
     // The loaded main track is an e-stim ALPHA channel rather than a stroke: nothing to twist with.
     private bool _mainIsAlpha = false;
 
@@ -232,14 +229,22 @@ public partial class FunscriptPlayer : Node
     private const double FillerVibTickIntervalMs = 50.0;
 
     // Ease-in state — blends output from neutral (50) toward the script position
-    // at the start of each round, journey, or resume-from-pause.
+    // at the start of each round, journey, or resume-from-pause. Timed in PLAYED time, not on the
+    // playback clock: the first sync after a resume or a round start can snap that clock to the video,
+    // which used to count the whole ease as already elapsed and jump every axis into place.
     private bool _easing = false;
-    private double _easeStartMs = 0.0;
+    private double _easeElapsedMs = 0.0;
     private double _easeDurationMs = 0.0;
     private float _easeFromPos = 50f; // the ease blends FROM here (the device's current pos), not home
     private const float EaseSpeedUnitsPerMs = 40f / 1000f; // 40 units/sec
     private const double EaseMinMs = 50.0;
     private const double EaseMaxMs = 1500.0;
+
+    // The secondary axes' own ease from centre, where pause and round changes home them. Separate from
+    // the stroke's, which is sized by the STROKE's gap and is skipped outright when the script starts
+    // where the stroke already is — which left a Pose snapping from centre to its tilt.
+    private double _axisEaseElapsedMs = AxisEaseMs;
+    private const double AxisEaseMs = 1000.0;
 
     // Mirror-ease state — the "mirror" shop item flips position to 100-pos.
     // Toggling it on/off is eased through the centre rather than snapped: an
@@ -257,6 +262,47 @@ public partial class FunscriptPlayer : Node
 
     // The turning axes, which axis modifiers drive with their stronger `rotary_` values.
     private static readonly string[] RotaryAxes = { "R0", "R1", "R2" };
+
+    // ── Pose and Vortex ───────────────────────────────────────────────────
+    // The two multi-axis modifiers that CREATE motion rather than reshape it (MULTIAXIS_DESIGN.md §3):
+    // Pose holds roll and pitch at a tilt, replacing their scripts; Vortex circles the roll and pitch a
+    // round leaves unscripted once per stroke, with the twist following the stroke by Auto Twist's model.
+    // GameLoop stamps each effect with
+    // the axes this player's device gives it ("axes"). Both blend in and out with Contrary's ease, so a
+    // pose never snaps the device to its tilt.
+    private float _poseBlend = 0f;
+    private double _poseClockMs = double.NaN;
+    private float _vortexBlend = 0f;
+    private double _vortexClockMs = double.NaN;
+    // Latched from the live effect, and kept while the blend eases back out after it ends: the effect
+    // is gone by then, but the device still has to travel home from where it was held.
+    private readonly System.Collections.Generic.Dictionary<string, double> _poseTargets =
+        new System.Collections.Generic.Dictionary<string, double>();
+    private readonly HashSet<string> _vortexAxes = new HashSet<string>();
+    private double _vortexGain = 0.0;
+    // Each Vortex axis's last position, which the speed ceiling measures from.
+    private readonly System.Collections.Generic.Dictionary<string, double> _vortexFollow =
+        new System.Collections.Generic.Dictionary<string, double>();
+    // Vortex circles roll and pitch once per down-and-up (owner, after hardware: following the stroke in
+    // turns still felt the same every stroke). The circle is locked to the stroke, not to a clock, so it
+    // keeps time with any script: pitch rides the stroke's height and roll leans one way on the way down
+    // and the other on the way up — top, side, bottom, other side, top. Each circle is sized to where the
+    // last strokes actually turned, so a shallow stroke still traces a whole loop, not a sliver of one.
+    private double _vortexTop = 100.0;
+    private double _vortexBottom = 0.0;
+    // Reversal tracking: the furthest point of the stroke in progress, and its direction (0 = unknown).
+    private double _strokeExtreme = 50.0;
+    private int _strokeDirection = 0;
+    // How far the stroke must come back from its furthest point to count as having turned — enough to
+    // ignore jitter in a held stroke.
+    private const double StrokeReversalUnits = 3.0;
+    // The turning axes that can move with no script behind them: Auto Twist's twist, and the axes Pose
+    // and Vortex drive.
+    private static readonly string[] SynthesisedAxes = { "R0", "R1", "R2" };
+    private static readonly string[] PoseAxesDefault = { "R1", "R2" };
+    // The axes that moved with no script since they were last homed, so a pause re-centres exactly
+    // those. Authored axes are homed from _axes.
+    private readonly HashSet<string> _synthesisedDriving = new HashSet<string>();
 
     public bool Playing => _playing;
     public int ActionCount => _actions.Count;
@@ -383,6 +429,7 @@ public partial class FunscriptPlayer : Node
         string stem = System.IO.Path.GetFileNameWithoutExtension(path ?? "").ToLowerInvariant();
         _mainIsAlpha = stem.EndsWith(".alpha") || stem.EndsWith("_alpha");
         _lastAutoTwist = 50.0;
+        ResetVortex();
         _actions.Clear();
         _actionIndex = 0;
         _positionMs = 0.0;
@@ -574,17 +621,172 @@ public partial class FunscriptPlayer : Node
         && !_mainIsAlpha
         && !(_axes.TryGetValue("R0", out var authored) && authored.Actions.Count > 0);
 
-    // One tick of Auto Twist, on the same line as the stroke move it was derived from. Serial only:
-    // restim maps R0 to its carrier frequency, which a synthesised twist must never touch.
-    private void QueueAutoTwist(double stroke, double delta, Godot.Collections.Array effects)
+    // Every turning axis with no script that something here moves: Auto Twist and Vortex riding the
+    // stroke, and Pose holding a tilt. Serial only, like everything on this stream: restim maps these
+    // axes to its carrier and pulse settings, which synthesised motion must never touch. `stroke` is
+    // this tick's sent stroke in script space, NaN when a block holds it — and whatever follows the
+    // stroke holds with it. The followers only run while the stroke itself streams (`strokeStreams`).
+    private void QueueSynthesisedAxes(
+        bool strokeStreams, double stroke, double delta, Godot.Collections.Array effects)
     {
-        _lastAutoTwist = AutoTwistStep(stroke, _lastAutoTwist, _autoTwistGain, MaxTwistSpeed * delta);
-        (int axisMin, int axisMax) = GetAxisRange("R0");
+        bool stepping = !double.IsNaN(stroke);
+        double maxDelta = MaxTwistSpeed * delta;
+        Vector2 circle = new Vector2(50f, 50f);  // (pitch, roll) on the circle this tick
+        if (strokeStreams && stepping && _vortexBlend > 0f)
+        {
+            TrackStrokeTurns(stroke);
+            circle = VortexTilt(stroke, _vortexTop, _vortexBottom, _strokeDirection, _vortexGain);
+        }
+        // Blend in from centre, like the authored axes. The stroke eases in from the player's HOME
+        // position, not 50, so its first sent value already reads as a large twist — unblended, the twist
+        // (homed to 50 on pause / between rounds) snapped there in one tick.
+        double easeBlend = AxisEaseBlend();
+        foreach (string axis in SynthesisedAxes)
+        {
+            if (HasAuthoredAxis(axis))
+                continue;  // a script always wins; Pose reaches scripted axes in QueueAuthoredAxes
+
+            // What the axis does underneath Vortex and Pose: Auto Twist's twist, or rest at centre.
+            double basePos = 50.0;
+            bool twisting = strokeStreams && axis == "R0" && AutoTwistActive();
+            if (twisting)
+            {
+                if (stepping)
+                    _lastAutoTwist = AutoTwistStep(stroke, _lastAutoTwist, _autoTwistGain, maxDelta);
+                basePos = _lastAutoTwist;
+            }
+
+            double follow = double.NaN;
+            if (strokeStreams && _vortexBlend > 0f && _vortexAxes.Contains(axis))
+            {
+                double last = _vortexFollow.TryGetValue(axis, out double previous) ? previous : 50.0;
+                if (!stepping)
+                    follow = last;  // a held stroke holds the circle where it is
+                else if (axis == "R0")
+                    follow = AutoTwistStep(stroke, last, _vortexGain, maxDelta);  // the twist follows the stroke
+                else
+                    follow = Math.Clamp(axis == "R2" ? circle.X : circle.Y, last - maxDelta, last + maxDelta);
+                _vortexFollow[axis] = follow;
+            }
+
+            double poseTarget = PoseTargetFor(axis);
+            if (!twisting && double.IsNaN(follow) && double.IsNaN(poseTarget))
+                continue;  // nothing moves this axis; it rests wherever it was homed
+
+            double pos = CreatedMotionPos(basePos, follow, _vortexBlend, poseTarget, _poseBlend);
+            QueueSecondaryAxis(axis, pos, effects, easeBlend);
+            _synthesisedDriving.Add(axis);
+        }
+    }
+
+    // Notes where the stroke turns, so the next circle is sized to the strokes actually being played.
+    private void TrackStrokeTurns(double stroke)
+    {
+        double furthest = _strokeExtreme;
+        int wasGoing = _strokeDirection;
+        if (!StrokeReversed(stroke))
+            return;
+        if (wasGoing > 0)
+            _vortexTop = furthest;
+        else
+            _vortexBottom = furthest;
+    }
+
+    /// Where Vortex's circle puts pitch (x) and roll (y), 0–100, for a stroke at `stroke` that last turned
+    /// at `top` and `bottom` and is moving `direction` (+1 up, −1 down, 0 not yet known). The stroke's
+    /// place between its turns is the circle's height — pitch — and roll is the circle's other half,
+    /// leaning one way going down and the other going up; it is zero at each turn, which is what lets it
+    /// change sides there without a jump. `gain` sets the radius: 0.5 is ±25. Pure — public for the
+    /// gdUnit suite.
+    public Vector2 VortexTilt(double stroke, double top, double bottom, int direction, double gain)
+    {
+        double half = (top - bottom) / 2.0;
+        // A stroke too short to measure is placed on the full range instead.
+        double height = half >= StrokeReversalUnits
+            ? (stroke - (top + bottom) / 2.0) / half
+            : (stroke - 50.0) / 50.0;
+        height = Math.Clamp(height, -1.0, 1.0);
+        double radius = 50.0 * Math.Clamp(gain, 0.0, 1.0);
+        double lean = -Math.Sign(direction) * Math.Sqrt(1.0 - height * height);
+        return new Vector2((float)(50.0 + radius * height), (float)(50.0 + radius * lean));
+    }
+
+    // Whether the stroke has just turned: it has come back StrokeReversalUnits from the furthest point of
+    // the run in progress. The first move far enough from the start only sets the direction.
+    private bool StrokeReversed(double stroke)
+    {
+        if (_strokeDirection == 0)
+        {
+            if (Math.Abs(stroke - _strokeExtreme) >= StrokeReversalUnits)
+            {
+                _strokeDirection = Math.Sign(stroke - _strokeExtreme);
+                _strokeExtreme = stroke;
+            }
+            return false;
+        }
+        if ((stroke - _strokeExtreme) * _strokeDirection > 0.0)
+        {
+            _strokeExtreme = stroke;  // still travelling the same way; the furthest point moves on
+            return false;
+        }
+        if (Math.Abs(stroke - _strokeExtreme) < StrokeReversalUnits)
+            return false;
+        _strokeDirection = -_strokeDirection;
+        _strokeExtreme = stroke;
+        return true;
+    }
+
+    // Forgets where Vortex's axes were and the strokes it measured, so the next Vortex starts afresh.
+    private void ResetVortex()
+    {
+        _vortexFollow.Clear();
+        _vortexTop = 100.0;
+        _vortexBottom = 0.0;
+        _strokeExtreme = 50.0;
+        _strokeDirection = 0;
+    }
+
+    private bool HasAuthoredAxis(string axis) =>
+        _axes.TryGetValue(axis, out var authored) && authored.Actions.Count > 0;
+
+    /// One axis with Vortex and Pose blended over what it would otherwise do (`basePos`: its script,
+    /// Auto Twist, or centre). Vortex's `follow` takes over by `vortexBlend`, then the pose by
+    /// `poseBlend`, so a held axis is held whatever else moves it. NaN for a modifier that doesn't drive
+    /// this axis. Pure — public for the gdUnit suite, like AutoTwistStep.
+    public double CreatedMotionPos(
+        double basePos, double follow, double vortexBlend, double poseTarget, double poseBlend)
+    {
+        double pos = basePos;
+        if (!double.IsNaN(follow))
+            pos += (follow - pos) * Math.Clamp(vortexBlend, 0.0, 1.0);
+        if (!double.IsNaN(poseTarget))
+            pos += (poseTarget - pos) * Math.Clamp(poseBlend, 0.0, 1.0);
+        return Math.Clamp(pos, 0.0, 100.0);
+    }
+
+    /// Where Pose holds an axis for a tilt from centre (−50 to +50). Pure — public for the gdUnit suite.
+    public double PoseTarget(double tilt) => Math.Clamp(50.0 + tilt, 0.0, 100.0);
+
+    // The position Pose is holding `axis` at, or NaN when Pose isn't holding it.
+    private double PoseTargetFor(string axis) =>
+        _poseBlend > 0f && _poseTargets.TryGetValue(axis, out double target) ? target : double.NaN;
+
+    // Adds a secondary axis's position to this tick's line: the multi-axis curses applied, then the
+    // player's window and the ease-in. Left off the line when it hasn't moved since it was last sent.
+    private void QueueSecondaryAxis(
+        string axis, double scriptPos, Godot.Collections.Array effects, double easeBlend)
+    {
+        (int axisMin, int axisMax) = GetAxisRange(axis);
         // Axis modifiers reshape what is SENT, not the follow itself — so the speed ceiling keeps
         // measuring the honest twist, and a curse lifting doesn't leave it anywhere it has to catch up from.
-        double twist = AxisModifiedPos("R0", _lastAutoTwist, effects, _axisMirrorBlend);
-        QueueMove("R0", SecondaryAxisOutput(twist, axisMin, axisMax, 1.0));
-        _autoTwistDriving = true;
+        double modified = AxisModifiedPos(axis, scriptPos, effects, _axisMirrorBlend);
+        double pos = SecondaryAxisOutput(modified, axisMin, axisMax, easeBlend);
+
+        int steps = (int)Math.Round(pos / 100.0 * 9999.0);
+        if (_lastSentAxisSteps.TryGetValue(axis, out int lastSteps) && lastSteps == steps)
+            return;
+        _lastSentAxisSteps[axis] = steps;
+        QueueMove(axis, pos);
     }
 
     /// A secondary axis's script position (0–100) as sent: rescaled into the player's window for that
@@ -644,14 +846,17 @@ public partial class FunscriptPlayer : Node
     // of them again rather than trusting what it last sent.
     private void ForgetSentAxes() => _lastSentAxisSteps.Clear();
 
-    // How far the round-start ease has got, as a smoothstep 0–1 (1 when not easing). The stroke and the
-    // secondary axes share it, so every axis blends in from neutral together.
-    private float EaseBlend()
+    // How far the stroke's round-start ease has got, as a smoothstep 0–1 (1 when not easing).
+    private float StrokeEaseBlend() =>
+        _easing ? Smoothstep(_easeElapsedMs / _easeDurationMs) : 1f;
+
+    // How far the secondary axes' ease from centre has got, as a smoothstep 0–1.
+    private float AxisEaseBlend() => Smoothstep(_axisEaseElapsedMs / AxisEaseMs);
+
+    // Ease-in-out Hermite on a 0–1 progress — natural for device motion.
+    private static float Smoothstep(double progress)
     {
-        if (!_easing)
-            return 1f;
-        double elapsed = _positionMs - _easeStartMs;
-        float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
+        float t = (float)Math.Clamp(progress, 0.0, 1.0);
         return t * t * (3f - 2f * t);
     }
 
@@ -1128,6 +1333,8 @@ public partial class FunscriptPlayer : Node
     // sudden linear strokes are, so no ease is needed.
     private void _StartEaseIn()
     {
+        _axisEaseElapsedMs = 0.0;  // the secondary axes always come in from centre, whatever the stroke does
+
         if (_strokeBackend == StrokeBackend.None)
             return; // no stroke target: nothing to ease
 
@@ -1147,7 +1354,7 @@ public partial class FunscriptPlayer : Node
         }
 
         _easeDurationMs = Math.Clamp(gap / EaseSpeedUnitsPerMs, EaseMinMs, EaseMaxMs);
-        _easeStartMs = _positionMs;
+        _easeElapsedMs = 0.0;
         _easing = true;
     }
 
@@ -1181,12 +1388,15 @@ public partial class FunscriptPlayer : Node
             foreach (var axis in _axes.Keys)
                 serialAx.SendAxis(axis, _homeEaseMs, 0.5);
 
-        // Auto Twist is not in _axes, so the loop above never reaches it. Centre it the same way — unless
-        // an authored R0 is loaded, in which case that loop already did.
-        if (_autoTwistDriving && !_axes.ContainsKey("R0") && serialAx != null && serialAx.SerialConnected)
-            serialAx.SendAxis("R0", _homeEaseMs, 0.5);
-        _autoTwistDriving = false;
+        // Axes Auto Twist, Pose or Vortex moved with no script are not in _axes, so the loop above never
+        // reaches them. Centre them the same way.
+        if (serialAx != null && serialAx.SerialConnected)
+            foreach (var axis in _synthesisedDriving)
+                if (!_axes.ContainsKey(axis))
+                    serialAx.SendAxis(axis, _homeEaseMs, 0.5);
+        _synthesisedDriving.Clear();
         _lastAutoTwist = 50.0;
+        ResetVortex();
         ForgetSentAxes();
 
         // Silence every mapped vibe actuator.
@@ -1279,7 +1489,7 @@ public partial class FunscriptPlayer : Node
             {
                 var restim = _restim;
                 bool restimOn = restim != null && restim.RestimConnected;
-                double easeBlend = EaseBlend();
+                double easeBlend = AxisEaseBlend();
                 foreach (var multiaxis in _axes)
                 {
                     string axis = multiaxis.Key;
@@ -1416,7 +1626,9 @@ public partial class FunscriptPlayer : Node
         if (_playing)
         {
             _positionMs += delta * 1000.0;
-            if (_easing && _positionMs - _easeStartMs >= _easeDurationMs)
+            _easeElapsedMs += delta * 1000.0;
+            _axisEaseElapsedMs += delta * 1000.0;
+            if (_easing && _easeElapsedMs >= _easeDurationMs)
                 _easing = false;
         }
 
@@ -1432,14 +1644,25 @@ public partial class FunscriptPlayer : Node
         _tickPositions.Clear();
 
         var effects = ActiveEffectsForOutput();
-        UpdateAxisMirrorBlend(effects); // clock-driven; advance once per tick, even while axes are held
+        // Clock-driven; advance once per tick, even while axes are held.
+        UpdateAxisMirrorBlend(effects);
+        UpdateCreatedMotion(effects);
         // Stilled: every axis but the stroke holds where it is — the axis twin of the stroke's block.
         bool axesHeld = CountKind(effects, "axis_block") > 0;
 
-        if (_strokeBackend == StrokeBackend.Serial && _actions.Count > 0)
-            QueueStrokeTick(now, delta, effects, axesHeld);
+        if (++_ticksSinceAxisResend >= AxisResendTicks)
+        {
+            _ticksSinceAxisResend = 0;
+            ForgetSentAxes();
+        }
+
+        bool strokeStreams = _strokeBackend == StrokeBackend.Serial && _actions.Count > 0;
+        double stroke = strokeStreams ? QueueStrokeTick(now, delta, effects) : double.NaN;
         if (!axesHeld)
+        {
             QueueAuthoredAxes(now, effects);
+            QueueSynthesisedAxes(strokeStreams, stroke, delta, effects);
+        }
 
         // Interval a touch longer than the tick so the OSR is always still gliding toward a fresh
         // target instead of finishing early and dwelling (which would re-introduce stepping).
@@ -1447,14 +1670,15 @@ public partial class FunscriptPlayer : Node
         serial.SendMoves(_tickAxes, _tickPositions, intervalMs);
     }
 
-    // The stroke, plus Auto Twist riding it. Only when the stroke's backend is serial and there is a main
-    // track; a block effect holds both where they are.
-    private void QueueStrokeTick(double now, double delta, Godot.Collections.Array effects, bool axesHeld)
+    // The stroke, when its backend is serial and there is a main track. Returns the stroke as sent, in
+    // script space, for Auto Twist and Vortex to follow — NaN under a block, which holds the stroke and
+    // so holds them too.
+    private double QueueStrokeTick(double now, double delta, Godot.Collections.Array effects)
     {
         UpdateMirrorBlend(effects); // clock-driven; advance once per tick, even under block
 
         if (effects != null && HasBlockEffect(effects))
-            return; // block suppresses output — hold position
+            return double.NaN; // block suppresses output — hold position
 
         // Move the bracket cursor to the segment containing `now` (both directions, so seeks recover).
         while (_interpIndex + 1 < _actions.Count && _actions[_interpIndex + 1].AtMs <= now)
@@ -1476,11 +1700,9 @@ public partial class FunscriptPlayer : Node
         double sent = Math.Clamp(target, 0.0, 100.0);
         QueueMove("L0", sent);
 
-        // Auto Twist rides the stroke it was derived from: the same value, after every effect and the
-        // speed cap above, so anything that reshapes the stroke reshapes the twist. Block returned early,
-        // so a blocked stroke holds the twist too.
-        if (AutoTwistActive() && !axesHeld)
-            QueueAutoTwist(StrokeInScriptSpace(sent, _rangeMin, _rangeMax), delta, effects);
+        // What follows the stroke follows the value sent: after every effect and the speed cap above, so
+        // anything that reshapes the stroke reshapes the twist.
+        return StrokeInScriptSpace(sent, _rangeMin, _rangeMax);
     }
 
     // Every authored secondary axis at `now`, whatever the stroke is doing: they play on under a block
@@ -1491,13 +1713,7 @@ public partial class FunscriptPlayer : Node
         if (_axes.Count == 0)
             return;
 
-        if (++_ticksSinceAxisResend >= AxisResendTicks)
-        {
-            _ticksSinceAxisResend = 0;
-            ForgetSentAxes();
-        }
-
-        double easeBlend = EaseBlend();
+        double easeBlend = AxisEaseBlend();
         foreach (var multiaxis in _axes)
         {
             AxisState state = multiaxis.Value;
@@ -1505,16 +1721,10 @@ public partial class FunscriptPlayer : Node
                 continue;
 
             string axis = multiaxis.Key;
-            (int axisMin, int axisMax) = GetAxisRange(axis);
             double scriptPos = SampleActions(state.Actions, ref state.InterpIndex, now);
-            double modified = AxisModifiedPos(axis, scriptPos, effects, _axisMirrorBlend);
-            double pos = SecondaryAxisOutput(modified, axisMin, axisMax, easeBlend);
-
-            int steps = (int)Math.Round(pos / 100.0 * 9999.0);
-            if (_lastSentAxisSteps.TryGetValue(axis, out int lastSteps) && lastSteps == steps)
-                continue;
-            _lastSentAxisSteps[axis] = steps;
-            QueueMove(axis, pos);
+            // Pose replaces a scripted roll or pitch rather than biasing it; Vortex never touches one.
+            scriptPos = CreatedMotionPos(scriptPos, double.NaN, 0.0, PoseTargetFor(axis), _poseBlend);
+            QueueSecondaryAxis(axis, scriptPos, effects, easeBlend);
         }
     }
 
@@ -1804,16 +2014,13 @@ public partial class FunscriptPlayer : Node
     }
 
     // Ease-in blend from the home position toward `pos`, over the computed ease window. Time-driven
-    // (reads _positionMs); the flag itself is cleared in _PhysicsProcess once the window elapses, so
+    // (reads _easeElapsedMs); the flag itself is cleared in _PhysicsProcess once the window elapses, so
     // this stays a pure map that both the keyframe path and the serial interp tick can call freely.
     private int ApplyEase(int pos)
     {
         if (!_easing)
             return pos;
-        double elapsed = _positionMs - _easeStartMs;
-        float t = (float)Math.Clamp(elapsed / _easeDurationMs, 0.0, 1.0);
-        float smooth = t * t * (3f - 2f * t); // smoothstep (ease-in-out Hermite) — natural for device motion
-        return (int)Math.Round(_easeFromPos + (pos - _easeFromPos) * smooth);
+        return (int)Math.Round(_easeFromPos + (pos - _easeFromPos) * StrokeEaseBlend());
     }
 
     // Linearly interpolates the processed stroke position at `now` between the bracketing keyframes
@@ -1873,9 +2080,13 @@ public partial class FunscriptPlayer : Node
 
     // Moves a mirror blend toward 1 while an odd number of reverses is active (even counts cancel), else
     // toward 0, on the playback clock.
-    private void AdvanceMirror(int reverseCount, ref float blend, ref double clockMs)
+    private void AdvanceMirror(int reverseCount, ref float blend, ref double clockMs) =>
+        AdvanceBlend(reverseCount % 2 != 0, ref blend, ref clockMs);
+
+    // Moves a 0–1 blend toward 1 while `on`, else toward 0, over MirrorEaseMs of playback clock.
+    private void AdvanceBlend(bool on, ref float blend, ref double clockMs)
     {
-        float target = (reverseCount % 2 != 0) ? 1f : 0f;
+        float target = on ? 1f : 0f;
 
         double dt = double.IsNaN(clockMs) ? 0.0 : _positionMs - clockMs;
         clockMs = _positionMs;
@@ -1885,6 +2096,77 @@ public partial class FunscriptPlayer : Node
             dt = MirrorEaseMs;
 
         blend = Mathf.MoveToward(blend, target, (float)(dt / MirrorEaseMs));
+    }
+
+    // Advances the Pose and Vortex blends, latching what each holds or follows while its effect is live
+    // and forgetting it once the blend has eased all the way back out.
+    private void UpdateCreatedMotion(Godot.Collections.Array effects)
+    {
+        var pose = LastOfKind(effects, "pose");
+        if (pose != null)
+            LatchPose(pose);
+        AdvanceBlend(pose != null, ref _poseBlend, ref _poseClockMs);
+        if (pose == null && _poseBlend <= 0f)
+            _poseTargets.Clear();
+
+        var vortex = LastOfKind(effects, "vortex");
+        if (vortex != null)
+            LatchVortex(vortex);
+        AdvanceBlend(vortex != null, ref _vortexBlend, ref _vortexClockMs);
+        if (vortex == null && _vortexBlend <= 0f)
+        {
+            _vortexAxes.Clear();
+            ResetVortex();
+        }
+    }
+
+    // Roll and pitch's tilts from a Pose, on the axes it was stamped with.
+    private void LatchPose(Godot.Collections.Dictionary pose)
+    {
+        _poseTargets.Clear();
+        foreach (string axis in StampedAxes(pose, PoseAxesDefault))
+        {
+            string tiltKey = axis == "R1" ? "roll" : axis == "R2" ? "pitch" : null;
+            if (tiltKey == null)
+                continue;
+            double tilt = pose.ContainsKey(tiltKey) ? pose[tiltKey].AsDouble() : 0.0;
+            _poseTargets[axis] = PoseTarget(tilt);
+        }
+    }
+
+    private void LatchVortex(Godot.Collections.Dictionary vortex)
+    {
+        _vortexGain = vortex.ContainsKey("gain") ? Math.Clamp(vortex["gain"].AsDouble(), 0.0, 1.0) : 0.5;
+        _vortexAxes.Clear();
+        foreach (string axis in StampedAxes(vortex, SynthesisedAxes))
+            _vortexAxes.Add(axis);
+    }
+
+    // The axes GameLoop stamped on a Pose or Vortex for this player's device, or `fallback` for one
+    // that reached the player without going through it.
+    private static IEnumerable<string> StampedAxes(Godot.Collections.Dictionary effect, string[] fallback)
+    {
+        if (!effect.ContainsKey("axes"))
+            return fallback;
+        var axes = new List<string>();
+        foreach (var axis in effect["axes"].AsGodotArray())
+            axes.Add(axis.AsString());
+        return axes;
+    }
+
+    // The last active effect of `kind` (the newest wins when two overlap), or null.
+    private static Godot.Collections.Dictionary LastOfKind(Godot.Collections.Array effects, string kind)
+    {
+        if (effects == null)
+            return null;
+        Godot.Collections.Dictionary found = null;
+        foreach (var effectVariant in effects)
+        {
+            var effect = effectVariant.AsGodotDictionary();
+            if (effect.ContainsKey("kind") && effect["kind"].AsString() == kind)
+                found = effect;
+        }
+        return found;
     }
 
     private static int CountKind(Godot.Collections.Array effects, string kind)

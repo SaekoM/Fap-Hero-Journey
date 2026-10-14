@@ -57,9 +57,27 @@ const BOSS_EFFECT_NAMES: Dictionary = {
 	"axis_clamp": "AXES CLAMP",
 	"axis_reverse": "AXES REVERSE",
 	"axis_block": "AXES STILLED",
+	"pose": "POSE",
+	"vortex": "VORTEX",
 	"blackout": "BLACKOUT",
 	"score_multiplier": "SCORE ×",
 }
+# Every parameter a modifier can carry onto the device. Listed rather than copied wholesale (a catalog
+# entry also holds name/desc/substitute bookkeeping), so a NEW parameter must be added here — the rotary
+# ones were, after an axis curse's twist/roll/pitch values silently fell back to its surge/sway ones.
+# `axes` is what JourneyData.express_effects stamps on a kept Pose or Vortex.
+const BOSS_EFFECT_PARAMS: Array = [
+	"factor",
+	"min",
+	"max",
+	"rotary_factor",
+	"rotary_min",
+	"rotary_max",
+	"pitch",
+	"roll",
+	"gain",
+	"axes",
+]
 
 @onready var _bg: ColorRect = $Background
 @onready var _video: VideoStreamPlayer = $VideoPlayer
@@ -204,10 +222,11 @@ var _boss_frame: Panel = null
 # into the boss-effects list so they surface as named HUD chips and lift together on
 # cleanse. Set when the round loads, cleared at round end.
 var _is_effect_round: bool = false
-# Whether this round gives multi-axis modifiers anything to act on for this player (MULTIAXIS_DESIGN.md
-# §3). Decided once at round load — before the boss intro card names its effects — and read wherever an
-# effect is installed, so a card, its round and its timeline windows all agree on what the player gets.
-var _round_axis_motion: bool = false
+# What this round gives multi-axis modifiers to act on for this player (MULTIAXIS_DESIGN.md §3,
+# JourneyData.axis_context). Decided once at round load — before the boss intro card names its effects —
+# and read wherever an effect is installed, so a card, its round and its timeline windows all agree on
+# what the player gets.
+var _round_axis_context: Dictionary = {}
 var _effect_resolvable: bool = false  # the round carries the cleanse/endure layer
 # Effective length (ms) of the round currently playing. For a pool round this is
 # the CHOSEN entry's length, not the round's own (empty) length_ms — read by the
@@ -1093,7 +1112,7 @@ func _load_current_round() -> void:
 	if _boss_progress_id == "":
 		_boss_progress_id = GameState.CurrentNodeId()
 	# After the pool draw (the drawn entry's media is the round's now), before anything names an effect.
-	_round_axis_motion = _round_has_axis_motion(round)
+	_round_axis_context = _build_round_axis_context(round)
 
 	var rtype: String = round.get("round_type", "normal")
 	_is_boss_round = rtype == "boss"
@@ -1767,7 +1786,7 @@ func _enter_boss_mode(round: Dictionary) -> void:
 	# Inject the designer's forced modifiers as boss effects.
 	var boss_effects: Array = []
 	for mod: Dictionary in JourneyData.express_effects(
-		round.get("boss_modifiers", []), _round_axis_motion
+		round.get("boss_modifiers", []), _round_axis_context
 	):
 		boss_effects.append(_make_boss_effect(mod))
 	if not boss_effects.is_empty():
@@ -1867,7 +1886,7 @@ func _resolve_gameplay_effects(round: Dictionary, entries: Array) -> Array:
 			resolved.append(r)
 	# As the player will get them: an axis curse they can't feel this round becomes its stroke twin —
 	# on the card that names it as well as on the device.
-	return JourneyData.express_effects(resolved, _round_axis_motion)
+	return JourneyData.express_effects(resolved, _round_axis_context)
 
 
 # Applies already-resolved effects as boss effects: into the shared effect pipeline, chip
@@ -2753,10 +2772,7 @@ func _make_boss_effect(mod: Dictionary) -> Dictionary:
 		"kind": kind,
 		"boss": true,
 	}
-	# Every parameter a modifier can carry. Listed rather than copied wholesale (a catalog entry also
-	# holds name/desc/substitute bookkeeping), so a NEW parameter must be added here — the rotary ones
-	# were, after an axis curse's twist/roll/pitch values silently fell back to its surge/sway ones.
-	for key: String in ["factor", "min", "max", "rotary_factor", "rotary_min", "rotary_max"]:
+	for key: String in BOSS_EFFECT_PARAMS:
 		if mod.has(key):
 			effect[key] = mod[key]
 	return effect
@@ -3043,10 +3059,10 @@ func _round_channel_scripts(round: Dictionary, main_track: String) -> Dictionary
 	return {"axis": axis_scripts, "estim": estim_scripts}
 
 
-# Whether multi-axis modifiers can act this round, for this player: a script on an axis their device
-# has, or Auto Twist moving the twist. Auto Twist doesn't run on an e-stim alpha main track (nothing to
-# follow), so an alpha swap counts as no twist.
-func _round_has_axis_motion(round: Dictionary) -> bool:
+# What multi-axis modifiers can act on this round, for this player (JourneyData.axis_context): scripts on
+# axes their device has, Auto Twist moving the twist, and the axes Pose and Vortex would drive. An
+# e-stim alpha main track is no stroke to follow, so it runs neither Auto Twist nor Vortex.
+func _build_round_axis_context(round: Dictionary) -> Dictionary:
 	var main_track: String = _main_track_path(round)
 	var scripted: Array = []
 	var axis_scripts: Dictionary = _round_channel_scripts(round, main_track)["axis"]
@@ -3055,8 +3071,8 @@ func _round_has_axis_motion(round: Dictionary) -> bool:
 			scripted.append(str(axis))
 	var main_is_alpha: bool = main_track != str(round.get("funscript_path", ""))
 	var auto_twist_on: bool = SettingsService.get_auto_twist_gain() > 0.0 and not main_is_alpha
-	return JourneyData.round_has_axis_motion(
-		SettingsService.get_device_axes(), scripted, auto_twist_on
+	return JourneyData.axis_context(
+		SettingsService.get_device_axes(), scripted, auto_twist_on, not main_is_alpha
 	)
 
 
@@ -5049,7 +5065,7 @@ func _begin_timeline_window(event: Dictionary) -> void:
 	if str(event.get("track", "")) == RoundTimeline.TRACK_REGION:
 		_gate_region(event)
 		return
-	var effects: Array = JourneyData.express_effects(event.get("effects", []), _round_axis_motion)
+	var effects: Array = JourneyData.express_effects(event.get("effects", []), _round_axis_context)
 	if effects.is_empty():
 		return
 	var source_id: String = str(event.get("id", ""))

@@ -4,7 +4,7 @@ extends GdUnitTestSuite
 # The model is one line, `twist = 50 + gain × (stroke − 50)`, held to a per-tick speed ceiling. These
 # pin that line and the step → gain mapping; how it FEELS can only be judged on hardware.
 
-const SUBTLE: float = 0.1
+const SUBTLE: float = 0.2
 const MEDIUM: float = 0.5
 const STRONG: float = 1.0
 const NO_CAP: float = 0.0
@@ -24,8 +24,8 @@ func test_centre_stays_centre_at_every_step() -> void:
 
 # The steps are defined as the swing either side of centre at a full 0–100 stroke.
 func test_a_full_stroke_swings_the_advertised_amount_either_side() -> void:
-	assert_float(_step(100.0, 50.0, SUBTLE)).is_equal_approx(55.0, 0.0001)
-	assert_float(_step(0.0, 50.0, SUBTLE)).is_equal_approx(45.0, 0.0001)
+	assert_float(_step(100.0, 50.0, SUBTLE)).is_equal_approx(60.0, 0.0001)
+	assert_float(_step(0.0, 50.0, SUBTLE)).is_equal_approx(40.0, 0.0001)
 	assert_float(_step(100.0, 50.0, MEDIUM)).is_equal_approx(75.0, 0.0001)
 	assert_float(_step(0.0, 50.0, MEDIUM)).is_equal_approx(25.0, 0.0001)
 	assert_float(_step(100.0, 50.0, STRONG)).is_equal_approx(100.0, 0.0001)
