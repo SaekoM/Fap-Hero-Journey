@@ -246,6 +246,19 @@ public partial class FunscriptPlayer : Node
     private double _axisEaseElapsedMs = AxisEaseMs;
     private const double AxisEaseMs = 1000.0;
 
+    // Where each secondary axis really is: the position last streamed to it, 0–100. An axis homed
+    // outside the stream (pause, an override's park) is dropped, which reads as centre.
+    private readonly System.Collections.Generic.Dictionary<string, double> _lastAxisPos =
+        new System.Collections.Generic.Dictionary<string, double>();
+    // Where each axis eases in FROM when it isn't centre. Set at an override's start and end, so every
+    // axis carries on from where the device actually is — the round's axes back from the override's last
+    // positions, the override's in from the round's — instead of jumping to centre to ease out from there.
+    private readonly System.Collections.Generic.Dictionary<string, double> _axisEaseFrom =
+        new System.Collections.Generic.Dictionary<string, double>();
+    // Axes an ended override left off-centre that nothing else drives now. The stream glides them home
+    // over the axis ease; until then they'd sit wherever the override's script last put them.
+    private readonly HashSet<string> _handingBack = new HashSet<string>();
+
     // Mirror-ease state — the "mirror" shop item flips position to 100-pos.
     // Toggling it on/off is eased through the centre rather than snapped: an
     // instant reversal into the opposite direction is jarring and unsafe on a
@@ -670,13 +683,41 @@ public partial class FunscriptPlayer : Node
             }
 
             double poseTarget = PoseTargetFor(axis);
-            if (!twisting && double.IsNaN(follow) && double.IsNaN(poseTarget))
+            if (!twisting && double.IsNaN(follow) && double.IsNaN(poseTarget) && !_handingBack.Contains(axis))
                 continue;  // nothing moves this axis; it rests wherever it was homed
 
             double pos = CreatedMotionPos(basePos, follow, _vortexBlend, poseTarget, _poseBlend);
             QueueSecondaryAxis(axis, pos, effects, easeBlend);
             _synthesisedDriving.Add(axis);
         }
+        QueueHandBack(effects, easeBlend);
+    }
+
+    // Glides the axes an ended override left behind back to centre — the sliding ones here; a turning one
+    // went home through the pass above, unless Auto Twist, Vortex or Pose took it over. Done once the
+    // axis ease completes.
+    private void QueueHandBack(Godot.Collections.Array effects, double easeBlend)
+    {
+        if (_handingBack.Count == 0)
+            return;
+        foreach (string axis in _handingBack)
+        {
+            if (System.Array.IndexOf(SynthesisedAxes, axis) >= 0 || HasAuthoredAxis(axis))
+                continue;
+            QueueSecondaryAxis(axis, 50.0, effects, easeBlend);
+            _synthesisedDriving.Add(axis);
+        }
+        if (easeBlend >= 1.0)
+            _handingBack.Clear();
+    }
+
+    // Starts every axis's ease from where the device actually is, not centre. Called right after
+    // _StartEaseIn at an override's handovers; any other ease-in starts from centre, where homing left
+    // the axes.
+    private void EaseAxesOnFromWhereTheyAre()
+    {
+        foreach (var kv in _lastAxisPos)
+            _axisEaseFrom[kv.Key] = kv.Value;
     }
 
     // Notes where the stroke turns, so the next circle is sized to the strokes actually being played.
@@ -780,7 +821,9 @@ public partial class FunscriptPlayer : Node
         // Axis modifiers reshape what is SENT, not the follow itself — so the speed ceiling keeps
         // measuring the honest twist, and a curse lifting doesn't leave it anywhere it has to catch up from.
         double modified = AxisModifiedPos(axis, scriptPos, effects, _axisMirrorBlend);
-        double pos = SecondaryAxisOutput(modified, axisMin, axisMax, easeBlend);
+        double from = _axisEaseFrom.TryGetValue(axis, out double easeFrom) ? easeFrom : 50.0;
+        double pos = SecondaryAxisOutputFrom(modified, axisMin, axisMax, easeBlend, from);
+        _lastAxisPos[axis] = pos;
 
         int steps = (int)Math.Round(pos / 100.0 * 9999.0);
         if (_lastSentAxisSteps.TryGetValue(axis, out int lastSteps) && lastSteps == steps)
@@ -797,11 +840,18 @@ public partial class FunscriptPlayer : Node
     /// window first (a symmetric window narrows the swing around centre), the ease from centre because
     /// secondary axes home to centre, and the clamp last as a safety net — it is what keeps an ease from
     /// 50 inside a window that excludes 50.
-    public double SecondaryAxisOutput(double scriptPos, int axisMin, int axisMax, double easeBlend)
+    public double SecondaryAxisOutput(double scriptPos, int axisMin, int axisMax, double easeBlend) =>
+        SecondaryAxisOutputFrom(scriptPos, axisMin, axisMax, easeBlend, 50.0);
+
+    /// SecondaryAxisOutput blending in from `fromPos` instead of centre: across an override's handover,
+    /// where the device was left. A separate method rather than an optional parameter, because Godot
+    /// can't call a C# method from GDScript with fewer arguments than it declares.
+    public double SecondaryAxisOutputFrom(
+        double scriptPos, int axisMin, int axisMax, double easeBlend, double fromPos)
     {
         double pos = axisMin + (axisMax - axisMin) * Math.Clamp(scriptPos, 0.0, 100.0) / 100.0;
         if (easeBlend < 1.0)
-            pos = 50.0 + (pos - 50.0) * easeBlend;
+            pos = fromPos + (pos - fromPos) * easeBlend;
         return Math.Clamp(pos, axisMin, axisMax);
     }
 
@@ -1018,7 +1068,10 @@ public partial class FunscriptPlayer : Node
         foreach (var axis in KnownAxes)
         {
             if (!_axes.ContainsKey(axis))
+            {
                 serial.SendAxis(axis, AxisParkMs, 0.5);
+                _lastAxisPos.Remove(axis);
+            }
         }
         ForgetSentAxes();
     }
@@ -1168,6 +1221,7 @@ public partial class FunscriptPlayer : Node
 
         _ParkUndefinedOverrideChannels();
         _StartEaseIn();
+        EaseAxesOnFromWhereTheyAre();  // the override's axes carry on from the round's positions
     }
 
     /// Ends the override and restores the round's channels, then re-anchors to where the video is NOW
@@ -1177,6 +1231,12 @@ public partial class FunscriptPlayer : Node
     {
         if (!_overrideActive)
             return;
+
+        // The axes the override drove, before the round's channels replace them in _axes.
+        var overrideAxes = new List<string>();
+        foreach (var kv in _axes)
+            if (kv.Value.Actions.Count > 0)
+                overrideAxes.Add(kv.Key);
 
         _actions = _savedActions ?? new List<Action>();
         _savedActions = null;
@@ -1209,6 +1269,12 @@ public partial class FunscriptPlayer : Node
         _overrideImmune = false;
 
         _StartEaseIn();
+        // Every axis carries on from where the override left it: the round's own back into their scripts,
+        // and the rest home to centre, unless Auto Twist, Vortex or Pose picks one up.
+        EaseAxesOnFromWhereTheyAre();
+        foreach (var axis in overrideAxes)
+            if (!HasAuthoredAxis(axis) && _lastAxisPos.ContainsKey(axis))
+                _handingBack.Add(axis);
     }
 
     // Effects the OUTPUT path should honour: NONE while an immune override is active (it ignores
@@ -1243,7 +1309,10 @@ public partial class FunscriptPlayer : Node
         if (serial != null && serial.SerialConnected)
             foreach (var axis in KnownAxes)
                 if (!_axes.ContainsKey(axis))
+                {
                     serial.SendAxis(axis, _homeEaseMs, 0.5);
+                    _lastAxisPos.Remove(axis);
+                }
 
         var restim = _restim;
         if (restim != null && restim.RestimConnected)
@@ -1333,7 +1402,11 @@ public partial class FunscriptPlayer : Node
     // sudden linear strokes are, so no ease is needed.
     private void _StartEaseIn()
     {
-        _axisEaseElapsedMs = 0.0;  // the secondary axes always come in from centre, whatever the stroke does
+        // The secondary axes come in from centre, whatever the stroke does — an override's handover then
+        // points them at where they really are (EaseAxesOnFromWhereTheyAre).
+        _axisEaseElapsedMs = 0.0;
+        _axisEaseFrom.Clear();
+        _handingBack.Clear();
 
         if (_strokeBackend == StrokeBackend.None)
             return; // no stroke target: nothing to ease
@@ -1395,6 +1468,7 @@ public partial class FunscriptPlayer : Node
                 if (!_axes.ContainsKey(axis))
                     serialAx.SendAxis(axis, _homeEaseMs, 0.5);
         _synthesisedDriving.Clear();
+        _lastAxisPos.Clear();  // everything is on its way to centre
         _lastAutoTwist = 50.0;
         ResetVortex();
         ForgetSentAxes();

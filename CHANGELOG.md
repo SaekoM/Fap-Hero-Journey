@@ -31,6 +31,34 @@ Posed becoming Choked and Vortex becoming Surge. The effect card names what you 
 builder says so under each one — louder when the round has no axis scripts at all — and the audit lists
 every round that uses them.
 
+### ◆ Multi-axis overrides
+
+Every built-in override now moves more than the stroke, with its own surge, sway, twist, roll or pitch
+to match its character:
+
+- **The Undertow** — pitch and surge pull to one side in time with every stroke.
+- **Live Wire** — slow, wide sweeps of twist, surge and pitch under the buzz.
+- **Full Throttle** — pitch rocks through its full range with every stroke, and surge pushes with it.
+- **The Sweet Spot** — the twist turns with every stroke while roll rocks slowly at half time.
+- **Clockwork** — the twist ratchets round in even steps, one click per stroke.
+- **Smooth Operator** — pitch rises with each stroke while roll and a gentle twist flow on their own
+  rhythm.
+- **Head Rush** — pitch flicks on every stroke while roll and sway swing quickly from side to side
+  beneath it.
+
+Six new ones join the shop, written for multi-axis devices from the start:
+
+- **Corkscrew** — full strokes that wind one way and unwind on the way back.
+- **Cowgirl** — riding on top: rocking hips and short, eager strokes.
+- **Figure Eight** — measured strokes on a looping, figure-eight path.
+- **Grind** — stays down deep and grinds, hips rolling.
+- **The Pendulum** — slow strokes that swing from side to side.
+- **Riptide** — fast strokes that drag you one way, then the other.
+
+On a stroke-only device every override plays its stroke exactly as before. And going into or out of
+an override no longer jolts the other axes. Each one carries on from where it was, and an axis only the
+override moved glides back to centre afterwards instead of staying where the override left it.
+
 ### ◆ Auto Twist
 
 An SR6, or an OSR2 with the twist add-on, has sat with its twist axis idle through almost every

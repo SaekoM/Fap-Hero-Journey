@@ -95,6 +95,17 @@ func test_the_ease_blends_in_from_centre() -> void:
 	assert_float(_out(0.0, 0, 100, 0.5)).is_equal_approx(25.0, 0.0001)
 
 
+# Across an override's handover the axis eases on from wherever the device was left, not from centre —
+# so an override ending with the twist at 0 doesn't jump to 50 first.
+func test_a_handover_eases_from_where_the_axis_was() -> void:
+	var from_zero: float = FunscriptPlayer.SecondaryAxisOutputFrom(100.0, 0, 100, 0.0, 0.0)
+	assert_float(from_zero).is_equal_approx(0.0, 0.0001)
+	var halfway: float = FunscriptPlayer.SecondaryAxisOutputFrom(100.0, 0, 100, 0.5, 0.0)
+	assert_float(halfway).is_equal_approx(50.0, 0.0001)
+	var done: float = FunscriptPlayer.SecondaryAxisOutputFrom(30.0, 0, 100, 1.0, 0.0)
+	assert_float(done).is_equal_approx(30.0, 0.0001)
+
+
 # The clamp comes last so an ease from 50 can never leave a window that doesn't include 50.
 func test_an_ease_never_leaves_a_window_that_excludes_centre() -> void:
 	assert_float(_out(100.0, 60, 100, 0.0)).is_equal_approx(60.0, 0.0001)
