@@ -185,7 +185,7 @@ func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
 	top_row.add_child(class_lbl)
 
 	var dur_lbl: Label = Label.new()
-	var dur_ms: int = data.get("duration_ms", 0)
+	var dur_ms: int = JourneyData.item_play_ms(data)
 	dur_lbl.text = "%ds" % int(dur_ms / 1000.0)
 	dur_lbl.add_theme_color_override("font_color", UITheme.DARK_TEXT)
 	dur_lbl.add_theme_font_size_override("font_size", 11)

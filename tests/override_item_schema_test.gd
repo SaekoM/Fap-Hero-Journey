@@ -112,3 +112,37 @@ func test_apply_override_trim() -> void:
 		assert_int(JourneyData.apply_override_trim(actions, {"in_ms": 0, "out_ms": 3000}).size())
 		. is_equal(4)
 	)
+
+
+# How long it plays survives the round trip; none set stays absent (plays once, as it always did).
+func test_play_length_round_trips() -> void:
+	var item: Dictionary = _override_item()
+	item["play_ms"] = 45000
+	var back: Dictionary = JourneyData.parse_journey_item(JourneyData.coerce_journey_item(item))
+	assert_int(int(back["play_ms"])).is_equal(45000)
+	var once: Dictionary = JourneyData.parse_journey_item(
+		JourneyData.coerce_journey_item(_override_item())
+	)
+	assert_bool(once.has("play_ms")).is_false()
+
+
+# An attack saved before looping existed normalizes to play once, as it always did.
+func test_an_old_attack_keeps_playing_as_it_did() -> void:
+	var timeline: Dictionary = (
+		RoundTimeline
+		. normalize(
+			{
+				"events":
+				[
+					{
+						"id": "a1",
+						"track": RoundTimeline.TRACK_ATTACK,
+						"at_ms": 0,
+						"scripts": {"main": "x.funscript"},
+					}
+				]
+			}
+		)
+	)
+	var attack: Dictionary = (timeline["events"] as Array)[0]
+	assert_int(int(attack["play_ms"])).is_equal(0)

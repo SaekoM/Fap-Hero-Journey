@@ -515,6 +515,110 @@ static func sensory_rate_text(entry: Dictionary, rate: float) -> String:
 	return ("%d %s" if unit == "Hz" else "%.1f %s") % [v, unit]
 
 
+# An effect kind's display name, wherever the builder lists or shows one: a sensory kind's catalog name,
+# a multi-axis kind's label, a few gameplay kinds that read better spelled out, else the kind itself.
+static func effect_kind_label(kind: String) -> String:
+	var sensory: Dictionary = sensory_entry_by_kind(kind)
+	if not sensory.is_empty():
+		return str(sensory.get("name", kind))
+	match kind:
+		"hud_hide":
+			return "Fog (hide HUD)"
+		"flag":
+			return "Set flag"
+		"counter":
+			return "Change counter"
+		"toll":
+			return "Toll (lose coins)"
+		"interest":
+			return "Interest (gain coins)"
+	if AXIS_EFFECT_LABELS.has(kind):
+		return str(AXIS_EFFECT_LABELS[kind])
+	return kind.capitalize()
+
+
+# One line on what an effect kind does, for the builder's pickers and tooltips. A sensory kind answers
+# from its catalog entry.
+static func effect_kind_desc(kind: String) -> String:
+	match kind:
+		"scale":
+			return "Scales stroke depth by a factor (×0.5 = shallower, ×2 = deeper)."
+		"clamp":
+			return "Restricts strokes to a min/max position range."
+		"reverse":
+			return "Inverts stroke direction (top ↔ bottom)."
+		"block":
+			return "Blocks output — the device holds position."
+		"blackout":
+			return "Hides the video; the device keeps playing in the dark."
+		"score_multiplier":
+			return "Multiplies the round's score."
+		"score_add":
+			return (
+				"Adds score the instant it is used. In a boss round with a SCORE health bar that is "
+				+ "damage — scaled by the boss's stance, so it glances off a guard and does nothing "
+				+ "through "
+				+ "an attack. Elsewhere it is simply points."
+			)
+		"coin_jackpot":
+			return "Multiplies the round's coin payout. Settled at the next round end."
+		"coin_penalty":
+			return "Reduces the round's coin payout (fraction kept). Settled at the next round end."
+		"toll":
+			return "Deducts coins from the balance immediately when used (capped at the balance)."
+		"interest":
+			return "Grants coins equal to a fraction of the current balance, immediately when used."
+		"flag":
+			return "Sets a run flag when used — a later fork can branch on it (Conditional / required)."
+		"counter":
+			return "Changes a run counter when used (± delta) — feeds counter-gated forks and the HUD."
+		"hud_hide":
+			return "Fog — hides the HUD for the item's duration."
+		"axis_scale":
+			return (
+				"Scales every axis but the stroke around centre, each by its own factor (above ×1 "
+				+ "swings wider)."
+			)
+		"axis_clamp":
+			return "Holds every axis but the stroke inside a band, each axis its own."
+		"axis_reverse":
+			return "Every axis but the stroke moves the opposite way, easing through centre."
+		"axis_block":
+			return "Every axis but the stroke freezes where it is."
+		"pose":
+			return "Holds roll and pitch at a tilt from centre, replacing their scripts."
+		"vortex":
+			return (
+				"Roll and pitch circle once per stroke on axes the round leaves unscripted; the twist "
+				+ "follows the stroke."
+			)
+	return str(sensory_entry_by_kind(kind).get("desc", ""))
+
+
+# Picker entries for `kinds` ({id, label, desc}), in order — what CatalogPicker lists.
+static func effect_kind_entries(kinds: Array) -> Array:
+	var entries: Array = []
+	for kind: Variant in kinds:
+		entries.append(
+			{
+				"id": str(kind),
+				"label": effect_kind_label(str(kind)),
+				"desc": effect_kind_desc(str(kind))
+			}
+		)
+	return entries
+
+
+# The sensory kinds that act on what is heard (`audio`) or on what is seen, in catalog order.
+static func sensory_kinds(audio: bool) -> Array:
+	var kinds: Array = []
+	for entry: Dictionary in SENSORY_CATALOG:
+		var kind: String = str(entry.get("kind", ""))
+		if AUDIO_SENSORY_KINDS.has(kind) == audio:
+			kinds.append(kind)
+	return kinds
+
+
 # The SENSORY_CATALOG entry for a kind (carries name + imin/imax/idef intensity range). {} if none.
 static func sensory_entry_by_kind(kind: String) -> Dictionary:
 	for e: Dictionary in SENSORY_CATALOG:
@@ -560,6 +664,78 @@ const VORTEX_AXES: Array = ["R0", "R1", "R2"]
 
 static func is_axis_effect(kind: String) -> bool:
 	return AXIS_EFFECT_TWINS.has(kind)
+
+
+# Every axis but the stroke, surge to pitch, and the turning ones among them.
+const SECONDARY_AXES: Array = ["L1", "L2", "R0", "R1", "R2"]
+const ROTARY_AXES: Array = ["R0", "R1", "R2"]
+# Axes scale and axes clamp carry a value per axis — factor_R0, min_L1, max_R2 — and fall back to
+# these when one has none at all.
+const AXIS_PARAM_DEFAULTS: Dictionary = {"factor": 1.0, "min": 0.0, "max": 100.0}
+
+
+# The key holding one axis's value of an axes scale or clamp parameter: axis_key("factor", "R0").
+static func axis_key(base: String, axis: String) -> String:
+	return "%s_%s" % [base, axis]
+
+
+# One axis's value for an axes scale or clamp: its own key, else — on a turning axis — the `rotary_`
+# value data written before per-axis values existed carries for the whole group, else the plain value
+# (surge/sway's, in that data), else the default. FunscriptPlayer.AxisParam reads the same chain, so a
+# journey saved with group values plays exactly as it did.
+static func axis_value(effect: Dictionary, base: String, axis: String) -> float:
+	var own: String = axis_key(base, axis)
+	if effect.has(own):
+		return float(effect[own])
+	if axis in ROTARY_AXES and effect.has("rotary_" + base):
+		return float(effect["rotary_" + base])
+	return float(effect.get(base, AXIS_PARAM_DEFAULTS.get(base, 0.0)))
+
+
+# A tunable value by key, for the editors: a per-axis key resolves through axis_value, anything else
+# reads straight off the effect.
+static func effect_param_value(effect: Dictionary, key: String, fallback: float) -> float:
+	var cut: int = key.rfind("_")
+	if cut > 0 and key.substr(cut + 1) in SECONDARY_AXES:
+		return axis_value(effect, key.substr(0, cut), key.substr(cut + 1))
+	return float(effect.get(key, fallback))
+
+
+# A new axes scale or clamp, written per axis: the turning axes get the stronger values (they're
+# subtler, so the same ×0.6 would barely register), as the catalog's Stiffened and Braced do.
+static func default_axis_modifier(kind: String) -> Dictionary:
+	var effect: Dictionary = {"kind": kind}
+	for axis: String in SECONDARY_AXES:
+		var rotary: bool = axis in ROTARY_AXES
+		if kind == "axis_scale":
+			effect[axis_key("factor", axis)] = 0.4 if rotary else 0.6
+		elif kind == "axis_clamp":
+			effect[axis_key("min", axis)] = 45 if rotary else 40
+			effect[axis_key("max", axis)] = 55 if rotary else 60
+	return effect
+
+
+# The stroke scale an axes scale becomes: the axis scaled furthest from ×1, either way, so a curse stays a
+# curse and a blessing a blessing even when the author changed only one axis.
+static func strongest_axis_factor(effect: Dictionary) -> float:
+	var strongest: float = 1.0
+	for axis: String in SECONDARY_AXES:
+		var factor: float = axis_value(effect, "factor", axis)
+		if absf(log(maxf(factor, 0.01))) > absf(log(maxf(strongest, 0.01))):
+			strongest = factor
+	return strongest
+
+
+# The stroke band an axes clamp becomes: the narrowest axis band, its most restrictive, as Vector2(min,
+# max).
+static func narrowest_axis_band(effect: Dictionary) -> Vector2:
+	var band: Vector2 = Vector2(0, 100)
+	for axis: String in SECONDARY_AXES:
+		var low: float = axis_value(effect, "min", axis)
+		var high: float = axis_value(effect, "max", axis)
+		if absf(high - low) < absf(band.y - band.x):
+			band = Vector2(low, high)
+	return band
 
 
 # Whether a round gives an axis modifier anything to act on, for THIS player: a script on an axis
@@ -675,33 +851,40 @@ static func axis_effects_in_round(data: Dictionary) -> Array:
 	return names
 
 
-# The stroke modifier an axis modifier becomes on a device that can't feel it. Keeps the author's
-# LINEAR values — an axis_scale ×0.6 becomes a stroke scale ×0.6 — and, for a catalog entry, takes on
-# its named substitute's name and description, so the effect card names a curse that really exists.
+# The stroke modifier an axis modifier becomes on a device that can't feel it. A catalog entry plays its
+# named substitute exactly as catalogued — Stiffened is Shrunken, Braced is Choked — so the effect card
+# names a curse that really exists and it does what that curse does (owner, 2026-10-15). An authored one
+# with no substitute (a boss modifier, a timeline window, an item) passes on its strongest axis: the
+# scale furthest from ×1, or the narrowest clamp band.
 static func stroke_twin(effect: Dictionary) -> Dictionary:
 	var kind: String = str(effect.get("kind", ""))
 	var twin: Dictionary = effect.duplicate(true)
 	twin["kind"] = AXIS_EFFECT_TWINS.get(kind, kind)
+	if kind == "axis_scale":
+		twin["factor"] = strongest_axis_factor(effect)
+	elif kind == "axis_clamp":
+		var band: Vector2 = narrowest_axis_band(effect)
+		twin["min"] = int(band.x)
+		twin["max"] = int(band.y)
 	var substitute: String = str(effect.get("substitute", AXIS_CREATING_SUBSTITUTES.get(kind, "")))
 	var named: Dictionary = effect_entry(substitute)
-	if AXIS_CREATING_SUBSTITUTES.has(kind):
-		# A tilt or a follow gain has no stroke meaning: play the substitute exactly as catalogued.
-		for key: Variant in named:
-			if not (str(key) in ["name", "desc"]):
-				twin[key] = named[key]
 	if not named.is_empty():
-		twin["name"] = named["name"]
-		twin["desc"] = named.get("desc", "")
+		for key: Variant in named:
+			twin[key] = named[key]
 		twin["_ref"] = named["name"]
 	for key: String in AXIS_ONLY_KEYS:
 		twin.erase(key)
+	for axis: String in SECONDARY_AXES:
+		for base: String in AXIS_PARAM_DEFAULTS:
+			twin.erase(axis_key(base, axis))
 	return twin
 
 
 # The tunable numeric parameter(s) for an effect kind, each a spec the authoring controls
 # read: {key, label, ctl, min, max, step}. `ctl` picks the control style — "pct" (0–1 shown
 # as %), "mult" (× multiplier), "coins" (whole coins), "pos" (0–100 stroke position), "tilt" (−50 to +50 from centre). Empty
-# for binary kinds (reverse/block/hud_hide/no_pause/gift/lingering).
+# for binary kinds (reverse/block/hud_hide/no_pause/gift/lingering), and for axes scale and axes clamp,
+# whose value per axis is edited through AxisEffectFields.
 static func effect_param_specs(kind: String) -> Array:
 	match kind:
 		"scale":
@@ -719,60 +902,6 @@ static func effect_param_specs(kind: String) -> Array:
 			return [
 				{"key": "min", "label": "Range min", "ctl": "pos", "min": 0, "max": 100, "step": 1},
 				{"key": "max", "label": "Range max", "ctl": "pos", "min": 0, "max": 100, "step": 1},
-			]
-		"axis_scale":
-			return [
-				{
-					"key": "factor",
-					"label": "Surge + sway travel",
-					"ctl": "pct",
-					"min": 0.1,
-					"max": 2.0,
-					"step": 0.05
-				},
-				{
-					"key": "rotary_factor",
-					"label": "Twist, roll + pitch travel",
-					"ctl": "pct",
-					"min": 0.1,
-					"max": 2.0,
-					"step": 0.05
-				},
-			]
-		"axis_clamp":
-			return [
-				{
-					"key": "min",
-					"label": "Surge + sway min",
-					"ctl": "pos",
-					"min": 0,
-					"max": 100,
-					"step": 1
-				},
-				{
-					"key": "max",
-					"label": "Surge + sway max",
-					"ctl": "pos",
-					"min": 0,
-					"max": 100,
-					"step": 1
-				},
-				{
-					"key": "rotary_min",
-					"label": "Twist, roll + pitch min",
-					"ctl": "pos",
-					"min": 0,
-					"max": 100,
-					"step": 1
-				},
-				{
-					"key": "rotary_max",
-					"label": "Twist, roll + pitch max",
-					"ctl": "pos",
-					"min": 0,
-					"max": 100,
-					"step": 1
-				},
 			]
 		"pose":
 			return [
@@ -1475,6 +1604,9 @@ static func coerce_journey_item(item: Dictionary) -> Dictionary:
 		# plays), same shape a modifier uses.
 		out["ImmuneToEffects"] = bool(item.get("immune_to_effects", false))
 		out["DurationMs"] = maxi(0, int(item.get("duration_ms", 0)))
+		# How long it plays (looping or cutting the script) — only when set; absent plays it once.
+		if int(item.get("play_ms", 0)) > 0:
+			out["PlayMs"] = int(item["play_ms"])
 		out["Scripts"] = _coerce_override_scripts(item.get("scripts", {}))
 		var override_effects: Array = []
 		for e: Variant in item.get("effects", []):
@@ -1537,6 +1669,8 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 		# so it stays manually usable (unlike a key). Scripts resolve to absolute in the scanner.
 		item["immune_to_effects"] = bool(raw.get("ImmuneToEffects", false))
 		item["duration_ms"] = int(raw.get("DurationMs", 0))
+		if int(raw.get("PlayMs", 0)) > 0:
+			item["play_ms"] = int(raw["PlayMs"])
 		item["scripts"] = _parse_override_scripts(raw.get("Scripts", {}))
 		var override_effects: Array = []
 		for e: Variant in raw.get("Effects", []):
@@ -1556,6 +1690,13 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 			effects.append((e as Dictionary).duplicate(true))
 	item["effects"] = effects
 	return item
+
+
+# How long an item lasts when used, as its card shows it: an override's play length when it has one (a
+# looping or cut override), else the item's own duration — an override's clip length, a modifier's timer.
+static func item_play_ms(item: Dictionary) -> int:
+	var play_ms: int = int(item.get("play_ms", 0))
+	return play_ms if play_ms > 0 else int(item.get("duration_ms", 0))
 
 
 static func parse_journey_items(raw: Array) -> Array:

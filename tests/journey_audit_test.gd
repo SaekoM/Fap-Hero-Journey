@@ -795,17 +795,19 @@ func test_a_fork_level_counter_gate_reaches_its_choices() -> void:
 					"cond_counter": "ammo",
 					"default_path": 1,
 				},
-				"out": [_edge("armed", {"threshold": 10}), _edge("empty", {"threshold": 0})],
+				"out": [_edge("armed", {"threshold": 10}), _edge("overflowing", {"threshold": 20})],
 			},
 			"armed": _round(0),
-			"empty": _round(0),
+			"overflowing": _round(0),
 		}
 	}
-	# Starts at 12, so the armed path is the one every run should take.
+	# Starts at 12: only the armed path's gate is met, so every run takes it — and only because the choice
+	# reads the fork's counter. (A met path is picked at random among all met ones, so the other gate is
+	# set out of reach rather than below the armed one.)
 	var result: Dictionary = _audit(graph, {"counters": [_counter("ammo", 0, 12, 12)]})
 	var nodes: Dictionary = (result["visits"] as Dictionary)["nodes"]
 	assert_int(int(nodes.get("armed", 0))).is_greater(0)
-	assert_int(int(nodes.get("empty", 0))).is_equal(0)
+	assert_int(int(nodes.get("overflowing", 0))).is_equal(0)
 
 
 # A declared flag nothing mentions is the typo case: the row says "spared_boss", the fork asks for
@@ -849,3 +851,30 @@ func test_a_flag_that_is_only_required_counts_as_used() -> void:
 	}
 	var result: Dictionary = _audit(graph, {"flags": [JourneyData.new_flag_def("spared_boss")]})
 	assert_array(_findings_of_kind(result, "flag_declared_unused")).is_empty()
+
+
+# ── Multi-Axis tag nudge ─────────────────────────────────────────────────────
+
+
+func _tag_findings(axes: Array, tags: Array) -> Array:
+	return JourneyAudit.multi_axis_tag_findings({"journey_axes": axes, "tags": tags})
+
+
+# Axis content without the tag: the nudge names the axes, in plain words, so the author sees why.
+func test_axis_content_without_the_tag_is_flagged() -> void:
+	var found: Array = _tag_findings(["R0", "R2"], ["animated"])
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["severity"])).is_equal(JourneyAudit.SEV_INFO)
+	assert_str(str(found[0]["node_id"])).is_empty()  # journey-wide: no node to jump to
+	assert_str(str(found[0]["msg"])).contains("twist, pitch")
+
+
+func test_the_tag_without_axis_content_is_flagged() -> void:
+	var found: Array = _tag_findings([], [JourneyAudit.MULTI_AXIS_TAG])
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["msg"])).contains("Tagged Multi-Axis")
+
+
+func test_matching_tag_and_content_raise_nothing() -> void:
+	assert_array(_tag_findings(["R1"], [JourneyAudit.MULTI_AXIS_TAG])).is_empty()
+	assert_array(_tag_findings([], [])).is_empty()

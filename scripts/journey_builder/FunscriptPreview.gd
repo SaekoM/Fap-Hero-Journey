@@ -1592,12 +1592,10 @@ class _Graph:
 
 	func _draw_playhead(area: Rect2, font: Font) -> void:
 		var x: float = _time_to_x(_playhead_ms)
-		draw_line(
-			Vector2(x, area.position.y),
-			Vector2(x, area.position.y + area.size.y),
-			UITheme.AMBER,
-			1.0
-		)
+		# A one-pixel column rather than draw_line: a click lands the playhead on a whole-pixel x, and a
+		# 1px line exactly on a pixel boundary can rasterize to nothing — the label showed, the line
+		# didn't, until playback moved it off the boundary again.
+		draw_rect(Rect2(floorf(x), area.position.y, 1.0, area.size.y), UITheme.AMBER)
 		var label: String = (
 			time_label_format.call(_playhead_ms) + " / " + time_label_format.call(_length_ms)
 		)

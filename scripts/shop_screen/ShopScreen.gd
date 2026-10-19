@@ -398,7 +398,7 @@ func _make_card(id: String, data: Dictionary) -> Control:
 	col.add_child(desc_lbl)
 
 	# Stats row: duration
-	var dur_ms: int = data.get("duration_ms", 0)
+	var dur_ms: int = JourneyData.item_play_ms(data)
 	var dur_lbl: Label = Label.new()
 	dur_lbl.text = "DURATION: %ds" % int(dur_ms / 1000.0)
 	dur_lbl.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)

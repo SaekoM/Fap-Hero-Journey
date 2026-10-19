@@ -16,6 +16,10 @@ var axes: Dictionary = {}  # String axis name ("L1".."R2") -> Array[Vector2]
 var vibes: Dictionary = {}  # int channel (0 = vib1, 1 = vib2) -> Array[Vector2]
 var duration_ms: int = 0  # max end time across every channel; the override's play length
 
+# Shortest script that may loop: below it, a long play length would unroll into an enormous point list for
+# what is effectively a held position.
+const MIN_LOOP_MS: int = 100
+
 
 # Builds a bundle from already-loaded channel actions and derives its duration. `axis_actions` and
 # `vibe_actions` default empty (a stroke-only override). Empty channels are dropped so
@@ -35,6 +39,52 @@ static func from_channels(
 			bundle.vibes[channel] = points
 	bundle.duration_ms = bundle._compute_duration()
 	return bundle
+
+
+# This bundle played for `play_ms` rather than once (MULTIAXIS_DESIGN.md §4, Looping). Longer than its
+# script, it repeats: every channel together, on ONE loop length — the longest channel's end — so a twist
+# and a pitch written to line up stay lined up on every pass. Shorter, it is cut off there. Unrolled now,
+# at load, so the session clock, FunscriptPlayer and the Handy all see one long script and none of them
+# needs loop logic. `play_ms` of 0 or less leaves the bundle as it is.
+func played_for(play_ms: int) -> OverrideBundle:
+	if play_ms <= 0 or duration_ms < MIN_LOOP_MS:
+		return self
+	var axes_out: Dictionary = {}
+	for axis_name: Variant in axes:
+		axes_out[axis_name] = _unrolled(axes[axis_name], duration_ms, play_ms)
+	var vibes_out: Dictionary = {}
+	for channel: Variant in vibes:
+		vibes_out[channel] = _unrolled(vibes[channel], duration_ms, play_ms)
+	var played: OverrideBundle = from_channels(
+		_unrolled(main, duration_ms, play_ms), axes_out, vibes_out
+	)
+	played.duration_ms = play_ms  # exactly as long as asked, even where a channel's last pass ends early
+	return played
+
+
+# One channel's points repeated every `loop_ms` until `play_ms`, then cut there on a point interpolated
+# at the cut, so the curve ends where it would have been rather than at its last whole stroke. A pass that
+# ends where the next begins — same time, same position — loses the duplicate rather than playing a
+# zero-length move; a seam that DOES jump (a stroke ending high, starting low) keeps both points.
+static func _unrolled(points: Array, loop_ms: int, play_ms: int) -> Array:
+	var out: Array = []
+	if points.is_empty():
+		return out
+	var offset: int = 0
+	while offset < play_ms:
+		for point: Variant in points:
+			var here: Vector2 = (point as Vector2) + Vector2(offset, 0)
+			if here.x > play_ms:
+				if not out.is_empty() and (out[-1] as Vector2).x < play_ms:
+					var before: Vector2 = out[-1]
+					var weight: float = (play_ms - before.x) / (here.x - before.x)
+					out.append(Vector2(play_ms, lerpf(before.y, here.y, weight)))
+				return out
+			if not out.is_empty() and (out[-1] as Vector2).is_equal_approx(here):
+				continue
+			out.append(here)
+		offset += loop_ms
+	return out
 
 
 # Nothing to play on any channel.

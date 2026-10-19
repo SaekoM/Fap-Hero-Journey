@@ -620,3 +620,59 @@ func build_centered_modal(
 		"vbox": vbox,
 		"title": title_lbl,
 	}
+
+
+# A press on a modal's backdrop that should dismiss it: a real left or right click. The scroll wheel
+# arrives as mouse-button presses too, so it's excluded — otherwise scrolling a modal whose content
+# doesn't need to scroll (or with the pointer just off the panel) closes it.
+func is_backdrop_click(event: InputEvent) -> bool:
+	var press: InputEventMouseButton = event as InputEventMouseButton
+	return (
+		press != null
+		and press.pressed
+		and press.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]
+	)
+
+
+# The prompt a builder editor shows when something just added is being closed with work in it but no
+# name, which it needs to be kept. NAME IT leads — `on_keep` puts the cursor in the name field, since a
+# name is the one thing missing — and DISCARD (`on_discard`) is the explicit way to say the add was a
+# mistake. `message` says why this thing needs a name. Either button closes the prompt first. Returns the
+# prompt, so a caller can tell whether it is still up.
+func show_name_or_discard(
+	parent: Node, message: String, on_keep: Callable, on_discard: Callable
+) -> Control:
+	var parts: Dictionary = build_centered_modal("NO NAME YET", DANGER, Vector2i(520, 240))
+	var prompt: Control = parts["modal"]
+	var column: VBoxContainer = parts["vbox"]
+
+	var text: Label = Label.new()
+	text.text = message
+	text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	style_label(text, WHITE_SOFT, 13)
+	column.add_child(text)
+
+	var buttons: HBoxContainer = HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 12)
+	var keep: Button = Button.new()
+	keep.text = "NAME IT"
+	style_button(keep, PURPLE_BRIGHT)
+	var keep_editing: Callable = func() -> void:
+		prompt.queue_free()
+		on_keep.call()
+	keep.pressed.connect(keep_editing)
+	buttons.add_child(keep)
+	var discard: Button = Button.new()
+	discard.text = "DISCARD"
+	style_button(discard, DANGER)
+	var throw_away: Callable = func() -> void:
+		prompt.queue_free()
+		on_discard.call()
+	discard.pressed.connect(throw_away)
+	buttons.add_child(discard)
+	column.add_child(buttons)
+	parent.add_child(prompt)
+	return prompt

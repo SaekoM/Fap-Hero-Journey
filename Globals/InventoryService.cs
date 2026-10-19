@@ -339,6 +339,56 @@ public partial class InventoryService : Node
 
     private double _nowMs = 0.0;
 
+    // Turns item effects into what THIS player gets in THIS round (JourneyData.express_effects): a
+    // multi-axis effect they can't feel becomes its stroke twin, and a kept Pose or Vortex is stamped with
+    // the axes it drives — the same rule a round's own effects follow. Set by GameLoop for the run; unset
+    // (a test-play stub, a menu), effects apply as authored.
+    private Callable _effectExpresser;
+
+    // An active item effect keeps the effect as authored under this key, so it can be expressed again
+    // for each round it lasts into (ReexpressItemEffects) — it may be used between rounds, or outlast the
+    // round it was used in.
+    private const string AuthoredKey = "_authored";
+
+    /// GameLoop's hook for expressing item effects per round and device (see _effectExpresser). Pass a
+    /// default Callable to clear it.
+    public void SetEffectExpresser(Callable expresser) => _effectExpresser = expresser;
+
+    // One item effect as this player gets it in the current round; as authored when no expresser is set.
+    private Dictionary _Express(Dictionary authored)
+    {
+        if (!(_effectExpresser.Target is GodotObject owner) || !GodotObject.IsInstanceValid(owner))
+            return authored;
+        var expressed = _effectExpresser.Call(new Array { authored }).AsGodotArray();
+        return expressed.Count > 0 ? expressed[0].AsGodotDictionary() : authored;
+    }
+
+    /// Re-expresses every active item effect for the round now loading — GameLoop calls this once it
+    /// knows what the round gives the multi-axis modifiers to act on. Timing is kept; only what the effect
+    /// does is redone, so an axis curse used on a storyboard, or one lasting into the next round, follows
+    /// the round it actually plays in.
+    public void ReexpressItemEffects()
+    {
+        bool changed = false;
+        for (int i = 0; i < _active.Count; i++)
+        {
+            var current = _active[i];
+            if (!current.ContainsKey(AuthoredKey))
+                continue;
+            var authored = current[AuthoredKey].AsGodotDictionary();
+            var fresh = _MakeActiveEffect(
+                current["id"].AsString(), current["name"].AsString(), _Express(authored),
+                current["duration_ms"].AsInt32());
+            fresh["start_time_ms"] = current["start_time_ms"];
+            fresh["end_time_ms"] = current["end_time_ms"];
+            fresh[AuthoredKey] = authored;
+            _active[i] = fresh;
+            changed = true;
+        }
+        if (changed)
+            EmitSignal(SignalName.ActiveEffectsChanged);
+    }
+
     // When true, the effect clock is frozen — _nowMs stops advancing so active
     // effects neither expire nor visibly count down. Driven by GameLoop while the
     // round is paused (pause button / Options overlay) so timed effects are not
@@ -568,7 +618,9 @@ public partial class InventoryService : Node
                     scoreAdd += eff.ContainsKey("amount") ? eff["amount"].AsInt32() : 0;
                     continue;
                 }
-                _active.Add(_MakeActiveEffect(itemId, displayName, eff, duration));
+                var active = _MakeActiveEffect(itemId, displayName, _Express(eff), duration);
+                active[AuthoredKey] = eff;
+                _active.Add(active);
             }
         }
         else if ((source.ContainsKey("kind") ? source["kind"].AsString() : "") == "score_add")

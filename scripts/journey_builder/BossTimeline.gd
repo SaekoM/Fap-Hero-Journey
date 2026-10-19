@@ -859,7 +859,9 @@ func _draw_playhead() -> void:
 	var x: float = _ms_to_x(_playhead_ms)
 	if x < _track_x0() or x > size.x:
 		return
-	draw_line(Vector2(x, PAD), Vector2(x, size.y - RULER_H), UITheme.WHITE_SOFT, 1.0)
+	# A one-pixel column rather than draw_line, which can rasterize to nothing when a click puts the
+	# playhead exactly on a pixel boundary.
+	draw_rect(Rect2(floorf(x), PAD, 1.0, size.y - RULER_H - PAD), UITheme.WHITE_SOFT)
 
 
 # The visible range's start/end, so a zoomed view stays oriented.

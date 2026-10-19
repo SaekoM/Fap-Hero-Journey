@@ -577,6 +577,8 @@ static func normalize_event(raw: Dictionary) -> Dictionary:
 static func _fill_attack(out: Dictionary, raw: Dictionary) -> void:
 	out["name"] = str(raw.get("name", ""))
 	out["immune_to_effects"] = bool(raw.get("immune_to_effects", false))
+	# As on an override item: how long it plays — longer than its script repeats it, 0 plays it once.
+	out["play_ms"] = maxi(0, int(raw.get("play_ms", 0)))
 	out["scripts"] = _normalize_scripts(raw.get("scripts", {}))
 	out["effects"] = _copy_dict_array(raw.get("effects", []))
 	_carry_trim(out, raw)

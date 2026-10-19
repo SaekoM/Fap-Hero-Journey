@@ -51,6 +51,9 @@ const SEV_DEAD: String = "dead"  # can never happen — dead authored content
 const SEV_WARN: String = "warn"  # fails on some routes / some runs
 const SEV_INFO: String = "info"  # worth knowing; not necessarily a problem
 
+# The tag (data/tags.json) that marks a journey as written for multi-axis devices.
+const MULTI_AXIS_TAG: String = "multi_axis"
+
 
 # Runs the full audit. ctx:
 #   items:         {item_id: {"price": int, ...}} — the item registry
@@ -63,6 +66,9 @@ const SEV_INFO: String = "info"  # worth knowing; not necessarily a problem
 #                  round's score isn't a single value (a POOL round varies by which
 #                  entry is rolled). Absent → the flat round_scores value bounds it.
 #   round_length_bounds: {node_id: {lo, hi}} (optional) — same, for funscript length
+#   journey_axes:  Array (optional) — secondary axes any of the journey's content carries a script
+#                  for (engine glue scans the files, sibling scripts included)
+#   tags:          Array (optional) — the journey's tag ids
 #   mc_runs:       int (optional, DEFAULT_MC_RUNS)
 #   rng_seed:      int (optional — fixed seed makes the MC pass reproducible)
 # Returns {findings, coins, last_score, visits, stats}: findings is an Array of
@@ -88,6 +94,7 @@ static func audit(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 	findings.append_array(_counter_findings(graph, visits))
 	findings.append_array(_flag_findings(graph, ctx))
 	findings.append_array(_axis_effect_findings(graph))
+	findings.append_array(multi_axis_tag_findings(ctx))
 
 	return {
 		"findings": findings,
@@ -1491,7 +1498,13 @@ static func _pick_edge(
 			var counter_of: Callable = func(cn: String) -> int:
 				return int(counters.get(cn if cn != "" else fork_counter, 0))
 			return ForkResolver.conditional_path(
-				out, metric, int(data.get("default_path", 0)), value, checker, counter_of
+				out,
+				metric,
+				int(data.get("default_path", 0)),
+				value,
+				checker,
+				counter_of,
+				rng.randi()
 			)
 		"sacrifice":
 			var affordable: Array = []
@@ -1634,6 +1647,47 @@ static func _axis_effect_findings(graph: Dictionary) -> Array:
 			)
 		)
 	return out
+
+
+# The Multi-Axis tag is how players find journeys for their SR6 or OSR2, but an author has to remember
+# it. Nudge either way: content for other axes with no tag, or the tag with nothing behind it. INFO —
+# a missing tag hides the journey from a filter, it doesn't break it.
+static func multi_axis_tag_findings(ctx: Dictionary) -> Array:
+	var axes: Array = ctx.get("journey_axes", [])
+	var tagged: bool = (ctx.get("tags", []) as Array).has(MULTI_AXIS_TAG)
+	if not axes.is_empty() and not tagged:
+		var names: PackedStringArray = []
+		for axis: Variant in axes:
+			names.append(str(JourneyData.AXIS_SUFFIXES.get(str(axis), str(axis))))
+		return [
+			_finding(
+				SEV_INFO,
+				"multi_axis_tag",
+				"",
+				-1,
+				(
+					(
+						"Has scripts for %s, but isn't tagged Multi-Axis. Add the tag so players with a "
+						+ "multi-axis device can find it."
+					)
+					% ", ".join(names)
+				)
+			)
+		]
+	if axes.is_empty() and tagged:
+		return [
+			_finding(
+				SEV_INFO,
+				"multi_axis_tag",
+				"",
+				-1,
+				(
+					"Tagged Multi-Axis, but no round, attack or override item in it has a script for "
+					+ "any axis but the stroke."
+				)
+			)
+		]
+	return []
 
 
 static func _flag_findings(graph: Dictionary, ctx: Dictionary) -> Array:

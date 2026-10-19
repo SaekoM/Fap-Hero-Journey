@@ -276,6 +276,38 @@ public partial class FunscriptPlayer : Node
     // The turning axes, which axis modifiers drive with their stronger `rotary_` values.
     private static readonly string[] RotaryAxes = { "R0", "R1", "R2" };
 
+    // The keys AxisParam reads — factor_R0, rotary_factor — built once, since it runs for every axis and
+    // every axis effect on every physics tick.
+    private static readonly string[] AxisParamBases = { "factor", "min", "max" };
+    private static readonly string[] SecondaryAxisNames = { "L1", "L2", "R0", "R1", "R2" };
+    private static readonly System.Collections.Generic.Dictionary<string,
+        System.Collections.Generic.Dictionary<string, string>> PerAxisKeys = BuildPerAxisKeys();
+    private static readonly System.Collections.Generic.Dictionary<string, string> RotaryKeys =
+        BuildRotaryKeys();
+
+    private static System.Collections.Generic.Dictionary<string,
+        System.Collections.Generic.Dictionary<string, string>> BuildPerAxisKeys()
+    {
+        var keys = new System.Collections.Generic.Dictionary<string,
+            System.Collections.Generic.Dictionary<string, string>>();
+        foreach (string paramBase in AxisParamBases)
+        {
+            var byAxis = new System.Collections.Generic.Dictionary<string, string>();
+            foreach (string axis in SecondaryAxisNames)
+                byAxis[axis] = paramBase + "_" + axis;
+            keys[paramBase] = byAxis;
+        }
+        return keys;
+    }
+
+    private static System.Collections.Generic.Dictionary<string, string> BuildRotaryKeys()
+    {
+        var keys = new System.Collections.Generic.Dictionary<string, string>();
+        foreach (string paramBase in AxisParamBases)
+            keys[paramBase] = "rotary_" + paramBase;
+        return keys;
+    }
+
     // ── Pose and Vortex ───────────────────────────────────────────────────
     // The two multi-axis modifiers that CREATE motion rather than reshape it (MULTIAXIS_DESIGN.md §3):
     // Pose holds roll and pitch at a tilt, replacing their scripts; Vortex circles the roll and pitch a
@@ -2259,8 +2291,8 @@ public partial class FunscriptPlayer : Node
 
     /// One secondary axis's script position (0–100) with the multi-axis modifiers applied: the eased
     /// reverse first, then every axis_scale multiplied together around centre, then each axis_clamp
-    /// remapping into its band — the stroke's own order (TransformPos). The turning axes read the
-    /// `rotary_` values where an effect has them. Block is not here: it holds output rather than moving
+    /// remapping into its band — the stroke's own order (TransformPos). Each axis reads its own value
+    /// (AxisParam), falling back to the group values older data carries. Block is not here: it holds output rather than moving
     /// it (see _PhysicsProcess). Pure — public for the gdUnit suite, like AutoTwistStep.
     public double AxisModifiedPos(string axis, double pos, Godot.Collections.Array effects, double mirrorBlend)
     {
@@ -2275,7 +2307,7 @@ public partial class FunscriptPlayer : Node
         {
             var effect = effectVariant.AsGodotDictionary();
             if (effect.ContainsKey("kind") && effect["kind"].AsString() == "axis_scale")
-                factor *= AxisParam(effect, "factor", rotary, 1.0);
+                factor *= AxisParam(effect, "factor", axis, rotary, 1.0);
         }
         // Around centre rather than each stroke's own midpoint: these axes rest at 50 and swing both ways.
         pos = 50.0 + (pos - 50.0) * factor;
@@ -2285,19 +2317,25 @@ public partial class FunscriptPlayer : Node
             var effect = effectVariant.AsGodotDictionary();
             if (!effect.ContainsKey("kind") || effect["kind"].AsString() != "axis_clamp")
                 continue;
-            double min = AxisParam(effect, "min", rotary, 0.0);
-            double max = AxisParam(effect, "max", rotary, 100.0);
+            double min = AxisParam(effect, "min", axis, rotary, 0.0);
+            double max = AxisParam(effect, "max", axis, rotary, 100.0);
             pos = min + Math.Clamp(pos, 0.0, 100.0) / 100.0 * (max - min);
         }
         return Math.Clamp(pos, 0.0, 100.0);
     }
 
-    // An axis modifier's value for one axis: the `rotary_` one on a turning axis when the effect has it,
-    // else the plain one, else the fallback.
-    private static double AxisParam(Godot.Collections.Dictionary effect, string key, bool rotary, double fallback)
+    // An axis modifier's value for one axis: its own per-axis key (factor_R0), else — on a turning axis —
+    // the `rotary_` group value older data carries, else the plain one, else the fallback. The same chain
+    // as JourneyData.axis_value, so a journey saved with group values plays as it always did.
+    private static double AxisParam(
+        Godot.Collections.Dictionary effect, string key, string axis, bool rotary, double fallback)
     {
-        if (rotary && effect.ContainsKey("rotary_" + key))
-            return effect["rotary_" + key].AsDouble();
+        string own = PerAxisKeys[key][axis];
+        if (effect.ContainsKey(own))
+            return effect[own].AsDouble();
+        string group = RotaryKeys[key];
+        if (rotary && effect.ContainsKey(group))
+            return effect[group].AsDouble();
         return effect.ContainsKey(key) ? effect[key].AsDouble() : fallback;
     }
 

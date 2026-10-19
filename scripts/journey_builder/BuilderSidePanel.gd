@@ -47,8 +47,6 @@ const VIB_CHANNELS_INFO: Array = [
 	{"key": "vib2", "label": "VIB2  —  CHANNEL 1  (secondary motor)"},
 ]
 
-# Forced-modifier kinds a boss round can impose. Parallel arrays: KINDS feeds the
-# saved data, LABELS feeds the editor dropdown.
 # Gameplay forced-modifier kinds a boss round can impose. Visual/audio effects
 # (incl. the old BLACKOUT) now live in the "Non-gameplay modifiers" picker.
 const BOSS_MODIFIER_KINDS: Array = [
@@ -72,18 +70,6 @@ const ITEMS_MODAL_MIN: int = 340
 const ITEMS_MODAL_MAX: int = 640
 
 # The audition button beside an audio field. Wide enough to read, narrow enough to stay a utility.
-const BOSS_MODIFIER_LABELS: Array = [
-	"SCALE  —  STROKE LENGTH",
-	"CLAMP  —  POSITION RANGE",
-	"REVERSE  —  MIRROR",
-	"SCORE MULTIPLIER",
-	"AXES SCALE  —  ALL BUT THE STROKE",
-	"AXES CLAMP  —  HOLD NEAR CENTRE",
-	"AXES REVERSE  —  OPPOSITE WAY",
-	"AXES STILLED  —  FREEZE",
-	"POSE  —  HOLD ROLL + PITCH AT A TILT",
-	"VORTEX  —  ROLL + PITCH CIRCLE EACH STROKE",
-]
 
 var _owner: JourneyBuilder
 
@@ -93,13 +79,26 @@ var _owner: JourneyBuilder
 var _pool_drop: Dictionary = {}
 # Effect picker rows whose editor the author left open, by effect name — kept across panel rebuilds.
 var _effect_editors_open: Dictionary = {}
-# The add-effect menu's scrolling list area: room for a few groups without covering the whole builder.
-const ADD_EFFECT_MENU_SIZE: Vector2 = Vector2(340, 380)
+# An override's play length tops out at ten minutes — far past any sensible item — so a typo can't unroll
+# an hour of points.
+const MAX_OVERRIDE_PLAY_SECS: int = 600
+# A loop seam jumping further than this (0–100) gets a warning under the play length.
+const OVERRIDE_SEAM_JUMP: float = 25.0
 
 # The custom-items list container, tracked so the editor modal can refresh it after the
 # side panel is rebuilt underneath it (e.g. a save mid-edit frees the old container). The
 # modal never holds a direct reference; it rebuilds through this, guarded by validity.
 var _custom_items_list: VBoxContainer = null
+# The open item editor's name field — rebuilt with the editor body, so NAME IT can focus the live one —
+# and its NO NAME YET prompt while that is up, so a second close can't stack another. The prompt lives
+# inside the item modal, so anything that frees the modal frees the prompt and nothing is left stuck.
+var _item_name_edit: LineEdit = null
+var _item_prompt: Control = null
+# The open counter editor's name field — its body rebuilds, so the NO NAME YET prompt asks for the live
+# one. (A flag editor never rebuilds, so it hands its field over directly.)
+var _counter_name_edit: LineEdit = null
+# Where a flag or counter editor keeps its NO NAME YET prompt while it is up (modal meta).
+const NAME_PROMPT_META: StringName = &"name_prompt"
 # The side panel shows only a "Manage Items (N)" button; the list itself lives in a modal. Kept so the
 # count stays live as items are added/removed. _custom_items_list points at the open modal's container.
 var _manage_items_btn: Button = null
@@ -429,15 +428,34 @@ func _build_map_settings_section(side_vbox: VBoxContainer) -> void:
 	map_toggle.button_pressed = _owner._journey_map_enabled
 	side_vbox.add_child(map_toggle)
 
-	# Sub-options: fog of war + how far ahead it reveals. All grey out when the map is off; the step
-	# count additionally greys out under "whole structure". Declared before the wiring so the shared
-	# refresh closure can reach them all.
+	# Loops on the map: hidden by default (the markers are spliced out so the flow reads as a clean run);
+	# the author opts in to reveal them. Only offered when the journey actually has a loop.
+	var loops_toggle: CheckButton = null
+	if _journey_has_loops():
+		loops_toggle = CheckButton.new()
+		loops_toggle.text = "SHOW LOOPS ON MAP"
+		loops_toggle.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"Show Loop Start / Loop End markers on the player's map. Off (the default) hides them, so the map shows the looped rounds as one straight run."
+			)
+		)
+		loops_toggle.add_theme_font_size_override("font_size", 12)
+		loops_toggle.button_pressed = _owner._journey_show_loops_on_map
+		side_vbox.add_child(loops_toggle)
+		loops_toggle.toggled.connect(func(on: bool) -> void: _owner._journey_show_loops_on_map = on)
+
+	# Fog of war + how far ahead it reveals — its own group, NOT under the map switch: fog also shapes
+	# the route map at the end of the journey, which shows whether or not the player could open the map
+	# during play. The step count greys out under "whole structure". Declared before the wiring so the
+	# shared refresh closure can reach them all.
+	side_vbox.add_child(_side_section_separator())
 	var fog_toggle: CheckButton = CheckButton.new()
 	fog_toggle.text = "FOG OF WAR  (REVEAL ON DISCOVERY)"
 	fog_toggle.tooltip_text = (
 		UITheme
 		. wrap_tip(
-			"Reveal the map as the player plays: visited nodes shown in full, the steps ahead ghosted as '?', everything beyond hidden. Discovery resets each run."
+			"Reveal the journey as the player plays: visited nodes shown in full, the steps ahead ghosted as '?', everything beyond hidden. Covers the in-play map and the route map at the end of the journey, whether or not the in-play map is allowed. Discovery resets each run."
 		)
 	)
 	fog_toggle.add_theme_font_size_override("font_size", 12)
@@ -476,28 +494,10 @@ func _build_map_settings_section(side_vbox: VBoxContainer) -> void:
 	whole_toggle.button_pressed = _owner._journey_map_fog_reveal < 0
 	side_vbox.add_child(whole_toggle)
 
-	# Loops on the map: hidden by default (the markers are spliced out so the flow reads as a clean run);
-	# the author opts in to reveal them. Only offered when the journey actually has a loop.
-	var loops_toggle: CheckButton = null
-	if _journey_has_loops():
-		loops_toggle = CheckButton.new()
-		loops_toggle.text = "SHOW LOOPS ON MAP"
-		loops_toggle.tooltip_text = (
-			UITheme
-			. wrap_tip(
-				"Show Loop Start / Loop End markers on the player's map. Off (the default) hides them, so the map shows the looped rounds as one straight run."
-			)
-		)
-		loops_toggle.add_theme_font_size_override("font_size", 12)
-		loops_toggle.button_pressed = _owner._journey_show_loops_on_map
-		side_vbox.add_child(loops_toggle)
-		loops_toggle.toggled.connect(func(on: bool) -> void: _owner._journey_show_loops_on_map = on)
-
-	# Shared enable-state refresh: reveal controls need the map AND fog on; the step spin also greys out
-	# under "whole structure"; the loops toggle needs the map on.
+	# Shared enable-state refresh: reveal controls need fog on; the step spin also greys out under "whole
+	# structure"; the loops toggle needs the map on.
 	var refresh_fog: Callable = func() -> void:
-		var fog_on: bool = _owner._journey_map_enabled and _owner._journey_map_fog
-		fog_toggle.disabled = not _owner._journey_map_enabled
+		var fog_on: bool = _owner._journey_map_fog
 		whole_toggle.disabled = not fog_on
 		reveal_spin.editable = fog_on and not whole_toggle.button_pressed
 		if loops_toggle != null:
@@ -827,26 +827,39 @@ func _make_seconds_row(
 	return spin
 
 
-# Gameplay effect kinds an item can bundle. Timed: stroke modifiers + blackout + score + coin. One-shot
-# (fire once on use, then consumed): toll / interest / flag / counter. Timed HUD hide: hud_hide (Fog).
-# Sensory (visual/audio) kinds are ALSO offered — appended from SENSORY_CATALOG in the effect dropdown,
-# applied for the item's duration via SensoryFX.reconcile. Still NOT offered: gift / lingering / no_pause.
-const _ITEM_EFFECT_KINDS: Array = [
-	"scale",
-	"clamp",
-	"reverse",
-	"block",
-	"blackout",
-	"score_multiplier",
-	"score_add",
-	"coin_jackpot",
-	"coin_penalty",
-	"toll",
-	"interest",
-	"hud_hide",
-	"flag",
-	"counter"
+# The effect kinds an item can bundle, as its add menu groups them. Timed: stroke modifiers, score and
+# coin multipliers, Fog. One-shot (fire once on use, then consumed): score_add, toll, interest, flag,
+# counter. The multi-axis and sensory (visual / audio) groups are added after these. Still NOT offered:
+# gift / lingering / no_pause.
+const _ITEM_EFFECT_GROUPS: Array = [
+	["Stroke", ["scale", "clamp", "reverse", "block"]],
+	[
+		"Score & coins",
+		["score_multiplier", "score_add", "coin_jackpot", "coin_penalty", "toll", "interest"]
+	],
+	["The run", ["flag", "counter", "hud_hide"]],
 ]
+# Multi-axis kinds an item can bundle, listed under their own heading. Same kinds and defaults as a boss's
+# forced modifiers; at use they go through the round's substitution like any curse (GameLoop
+# _express_item_effects), so a player without the axes gets the stroke version.
+const _ITEM_AXIS_EFFECT_KINDS: Array = [
+	"axis_scale", "axis_clamp", "axis_reverse", "axis_block", "pose", "vortex"
+]
+# The line under each one in the item editor. An item can be used in any round, so it can't say whether
+# THIS round lets the effect act — only what it needs, and what plays when it can't.
+const _ITEM_AXIS_NOTES: Dictionary = {
+	"axis_scale":
+	"Needs those axes on the device and moving this round — otherwise it scales the stroke instead.",
+	"axis_clamp":
+	"Needs those axes on the device and moving this round — otherwise it clamps the stroke instead.",
+	"axis_reverse":
+	"Needs those axes on the device and moving this round — otherwise it reverses the stroke instead.",
+	"axis_block":
+	"Needs those axes on the device and moving this round — otherwise it freezes the stroke instead.",
+	"pose": "Needs roll or pitch on the device — otherwise it plays as Choked.",
+	"vortex":
+	"Needs twist, roll or pitch the round leaves unscripted — otherwise it plays as Surge.",
+}
 
 
 # AFTERCARE — the "I came" button, which ends the run early from a round into an aftercare sequence
@@ -1054,7 +1067,7 @@ func _open_items_manager_modal() -> void:
 	if backdrop:
 		backdrop.gui_input.connect(
 			func(event: InputEvent) -> void:
-				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+				if UITheme.is_backdrop_click(event):
 					on_close.call()
 		)
 
@@ -1199,6 +1212,8 @@ func _default_custom_item() -> Dictionary:
 
 
 func _default_item_effect(kind: String) -> Dictionary:
+	if kind in _ITEM_AXIS_EFFECT_KINDS:
+		return _default_boss_modifier(kind)
 	match kind:
 		"scale":
 			return {"kind": "scale", "factor": 1.0}
@@ -1229,63 +1244,6 @@ func _default_item_effect(kind: String) -> Dictionary:
 			if not sensory.is_empty() and sensory.has("idef"):
 				return {"kind": kind, "intensity": float(sensory["idef"])}
 			return {"kind": kind}  # reverse / block / blackout / binary sensory — no tuning
-
-
-# One-line description of a gameplay item-effect kind, shown as the dropdown tooltip. Sensory kinds
-# use their SENSORY_CATALOG `desc` instead (set where the dropdown is built).
-func _effect_kind_desc(kind: String) -> String:
-	match kind:
-		"scale":
-			return "Scales stroke depth by a factor (×0.5 = shallower, ×2 = deeper)."
-		"clamp":
-			return "Restricts strokes to a min/max position range."
-		"reverse":
-			return "Inverts stroke direction (top ↔ bottom)."
-		"block":
-			return "Blocks output — the device holds position."
-		"blackout":
-			return "Hides the video; the device keeps playing in the dark."
-		"score_multiplier":
-			return "Multiplies the round's score."
-		"score_add":
-			return (
-				"Adds score the instant it is used. In a boss round with a SCORE health bar that is "
-				+ "damage — scaled by the boss's stance, so it glances off a guard and does nothing "
-				+ "through "
-				+ "an attack. Elsewhere it is simply points."
-			)
-		"coin_jackpot":
-			return "Multiplies the round's coin payout. Settled at the next round end."
-		"coin_penalty":
-			return "Reduces the round's coin payout (fraction kept). Settled at the next round end."
-		"toll":
-			return "Deducts coins from the balance immediately when used (capped at the balance)."
-		"interest":
-			return "Grants coins equal to a fraction of the current balance, immediately when used."
-		"flag":
-			return "Sets a run flag when used — a later fork can branch on it (Conditional / required)."
-		"counter":
-			return "Changes a run counter when used (± delta) — feeds counter-gated forks and the HUD."
-		"hud_hide":
-			return "Fog — hides the HUD for the item's duration."
-	return ""
-
-
-# Short display label for a gameplay item-effect kind (dropdown option + row tag). Defaults to the
-# kind capitalized; a few read better with a custom label.
-func _item_effect_label(kind: String) -> String:
-	match kind:
-		"hud_hide":
-			return "Fog (hide HUD)"
-		"flag":
-			return "Set flag"
-		"counter":
-			return "Change counter"
-		"toll":
-			return "Toll (lose coins)"
-		"interest":
-			return "Interest (gain coins)"
-	return kind.capitalize()
 
 
 # Compact list row for one custom item: name + type badge, with EDIT (opens the editor
@@ -1400,35 +1358,75 @@ func _open_item_editor_modal(item_idx: int, is_new: bool = false) -> void:
 	if backdrop:
 		backdrop.gui_input.connect(
 			func(event: InputEvent) -> void:
-				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+				if UITheme.is_backdrop_click(event):
 					_close_item_editor(modal, item_idx, item, is_new)
 		)
 
 
 # Closes the item editor, then frees the modal and re-renders the list. A NEWLY-ADDED item that is
 # still incomplete is discarded — so clicking ＋ ADD ITEM and then dismissing an untouched item leaves
-# nothing behind. Editing an EXISTING item never deletes it, even if edited to be incomplete. Complete
-# = has a name, and (unless it is a key, which needs none) at least one effect.
+# nothing behind. One with work in it but no name asks first, like a new character or setting. Editing
+# an EXISTING item never deletes it, even if edited to be incomplete. Complete = has a name, and (unless
+# it is a key, which needs none) at least one effect.
 func _close_item_editor(modal: Control, item_idx: int, item: Dictionary, is_new: bool) -> void:
+	if is_instance_valid(_item_prompt):
+		return
+	var unnamed: bool = str(item.get("name", "")).strip_edges() == ""
+	if is_new and unnamed and not _journey_item_blank(item):
+		_confirm_discard_unnamed_item(modal, item_idx, item)
+		return
 	if is_new and not _journey_item_complete(item):
-		var nm: String = str(item.get("name", "")).strip_edges()
-		var is_override: bool = str(item.get("category", "modifier")) == "override"
-		var has_effects: bool = not (item.get("effects", []) as Array).is_empty()
-		var has_script: bool = str((item.get("scripts", {}) as Dictionary).get("main", "")) != ""
 		_discard_journey_item(item_idx, item)
-		# A bare Add-then-dismiss (nothing filled in) is a silent cancel. If the author put in SOME
-		# content but it's still not keepable, say why it vanished rather than dropping it silently.
-		if nm != "" or has_effects or has_script:
-			var reason: String
-			if nm == "":
-				reason = "items need a name"
-			elif is_override:
-				reason = "an override needs a main funscript"
-			else:
-				reason = "a modifier needs at least one effect"
+		# Unnamed, it reached here blank — a bare Add-then-dismiss, a silent cancel. Named, the author
+		# put work in, so say why it vanished rather than dropping it silently.
+		if not unnamed:
+			var is_override: bool = str(item.get("category", "modifier")) == "override"
+			var reason: String = (
+				"an override needs a main funscript"
+				if is_override
+				else "a modifier needs at least one effect"
+			)
 			_owner._show_status("Discarded incomplete item — %s." % reason, true)
 	modal.queue_free()
 	_rebuild_custom_items_list()
+
+
+# Nothing put into a new item yet: still the type, price and duration ＋ ADD ITEM gave it, and no
+# description, effect, script, image or sound. Closing one like this was backing out, so it goes without
+# asking.
+func _journey_item_blank(item: Dictionary) -> bool:
+	var fresh: Dictionary = _default_custom_item()
+	return (
+		str(item.get("category", "")) == str(fresh["category"])
+		and int(item.get("price", 0)) == int(fresh["price"])
+		and int(item.get("duration_ms", 0)) == int(fresh["duration_ms"])
+		and str(item.get("description", "")).strip_edges() == ""
+		and (item.get("effects", []) as Array).is_empty()
+		and str((item.get("scripts", {}) as Dictionary).get("main", "")) == ""
+		and str(item.get("image", "")) == ""
+		and str(item.get("sound", "")) == ""
+	)
+
+
+# Asks before a new, unnamed item with work in it is thrown away (UITheme.show_name_or_discard).
+func _confirm_discard_unnamed_item(modal: Control, item_idx: int, item: Dictionary) -> void:
+	var keep: Callable = func() -> void:
+		if is_instance_valid(_item_name_edit):
+			_item_name_edit.grab_focus()
+	var discard: Callable = func() -> void:
+		_discard_journey_item(item_idx, item)
+		modal.queue_free()
+		_rebuild_custom_items_list()
+		_owner._show_status("Discarded the unnamed item — items need a name.", true)
+	_item_prompt = UITheme.show_name_or_discard(
+		modal,
+		(
+			"An item needs a name to be kept — it's what the shop and the inventory show. Name "
+			+ "this one, or discard it?"
+		),
+		keep,
+		discard
+	)
 
 
 # An item is complete enough to keep: it has a name, plus whatever its type needs to function — a key
@@ -1445,16 +1443,19 @@ func _journey_item_complete(item: Dictionary) -> bool:
 			return not (item.get("effects", []) as Array).is_empty()
 
 
-# Removes an item from the journey list, preferring the captured index but verifying identity (the
-# array can't shift while the modal is up, but be safe), falling back to an identity search.
 func _discard_journey_item(item_idx: int, item: Dictionary) -> void:
-	var items: Array = _owner._journey_items
-	if item_idx >= 0 and item_idx < items.size() and is_same(items[item_idx], item):
-		items.remove_at(item_idx)
+	_remove_same(_owner._journey_items, item_idx, item)
+
+
+# Removes `entry` from `list`: at the index captured when its editor opened if it is still there, else
+# wherever it now is — the list can't shift while an editor is up, but a rebuild underneath could.
+static func _remove_same(list: Array, captured_idx: int, entry: Variant) -> void:
+	if captured_idx >= 0 and captured_idx < list.size() and is_same(list[captured_idx], entry):
+		list.remove_at(captured_idx)
 		return
-	for i: int in items.size():
-		if is_same(items[i], item):
-			items.remove_at(i)
+	for i: int in list.size():
+		if is_same(list[i], entry):
+			list.remove_at(i)
 			return
 
 
@@ -1986,7 +1987,7 @@ func _make_settings_section() -> Control:
 		func() -> void:
 			_owner._journey_settings.append(_default_setting())
 			_rebuild_settings_list()
-			_open_setting_editor_modal(_owner._journey_settings.size() - 1)
+			_open_setting_editor_modal(_owner._journey_settings.size() - 1, true)
 	)
 	box.add_child(add_btn)
 	return box
@@ -2122,14 +2123,26 @@ func _confirm_delete_setting(setting_idx: int) -> void:
 # Opens the full-screen editor for one setting. Replaces the modal that used to hold these fields: a
 # setting is almost entirely about its art, and how a background is framed cannot be judged from a
 # thumbnail in a 520px window. The editor edits the live dictionary, so closing needs no save step.
-func _open_setting_editor_modal(setting_idx: int) -> void:
+func _open_setting_editor_modal(setting_idx: int, is_new: bool = false) -> void:
 	if setting_idx < 0 or setting_idx >= _owner._journey_settings.size():
 		return
+	var setting: Dictionary = _owner._journey_settings[setting_idx]
 	var editor: SettingEditor = SettingEditor.new()
 	_owner.add_child(editor)
-	editor.setup(_owner._journey_settings[setting_idx])
-	# The row shows the setting's name and its variant count, both of which the editor can change.
-	editor.closed.connect(_rebuild_settings_list)
+	editor.setup(setting, is_new)
+	editor.closed.connect(func() -> void: _close_setting_editor(setting_idx, setting, is_new))
+
+
+# A NEWLY-ADDED setting leaving without a name is dropped. Blank, the author was just backing out, so it
+# goes quietly; with something in it, the editor has already asked and this is the answer. A named
+# setting is kept, art or not. Re-renders the row either way — the editor can change its name and
+# variant count.
+func _close_setting_editor(setting_idx: int, setting: Dictionary, is_new: bool) -> void:
+	if is_new and str(setting.get("name", "")).strip_edges() == "":
+		_remove_same(_owner._journey_settings, setting_idx, setting)
+		if not SettingEditor.is_blank(setting):
+			_owner._show_status("Discarded the unnamed setting — settings need a name.", true)
+	_rebuild_settings_list()
 
 
 # ── Counters (journey-level named numbers) ────────────────────────
@@ -2166,7 +2179,7 @@ func _build_counters_section(side_vbox: VBoxContainer) -> void:
 		func() -> void:
 			_owner._journey_counters.append(JourneyData.new_counter_def())
 			_rebuild_counters_list()
-			_open_counter_modal(_owner._journey_counters.size() - 1)
+			_open_counter_modal(_owner._journey_counters.size() - 1, true)
 	)
 	side_vbox.add_child(add_btn)
 
@@ -2342,7 +2355,7 @@ func _confirm_delete_counter(counter_idx: int) -> void:
 	)
 
 
-func _open_counter_modal(counter_idx: int) -> void:
+func _open_counter_modal(counter_idx: int, is_new: bool = false) -> void:
 	if counter_idx < 0 or counter_idx >= _owner._journey_counters.size():
 		return
 	var def: Dictionary = _owner._journey_counters[counter_idx]
@@ -2367,20 +2380,29 @@ func _open_counter_modal(counter_idx: int) -> void:
 	close_btn.text = "DONE"
 	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
-	close_btn.pressed.connect(
-		func() -> void:
-			modal.queue_free()
-			_rebuild_counters_list()
-	)
+	var name_field: Callable = func() -> LineEdit: return _counter_name_edit
+	var close: Callable = func() -> void:
+		_close_definition_editor(
+			modal,
+			"counter",
+			_owner._journey_counters,
+			counter_idx,
+			def,
+			is_new,
+			JourneyData.new_counter_def(),
+			"A counter needs a name to be kept — it's how nodes and gates change and test it.",
+			name_field,
+			_rebuild_counters_list
+		)
+	close_btn.pressed.connect(close)
 	vbox.add_child(close_btn)
 
 	var backdrop: Control = modal.get_child(0) as Control
 	if backdrop:
 		backdrop.gui_input.connect(
 			func(event: InputEvent) -> void:
-				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
-					modal.queue_free()
-					_rebuild_counters_list()
+				if UITheme.is_backdrop_click(event):
+					close.call()
 		)
 
 
@@ -2403,6 +2425,8 @@ func _fill_counter_editor_body(body: VBoxContainer, def: Dictionary) -> void:
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(v: String) -> void: def["name"] = v.strip_edges())
 	body.add_child(name_edit)
+	_focus_if_blank(name_edit)
+	_counter_name_edit = name_edit
 
 	body.add_child(
 		_side_field_label("LABEL (OPTIONAL)", "What the player sees. Blank shows the name itself.")
@@ -2555,7 +2579,7 @@ func _build_flags_section(side_vbox: VBoxContainer) -> void:
 		func() -> void:
 			_owner._journey_flags.append(JourneyData.new_flag_def())
 			_rebuild_flags_list()
-			_open_flag_modal(_owner._journey_flags.size() - 1)
+			_open_flag_modal(_owner._journey_flags.size() - 1, true)
 	)
 	side_vbox.add_child(add_btn)
 
@@ -2716,7 +2740,72 @@ func _confirm_delete_flag(flag_idx: int) -> void:
 	)
 
 
-func _open_flag_modal(flag_idx: int) -> void:
+# Closes a journey-panel flag or counter editor. A NEWLY-ADDED one leaving without a name is dropped: as
+# it was made (still `fresh`, the name aside), quietly — the author was backing out; with anything set,
+# after asking (UITheme.show_name_or_discard), the prompt living in the editor so the two close together.
+# A named one is kept. `noun` names the kind ("flag"), `why` says what the name is for, and `name_field`
+# returns the editor's live name field.
+func _close_definition_editor(
+	modal: Control,
+	noun: String,
+	list: Array,
+	idx: int,
+	def: Dictionary,
+	is_new: bool,
+	fresh: Dictionary,
+	why: String,
+	name_field: Callable,
+	rebuild: Callable
+) -> void:
+	if modal.has_meta(NAME_PROMPT_META) and is_instance_valid(modal.get_meta(NAME_PROMPT_META)):
+		return
+	var unnamed: bool = str(def.get("name", "")).strip_edges() == ""
+	var finish: Callable = func() -> void:
+		modal.queue_free()
+		rebuild.call()
+	if not (is_new and unnamed):
+		finish.call()
+		return
+	if _matches_fresh(def, fresh):
+		_remove_same(list, idx, def)
+		finish.call()
+		return
+	var keep: Callable = func() -> void:
+		var field: LineEdit = name_field.call()
+		if is_instance_valid(field):
+			field.grab_focus()
+	var discard: Callable = func() -> void:
+		_remove_same(list, idx, def)
+		finish.call()
+		_owner._show_status("Discarded the unnamed %s — %ss need a name." % [noun, noun], true)
+	var prompt: Control = UITheme.show_name_or_discard(
+		modal, why + " Name this one, or discard it?", keep, discard
+	)
+	modal.set_meta(NAME_PROMPT_META, prompt)
+
+
+# Whether a definition is still exactly as ＋ ADD made it, its (blank) name aside.
+static func _matches_fresh(def: Dictionary, fresh: Dictionary) -> bool:
+	for key: Variant in fresh:
+		if str(key) == "name":
+			continue
+		var value: Variant = def.get(key, fresh[key])
+		if value is String:
+			if str(value).strip_edges() != str(fresh[key]):
+				return false
+		elif value != fresh[key]:
+			return false
+	return true
+
+
+# A just-added flag or counter opens with its name field ready to type in. Deferred, because a field can
+# only take focus once it is in the tree — and an existing one keeps the cursor out of its name.
+func _focus_if_blank(name_edit: LineEdit) -> void:
+	if name_edit.text.strip_edges() == "":
+		name_edit.grab_focus.call_deferred()
+
+
+func _open_flag_modal(flag_idx: int, is_new: bool = false) -> void:
 	if flag_idx < 0 or flag_idx >= _owner._journey_flags.size():
 		return
 	var def: Dictionary = _owner._journey_flags[flag_idx]
@@ -2743,6 +2832,7 @@ func _open_flag_modal(flag_idx: int) -> void:
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(v: String) -> void: def["name"] = v.strip_edges())
 	body.add_child(name_edit)
+	_focus_if_blank(name_edit)
 
 	body.add_child(_side_field_label("LABEL (OPTIONAL)", "A readable name for the pickers."))
 	var label_edit: LineEdit = LineEdit.new()
@@ -2764,20 +2854,29 @@ func _open_flag_modal(flag_idx: int) -> void:
 	close_btn.text = "DONE"
 	close_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(close_btn, UITheme.PURPLE_BRIGHT)
-	close_btn.pressed.connect(
-		func() -> void:
-			modal.queue_free()
-			_rebuild_flags_list()
-	)
+	var name_field: Callable = func() -> LineEdit: return name_edit
+	var close: Callable = func() -> void:
+		_close_definition_editor(
+			modal,
+			"flag",
+			_owner._journey_flags,
+			flag_idx,
+			def,
+			is_new,
+			JourneyData.new_flag_def(),
+			"A flag needs a name to be kept — it's what nodes set and gates check.",
+			name_field,
+			_rebuild_flags_list
+		)
+	close_btn.pressed.connect(close)
 	vbox.add_child(close_btn)
 
 	var backdrop: Control = modal.get_child(0) as Control
 	if backdrop:
 		backdrop.gui_input.connect(
 			func(event: InputEvent) -> void:
-				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
-					modal.queue_free()
-					_rebuild_flags_list()
+				if UITheme.is_backdrop_click(event):
+					close.call()
 		)
 
 
@@ -2932,14 +3031,7 @@ func _open_character_editor_modal(char_idx: int, is_new: bool = false) -> void:
 # portraits — the author clearly meant it.
 func _close_character_editor(char_idx: int, chr: Dictionary, is_new: bool) -> void:
 	if is_new and str(chr.get("name", "")).strip_edges() == "":
-		var chars: Array = _owner._journey_characters
-		if char_idx >= 0 and char_idx < chars.size() and is_same(chars[char_idx], chr):
-			chars.remove_at(char_idx)
-		else:
-			for i: int in chars.size():
-				if is_same(chars[i], chr):
-					chars.remove_at(i)
-					break
+		_remove_same(_owner._journey_characters, char_idx, chr)
 		_owner._show_status("Discarded the unnamed character — characters need a name.", true)
 	_rebuild_characters_list()
 
@@ -2967,6 +3059,7 @@ func _fill_item_editor_body(body: VBoxContainer, item: Dictionary) -> void:
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(v: String) -> void: item["name"] = v)
 	body.add_child(name_edit)
+	_item_name_edit = name_edit
 
 	body.add_child(_side_field_label("DESCRIPTION"))
 	var desc_edit: LineEdit = LineEdit.new()
@@ -3073,39 +3166,23 @@ func _fill_item_effects_editor(
 	var effects: Array = item.get("effects", [])
 	for ei: int in effects.size():
 		body.add_child(_make_item_effect_row(item, ei, rebuild, on_tune))
-	# The dropdown lists gameplay/stroke/coin kinds, then a separator, then the full sensory (visual/audio)
-	# catalog by display name. `fx_kinds` is kept parallel to every row (including the placeholder and
-	# separator, which occupy indices) so item_selected maps back to a kind.
-	var add_fx: OptionButton = OptionButton.new()
-	var fx_kinds: Array = [""]  # index 0 = placeholder
-	add_fx.add_item("＋ Add effect…")
-	for kind: String in _ITEM_EFFECT_KINDS:
-		add_fx.add_item(_item_effect_label(kind))
-		add_fx.set_item_tooltip(
-			add_fx.get_item_count() - 1, UITheme.wrap_tip(_effect_kind_desc(kind))
+		var axis_note: String = str(
+			_ITEM_AXIS_NOTES.get(str((effects[ei] as Dictionary).get("kind", "")), "")
 		)
-		fx_kinds.append(kind)
-	add_fx.add_separator("SENSORY (VISUAL / AUDIO)")
-	fx_kinds.append("")  # the separator occupies an index but isn't selectable
-	for e: Dictionary in JourneyData.SENSORY_CATALOG:
-		var skind: String = str(e.get("kind", ""))
-		if skind in _ITEM_EFFECT_KINDS:
-			continue  # "blackout" (Blinded) is already offered as a gameplay kind — no duplicate
-		add_fx.add_item(str(e.get("name", skind)))
-		add_fx.set_item_tooltip(
-			add_fx.get_item_count() - 1, UITheme.wrap_tip(str(e.get("desc", "")))
-		)
-		fx_kinds.append(skind)
-	add_fx.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_option_button(add_fx)
-	add_fx.item_selected.connect(
-		func(i: int) -> void:
-			if i <= 0 or i >= fx_kinds.size() or str(fx_kinds[i]) == "":
-				return
-			(item["effects"] as Array).append(_default_item_effect(str(fx_kinds[i])))
-			rebuild.call()
+		if axis_note != "":
+			body.add_child(_item_axis_note(axis_note))
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD EFFECT"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button_subtle(add_btn, UITheme.PURPLE_MID, 8, 6, 11)
+	var add_effect: Callable = func(kind: Variant) -> void:
+		(item["effects"] as Array).append(_default_item_effect(str(kind)))
+		rebuild.call()
+	add_btn.pressed.connect(
+		func() -> void:
+			CatalogPicker.open(add_btn, _item_effect_groups(), add_effect, "Search effects…")
 	)
-	body.add_child(add_fx)
+	body.add_child(add_btn)
 
 
 # ── Override item authoring (see OVERRIDE_ITEMS_DESIGN.md §7) ─────────────────
@@ -3172,6 +3249,8 @@ func _fill_item_override_section(body: VBoxContainer, item: Dictionary, rebuild:
 				refresh_preview.call()
 	)
 	body.add_child(immune_chk)
+	if main_path != "":
+		body.add_child(_make_play_length_field(item, scripts))
 
 	# An override can ALSO carry an effects bundle (score / sensory / modifier), applied while it plays.
 	# `refresh_preview` (on_tune) repaints the stroke preview live as a stroke effect is tuned.
@@ -3319,14 +3398,105 @@ func _fill_override_timeline(
 			if test_player.is_playing():
 				test_player.stop()
 			else:
+				var test_bundle: OverrideBundle = _build_override_test_bundle(item, scripts)
+				var slice_ms: int = _override_slice_ms(item, scripts)
 				test_player.start(
-					_build_override_test_bundle(item, scripts),
+					test_bundle.played_for(int(item.get("play_ms", 0))),
 					timeline,
-					int((item.get("trim", {}) as Dictionary).get("in_ms", 0))
+					int((item.get("trim", {}) as Dictionary).get("in_ms", 0)),
+					slice_ms  # the timeline shows one pass, so the playhead wraps on each repeat
 				)
 	)
 	body.add_child(test_btn)
 	return refresh_preview
+
+
+# How long the override plays: blank (0) plays the slice once, as overrides always have; longer repeats
+# it, shorter cuts it off. Under it, what that means for this slice — and a warning when a channel ends far
+# from where it starts, since every repeat then jumps across that gap.
+func _make_play_length_field(item: Dictionary, scripts: Dictionary) -> Control:
+	var box: VBoxContainer = VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	box.add_child(
+		_side_field_label(
+			"PLAYS FOR (SECONDS)",
+			"Longer than the slice repeats it, shorter cuts it off. 0 plays the slice once."
+		)
+	)
+	var spin: SpinBox = SpinBox.new()
+	spin.min_value = 0
+	spin.max_value = MAX_OVERRIDE_PLAY_SECS
+	spin.step = 1
+	spin.suffix = "s"
+	spin.value = roundi(int(item.get("play_ms", 0)) / 1000.0)
+	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_spin_box(spin)
+	box.add_child(spin)
+	var note: Label = _side_hint("")
+	box.add_child(note)
+	var refresh_note: Callable = func() -> void: note.text = _play_length_note(item, scripts)
+	spin.value_changed.connect(
+		func(seconds: float) -> void:
+			if seconds <= 0.0:
+				item.erase("play_ms")
+			else:
+				item["play_ms"] = int(seconds * 1000.0)
+			refresh_note.call()
+	)
+	refresh_note.call()
+	return box
+
+
+# What the play length does to this slice, in words.
+func _play_length_note(item: Dictionary, scripts: Dictionary) -> String:
+	var slice_ms: int = _override_slice_ms(item, scripts)
+	var play_ms: int = int(item.get("play_ms", 0))
+	var slice_text: String = "%.1fs" % (slice_ms / 1000.0)
+	if play_ms <= 0 or slice_ms <= 0:
+		return "Plays the %s slice once." % slice_text
+	if play_ms <= slice_ms:
+		return "Plays the first %.1fs of the %s slice." % [play_ms / 1000.0, slice_text]
+	var text: String = "Repeats the %s slice %.1f times." % [slice_text, float(play_ms) / slice_ms]
+	var seams: PackedStringArray = _jumping_seams(item, scripts)
+	if not seams.is_empty():
+		text += (
+			"\n⚠ %s end far from where they start, so each repeat jumps. End them near their start."
+			% ", ".join(seams)
+		)
+	return text
+
+
+# The channels whose trimmed slice ends more than OVERRIDE_SEAM_JUMP from where it begins — each loop
+# would snap across that gap, which on the stroke is a lurch.
+func _jumping_seams(item: Dictionary, scripts: Dictionary) -> PackedStringArray:
+	var trim: Dictionary = item.get("trim", {})
+	var channels: Dictionary = {"Stroke": str(scripts.get("main", ""))}
+	for axis_name: Variant in scripts.get("axes", {}):
+		channels[str(JourneyData.AXIS_SUFFIXES.get(str(axis_name), axis_name)).capitalize()] = str(
+			scripts["axes"][axis_name]
+		)
+	var jumping: PackedStringArray = []
+	for label: String in channels:
+		var points: Array = JourneyData.apply_override_trim(
+			JourneyData.read_funscript_actions(str(channels[label])), trim
+		)
+		if points.size() < 2:
+			continue
+		var gap: float = absf((points[-1] as Vector2).y - (points[0] as Vector2).y)
+		if gap > OVERRIDE_SEAM_JUMP:
+			jumping.append(label)
+	return jumping
+
+
+# The length of one pass: the trim window if set, else the whole bundle.
+func _override_slice_ms(item: Dictionary, scripts: Dictionary) -> int:
+	var full_ms: int = _override_bundle_duration_ms(scripts)
+	var trim: Dictionary = item.get("trim", {})
+	var in_ms: int = clampi(int(trim.get("in_ms", 0)), 0, full_ms)
+	var out_ms: int = int(trim.get("out_ms", 0))
+	if out_ms <= 0 or out_ms > full_ms:
+		out_ms = full_ms
+	return maxi(0, out_ms - in_ms)
 
 
 # True if the bundle carries an effect that reshapes the stroke (vs. score / sensory / coin, which don't).
@@ -3485,7 +3655,7 @@ func _make_item_effect_row(
 	lbl.text = (
 		str(sensory.get("name", kind)).to_upper()
 		if not sensory.is_empty()
-		else _item_effect_label(kind).to_upper()
+		else JourneyData.effect_kind_label(kind).to_upper()
 	)
 	lbl.custom_minimum_size = Vector2(64, 0)
 	lbl.add_theme_color_override("font_color", UITheme.CYAN)
@@ -3532,6 +3702,13 @@ func _make_item_effect_row(
 						on_tune.call()
 			)
 			row.add_child(mx)
+		"axis_scale", "axis_clamp":
+			row.add_child(_axis_fields_on(fx, kind))
+		"pose":
+			row.add_child(_make_int_spin(fx, "pitch", -50, 50, "pitch tilt ", 25))
+			row.add_child(_make_int_spin(fx, "roll", -50, 50, "roll tilt ", 0))
+		"vortex":
+			row.add_child(_make_factor_spin(fx, "gain", 0.1, 1.0, 0.05, "circle ×", 0.5))
 		"toll":
 			row.add_child(_make_int_spin(fx, "amount", 0, 9999, "lose ♦", 40))
 		"interest":
@@ -3571,6 +3748,69 @@ func _make_item_effect_row(
 	)
 	row.add_child(rm)
 	return row
+
+
+# Per-axis fields editing an effect dictionary in place — a boss's forced modifier or an item's effect.
+func _axis_fields_on(effect: Dictionary, kind: String) -> Control:
+	var read: Callable = func(key: String) -> float:
+		return JourneyData.effect_param_value(effect, key, 0.0)
+	var write: Callable = func(key: String, value: Variant) -> void: effect[key] = value
+	return AxisEffectFields.build(kind, read, write)
+
+
+# Per-axis fields for a catalog effect on an effect round, kept as a diff: a value is read from the
+# catalog entry with this round's overrides on top (older group overrides included), and stored only
+# while it differs from what the axis would get without it.
+func _axis_fields_as_overrides(
+	arr: Array, idx: int, effect_name: String, kind: String, entry: Dictionary
+) -> Control:
+	var tuned: Callable = func() -> Dictionary:
+		var merged: Dictionary = entry.duplicate()
+		var overrides: Dictionary = arr[idx].get("effect_overrides", {})
+		merged.merge(overrides.get(effect_name, {}) as Dictionary, true)
+		return merged
+	var read: Callable = func(key: String) -> float:
+		return JourneyData.effect_param_value(tuned.call(), key, 0.0)
+	var write: Callable = func(key: String, value: Variant) -> void:
+		_set_effect_override(arr, idx, effect_name, key, null)
+		var without: float = JourneyData.effect_param_value(tuned.call(), key, 0.0)
+		if not is_equal_approx(float(value), without):
+			_set_effect_override(arr, idx, effect_name, key, value)
+	return AxisEffectFields.build(kind, read, write)
+
+
+# Every effect an item can carry, grouped for its add menu. An item may carry the same kind twice, so
+# nothing is filtered out.
+func _item_effect_groups() -> Array:
+	var groups: Array = []
+	for group: Array in _ITEM_EFFECT_GROUPS:
+		groups.append({"title": group[0], "entries": JourneyData.effect_kind_entries(group[1])})
+	groups.append(
+		{"title": "Multi-axis", "entries": JourneyData.effect_kind_entries(_ITEM_AXIS_EFFECT_KINDS)}
+	)
+	groups.append(
+		{
+			"title": "Visual",
+			"entries": JourneyData.effect_kind_entries(JourneyData.sensory_kinds(false))
+		}
+	)
+	groups.append(
+		{
+			"title": "Audio",
+			"entries": JourneyData.effect_kind_entries(JourneyData.sensory_kinds(true))
+		}
+	)
+	return groups
+
+
+# The note under a multi-axis item effect (_ITEM_AXIS_NOTES).
+func _item_axis_note(text: String) -> Label:
+	var note: Label = Label.new()
+	note.text = "↳ " + text
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_font_size_override("font_size", 10)
+	note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	return note
 
 
 # Item ids offered in the journey's item dropdowns: BUILT-IN items + this journey's LIVE custom items.
@@ -7620,13 +7860,13 @@ func _fork_resolution_hint(resolution: String, metric: String, decider: String) 
 				return "The player picks among the paths they qualify for (plus the default)."
 			match metric:
 				"score":
-					return "The game auto-picks the highest path whose score threshold the last round met, else the default path."
+					return "The game auto-picks one of the paths whose score threshold the last round met, at random, else the default path. Thresholds that overlap all count — raise the low ones to make tiers."
 				"coins":
-					return "The game auto-picks the highest path whose coin threshold the player's balance meets, else the default path. Coins are NOT spent."
+					return "The game auto-picks one of the paths whose coin threshold the player's balance meets, at random, else the default path. Coins are NOT spent."
 				"item":
-					return "The game auto-picks the first path whose required item the player owns (a pure check — the item is NOT consumed), else the default path."
+					return "The game auto-picks one of the paths whose required item the player owns, at random (a pure check — the item is NOT consumed), else the default path."
 				"flag":
-					return "The game auto-picks the first path whose required flag is set (by a node played or a choice taken earlier), else the default path."
+					return "The game auto-picks one of the paths whose required flag is set (by a node played or a choice taken earlier), at random, else the default path."
 		"sacrifice":
 			return "The player picks a path and spends its cost — coins and/or an item (e.g. a Key), both consumed. Paths they can't afford are disabled, so include at least one free (0 coins, item None) path."
 	return ""
@@ -8084,13 +8324,15 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 	_rebuild_boss_modifiers(arr, idx, mods_list)
 
 	var add_btn: Button = Button.new()
-	add_btn.text = "+ ADD MODIFIER"
+	add_btn.text = "＋ ADD MODIFIER"
 	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	var add_modifier: Callable = func(kind: Variant) -> void:
+		(arr[idx]["boss_modifiers"] as Array).append(_default_boss_modifier(str(kind)))
+		_rebuild_boss_modifiers(arr, idx, mods_list)
 	add_btn.pressed.connect(
 		func() -> void:
-			(arr[idx]["boss_modifiers"] as Array).append(_default_boss_modifier("scale"))
-			_rebuild_boss_modifiers(arr, idx, mods_list)
+			CatalogPicker.open(add_btn, _boss_modifier_groups(), add_modifier, "Search modifiers…")
 	)
 	boss_panel.add_child(add_btn)
 
@@ -8782,7 +9024,9 @@ func _make_selected_effect_row(arr: Array, idx: int, nm: String, refill: Callabl
 		editor.add_child(
 			_effect_override_text(arr, idx, nm, "desc", "FLAVOR", str(entry.get("desc", "")))
 		)
-		if JourneyData.is_stroke_effect(kind):
+		if AxisEffectFields.is_per_axis_kind(kind):
+			editor.add_child(_axis_fields_as_overrides(arr, idx, nm, kind, entry))
+		elif JourneyData.is_stroke_effect(kind):
 			if not JourneyData.effect_param_specs(kind).is_empty():
 				var h: Label = _side_field_label("↳ tune magnitude in the funscript preview")
 				h.add_theme_color_override("font_color", UITheme.PURPLE_MID)
@@ -8844,123 +9088,31 @@ func _make_gift_item_field(arr: Array, idx: int) -> VBoxContainer:
 
 
 # The "add effect" menu: every effect the round doesn't have yet, grouped as hindrances and boons, each
-# split into stroke-and-general and other-axes, with a one-line description under each and a search
-# box that filters by name or description. Picking one adds it, opens its editor, and closes the menu.
+# split into stroke-and-general and other-axes (CatalogPicker). Picking one adds it and opens its editor.
 func _show_add_effect_menu(arr: Array, idx: int, anchor: Control, refill: Callable) -> void:
-	var popup: PopupPanel = PopupPanel.new()
-	_owner.add_child(popup)
-	var panel_style: StyleBoxFlat = StyleBoxFlat.new()
-	panel_style.bg_color = UITheme.PANEL_BG
-	panel_style.border_color = UITheme.PURPLE_BRIGHT
-	panel_style.set_border_width_all(2)
-	panel_style.set_content_margin_all(10)
-	popup.add_theme_stylebox_override("panel", panel_style)
-	popup.popup_hide.connect(popup.queue_free)
-
-	var vbox: VBoxContainer = VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	popup.add_child(vbox)
-
-	var search: LineEdit = LineEdit.new()
-	search.placeholder_text = "Search effects…"
-	search.clear_button_enabled = true
-	UITheme.style_line_edit(search)
-	vbox.add_child(search)
-
-	var scroll: ScrollContainer = ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(ADD_EFFECT_MENU_SIZE.x, ADD_EFFECT_MENU_SIZE.y)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	vbox.add_child(scroll)
-	var items: VBoxContainer = VBoxContainer.new()
-	items.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	items.add_theme_constant_override("separation", 2)
-	scroll.add_child(items)
-
-	var pick: Callable = func(nm: String) -> void:
-		_toggle_effect(arr, idx, nm, true)
-		_effect_editors_open[nm] = true  # straight into its editor — tuning is usually next
-		popup.hide()
-		refill.call()
-	var fill: Callable = func(query: String) -> void:
-		_fill_add_effect_menu(arr, idx, items, query.strip_edges().to_lower(), pick)
-	search.text_changed.connect(fill)
-	fill.call("")
-
-	# Under the button, kept on screen: a picker low in a long panel would otherwise open off the bottom.
-	var view: Vector2 = _owner.get_viewport_rect().size
-	popup.reset_size()
-	var pos: Vector2 = anchor.global_position + Vector2(0, anchor.size.y + 4)
-	pos.x = clampf(pos.x, 0.0, maxf(0.0, view.x - popup.size.x))
-	if pos.y + popup.size.y > view.y:
-		pos.y = maxf(0.0, anchor.global_position.y - popup.size.y - 4)  # flip above the button
-	popup.position = Vector2i(pos)
-	popup.popup()
-	search.grab_focus()
-
-
-# Fills the add menu with the effects not yet in the round that match `query` (lower-cased; "" = all).
-func _fill_add_effect_menu(
-	arr: Array, idx: int, items: VBoxContainer, query: String, pick: Callable
-) -> void:
-	for c: Node in items.get_children():
-		c.queue_free()
 	var selected: Array = arr[idx].get("effects", [])
-	var shown: int = 0
+	var groups: Array = []
 	for section: Array in [
-		["HINDRANCES", JourneyData.CURSE_CATALOG], ["BOONS", JourneyData.BLESSING_CATALOG]
+		["Hindrances", JourneyData.CURSE_CATALOG], ["Boons", JourneyData.BLESSING_CATALOG]
 	]:
 		for axes: bool in [false, true]:
-			var group: Array = []
+			var entries: Array = []
 			for entry: Dictionary in section[1]:
 				var nm: String = str(entry.get("name", ""))
 				if nm in selected or JourneyData.is_axis_effect(str(entry.get("kind", ""))) != axes:
 					continue
-				var hay: String = (nm + " " + str(entry.get("desc", ""))).to_lower()
-				if query == "" or hay.contains(query):
-					group.append(entry)
-			if group.is_empty():
-				continue
-			var heading: Label = _side_field_label(
-				"%s · %s" % [section[0], "OTHER AXES" if axes else "STROKE & GENERAL"]
+				entries.append({"id": nm, "label": nm, "desc": str(entry.get("desc", ""))})
+			var title: String = (
+				"%s · %s" % [section[0], "Other axes" if axes else "Stroke & general"]
 			)
-			heading.add_theme_color_override("font_color", UITheme.PURPLE_MID)
-			items.add_child(heading)
-			for entry: Dictionary in group:
-				items.add_child(_make_add_effect_item(entry, pick))
-				shown += 1
-	if shown == 0:
-		var none: Label = Label.new()
-		none.text = (
-			"Every effect is already in this round." if query == "" else "No matching effects."
-		)
-		none.add_theme_color_override("font_color", UITheme.DARK_TEXT)
-		none.add_theme_font_size_override("font_size", 11)
-		items.add_child(none)
-
-
-# One menu item: the effect's name as the button, its description underneath.
-func _make_add_effect_item(entry: Dictionary, pick: Callable) -> Control:
-	var nm: String = str(entry.get("name", ""))
-	var col: VBoxContainer = VBoxContainer.new()
-	col.add_theme_constant_override("separation", 0)
-	var btn: Button = Button.new()
-	btn.text = nm
-	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_button_subtle(btn, UITheme.PURPLE_MID, 8, 6, 12)
-	btn.pressed.connect(func() -> void: pick.call(nm))
-	col.add_child(btn)
-	var desc: Label = Label.new()
-	desc.text = str(entry.get("desc", ""))
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc.add_theme_color_override("font_color", UITheme.DARK_TEXT)
-	desc.add_theme_font_size_override("font_size", 10)
-	var indent: MarginContainer = MarginContainer.new()
-	indent.add_theme_constant_override("margin_left", 8)
-	indent.add_theme_constant_override("margin_bottom", 4)
-	indent.add_child(desc)
-	col.add_child(indent)
-	return col
+			groups.append({"title": title, "entries": entries})
+	var pick: Callable = func(nm: Variant) -> void:
+		_toggle_effect(arr, idx, str(nm), true)
+		_effect_editors_open[str(nm)] = true  # straight into its editor — tuning is usually next
+		refill.call()
+	CatalogPicker.open(
+		anchor, groups, pick, "Search effects…", "Every effect is already in this round."
+	)
 
 
 # Labeled int SpinBox bound to arr[idx][key]. Used by the effect-round fields.
@@ -9464,10 +9616,8 @@ func _default_boss_modifier(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 50}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
-		"axis_scale":
-			return {"kind": "axis_scale", "factor": 0.6, "rotary_factor": 0.4}
-		"axis_clamp":
-			return {"kind": "axis_clamp", "min": 40, "max": 60, "rotary_min": 45, "rotary_max": 55}
+		"axis_scale", "axis_clamp":
+			return JourneyData.default_axis_modifier(kind)
 		"pose":
 			return {"kind": "pose", "pitch": 25, "roll": 0}
 		"vortex":
@@ -9524,7 +9674,7 @@ func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 10)
 	note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
-	var scripted: Array = _round_scripted_axes(round_data)
+	var scripted: Array = ImportScanner.scripted_axes(round_data)
 	if kind == "pose":
 		note.text = (
 			"Needs a device with roll or pitch — players without them get %s instead." % substitute
@@ -9557,23 +9707,24 @@ func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String)
 	return note
 
 
-# The axes a round carries scripts for: its own entries plus sibling files next to its funscript, the
-# same set the game loads (GameLoop._round_channel_scripts).
-func _round_scripted_axes(round_data: Dictionary) -> Array:
+# The forced modifiers a boss can add, grouped for the add menu: the stroke's, the score's, and the other
+# axes'.
+func _boss_modifier_groups() -> Array:
+	var stroke: Array = []
+	var score: Array = []
 	var axes: Array = []
-	var explicit: Dictionary = round_data.get("axis_scripts", {})
-	for axis: Variant in explicit:
-		if str(explicit[axis]) != "":
-			axes.append(str(axis))
-	var main: String = str(round_data.get("funscript_path", ""))
-	if main != "":
-		var sib: Dictionary = ImportScanner.find_sibling_scripts(
-			main.get_base_dir(), ImportScanner.strip_script_suffix(main)
-		)
-		for axis: Variant in sib["axis"]:
-			if not axes.has(str(axis)):
-				axes.append(str(axis))
-	return axes
+	for kind: String in BOSS_MODIFIER_KINDS:
+		if JourneyData.is_axis_effect(kind):
+			axes.append(kind)
+		elif kind == "score_multiplier":
+			score.append(kind)
+		else:
+			stroke.append(kind)
+	return [
+		{"title": "Stroke", "entries": JourneyData.effect_kind_entries(stroke)},
+		{"title": "Score", "entries": JourneyData.effect_kind_entries(score)},
+		{"title": "Multi-axis", "entries": JourneyData.effect_kind_entries(axes)},
+	]
 
 
 # Rebuilds the forced-modifier rows from scratch — called on add / remove / kind
@@ -9624,18 +9775,14 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 	head.add_theme_constant_override("separation", 6)
 	col.add_child(head)
 
-	var kind_dd: OptionButton = OptionButton.new()
-	for label: String in BOSS_MODIFIER_LABELS:
-		kind_dd.add_item(label)
-	kind_dd.selected = BOSS_MODIFIER_KINDS.find(kind)
-	kind_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	UITheme.style_option_button(kind_dd)
-	head.add_child(kind_dd)
-	kind_dd.item_selected.connect(
-		func(sel: int) -> void:
-			arr[idx]["boss_modifiers"][m_idx] = _default_boss_modifier(BOSS_MODIFIER_KINDS[sel])
-			_rebuild_boss_modifiers(arr, idx, list)
-	)
+	# Its kind, named — chosen when it was added (＋ ADD MODIFIER); a different kind is a different row.
+	var kind_lbl: Label = Label.new()
+	kind_lbl.text = JourneyData.effect_kind_label(kind).to_upper()
+	kind_lbl.tooltip_text = UITheme.wrap_tip(JourneyData.effect_kind_desc(kind))
+	kind_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	kind_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_label(kind_lbl, UITheme.CYAN, 11, true)
+	head.add_child(kind_lbl)
 
 	var remove_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.DANGER)
 	remove_btn.pressed.connect(
@@ -9688,27 +9835,10 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 			crow.add_child(max_edit)
 			col.add_child(crow)
 		"axis_scale":
-			var srow: HBoxContainer = HBoxContainer.new()
-			srow.add_theme_constant_override("separation", 6)
-			srow.add_child(_boss_modifier_number(arr, idx, m_idx, "factor", "SURGE/SWAY ×", false))
-			srow.add_child(
-				_boss_modifier_number(arr, idx, m_idx, "rotary_factor", "TURNS ×", false)
-			)
-			col.add_child(srow)
+			col.add_child(_axis_fields_on(arr[idx]["boss_modifiers"][m_idx], kind))
 			col.add_child(_axis_effect_note(arr[idx], "axis_scale", "Shrunken"))
 		"axis_clamp":
-			var lin_row: HBoxContainer = HBoxContainer.new()
-			lin_row.add_theme_constant_override("separation", 6)
-			lin_row.add_child(_boss_modifier_number(arr, idx, m_idx, "min", "SURGE/SWAY MIN", true))
-			lin_row.add_child(_boss_modifier_number(arr, idx, m_idx, "max", "MAX", true))
-			col.add_child(lin_row)
-			var rot_row: HBoxContainer = HBoxContainer.new()
-			rot_row.add_theme_constant_override("separation", 6)
-			rot_row.add_child(
-				_boss_modifier_number(arr, idx, m_idx, "rotary_min", "TURNS MIN", true)
-			)
-			rot_row.add_child(_boss_modifier_number(arr, idx, m_idx, "rotary_max", "MAX", true))
-			col.add_child(rot_row)
+			col.add_child(_axis_fields_on(arr[idx]["boss_modifiers"][m_idx], kind))
 			col.add_child(_axis_effect_note(arr[idx], "axis_clamp", "Choked"))
 		"axis_reverse":
 			col.add_child(_axis_effect_note(arr[idx], "axis_reverse", "Inverted"))

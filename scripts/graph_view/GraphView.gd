@@ -17,6 +17,12 @@ extends Control
 
 const NODE_WIDTH: float = 200.0
 const NODE_HEIGHT: float = 64.0
+# Marker badges sit just above the node's top border — this far clear of it, and in from its right end —
+# so they never cover the node's title.
+const MARKER_BADGE_GAP: float = 3.0
+const MARKER_BADGE_INSET: float = 10.0
+# Badge glyphs at the size of the node's own title, so they stay readable when the canvas is zoomed out.
+const MARKER_GLYPH_SIZE: int = 15
 const V_GAP: float = 40.0
 const H_GAP: float = 36.0
 const PATH_LABEL_HEIGHT: float = 32.0
@@ -1256,7 +1262,96 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 		warn_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(warn_lbl)
 
+	_add_marker_badges(panel, _node_markers(item), accent)
 	return panel
+
+
+# What sets this node apart that the subtitle has no room for, as [{glyph, tip}] — each drawn as a badge
+# on the node's top edge (_add_marker_badges), its tip shown on hover.
+func _node_markers(item: Dictionary) -> Array:
+	var markers: Array = []
+	match str(item.get("type", "round")):
+		"round":
+			if item.get("is_warmup", false):
+				markers.append({"glyph": "⏭", "tip": "Warmup round — the player can skip it."})
+			# Pending segments (editor only by construction: saved journeys never carry segment keys —
+			# the save consumes them into the media). One reads as the trim it is; several, the count.
+			var segs: Array = JourneyData.normalize_segments(item)
+			if segs.size() == 1:
+				var seg: Dictionary = segs[0]
+				var seg_out: int = int(seg.get("out_ms", 0))
+				var window: String = (
+					"%s–%s"
+					% [
+						JourneyData.ms_to_mmss(int(seg.get("in_ms", 0))),
+						JourneyData.ms_to_mmss(seg_out) if seg_out > 0 else "end",
+					]
+				)
+				markers.append({"glyph": "✂", "tip": "Trimmed to %s on save." % window})
+			elif segs.size() > 1:
+				markers.append({"glyph": "✂", "tip": "%d segments, joined on save." % segs.size()})
+		"fork":
+			# A silent fork routes on arrival without a screen. Never on the player's map, which keeps
+			# a silent fork anonymous.
+			if not map_mode and JourneyData.fork_is_silent(item):
+				(
+					markers
+					. append(
+						{
+							"glyph": "🔇",
+							"tip": "Silent — routes on arrival. The player never sees this fork.",
+						}
+					)
+				)
+	return markers
+
+
+# Pins `markers` as small badges just above the node's top border at its right end, so they take none of
+# the node's own room. They sit on a plain Control laid over the node, because the node's own container
+# would stretch any direct child to fill it.
+func _add_marker_badges(panel: PanelContainer, markers: Array, accent: Color) -> void:
+	if markers.is_empty():
+		return
+	var layer: Control = Control.new()
+	layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(layer)
+	var strip: HBoxContainer = HBoxContainer.new()
+	strip.add_theme_constant_override("separation", 3)
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	strip.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	# Grows up and left from the node's top-right, its bottom resting just above the border.
+	strip.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	strip.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	strip.offset_bottom = -MARKER_BADGE_GAP - panel.get_theme_stylebox("panel").get_margin(SIDE_TOP)
+	strip.offset_top = strip.offset_bottom
+	strip.offset_right = -MARKER_BADGE_INSET
+	layer.add_child(strip)
+	for marker: Dictionary in markers:
+		strip.add_child(_marker_badge(str(marker["glyph"]), str(marker["tip"]), accent))
+
+
+func _marker_badge(glyph: String, tip: String, accent: Color) -> PanelContainer:
+	var badge: PanelContainer = PanelContainer.new()
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = Color(0.04, 0.0, 0.06, 1.0)
+	style.border_color = accent
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(4)
+	style.content_margin_left = 6
+	style.content_margin_right = 6
+	style.content_margin_top = 1
+	style.content_margin_bottom = 1
+	badge.add_theme_stylebox_override("panel", style)
+	# Hover explains it in the editor; the player's map lets the mouse through, as every node there does.
+	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE if map_mode else Control.MOUSE_FILTER_PASS
+	badge.tooltip_text = tip
+	var label: Label = Label.new()
+	label.text = glyph
+	label.add_theme_font_size_override("font_size", MARKER_GLYPH_SIZE)
+	label.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	badge.add_child(label)
+	return badge
 
 
 func _node_stylebox(accent: Color, selected: bool, terminal: bool = false) -> StyleBoxFlat:
@@ -1393,26 +1488,7 @@ func _type_sublabel(item: Dictionary) -> String:
 					rlabel = "BOSS ROUND"
 				"effect", "cursed", "blessed":
 					rlabel = "✦ EFFECT ROUND"
-			# (Checkpoints are their own node type now — no per-round marker.)
-			if item.get("is_warmup", false):
-				rlabel += "   ⏭ WARMUP"
-			# Pending-segments marker (editor only by construction: saved journeys never
-			# carry segment keys — the save consumes them into the media). One segment
-			# reads as the trim it is; several show the count instead of an unreadable
-			# list of windows.
-			var segs: Array = JourneyData.normalize_segments(item)
-			if segs.size() == 1:
-				var s: Dictionary = segs[0]
-				var s_out: int = int(s.get("out_ms", 0))
-				rlabel += (
-					"   ✂ %s–%s"
-					% [
-						JourneyData.ms_to_mmss(int(s.get("in_ms", 0))),
-						JourneyData.ms_to_mmss(s_out) if s_out > 0 else "END",
-					]
-				)
-			elif segs.size() > 1:
-				rlabel += "   ✂ %d SEGMENTS" % segs.size()
+			# Warmup and pending segments are badges on the node's edge (_node_markers), not text here.
 			return "%s   ♦ %d" % [rlabel, c] if c > 0 else rlabel
 		"shop":
 			return "SHOP"

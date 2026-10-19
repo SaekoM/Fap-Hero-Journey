@@ -113,6 +113,11 @@ func _apply_fork_layout(fork_data: Dictionary, backdrop: JourneyImage) -> void:
 		var path_data: Dictionary = _paths[i]
 		var name: String = str(path_data.get("name", "")).strip_edges()
 		var index: int = i
+		# A choice the player hasn't unlocked is placed, dimmed and unclickable, and says what it needs —
+		# the same thing its card's ✕ LOCKED says — so a painted door still reads as locked.
+		var lock_text: String = (
+			"🔒 " + _conditional_req_text(i, path_data) if _cond_locked(i, path_data) else ""
+		)
 		(
 			elements
 			. append(
@@ -128,6 +133,7 @@ func _apply_fork_layout(fork_data: Dictionary, backdrop: JourneyImage) -> void:
 					"run":
 					Callable(self, "_on_path_chosen").bind(index) if _is_selectable(i) else null,
 					"tooltip": _conditional_req_text(i, path_data),
+					"locked_text": lock_text,
 				}
 			)
 		)
@@ -278,11 +284,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 		col.add_child(cost_lbl)
 
 	var btn: Button = Button.new()
-	var cond_locked: bool = (
-		_resolution == "conditional"
-		and _cond_decider == "player"
-		and not _qualifies(index, path_data)
-	)
+	var cond_locked: bool = _cond_locked(index, path_data)
 	if _resolution == "sacrifice" and not sac_affordable:
 		btn.text = "✕ CAN'T AFFORD"
 		btn.disabled = true
@@ -408,14 +410,24 @@ func _resolve_timeout_index() -> int:
 	return ForkResolver.timeout_pick(_resolution, selectable, _timeout_path, _default_path, randi())
 
 
-# A path the auto-pick may land on: a sacrifice path must be affordable; others are always fair game.
+# A path the player can take (and the auto-pick may land on): a sacrifice path must be affordable, a
+# player-decided conditional one unlocked; others are always fair game.
 func _is_selectable(index: int) -> bool:
 	if index < 0 or index >= _paths.size():
 		return false
+	var p: Dictionary = _paths[index]
 	if _resolution == "sacrifice":
-		var p: Dictionary = _paths[index]
 		return _can_afford(int(p.get("cost", 0)), str(p.get("required_item", "")))
-	return true
+	return not _cond_locked(index, p)
+
+
+# A choice on a player-decided conditional fork whose requirement isn't met yet.
+func _cond_locked(index: int, path_data: Dictionary) -> bool:
+	return (
+		_resolution == "conditional"
+		and _cond_decider == "player"
+		and not _qualifies(index, path_data)
+	)
 
 
 # A small countdown pinned top-centre so the ticking clock is visible above the cards.
@@ -461,25 +473,17 @@ func _is_auto_resolved() -> bool:
 func _qualifies(index: int, path_data: Dictionary) -> bool:
 	if index == _default_path:
 		return true
-	match _cond_metric:
-		"score":
-			return ScoreService.LastRoundScore >= int(path_data.get("threshold", 0))
-		"coins":
-			return CoinService.Balance >= int(path_data.get("threshold", 0))
-		"item":
-			var req: String = str(path_data.get("required_item", ""))
-			return req != "" and InventoryService.OwnsItem(req)
-		"flag":
-			var rf: String = str(path_data.get("required_flag", ""))
-			return rf != "" and GameState.HasFlag(rf)
-		"counter":
-			# Each choice gates on its own counter (already resolved to the fork default when blank
-			# by GameState.CurrentFork); the fork-level name is a last-resort fallback.
-			var cn: String = str(path_data.get("cond_counter", ""))
-			if cn == "":
-				cn = _cond_counter
-			return GameState.CounterValue(cn) >= int(path_data.get("threshold", 0))
-	return true
+	var value: int = CoinService.Balance if _cond_metric == "coins" else ScoreService.LastRoundScore
+	var is_owned: Callable = (
+		Callable(GameState, "HasFlag")
+		if _cond_metric == "flag"
+		else Callable(InventoryService, "OwnsItem")
+	)
+	# Each choice gates on its own counter (already resolved to the fork default when blank by
+	# GameState.CurrentFork); the fork-level name is a last-resort fallback.
+	var counter_of: Callable = func(counter_name: String) -> int:
+		return GameState.CounterValue(counter_name if counter_name != "" else _cond_counter)
+	return ForkResolver.path_met(path_data, _cond_metric, value, is_owned, counter_of)
 
 
 # Requirement text for a conditional path's card, e.g. "SCORE ≥ 100" or

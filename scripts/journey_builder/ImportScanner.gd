@@ -243,40 +243,75 @@ static func collect_files_recursive(dir: String, out: PackedStringArray) -> void
 # Scans `dir` for every funscript whose base name (suffix stripped) matches `base`, classifying each
 # into the main stroke script, a secondary axis, or a vib channel — reusing the same suffix detection
 # as drag-routing. Returns {"funscript": String, "axis": Dictionary, "vib": Dictionary}; first match
-# wins per slot.
-static func find_sibling_scripts(dir: String, base: String) -> Dictionary:
+# wins per slot. Pass the same `listings` to several calls and each folder is listed only once — the
+# audit checks every round, and a saved journey keeps all its scripts in one pooled content/ folder.
+static func find_sibling_scripts(
+	dir: String, base: String, listings: Dictionary = {}
+) -> Dictionary:
 	var result: Dictionary = {"funscript": "", "axis": {}, "vib": {}, "estim": {}}
-	var base_low: String = base.to_lower()
-	var d: DirAccess = DirAccess.open(dir)
-	if d == null:
-		return result
-	d.list_dir_begin()
-	var fname: String = d.get_next()
-	while fname != "":
-		if (
-			not d.current_is_dir()
-			and fname.get_extension().to_lower() in JourneyData.FUNSCRIPT_EXTENSIONS
-		):
-			var full: String = "%s/%s" % [dir, fname]
-			if strip_script_suffix(full).to_lower() == base_low:
-				var vib_ch: String = detect_vib_channel(full)
-				var estim_ax: String = detect_estim_axis(full)
-				if vib_ch != "":
-					if not result["vib"].has(vib_ch):
-						result["vib"][vib_ch] = full
-				elif estim_ax != "":
-					if not result["estim"].has(estim_ax):
-						result["estim"][estim_ax] = full
-				else:
-					var axis: String = detect_funscript_axis(full)
-					if axis == "L0":
-						if result["funscript"] == "":
-							result["funscript"] = full
-					elif not result["axis"].has(axis):
-						result["axis"][axis] = full
-		fname = d.get_next()
-	d.list_dir_end()
+	for full: String in _funscripts_by_base(dir, listings).get(base.to_lower(), []):
+		var vib_ch: String = detect_vib_channel(full)
+		var estim_ax: String = detect_estim_axis(full)
+		if vib_ch != "":
+			if not result["vib"].has(vib_ch):
+				result["vib"][vib_ch] = full
+		elif estim_ax != "":
+			if not result["estim"].has(estim_ax):
+				result["estim"][estim_ax] = full
+		else:
+			var axis: String = detect_funscript_axis(full)
+			if axis == "L0":
+				if result["funscript"] == "":
+					result["funscript"] = full
+			elif not result["axis"].has(axis):
+				result["axis"][axis] = full
 	return result
+
+
+# A folder's funscripts grouped by base name (suffix stripped, lower-cased), in listing order — read once
+# per folder into `listings`, which callers share to avoid listing the same folder again.
+static func _funscripts_by_base(dir: String, listings: Dictionary) -> Dictionary:
+	if listings.has(dir):
+		return listings[dir]
+	var grouped: Dictionary = {}
+	var d: DirAccess = DirAccess.open(dir)
+	if d != null:
+		d.list_dir_begin()
+		var fname: String = d.get_next()
+		while fname != "":
+			if (
+				not d.current_is_dir()
+				and fname.get_extension().to_lower() in JourneyData.FUNSCRIPT_EXTENSIONS
+			):
+				var full: String = "%s/%s" % [dir, fname]
+				var key: String = strip_script_suffix(full).to_lower()
+				if not grouped.has(key):
+					grouped[key] = []
+				(grouped[key] as Array).append(full)
+			fname = d.get_next()
+		d.list_dir_end()
+	listings[dir] = grouped
+	return grouped
+
+
+# The secondary axes a round or pool entry carries scripts for: its own `axis_scripts` plus sibling
+# files next to its funscript — the same set the game loads (GameLoop._round_channel_scripts). Older
+# folder-shipped journeys often carry their axes only as siblings. `listings` as in find_sibling_scripts.
+static func scripted_axes(media: Dictionary, listings: Dictionary = {}) -> Array:
+	var axes: Array = []
+	var explicit: Dictionary = media.get("axis_scripts", {})
+	for axis: Variant in explicit:
+		if str(explicit[axis]) != "":
+			axes.append(str(axis))
+	var main: String = str(media.get("funscript_path", ""))
+	if main != "":
+		var sib: Dictionary = find_sibling_scripts(
+			main.get_base_dir(), strip_script_suffix(main), listings
+		)
+		for axis: Variant in sib["axis"]:
+			if not axes.has(str(axis)):
+				axes.append(str(axis))
+	return axes
 
 
 # Classifies an EXPLICIT list of funscript paths into {funscript, axis, vib, estim} using the SAME

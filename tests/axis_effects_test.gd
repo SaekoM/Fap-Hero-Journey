@@ -126,13 +126,56 @@ func test_without_it_the_named_twin_takes_its_place() -> void:
 	assert_bool(twin.has("substitute")).is_false()
 
 
-# The author's tuning survives the swap: a Stiffened turned down to ×0.5 becomes a stroke scale ×0.5,
-# not the catalog's Shrunken ×0.6.
-func test_the_twin_keeps_the_authors_linear_values() -> void:
-	var tuned: Dictionary = JourneyData.effect_entry("Stiffened").duplicate(true)
-	tuned["factor"] = 0.5
-	var twin: Dictionary = JourneyData.stroke_twin(tuned)
-	assert_float(float(twin["factor"])).is_equal_approx(0.5, 0.0001)
+# An authored axes scale with no named substitute passes on the axis scaled furthest from ×1, so a curse
+# stays a curse even when the author changed only one axis.
+func test_an_authored_scale_twin_takes_the_strongest_axis() -> void:
+	var tuned: Dictionary = {"kind": "axis_scale", "factor_L1": 0.9, "factor_R2": 1.8}
+	assert_float(float(JourneyData.stroke_twin(tuned)["factor"])).is_equal_approx(1.8, 0.0001)
+
+
+func test_an_authored_clamp_twin_takes_the_narrowest_band() -> void:
+	var band: Dictionary = {
+		"kind": "axis_clamp", "min_L1": 30, "max_L1": 70, "min_R1": 48, "max_R1": 58
+	}
+	var twin: Dictionary = JourneyData.stroke_twin(band)
+	assert_int(int(twin["min"])).is_equal(48)
+	assert_int(int(twin["max"])).is_equal(58)
+	assert_bool(twin.has("min_R1")).is_false()
+
+
+# A catalog effect plays its named substitute exactly as catalogued, whatever its own or tuned values
+# (owner, 2026-10-15): Stiffened is Shrunken's ×0.6, Braced is Choked's 40–60.
+func test_a_catalog_twin_plays_its_substitute_as_catalogued() -> void:
+	var stiffened: Dictionary = JourneyData.effect_entry("Stiffened").duplicate(true)
+	stiffened["factor_R2"] = 0.2  # tuned on the round
+	var shrunken: Dictionary = JourneyData.stroke_twin(stiffened)
+	assert_float(float(shrunken["factor"])).is_equal_approx(0.6, 0.0001)
+	var choked: Dictionary = JourneyData.stroke_twin(JourneyData.effect_entry("Braced"))
+	assert_int(int(choked["min"])).is_equal(40)
+	assert_int(int(choked["max"])).is_equal(60)
+	assert_bool(choked.has("rotary_min")).is_false()
+
+
+# ── Per-axis values ──────────────────────────────────────────────────────────
+
+
+# An axis's own value wins; without one, a turning axis falls back to the group `rotary_` value older
+# data carries, and everything else to the plain value — so a journey saved per group plays the same.
+func test_axis_values_fall_back_through_the_group_values() -> void:
+	var fx: Dictionary = {"factor": 0.6, "rotary_factor": 0.4, "factor_R2": 0.9}
+	assert_float(JourneyData.axis_value(fx, "factor", "R2")).is_equal_approx(0.9, 0.0001)
+	assert_float(JourneyData.axis_value(fx, "factor", "R0")).is_equal_approx(0.4, 0.0001)
+	assert_float(JourneyData.axis_value(fx, "factor", "L1")).is_equal_approx(0.6, 0.0001)
+	assert_float(JourneyData.axis_value({}, "max", "L2")).is_equal_approx(100.0, 0.0001)
+
+
+func test_a_new_axis_modifier_is_written_per_axis() -> void:
+	var scale: Dictionary = JourneyData.default_axis_modifier("axis_scale")
+	assert_float(float(scale["factor_L1"])).is_equal_approx(0.6, 0.0001)
+	assert_float(float(scale["factor_R1"])).is_equal_approx(0.4, 0.0001)
+	var band: Dictionary = JourneyData.default_axis_modifier("axis_clamp")
+	assert_int(int(band["min_R0"])).is_equal(45)
+	assert_int(int(band["max_L2"])).is_equal(60)
 
 
 # Raw kinds (boss forced modifiers, timeline windows) carry no catalog name, and swap by kind alone.
@@ -346,3 +389,16 @@ func test_a_shallow_stroke_still_makes_a_whole_loop() -> void:
 # Before the stroke has moved far enough to have a direction, roll stays at centre.
 func test_no_lean_before_the_stroke_has_a_direction() -> void:
 	assert_float(_circle(50.0, 0).y).is_equal_approx(50.0, 0.01)
+
+
+# On the device each axis reads its own value: pitch scaled alone leaves roll untouched.
+func test_one_axis_scaled_alone() -> void:
+	var fx: Array = [{"kind": "axis_scale", "factor_R2": 0.5}]
+	assert_float(_mod("R2", 100.0, fx)).is_equal_approx(75.0, 0.0001)
+	assert_float(_mod("R1", 100.0, fx)).is_equal_approx(100.0, 0.0001)
+
+
+func test_one_axis_clamped_alone() -> void:
+	var fx: Array = [{"kind": "axis_clamp", "min_L1": 40, "max_L1": 60}]
+	assert_float(_mod("L1", 100.0, fx)).is_equal_approx(60.0, 0.0001)
+	assert_float(_mod("L2", 100.0, fx)).is_equal_approx(100.0, 0.0001)

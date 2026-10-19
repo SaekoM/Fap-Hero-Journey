@@ -899,10 +899,59 @@ func _run_audit() -> Dictionary:
 				"round_lengths": round_lengths,
 				"round_score_bounds": round_score_bounds,
 				"round_length_bounds": round_length_bounds,
+				"journey_axes": _journey_axes(),
+				"tags": _journey_tags,
 			}
 		)
 	)
 	return _audit_result
+
+
+# Every secondary axis the journey carries a script for, in surge-to-pitch order: its rounds and pool
+# entries (sibling files included), the boss attacks in their timelines, and its own override items.
+# Built-in shop overrides don't count — a random shop can offer any of them, so they'd mark everything.
+func _journey_axes() -> Array:
+	var found: Dictionary = {}
+	var listings: Dictionary = {}  # each folder listed once, however many rounds live in it
+	for nid: String in _graph_model.get("nodes", {}):
+		var node: Dictionary = _graph_model["nodes"][nid]
+		if str(node.get("type", "")) != "round":
+			continue
+		var data: Dictionary = node.get("data", {})
+		var holders: Array = [data]
+		holders.append_array(data.get("pool_entries", []) as Array)
+		for holder: Variant in holders:
+			if not (holder is Dictionary):
+				continue
+			for axis: Variant in ImportScanner.scripted_axes(holder, listings):
+				found[str(axis)] = true
+			_note_attack_axes((holder as Dictionary).get("timeline", {}), found)
+	for it: Dictionary in _journey_items:
+		if str(it.get("category", "")) == "override":
+			var item_axes: Dictionary = (it.get("scripts", {}) as Dictionary).get("axes", {})
+			for axis: Variant in item_axes:
+				if str(item_axes[axis]) != "":
+					found[str(axis)] = true
+	var ordered: Array = []
+	for axis: String in JourneyData.AXIS_SUFFIXES:
+		if found.has(axis):
+			ordered.append(axis)
+	return ordered
+
+
+# Adds the axes a timeline's boss attacks carry scripts for to `found`.
+func _note_attack_axes(timeline: Variant, found: Dictionary) -> void:
+	if not (timeline is Dictionary):
+		return
+	for event: Variant in (timeline as Dictionary).get("events", []) as Array:
+		if not (event is Dictionary) or str(event.get("track", "")) != RoundTimeline.TRACK_ATTACK:
+			continue
+		var axes: Dictionary = ((event as Dictionary).get("scripts", {}) as Dictionary).get(
+			"axes", {}
+		)
+		for axis: Variant in axes:
+			if str(axes[axis]) != "":
+				found[str(axis)] = true
 
 
 # Baseline score + funscript length across a pool round's entries. The runtime rolls ONE entry
@@ -2382,7 +2431,7 @@ func _show_shortcuts_overlay() -> void:
 	if backdrop:
 		backdrop.gui_input.connect(
 			func(event: InputEvent) -> void:
-				if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+				if UITheme.is_backdrop_click(event):
 					modal.queue_free()
 		)
 
@@ -5297,7 +5346,6 @@ func _show_builder_prompt(
 	edit.placeholder_text = placeholder
 	UITheme.style_line_edit(edit)
 	vbox.add_child(edit)
-	edit.grab_focus()
 
 	var submit: Callable = func() -> void:
 		var value: String = edit.text.strip_edges()
@@ -5323,6 +5371,10 @@ func _show_builder_prompt(
 	ok_btn.pressed.connect(submit)
 	row.add_child(ok_btn)
 	add_child(modal)
+	# Ready to type the moment it opens. Deferred: a control can only take focus once it is in the tree,
+	# and a prompt opened from a dropdown item would otherwise lose it to the dropdown as its popup
+	# closes, leaving the author to click into the field first.
+	edit.grab_focus.call_deferred()
 
 
 # A manual rendition Save: write the overlay to disk, then finalize (return to the catalogue) like any

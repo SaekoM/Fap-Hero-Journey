@@ -860,9 +860,11 @@ func _attack_points(event: Dictionary) -> Array:
 	var main: String = str((event.get("scripts", {}) as Dictionary).get("main", ""))
 	if main == "":
 		return []
-	return JourneyData.apply_override_trim(
+	var slice: Array = JourneyData.apply_override_trim(
 		JourneyData.read_funscript_actions(main), event.get("trim", {})
 	)
+	# A looping attack repeats its slice for its whole block, so the curve does too.
+	return OverrideBundle.from_channels(slice).played_for(int(event.get("play_ms", 0))).main
 
 
 # An attack's stroke as it will actually be FELT: its own curve, put through any effect window it
@@ -1086,7 +1088,9 @@ func _on_event_resized(id: String, duration_ms: int) -> void:
 	# rather than just changing how wide the block looks, so what is drawn is what plays. The in-point is
 	# kept — only the out-point follows the drag.
 	var track: String = str(event.get("track", ""))
-	if track == RoundTimeline.TRACK_ATTACK or track == RoundTimeline.TRACK_AUDIO:
+	if track == RoundTimeline.TRACK_ATTACK and int(event.get("play_ms", 0)) > 0:
+		event["play_ms"] = length  # a looping attack repeats its slice; the edge sets how long for
+	elif track == RoundTimeline.TRACK_ATTACK or track == RoundTimeline.TRACK_AUDIO:
 		var trim: Dictionary = event.get("trim", {})
 		var in_ms: int = int(trim.get("in_ms", 0))
 		event["trim"] = {"in_ms": in_ms, "out_ms": in_ms + length}
@@ -1106,7 +1110,11 @@ func _on_event_head_dragged(id: String, at_ms: int) -> void:
 		return
 	_snapshot("resize:" + id)  # same tag as the other edge, so one gesture is one undo step
 	var track: String = str(event.get("track", ""))
-	var media: bool = track == RoundTimeline.TRACK_ATTACK or track == RoundTimeline.TRACK_AUDIO
+	# A looping attack is not cut by its edges — they set where it starts and how long it plays.
+	var looping: bool = track == RoundTimeline.TRACK_ATTACK and int(event.get("play_ms", 0)) > 0
+	var media: bool = (
+		not looping and (track == RoundTimeline.TRACK_ATTACK or track == RoundTimeline.TRACK_AUDIO)
+	)
 	var trim: Dictionary = event.get("trim", {})
 	var in_ms: int = int(trim.get("in_ms", 0))
 	var was_at: int = RoundTimeline.resolve_at_ms(event, _full_ms)
@@ -1126,6 +1134,8 @@ func _on_event_head_dragged(id: String, at_ms: int) -> void:
 	var new_at: int = maxi(0, was_at + moved)
 	event["at_ms"] = maxi(0, _full_ms - new_at) if from_end else new_at
 	event["duration_ms"] = maxi(0, was_long - moved)
+	if looping:
+		event["play_ms"] = int(event["duration_ms"])
 
 	if not media:
 		_refresh()  # nothing to cut into: a cast or effect window simply starts later
@@ -1243,6 +1253,7 @@ func _rebuild_inspector() -> void:
 			_add_override_reuse(event)
 			_add_script_field(event)
 			_add_immunity_toggle(event)
+			_add_play_length_field(event)
 		RoundTimeline.TRACK_CAST:
 			_add_character_fields(event)
 			_add_line_edit(event, "text", "Subtitle (optional)")
@@ -3331,6 +3342,37 @@ func _add_immunity_toggle(event: Dictionary) -> void:
 	_inspector.add_child(toggle)
 
 
+# How long the attack plays, as on an override item: 0 plays its slice once; longer repeats it. A looping
+# attack's block is as long as it plays, so dragging its right edge sets the play length rather than
+# cutting the script — the slice it repeats stays what it was.
+func _add_play_length_field(event: Dictionary) -> void:
+	var spin: SpinBox = _make_ms_spin(int(event.get("play_ms", 0)))
+	spin.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"0 plays the attack's slice once. Longer repeats it until the time is up; shorter cuts it off."
+		)
+	)
+	spin.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:play_ms")
+			event["play_ms"] = int(value)
+			# The block is as long as the attack plays: the play length when set, else its slice.
+			event["duration_ms"] = int(value) if int(value) > 0 else _attack_slice_ms(event)
+			_refresh()
+	)
+	_inspector.add_child(_labeled("Plays for (ms) — 0 = once", spin))
+
+
+# One pass of an attack: its trim window, else its whole main script.
+func _attack_slice_ms(event: Dictionary) -> int:
+	var trim: Dictionary = event.get("trim", {})
+	var out_ms: int = int(trim.get("out_ms", 0))
+	if out_ms > 0:
+		return maxi(0, out_ms - int(trim.get("in_ms", 0)))
+	return _funscript_length_ms(str((event.get("scripts", {}) as Dictionary).get("main", "")))
+
+
 # An attack can be built from an OVERRIDE ITEM the journey already defines, instead of re-dropping its
 # funscripts: the two carry the identical bundle shape, so this copies scripts + trim + immunity across.
 # A copy rather than a reference — editing the item later should not silently rewrite an encounter.
@@ -3565,6 +3607,7 @@ func _toggle_test(event: Dictionary) -> void:
 	var bundle: OverrideBundle = _build_attack_bundle(event)
 	if bundle == null or bundle.is_empty():
 		return
+	bundle = bundle.played_for(int(event.get("play_ms", 0)))
 	# The playhead sweeps from where the attack sits on the round's clock, so the test reads against the
 	# encounter rather than from zero.
 	_test_player.start(bundle, _timeline_view, RoundTimeline.resolve_at_ms(event, _full_ms))
@@ -3624,72 +3667,55 @@ func _add_effects_picker(event: Dictionary) -> void:
 		effects = []
 		event["effects"] = effects
 
-	var add_row: HBoxContainer = HBoxContainer.new()
-	add_row.add_theme_constant_override("separation", 8)
-	var picker: OptionButton = OptionButton.new()
-	_fill_effect_picker(picker)
-	add_row.add_child(picker)
 	var add_button: Button = Button.new()
 	add_button.text = "＋ ADD EFFECT"
+	add_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button_subtle(add_button, UITheme.PURPLE_MID, 10, 6, 11)
+	var add_effect: Callable = func(kind: Variant) -> void:
+		_snapshot("add-effect")
+		(event["effects"] as Array).append(_default_effect(str(kind)))
+		_refresh()
 	add_button.pressed.connect(
 		func() -> void:
-			# The kind rides on item metadata rather than an index, because separators occupy indices
-			# too and an offset lookup would silently pick the wrong effect.
-			var chosen: Variant = picker.get_selected_metadata()
-			if chosen == null:
-				return
-			_snapshot("add-effect")
-			(event["effects"] as Array).append(_default_effect(str(chosen)))
-			_refresh()
+			CatalogPicker.open(add_button, _window_effect_groups(), add_effect, "Search effects…")
 	)
-	add_row.add_child(add_button)
-	_inspector.add_child(_labeled("Effects applied for this window", add_row))
+	_inspector.add_child(_labeled("Effects applied for this window", add_button))
 	# The list sits UNDER its "add" row so a growing bundle pushes downwards into the inspector's own
 	# scroll, instead of shoving the picker further from where the author is reading.
 	for i: int in effects.size():
 		_inspector.add_child(_make_effect_row(event, i))
 
 
-# Grouped into the three things an effect can act on — the stroke, what you hear, what you see — so a
-# long flat list of kinds becomes something an author can scan. Separators are labels only; the real
-# selection travels as item METADATA, since separators take up indices of their own.
-func _fill_effect_picker(picker: OptionButton) -> void:
-	picker.add_separator("FUNSCRIPT")
+# What a window can apply, grouped for its add menu: the stroke's, the score's, the other axes', then what
+# you hear and what you see. A window may apply the same kind twice, so nothing is filtered out.
+func _window_effect_groups() -> Array:
+	var stroke: Array = []
+	var score: Array = []
+	var axes: Array = []
 	for kind: String in STROKE_EFFECT_KINDS:
-		picker.add_item(_effect_label(kind))
-		picker.set_item_metadata(picker.item_count - 1, kind)
-
-	var audio: Array[String] = []
-	var visual: Array[String] = []
-	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
-		var kind: String = str(entry.get("kind", ""))
-		if JourneyData.AUDIO_SENSORY_KINDS.has(kind):
-			audio.append(kind)
+		if JourneyData.is_axis_effect(kind):
+			axes.append(kind)
+		elif kind == "score_multiplier":
+			score.append(kind)
 		else:
-			visual.append(kind)
-
-	if not audio.is_empty():
-		picker.add_separator("AUDIO")
-		for kind: String in audio:
-			picker.add_item(_effect_label(kind))
-			picker.set_item_metadata(picker.item_count - 1, kind)
-	if not visual.is_empty():
-		picker.add_separator("VISUAL")
-		for kind: String in visual:
-			picker.add_item(_effect_label(kind))
-			picker.set_item_metadata(picker.item_count - 1, kind)
-	# A separator cannot be chosen, so start on the first real entry.
-	picker.selected = 1
+			stroke.append(kind)
+	return [
+		{"title": "Stroke", "entries": JourneyData.effect_kind_entries(stroke)},
+		{"title": "Score", "entries": JourneyData.effect_kind_entries(score)},
+		{"title": "Multi-axis", "entries": JourneyData.effect_kind_entries(axes)},
+		{
+			"title": "Audio",
+			"entries": JourneyData.effect_kind_entries(JourneyData.sensory_kinds(true))
+		},
+		{
+			"title": "Visual",
+			"entries": JourneyData.effect_kind_entries(JourneyData.sensory_kinds(false))
+		},
+	]
 
 
 static func _effect_label(kind: String) -> String:
-	if JourneyData.AXIS_EFFECT_LABELS.has(kind):
-		return str(JourneyData.AXIS_EFFECT_LABELS[kind]).to_upper()
-	for entry: Dictionary in JourneyData.SENSORY_CATALOG:
-		if str(entry.get("kind", "")) == kind:
-			return str(entry.get("name", kind)).to_upper()
-	return kind.to_upper()
+	return JourneyData.effect_kind_label(kind).to_upper()
 
 
 # A new effect's starting parameters. Mirrors the boss-modifier defaults so an effect authored here
@@ -3702,10 +3728,8 @@ static func _default_effect(kind: String) -> Dictionary:
 			return {"kind": "clamp", "min": 0, "max": 50}
 		"score_multiplier":
 			return {"kind": "score_multiplier", "factor": 2.0}
-		"axis_scale":
-			return {"kind": "axis_scale", "factor": 0.6, "rotary_factor": 0.4}
-		"axis_clamp":
-			return {"kind": "axis_clamp", "min": 40, "max": 60, "rotary_min": 45, "rotary_max": 55}
+		"axis_scale", "axis_clamp":
+			return JourneyData.default_axis_modifier(kind)
 		"pose":
 			return {"kind": "pose", "pitch": 25, "roll": 0}
 		"vortex":
@@ -3738,25 +3762,23 @@ func _make_effect_row(event: Dictionary, index: int) -> Control:
 	UITheme.style_label(name_label, UITheme.WHITE_SOFT, 11, true)
 	row.add_child(name_label)
 
-	# Parameter fields, by kind. Anything without parameters (reverse, block, blackout) shows none.
-	if effect.has("factor"):
-		row.add_child(_labeled("Factor", _make_float_spin(effect, "factor", 0.1, 5.0, 0.1)))
-	if effect.has("min"):
-		row.add_child(_labeled("Min", _make_float_spin(effect, "min", 0.0, 100.0, 1.0)))
-	if effect.has("max"):
-		row.add_child(_labeled("Max", _make_float_spin(effect, "max", 0.0, 100.0, 1.0)))
-	# An axis modifier's values for the turning axes (twist, roll, pitch); the plain ones above are surge
-	# and sway's.
-	if effect.has("rotary_factor"):
-		row.add_child(_labeled("Turns ×", _make_float_spin(effect, "rotary_factor", 0.1, 5.0, 0.1)))
-	if effect.has("rotary_min"):
-		row.add_child(
-			_labeled("Turns min", _make_float_spin(effect, "rotary_min", 0.0, 100.0, 1.0))
-		)
-	if effect.has("rotary_max"):
-		row.add_child(
-			_labeled("Turns max", _make_float_spin(effect, "rotary_max", 0.0, 100.0, 1.0))
-		)
+	# Parameter fields, by kind. Anything without parameters (reverse, block, blackout) shows none. An
+	# axes scale or clamp has a value per axis, which may still be stored per group in older windows.
+	if AxisEffectFields.is_per_axis_kind(kind):
+		var read: Callable = func(key: String) -> float:
+			return JourneyData.effect_param_value(effect, key, 0.0)
+		var write: Callable = func(key: String, value: Variant) -> void:
+			_snapshot("field:" + key)
+			effect[key] = value
+			_refresh_derived()
+		row.add_child(AxisEffectFields.build(kind, read, write))
+	else:
+		if effect.has("factor"):
+			row.add_child(_labeled("Factor", _make_float_spin(effect, "factor", 0.1, 5.0, 0.1)))
+		if effect.has("min"):
+			row.add_child(_labeled("Min", _make_float_spin(effect, "min", 0.0, 100.0, 1.0)))
+		if effect.has("max"):
+			row.add_child(_labeled("Max", _make_float_spin(effect, "max", 0.0, 100.0, 1.0)))
 	# Pose's tilts from centre, and the size of Vortex's circle.
 	if effect.has("pitch"):
 		row.add_child(_labeled("Pitch tilt", _make_float_spin(effect, "pitch", -50.0, 50.0, 1.0)))
@@ -3876,6 +3898,9 @@ func _sync_branch_view() -> void:
 # afterwards by dragging the block's edge.
 func _adopt_media_length(event: Dictionary, length_ms: int) -> void:
 	if length_ms <= 0:
+		return
+	if int(event.get("play_ms", 0)) > 0:
+		event["trim"] = {"in_ms": 0, "out_ms": length_ms}  # the new script loops for the same time
 		return
 	event["duration_ms"] = length_ms
 	event["trim"] = {"in_ms": 0, "out_ms": length_ms}

@@ -73,6 +73,21 @@ const BOSS_EFFECT_PARAMS: Array = [
 	"rotary_factor",
 	"rotary_min",
 	"rotary_max",
+	"factor_L1",
+	"factor_L2",
+	"factor_R0",
+	"factor_R1",
+	"factor_R2",
+	"min_L1",
+	"min_L2",
+	"min_R0",
+	"min_R1",
+	"min_R2",
+	"max_L1",
+	"max_L2",
+	"max_R0",
+	"max_R1",
+	"max_R2",
 	"pitch",
 	"roll",
 	"gain",
@@ -979,10 +994,9 @@ func _weighted_random_path(paths: Array) -> int:
 	return ForkResolver.weighted_pick(weights, randi() % total)
 
 
-# Resolves a conditional fork to a path index. Score/coins use tiered thresholds;
-# item checks ownership (not consumed); default path on no-match. The resolution
-# logic lives in ForkResolver.conditional_path (pure, tested) — here we just gather
-# the current score / coins / ownership.
+# Resolves a conditional fork to a path index: a random one of the paths whose condition is met, else the
+# default. Items are checked, not consumed. The resolution logic lives in ForkResolver.conditional_path
+# (pure, tested) — here we just gather the current score / coins / ownership and draw the random number.
 func _conditional_path(fork_data: Dictionary) -> int:
 	var metric: String = fork_data.get("cond_metric", "score")
 	# Flag metric: the "ownership" check is a flag-set check against GameState's run flags.
@@ -992,7 +1006,9 @@ func _conditional_path(fork_data: Dictionary) -> int:
 			metric,
 			int(fork_data.get("default_path", 0)),
 			0,
-			Callable(GameState, "HasFlag")
+			Callable(GameState, "HasFlag"),
+			Callable(),
+			randi()
 		)
 	# Counter: each choice gates on its OWN counter (paths carry the effective cond_counter, already
 	# resolved against the fork default in GameState.ParseFork), so it can't collapse to one scalar
@@ -1005,7 +1021,8 @@ func _conditional_path(fork_data: Dictionary) -> int:
 			int(fork_data.get("default_path", 0)),
 			0,
 			Callable(InventoryService, "OwnsItem"),
-			counter_of
+			counter_of,
+			randi()
 		)
 	# score / coins resolve by threshold against one scalar — only the source of the value differs.
 	var value: int
@@ -1019,7 +1036,9 @@ func _conditional_path(fork_data: Dictionary) -> int:
 		metric,
 		int(fork_data.get("default_path", 0)),
 		value,
-		Callable(InventoryService, "OwnsItem")
+		Callable(InventoryService, "OwnsItem"),
+		Callable(),
+		randi()
 	)
 
 
@@ -1113,6 +1132,8 @@ func _load_current_round() -> void:
 		_boss_progress_id = GameState.CurrentNodeId()
 	# After the pool draw (the drawn entry's media is the round's now), before anything names an effect.
 	_round_axis_context = _build_round_axis_context(round)
+	# Item effects still running — used between rounds, or lasting from the last one — follow THIS round.
+	InventoryService.ReexpressItemEffects()
 
 	var rtype: String = round.get("round_type", "normal")
 	_is_boss_round = rtype == "boss"
@@ -4310,7 +4331,9 @@ func _load_override_bundle(item: Dictionary) -> OverrideBundle:
 		)
 		if not pts.is_empty():
 			vibes[int(channel)] = pts
-	return OverrideBundle.from_channels(main, axes, vibes)
+	# How long it plays: longer than the (trimmed) script repeats it, shorter cuts it off, none plays it
+	# once as it always did.
+	return OverrideBundle.from_channels(main, axes, vibes).played_for(int(item.get("play_ms", 0)))
 
 
 # Per-frame while an override owns the device: advance its clock, keep the Handy buffer fed on that
@@ -5373,6 +5396,7 @@ func _set_muffle_fx_enabled(master: int, on: bool) -> void:
 # The Master bus is global — strip our effects when the run scene goes away so
 # the menu (or the next run) starts clean. Mirrors SensoryFX's bus hygiene.
 func _exit_tree() -> void:
+	InventoryService.SetEffectExpresser(Callable())  # this run's axis context leaves with it
 	# The journey's score is an autoload and would otherwise follow the player out to the menu, playing
 	# under music that belongs to a different owner. It ends with the run that authored it.
 	SettingMusic.stop()
@@ -5390,6 +5414,13 @@ func _exit_tree() -> void:
 			AudioServer.remove_bus_effect(master, i)
 	_muffle_lp = null
 	_muffle_amp = null
+
+
+# An item's effects as this player gets them in the current round: a multi-axis effect they can't feel
+# becomes its stroke twin, exactly as a round's own effects do (_resolve_gameplay_effects). Effects used
+# between rounds are expressed against the last round here, then again when the next one loads.
+func _express_item_effects(effects: Array) -> Array:
+	return JourneyData.express_effects(effects, _round_axis_context)
 
 
 func _show_hud(fade: bool = false) -> void:
@@ -5733,6 +5764,8 @@ func _connect_signals() -> void:
 	InventoryService.ActiveEffectsChanged.connect(_reconcile_hud_hide)
 	# Override items don't join the effect list — they seize the device via the takeover coordinator.
 	InventoryService.OverrideActivated.connect(_on_override_activated)
+	# Item effects go through the same per-round, per-device substitution as the round's own.
+	InventoryService.SetEffectExpresser(_express_item_effects)
 	# Every successful activation, for the encounter conditions that count item use.
 	InventoryService.connect("ItemActivated", _on_item_activated)
 	InventoryService.connect("ItemUsed", _on_item_used)
