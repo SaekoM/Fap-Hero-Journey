@@ -14,7 +14,8 @@ extends Control
 #
 # Edits apply straight to the live dictionary (the modal it replaced did the same), so DONE simply
 # closes. There is no cancel: nothing here is destructive except deleting a variant, which is one
-# click and visibly undone by adding another.
+# click and visibly undone by adding another. The one exception is a JUST-ADDED setting: left blank it
+# is dropped (the author was backing out), and left without a name it asks first, like a character.
 
 signal closed
 
@@ -30,6 +31,11 @@ const ZOOM_STEP: float = 0.05
 
 var _setting: Dictionary = {}
 var _selected: int = 0
+# A just-added setting is only kept if it leaves with a name (BuilderSidePanel drops it otherwise), so
+# closing one that has something in it but no name asks before throwing that away.
+var _is_new: bool = false
+var _name_edit: LineEdit = null
+var _confirming: bool = false
 
 var _preview: JourneyImage = null
 var _preview_frame: Control = null
@@ -40,10 +46,37 @@ var _music_test_btn: Button = null
 var _zoom_slider: HSlider = null
 
 
-func setup(setting: Dictionary) -> void:
+func setup(setting: Dictionary, is_new: bool = false) -> void:
 	_setting = setting
+	_is_new = is_new
 	_build_ui()
 	_refresh()
+
+
+# Nothing set at all — no name, no music, and still just the one untouched variant it started with. A
+# new setting closed like this was added by mistake or abandoned, so it is dropped without asking.
+static func is_blank(setting: Dictionary) -> bool:
+	if str(setting.get("name", "")).strip_edges() != "" or str(setting.get("bgm", "")) != "":
+		return false
+	var backgrounds: Array = setting.get("backgrounds", [])
+	if backgrounds.size() > 1:
+		return false
+	for bg: Variant in backgrounds:
+		if bg is Dictionary and not _untouched_background(bg):
+			return false
+	return true
+
+
+# A variant as ＋ ADD SETTING makes it: no art, no name, and the framing left at its defaults.
+static func _untouched_background(bg: Dictionary) -> bool:
+	return (
+		str(bg.get("path", "")) == ""
+		and str(bg.get("name", "")).strip_edges() == ""
+		and str(bg.get("image_fit", "")) == ""
+		and is_equal_approx(float(bg.get("focus_x", 0.5)), 0.5)
+		and is_equal_approx(float(bg.get("focus_y", 0.5)), 0.5)
+		and is_equal_approx(float(bg.get("zoom", 1.0)), 1.0)
+	)
 
 
 func _backgrounds() -> Array:
@@ -57,16 +90,52 @@ func _current() -> Dictionary:
 	return list[_selected]
 
 
-# ESC closes. Edits already went straight to the live setting, so this is the same as pressing DONE —
-# there is nothing held back that closing could discard.
+# ESC closes. Edits already went straight to the live setting, so this is the same as pressing DONE.
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not (event as InputEventKey).pressed:
 		return
 	if (event as InputEventKey).keycode != KEY_ESCAPE:
 		return
 	get_viewport().set_input_as_handled()
+	_request_close()
+
+
+# DONE and ESC both land here. A new setting with something in it but no name is about to be discarded,
+# so it asks; a blank one or any other closes at once, since every edit is already on the live setting.
+func _request_close() -> void:
+	if _confirming:
+		return
+	var unnamed: bool = str(_setting.get("name", "")).strip_edges() == ""
+	if _is_new and unnamed and not is_blank(_setting):
+		_confirm_discard_unnamed()
+		return
+	_close()
+
+
+func _close() -> void:
 	closed.emit()
 	queue_free()
+
+
+# Asks before a new, unnamed setting is thrown away (UITheme.show_name_or_discard).
+func _confirm_discard_unnamed() -> void:
+	_confirming = true
+	var keep: Callable = func() -> void:
+		_confirming = false
+		if is_instance_valid(_name_edit):
+			_name_edit.grab_focus()
+	var discard: Callable = func() -> void:
+		_confirming = false
+		_close()
+	UITheme.show_name_or_discard(
+		self,
+		(
+			"A setting needs a name to be kept — it's how a storyboard line picks it. Name this "
+			+ "one, or discard it?"
+		),
+		keep,
+		discard
+	)
 
 
 # ── Layout ──────────────────────────────────────────────────────────────────
@@ -134,6 +203,7 @@ func _build_setting_strip() -> Control:
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(v: String) -> void: _setting["name"] = v)
 	name_col.add_child(name_edit)
+	_name_edit = name_edit
 	strip.add_child(name_col)
 
 	var music_col: VBoxContainer = VBoxContainer.new()
@@ -279,11 +349,7 @@ func _build_side() -> Control:
 	var done: Button = Button.new()
 	done.text = "DONE"
 	UITheme.style_button(done, UITheme.CYAN)
-	done.pressed.connect(
-		func() -> void:
-			closed.emit()
-			queue_free()
-	)
+	done.pressed.connect(_request_close)
 	side.add_child(done)
 	return side
 

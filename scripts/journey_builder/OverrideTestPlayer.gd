@@ -21,6 +21,9 @@ var _bundle: OverrideBundle = null
 # timeline (BossTimeline). A narrower type would exclude it for no benefit.
 var _timeline: Control = null
 var _trim_in_ms: int = 0  # playhead offset: the slice plays rebased to 0 but sweeps the lit window
+# One pass's length when the timeline shows a single pass of a looping bundle: the playhead wraps back to
+# the window's start on each repeat. 0 sweeps straight through.
+var _wrap_ms: int = 0
 var _start_ticks: int = 0  # wall-clock at play start; elapsed is read from it so it can't drift slow
 var _duration_ms: int = 1
 var _handy: bool = false
@@ -37,14 +40,16 @@ func is_playing() -> bool:
 	return _bundle != null
 
 
-# Starts playback of `bundle`, sweeping `timeline`'s playhead across the trimmed window from `trim_in_ms`.
-func start(bundle: OverrideBundle, timeline: Control, trim_in_ms: int) -> void:
+# Starts playback of `bundle`, sweeping `timeline`'s playhead across the trimmed window from `trim_in_ms` —
+# wrapping every `wrap_ms` when the timeline shows one pass of a looping bundle.
+func start(bundle: OverrideBundle, timeline: Control, trim_in_ms: int, wrap_ms: int = 0) -> void:
 	stop()
 	if bundle == null or bundle.is_empty():
 		return
 	_bundle = bundle
 	_timeline = timeline
 	_trim_in_ms = trim_in_ms
+	_wrap_ms = maxi(0, wrap_ms)
 	_duration_ms = maxi(1, bundle.duration_ms)
 	_start_ticks = Time.get_ticks_msec()
 
@@ -90,7 +95,7 @@ func _process(_delta: float) -> void:
 	if _handy:
 		HandyService.feed(ms)
 	if is_instance_valid(_timeline):
-		_timeline.set_playhead(_trim_in_ms + ms)
+		_timeline.set_playhead(_trim_in_ms + (ms % _wrap_ms if _wrap_ms > 0 else ms))
 	if ms >= _duration_ms:
 		stop()
 

@@ -152,7 +152,13 @@
 		"price":             30,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/the_undertow/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/the_undertow/main.funscript",
+			"axes": {
+				"L1": "res://data/overrides/the_undertow/main.surge.funscript",
+				"R2": "res://data/overrides/the_undertow/main.pitch.funscript"
+			}
+		}
 	},
 	{
 		"id":                "live_wire",
@@ -162,7 +168,14 @@
 		"price":             50,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/live_wire/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/live_wire/main.funscript",
+			"axes": {
+				"L1": "res://data/overrides/live_wire/main.surge.funscript",
+				"R0": "res://data/overrides/live_wire/main.twist.funscript",
+				"R2": "res://data/overrides/live_wire/main.pitch.funscript"
+			}
+		}
 	},
 	{
 		"id":                "full_throttle",
@@ -172,7 +185,13 @@
 		"price":             45,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/full_throttle/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/full_throttle/main.funscript",
+			"axes": {
+				"L1": "res://data/overrides/full_throttle/main.surge.funscript",
+				"R2": "res://data/overrides/full_throttle/main.pitch.funscript"
+			}
+		}
 	},
 	{
 		"id":                "the_sweet_spot",
@@ -182,7 +201,13 @@
 		"price":             40,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/the_sweet_spot/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/the_sweet_spot/main.funscript",
+			"axes": {
+				"R0": "res://data/overrides/the_sweet_spot/main.twist.funscript",
+				"R1": "res://data/overrides/the_sweet_spot/main.roll.funscript"
+			}
+		}
 	},
 	{
 		"id":                "clockwork",
@@ -192,7 +217,12 @@
 		"price":             35,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/clockwork/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/clockwork/main.funscript",
+			"axes": {
+				"R0": "res://data/overrides/clockwork/main.twist.funscript"
+			}
+		}
 	},
 	{
 		"id":                "smooth_operator",
@@ -202,7 +232,14 @@
 		"price":             35,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/smooth_operator/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/smooth_operator/main.funscript",
+			"axes": {
+				"R0": "res://data/overrides/smooth_operator/main.twist.funscript",
+				"R1": "res://data/overrides/smooth_operator/main.roll.funscript",
+				"R2": "res://data/overrides/smooth_operator/main.pitch.funscript"
+			}
+		}
 	},
 	{
 		"id":                "head_rush",
@@ -212,6 +249,112 @@
 		"price":             55,
 		"immune_to_effects": true,
 		"duration_ms":  15000,
-		"scripts":           { "main": "res://data/overrides/head_rush/main.funscript" }
+		"scripts":           {
+			"main": "res://data/overrides/head_rush/main.funscript",
+			"axes": {
+				"L2": "res://data/overrides/head_rush/main.sway.funscript",
+				"R1": "res://data/overrides/head_rush/main.roll.funscript",
+				"R2": "res://data/overrides/head_rush/main.pitch.funscript"
+			}
+		}
+	},
+	{
+		"id":                "corkscrew",
+		"name":              "Corkscrew",
+		"description":       "Full strokes that wind one way and unwind on the way back.",
+		"category":          "override",
+		"price":             60,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           {
+			"main": "res://data/overrides/corkscrew/main.funscript",
+			"axes": {
+				"L1": "res://data/overrides/corkscrew/main.surge.funscript",
+				"R0": "res://data/overrides/corkscrew/main.twist.funscript",
+				"R2": "res://data/overrides/corkscrew/main.pitch.funscript"
+			}
+		}
+	},
+	{
+		"id":                "cowgirl",
+		"name":              "Cowgirl",
+		"description":       "Riding on top — rocking hips and short, eager strokes.",
+		"category":          "override",
+		"price":             55,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           {
+			"main": "res://data/overrides/cowgirl/main.funscript",
+			"axes": {
+				"L1": "res://data/overrides/cowgirl/main.surge.funscript",
+				"R2": "res://data/overrides/cowgirl/main.pitch.funscript"
+			}
+		}
+	},
+	{
+		"id":                "figure_eight",
+		"name":              "Figure Eight",
+		"description":       "Measured strokes on a looping, figure-eight path.",
+		"category":          "override",
+		"price":             60,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           {
+			"main": "res://data/overrides/figure_eight/main.funscript",
+			"axes": {
+				"R0": "res://data/overrides/figure_eight/main.twist.funscript",
+				"R1": "res://data/overrides/figure_eight/main.roll.funscript",
+				"R2": "res://data/overrides/figure_eight/main.pitch.funscript"
+			}
+		}
+	},
+	{
+		"id":                "grind",
+		"name":              "Grind",
+		"description":       "Stays down deep and grinds, hips rolling.",
+		"category":          "override",
+		"price":             55,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           {
+			"main": "res://data/overrides/grind/main.funscript",
+			"axes": {
+				"L1": "res://data/overrides/grind/main.surge.funscript",
+				"R0": "res://data/overrides/grind/main.twist.funscript",
+				"R2": "res://data/overrides/grind/main.pitch.funscript"
+			}
+		}
+	},
+	{
+		"id":                "the_pendulum",
+		"name":              "The Pendulum",
+		"description":       "Slow strokes that swing from side to side.",
+		"category":          "override",
+		"price":             45,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           {
+			"main": "res://data/overrides/the_pendulum/main.funscript",
+			"axes": {
+				"L2": "res://data/overrides/the_pendulum/main.sway.funscript",
+				"R1": "res://data/overrides/the_pendulum/main.roll.funscript"
+			}
+		}
+	},
+	{
+		"id":                "riptide",
+		"name":              "Riptide",
+		"description":       "Fast strokes that drag you one way, then the other.",
+		"category":          "override",
+		"price":             60,
+		"immune_to_effects": true,
+		"duration_ms":  15000,
+		"scripts":           {
+			"main": "res://data/overrides/riptide/main.funscript",
+			"axes": {
+				"L2": "res://data/overrides/riptide/main.sway.funscript",
+				"R1": "res://data/overrides/riptide/main.roll.funscript"
+			}
+		}
 	}
 ]

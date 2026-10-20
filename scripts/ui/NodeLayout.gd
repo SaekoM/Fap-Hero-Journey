@@ -19,6 +19,8 @@ extends RefCounted
 # Where an essential-but-unplaced element goes, and how far each subsequent one is nudged so two of
 # them do not land on top of each other.
 const FALLBACK_STEP: float = 0.14
+# How far a locked choice is dimmed: still readable, plainly not available.
+const LOCKED_TINT: Color = Color(1, 1, 1, 0.55)
 
 
 # `elements` is [{key, label, accent, run, optional}]. Returns the controls it drew, keyed by element —
@@ -108,6 +110,9 @@ static func _make_hotspot(backdrop: JourneyImage, slot: Dictionary, element: Dic
 		content["label"] = ""
 		content["sub"] = ""
 	button.add_child(make_hotspot_content(content, text_color))
+	# A locked choice is dimmed as well as unclickable, and keeps its lock line even on an art-only slot.
+	if str(element.get("locked_text", "")) != "":
+		button.modulate = LOCKED_TINT
 	if element.get("run", null) is Callable:
 		button.pressed.connect(element["run"] as Callable)
 	else:
@@ -167,6 +172,11 @@ static func make_hotspot_content(element: Dictionary, color: Color) -> Control:
 	if sub != "":
 		# Dimmed rather than a different colour: it is the same voice, said quieter.
 		box.add_child(_hotspot_line(sub, Color(color.r, color.g, color.b, 0.78), 11, 3))
+	# What a locked choice still needs ("🔒 REQUIRES KEY"). Not a label, so a slot that hides its label
+	# still shows it.
+	var locked: String = str(element.get("locked_text", ""))
+	if locked != "":
+		box.add_child(_hotspot_line(locked, UITheme.AMBER, 12, 4))
 	return holder
 
 

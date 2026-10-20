@@ -1251,6 +1251,16 @@ static func _parse_boss_modifier(raw_mod: Dictionary) -> Dictionary:
 		mod["min"] = raw_mod.get("Min", raw_mod.get("min", 0))
 	if raw_mod.has("Max") or raw_mod.has("max"):
 		mod["max"] = raw_mod.get("Max", raw_mod.get("max", 100))
+	# A multi-axis modifier's other values — its group and per-axis values, Pose's tilts, Vortex's circle —
+	# listed like the rest, or they'd be dropped.
+	var axis_keys: Array = ["rotary_factor", "rotary_min", "rotary_max", "pitch", "roll", "gain"]
+	for axis: String in JourneyData.SECONDARY_AXES:
+		for base: String in JourneyData.AXIS_PARAM_DEFAULTS:
+			axis_keys.append(JourneyData.axis_key(base, axis))
+	for key: String in axis_keys:
+		var pascal: String = key.to_pascal_case()
+		if raw_mod.has(pascal) or raw_mod.has(key):
+			mod[key] = raw_mod.get(pascal, raw_mod.get(key))
 	return mod
 
 

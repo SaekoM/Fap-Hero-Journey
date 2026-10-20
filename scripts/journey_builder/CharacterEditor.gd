@@ -674,52 +674,25 @@ func _close() -> void:
 	queue_free()
 
 
-# Keep-editing leads and puts the cursor in the name field, since a name is the one thing missing;
-# DISCARD is the explicit way to say the add was a mistake. Same shape as the encounter editor's.
+# Asks before a new, unnamed character is thrown away (UITheme.show_name_or_discard).
 func _confirm_discard_unnamed() -> void:
 	_confirming = true
-	var parts: Dictionary = UITheme.build_centered_modal(
-		"NO NAME YET", UITheme.DANGER, Vector2i(520, 240)
+	var keep: Callable = func() -> void:
+		_confirming = false
+		if is_instance_valid(_name_edit):
+			_name_edit.grab_focus()
+	var discard: Callable = func() -> void:
+		_confirming = false
+		_close()
+	UITheme.show_name_or_discard(
+		self,
+		(
+			"A character needs a name to be kept — it's how a line's speaker finds them. Name this "
+			+ "one, or discard it?"
+		),
+		keep,
+		discard
 	)
-	var confirm: Control = parts["modal"]
-	var column: VBoxContainer = parts["vbox"]
-
-	var message: Label = Label.new()
-	message.text = "A character needs a name to be kept — it's how a line's speaker finds them. Name this one, or discard it?"
-	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	message.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	UITheme.style_label(message, UITheme.WHITE_SOFT, 13)
-	column.add_child(message)
-
-	var buttons: HBoxContainer = HBoxContainer.new()
-	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
-	buttons.add_theme_constant_override("separation", 12)
-
-	var keep: Button = Button.new()
-	keep.text = "NAME IT"
-	UITheme.style_button(keep, UITheme.PURPLE_BRIGHT)
-	keep.pressed.connect(
-		func() -> void:
-			_confirming = false
-			confirm.queue_free()
-			if is_instance_valid(_name_edit):
-				_name_edit.grab_focus()
-	)
-	buttons.add_child(keep)
-
-	var discard: Button = Button.new()
-	discard.text = "DISCARD"
-	UITheme.style_button(discard, UITheme.DANGER)
-	discard.pressed.connect(
-		func() -> void:
-			_confirming = false
-			confirm.queue_free()
-			_close()
-	)
-	buttons.add_child(discard)
-	column.add_child(buttons)
-	add_child(confirm)
 
 
 func _label(text: String) -> Label:

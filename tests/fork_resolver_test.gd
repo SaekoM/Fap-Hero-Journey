@@ -34,114 +34,94 @@ func test_weighted_pick_skips_zero_weights() -> void:
 	assert_int(ForkResolver.weighted_pick([0, 0, 3], 2)).is_equal(2)
 
 
-# ── conditional_path: score / coins thresholds ──────────────────────────────
-
-
-func test_conditional_highest_met_threshold_wins() -> void:
-	var paths := [{"threshold": 0}, {"threshold": 100}, {"threshold": 200}]
-	assert_int(ForkResolver.conditional_path(paths, "score", 0, 150, _owns([]))).is_equal(1)
-	assert_int(ForkResolver.conditional_path(paths, "score", 0, 250, _owns([]))).is_equal(2)
-	assert_int(ForkResolver.conditional_path(paths, "score", 0, 50, _owns([]))).is_equal(0)
-
-
-# The coins metric runs the same threshold path (value is supplied by the caller).
-func test_conditional_coins_metric_uses_thresholds() -> void:
-	var paths := [{"threshold": 0}, {"threshold": 50}]
-	assert_int(ForkResolver.conditional_path(paths, "coins", 0, 75, _owns([]))).is_equal(1)
-	assert_int(ForkResolver.conditional_path(paths, "coins", 0, 25, _owns([]))).is_equal(0)
-
-
-# No path's threshold met → the (clamped) default path.
-func test_conditional_no_match_uses_default() -> void:
-	var paths := [{"threshold": 100}, {"threshold": 200}]
-	assert_int(ForkResolver.conditional_path(paths, "score", 1, 50, _owns([]))).is_equal(1)
-	# default_path out of range is clamped into bounds.
-	assert_int(ForkResolver.conditional_path(paths, "score", 99, 50, _owns([]))).is_equal(1)
-
-
-# ── conditional_path: item ownership ────────────────────────────────────────
-
-
-func test_conditional_item_picks_first_owned() -> void:
-	var paths := [{"required_item": ""}, {"required_item": "key"}, {"required_item": "gem"}]
-	assert_int(ForkResolver.conditional_path(paths, "item", 0, 0, _owns(["gem"]))).is_equal(2)
-	assert_int(ForkResolver.conditional_path(paths, "item", 0, 0, _owns(["key", "gem"]))).is_equal(
-		1
-	)
-	assert_int(ForkResolver.conditional_path(paths, "item", 0, 0, _owns([]))).is_equal(0)  # default
-
-
-# ── conditional_path: per-path counter gates ────────────────────────────────
+# ── conditional_path: a random one of the met paths ──────────────────────────
+# Every metric picks among ALL the paths whose condition is met, with equal odds (owner, 2026-10-17);
+# `r` is the caller's draw, r mod the met count indexing the met paths in order.
 
 
 # Builds a counter_of Callable backed by a fixed {name: value} map (missing counter = 0).
 func _counters(values: Dictionary) -> Callable:
-	return func(name: String) -> int: return int(values.get(name, 0))
+	return func(counter_name: String) -> int: return int(values.get(counter_name, 0))
 
 
-# Each choice gates on ITS OWN counter; among the satisfied choices the highest threshold wins.
-func test_conditional_counter_per_path() -> void:
+func _pick(paths: Array, metric: String, value: int, r: int, owned: Array = []) -> int:
+	return ForkResolver.conditional_path(paths, metric, 0, value, _owns(owned), Callable(), r)
+
+
+# Several thresholds met: any of them can come up — no longer always the highest.
+func test_any_met_threshold_can_be_picked() -> void:
+	var paths := [{"threshold": 0}, {"threshold": 100}, {"threshold": 200}]
+	assert_int(_pick(paths, "score", 250, 0)).is_equal(0)
+	assert_int(_pick(paths, "score", 250, 1)).is_equal(1)
+	assert_int(_pick(paths, "score", 250, 2)).is_equal(2)
+	# Only the ≥0 and ≥100 paths are met at 150, so the draw cycles between those two.
+	assert_int(_pick(paths, "score", 150, 2)).is_equal(0)
+	assert_int(_pick(paths, "score", 150, 3)).is_equal(1)
+
+
+func test_coins_use_the_same_rule() -> void:
+	var paths := [{"threshold": 50}, {"threshold": 0}]
+	assert_int(_pick(paths, "coins", 25, 0)).is_equal(1)  # only ≥0 is met
+	assert_int(_pick(paths, "coins", 75, 0)).is_equal(0)
+
+
+# Several unlocked flags: a random one, not the first — the bug that made one path win every time.
+func test_any_unlocked_flag_can_be_picked() -> void:
+	var paths := [
+		{"required_flag": "met_a"}, {"required_flag": "met_b"}, {"required_flag": "met_c"}
+	]
+	var owned: Array = ["met_a", "met_c"]
+	assert_int(_pick(paths, "flag", 0, 0, owned)).is_equal(0)
+	assert_int(_pick(paths, "flag", 0, 1, owned)).is_equal(2)
+
+
+func test_any_owned_item_path_can_be_picked() -> void:
+	var paths := [{"required_item": ""}, {"required_item": "key"}, {"required_item": "gem"}]
+	assert_int(_pick(paths, "item", 0, 0, ["key", "gem"])).is_equal(1)
+	assert_int(_pick(paths, "item", 0, 1, ["key", "gem"])).is_equal(2)
+	# A path naming no item is never met — it only comes up as the default.
+	assert_int(_pick(paths, "item", 0, 5, ["gem"])).is_equal(2)
+
+
+# Each choice gates on ITS OWN counter.
+func test_counter_paths_gate_on_their_own_counter() -> void:
 	var paths := [
 		{"cond_counter": "prod", "threshold": 2},
 		{"cond_counter": "test", "threshold": 3},
 	]
-	# Both met → the higher threshold (test ≥ 3) wins.
-	(
-		assert_int(
-			ForkResolver.conditional_path(
-				paths, "counter", 0, 0, _owns([]), _counters({"prod": 5, "test": 4})
-			)
-		)
-		. is_equal(1)
+	var both: Callable = _counters({"prod": 5, "test": 4})
+	assert_int(ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), both, 0)).is_equal(
+		0
 	)
-	# Only prod met → the prod choice.
+	assert_int(ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), both, 1)).is_equal(
+		1
+	)
+	var only_prod: Callable = _counters({"prod": 2, "test": 0})
 	(
-		assert_int(
-			ForkResolver.conditional_path(
-				paths, "counter", 0, 0, _owns([]), _counters({"prod": 2, "test": 0})
-			)
-		)
+		assert_int(ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), only_prod, 1))
 		. is_equal(0)
 	)
-	# Neither met → the (clamped) default path, not a fallthrough — default 1 proves it.
-	(
-		assert_int(
-			ForkResolver.conditional_path(
-				paths, "counter", 1, 0, _owns([]), _counters({"prod": 1, "test": 2})
-			)
-		)
-		. is_equal(1)
-	)
 
 
-# A single shared counter across paths preserves the legacy "highest met threshold wins" tiering,
-# so migrating an old single-counter fork to the per-path model doesn't change its resolution.
-func test_conditional_counter_shared_is_tiered() -> void:
-	var paths := [
-		{"cond_counter": "belt", "threshold": 0},
-		{"cond_counter": "belt", "threshold": 5},
-		{"cond_counter": "belt", "threshold": 10},
+# Nothing met → the default path, clamped into range.
+func test_nothing_met_uses_the_default() -> void:
+	var paths := [{"threshold": 100}, {"threshold": 200}]
+	assert_int(ForkResolver.conditional_path(paths, "score", 1, 50, _owns([]))).is_equal(1)
+	assert_int(ForkResolver.conditional_path(paths, "score", 99, 50, _owns([]))).is_equal(1)
+	var counters: Callable = _counters({"prod": 1})
+	var gated := [
+		{"cond_counter": "prod", "threshold": 2}, {"cond_counter": "prod", "threshold": 3}
 	]
 	(
-		assert_int(
-			ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), _counters({"belt": 7}))
-		)
+		assert_int(ForkResolver.conditional_path(gated, "counter", 1, 0, _owns([]), counters, 7))
 		. is_equal(1)
 	)
-	(
-		assert_int(
-			ForkResolver.conditional_path(
-				paths, "counter", 0, 0, _owns([]), _counters({"belt": 12})
-			)
-		)
-		. is_equal(2)
-	)
-	(
-		assert_int(
-			ForkResolver.conditional_path(paths, "counter", 0, 0, _owns([]), _counters({"belt": 3}))
-		)
-		. is_equal(0)
-	)
+
+
+# A negative draw still lands on a met path.
+func test_a_negative_draw_is_tolerated() -> void:
+	var paths := [{"threshold": 0}, {"threshold": 0}]
+	assert_int(_pick(paths, "score", 10, -1)).is_equal(1)
 
 
 func test_conditional_empty_paths() -> void:

@@ -13,6 +13,10 @@ func _pts(pairs: Array) -> Array:
 	return out
 
 
+func _pt(at_ms: float, pos: float) -> Vector2:
+	return Vector2(at_ms, pos)
+
+
 func _bundle(duration_ms: int) -> OverrideBundle:
 	return OverrideBundle.from_channels(_pts([[0, 0], [duration_ms, 100]]))
 
@@ -126,3 +130,59 @@ func test_session_carries_source() -> void:
 	var session := OverrideSession.new()
 	session.begin(_bundle(1000), false, "boss_attack")
 	assert_str(session.source()).is_equal("boss_attack")
+
+
+# ── played_for (looping) ─────────────────────────────────────────────────────
+
+
+# A stroke 0 → 100 over a second, played for 2.5 s: three passes, each starting low again — the seam jumps
+# (100 → 0), so both points are kept — and cut at 2.5 s halfway up the third.
+func test_played_for_repeats_and_cuts() -> void:
+	var b := OverrideBundle.from_channels([_pt(0, 0), _pt(1000, 100)]).played_for(2500)
+	assert_int(b.duration_ms).is_equal(2500)
+	(
+		assert_array(b.main)
+		. is_equal(
+			[
+				_pt(0, 0),
+				_pt(1000, 100),
+				_pt(1000, 0),
+				_pt(2000, 100),
+				_pt(2000, 0),
+				_pt(2500, 50),
+			]
+		)
+	)
+
+
+# A pass that ends where the next begins — same time, same position — drops the duplicate.
+func test_a_seamless_loop_loses_the_duplicate_point() -> void:
+	var b := OverrideBundle.from_channels([_pt(0, 50), _pt(500, 90), _pt(1000, 50)]).played_for(
+		2000
+	)
+	assert_array(b.main).is_equal(
+		[_pt(0, 50), _pt(500, 90), _pt(1000, 50), _pt(1500, 90), _pt(2000, 50)]
+	)
+
+
+# Shorter than the script: cut off, ending where the curve would have been.
+func test_played_for_shorter_cuts_off() -> void:
+	var b := OverrideBundle.from_channels([_pt(0, 0), _pt(1000, 100)]).played_for(400)
+	assert_int(b.duration_ms).is_equal(400)
+	assert_array(b.main).is_equal([_pt(0, 0), _pt(400, 40)])
+
+
+# Channels repeat together on the LONGEST channel's length, so a short axis keeps its place against the
+# stroke on every pass instead of drifting.
+func test_channels_loop_on_one_length() -> void:
+	var b := (
+		OverrideBundle
+		. from_channels([_pt(0, 0), _pt(1000, 100)], {"R0": [_pt(0, 50), _pt(400, 80)]})
+		. played_for(2000)
+	)
+	assert_array(b.axes["R0"]).is_equal([_pt(0, 50), _pt(400, 80), _pt(1000, 50), _pt(1400, 80)])
+
+
+func test_no_play_length_leaves_the_bundle_alone() -> void:
+	var b := OverrideBundle.from_channels([_pt(0, 0), _pt(1000, 100)])
+	assert_object(b.played_for(0)).is_same(b)

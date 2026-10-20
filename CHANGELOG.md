@@ -1,5 +1,151 @@
 # Changelog
 
+## v0.9.0
+
+### ◆ Curses for the other axes
+
+Seven new effects work on the axes beyond the stroke — surge, sway, twist, roll and pitch. Five reshape
+whatever those axes are already doing, the way the stroke curses reshape the stroke:
+
+- **Stiffened** — the axes move less far.
+- **Braced** — the axes are held close to centre.
+- **Contrary** — the axes move the opposite way, easing through centre as Inverted does.
+- **Stilled** — the axes freeze where they are.
+- **Limber** *(blessing)* — the axes swing wider.
+
+Two create motion of their own, so they work even on a video with no axis scripts:
+
+- **Posed** — roll and pitch are held at a tilt for the round, whatever the video does. The author sets
+  the pitch and roll tilts.
+- **Vortex** *(blessing)* — roll and pitch trace a circle once with every stroke: pitched one way at the
+  top, leaning to one side on the way down, pitched the other way at the bottom, the other side on the
+  way up. The twist turns with the stroke, taking over from Auto Twist while it lasts. Only axes the
+  video leaves unscripted join in, and the author sets the circle's size.
+
+Twist, roll and pitch get stronger values than surge and sway, which are easier to feel, and authors can
+tune **each axis on its own** — Stiffened can lock the twist while barely touching surge, Braced can hold
+pitch tight and leave sway loose. Contrary, Posed and Vortex ease in and out rather than snapping the
+device to a new angle. All of them can go on effect rounds, on a boss as forced modifiers, in a boss's
+timeline windows and on custom items, and they act on Auto Twist as well as on scripted axes — never on
+restim.
+
+A curse you can't feel is no curse, so a player whose device (see *Your device*) lacks the axes an effect
+needs gets the stroke version instead: Shrunken, Choked, Inverted, Numbed or Surge, with Posed becoming
+Choked and Vortex becoming Surge. A scale or clamp an author set up per axis on a boss, a timeline window
+or an item passes on its strongest axis — the one scaled furthest, or held in the narrowest band. The
+effect card names what you actually get, and an item follows the round it's used in. The builder says so
+under each effect — louder when the round has no axis scripts at all — and the audit lists every round
+that uses them. The audit also reminds you to add the **Multi-Axis** tag when a journey has scripts for
+other axes but isn't tagged, and flags the tag on a journey with nothing behind it.
+
+### ◆ Multi-axis overrides
+
+Every built-in override now moves more than the stroke, with its own surge, sway, twist, roll or pitch to
+match its character:
+
+- **The Undertow** — pitch and surge pull to one side in time with every stroke.
+- **Live Wire** — slow, wide sweeps of twist, surge and pitch under the buzz.
+- **Full Throttle** — pitch rocks through its full range with every stroke, and surge pushes with it.
+- **The Sweet Spot** — the twist turns with every stroke while roll rocks slowly at half time.
+- **Clockwork** — the twist ratchets round in even steps, one click per stroke.
+- **Smooth Operator** — pitch rises with each stroke while roll and a gentle twist flow on their own
+  rhythm.
+- **Head Rush** — pitch flicks on every stroke while roll and sway swing quickly from side to side
+  beneath it.
+
+Six new ones join the shop, written for multi-axis devices from the start:
+
+- **Corkscrew** — full strokes that wind one way and unwind on the way back.
+- **Cowgirl** — riding on top: rocking hips and short, eager strokes.
+- **Figure Eight** — measured strokes on a looping, figure-eight path.
+- **Grind** — stays down deep and grinds, hips rolling.
+- **The Pendulum** — slow strokes that swing from side to side.
+- **Riptide** — fast strokes that drag you one way, then the other.
+
+On a stroke-only device every override plays its stroke exactly as before. Going into or out of an
+override no longer jolts the other axes: each carries on from where it was, and an axis only the override
+moved glides back to centre afterwards instead of staying where the override left it.
+
+### ◆ Overrides can loop
+
+An override item — or a boss attack — can now play for longer than its script. Set **PLAYS FOR** and the
+script (or the slice you trimmed) repeats until the time is up, every channel together so a twist and a
+stroke written to line up stay lined up; set it shorter and it's cut off there. Left at 0 it plays once,
+as every override always has. The item editor tells you how many times it repeats and warns when a channel
+ends far from where it starts, since each repeat would jump. **▶ TEST ON DEVICE** plays the loop, shop and
+inventory cards show the play length, and a looping attack's block on the timeline is as long as it plays
+— drag its edge to change how long.
+
+### ◆ Auto Twist
+
+An SR6, or an OSR2 with the twist add-on, has sat with its twist axis idle through almost every journey —
+nearly all content is scripted for the stroke alone. **Options → Device → Auto Twist** gives it something
+to do: the twist follows the stroke, turning where the stroke turns, and swings further the deeper the
+stroke goes. **Subtle / Medium / Strong** reach ±10 / ±25 / ±50 either side of centre on a full-depth
+stroke; Off by default.
+
+It follows the stroke your device is actually sent, so every effect on the stroke reaches the twist too —
+a curse that freezes the stroke freezes the twist, one that makes strokes shallow makes the twist gentle.
+A round with its own twist script always plays that instead, and so does an override item that brings
+one; an override without one keeps the twist following its stroke. It is capped at a speed well short of
+a shake, goes through your Twist range like any other twist, and is sent to the serial device only —
+never to restim, where the same axis controls carrier frequency.
+
+Serial devices only: Buttplug has no twist command and the Handy is a single axis.
+
+### ◆ Smoother multi-axis playback
+
+Every axis on a serial device — the stroke, surge, sway, twist, roll and pitch — is now sent together on
+every frame, in one command, rather than each axis on its own whenever its script reached a keyframe.
+Slow roll and pitch scripts glide instead of stepping, an axis no longer drifts behind the stroke, and
+the effects above take hold the moment they start instead of at an axis's next keyframe, which on a slow
+script could be seconds away. Rounds and resumes ease every axis in from where it is, so nothing jumps
+into place.
+
+### ◆ Your device
+
+**Options → Device → Your device** tells the app which motion axes you have — **Stroke only, OSR2,
+OSR2 + twist or SR6**, the name on the box. There is no reliable way to ask the hardware, so you say. It
+decides what the game offers you, never what it sends: Auto Twist is offered only on a profile with
+twist, and the multi-axis effects play as their stroke versions for any axis you don't have. It defaults
+to Stroke only, and counts as Stroke only whenever the stroke isn't going to a serial device, since
+serial is the only output that carries the other axes.
+
+### ◆ Builder
+
+- **A new effect picker.** An effect round lists only the effects it uses, each opening to its own
+  settings, and adds more through a searchable, grouped menu with a line on what each one does. Custom
+  items, a boss's forced modifiers and a boss's timeline windows now use the same menu instead of long
+  dropdowns. A forced modifier's row names its kind; add a different one to change it.
+- **Node markers sit on the node's edge.** A silent fork, a warmup round and a round with pending trims
+  show small badges (🔇, ⏭, ✂) above their node instead of squeezing into the line under its title,
+  where they were cut off. Hover a badge for what it means. A silent fork's badge never shows on the
+  player's map.
+- **Name fields are ready to type.** The NEW FLAG prompt from a flag dropdown (and every other builder
+  name prompt) puts the cursor in its field as it opens, and so do the flag and counter editors when you
+  add one.
+
+### 🩹 Fixes
+
+- **Conditional forks that let the game decide are really random now.** When several paths are unlocked,
+  one of them is picked at random with equal odds. A flag or item fork used to take the first unlocked
+  path every time — often the default — and a score, coin or counter fork the highest threshold met.
+  Overlapping thresholds all count now, so make the low ones higher if you want tiers.
+- **Locked choices on an arranged fork are locked.** On a fork where the player picks among the paths
+  they've unlocked, a choice placed on the background could be clicked without meeting its requirement.
+  It's now dimmed and unclickable, with a 🔒 line saying what it needs — even on a slot that shows only
+  its art.
+- **Fog of war has its own switch.** It also shapes the route map at the end of the journey, but it could
+  only be changed while ALLOW JOURNEY MAP was on. It now sits in its own group, always editable.
+- **Scrolling no longer closes the builder's editors.** The custom items list, the item editor, the
+  counter and flag editors and the keyboard shortcuts overlay closed on any mouse button press on their
+  backdrop, and the scroll wheel counts as one. Only a real click outside closes them now.
+- **No more blank entries.** Closing a new setting, item, flag or counter with nothing filled in drops
+  it, since you were backing out. One with something in it but no name asks first — name it, or discard
+  it — the same as a new character.
+- **The timeline playhead stays visible.** Clicking the trim or boss timeline to move the playhead could
+  leave its line missing (only the time showed) until playback moved it again.
+
 ## v0.8.7
 
 ### ◆ Randomizer runs can be built from tags

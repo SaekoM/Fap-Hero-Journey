@@ -123,6 +123,50 @@ const CURSE_CATALOG: Array = [
 	},
 	{"kind": "reverse", "name": "Inverted", "desc": "Up and down are flipped."},
 	{"kind": "block", "name": "Numbed", "desc": "The device ignores the script entirely."},
+	# Multi-axis curses (MULTIAXIS_DESIGN.md §3): the stroke curses mirrored onto every axis but the
+	# stroke. The turning axes (twist, roll, pitch) take the `rotary_` values — they're subtler than the
+	# sliding ones, so the same ×0.6 would barely register. `substitute` is the stroke curse a player
+	# gets instead when this round gives them no such axis to feel (see express_effects).
+	{
+		"kind": "axis_scale",
+		"factor": 0.6,
+		"rotary_factor": 0.4,
+		"name": "Stiffened",
+		"desc": "Twist, roll and pitch move 40% as far; surge and sway 60%.",
+		"substitute": "Shrunken",
+	},
+	{
+		"kind": "axis_clamp",
+		"min": 40,
+		"max": 60,
+		"rotary_min": 45,
+		"rotary_max": 55,
+		"name": "Braced",
+		"desc": "Every axis but the stroke is held close to centre.",
+		"substitute": "Choked",
+	},
+	{
+		"kind": "axis_reverse",
+		"name": "Contrary",
+		"desc": "Every axis but the stroke moves the opposite way.",
+		"substitute": "Inverted",
+	},
+	{
+		"kind": "axis_block",
+		"name": "Stilled",
+		"desc": "Every axis but the stroke freezes where it is.",
+		"substitute": "Numbed",
+	},
+	# Pose and Vortex CREATE motion rather than reshaping it, so they need only the axis on the
+	# device, not a script for it. Pose's `pitch` and `roll` are tilts from centre, −50 to +50.
+	{
+		"kind": "pose",
+		"pitch": 25,
+		"roll": 0,
+		"name": "Posed",
+		"desc": "Held at a tilt all round — roll and pitch stop following the video.",
+		"substitute": "Choked",
+	},
 	{
 		"kind": "coin_penalty",
 		"factor": 0.5,
@@ -367,6 +411,22 @@ const BLESSING_CATALOG: Array = [
 		"desc": "Double the coins earned this round."
 	},
 	{"kind": "scale", "factor": 1.35, "name": "Surge", "desc": "Stronger, longer strokes."},
+	{
+		"kind": "axis_scale",
+		"factor": 1.35,
+		"rotary_factor": 1.6,
+		"name": "Limber",
+		"desc": "Every axis but the stroke swings wider — the turns and tilts most of all.",
+		"substitute": "Surge",
+	},
+	# `gain` sizes the motion: the circle's radius, and how far the twist follows the stroke — 0.5 is ±25.
+	{
+		"kind": "vortex",
+		"gain": 0.5,
+		"name": "Vortex",
+		"desc": "Roll and pitch circle once with every stroke, and the twist turns with it.",
+		"substitute": "Surge",
+	},
 	{"kind": "gift", "name": "Gift", "desc": "Start the round holding a free item."},
 	{
 		"kind": "lingering",
@@ -455,6 +515,110 @@ static func sensory_rate_text(entry: Dictionary, rate: float) -> String:
 	return ("%d %s" if unit == "Hz" else "%.1f %s") % [v, unit]
 
 
+# An effect kind's display name, wherever the builder lists or shows one: a sensory kind's catalog name,
+# a multi-axis kind's label, a few gameplay kinds that read better spelled out, else the kind itself.
+static func effect_kind_label(kind: String) -> String:
+	var sensory: Dictionary = sensory_entry_by_kind(kind)
+	if not sensory.is_empty():
+		return str(sensory.get("name", kind))
+	match kind:
+		"hud_hide":
+			return "Fog (hide HUD)"
+		"flag":
+			return "Set flag"
+		"counter":
+			return "Change counter"
+		"toll":
+			return "Toll (lose coins)"
+		"interest":
+			return "Interest (gain coins)"
+	if AXIS_EFFECT_LABELS.has(kind):
+		return str(AXIS_EFFECT_LABELS[kind])
+	return kind.capitalize()
+
+
+# One line on what an effect kind does, for the builder's pickers and tooltips. A sensory kind answers
+# from its catalog entry.
+static func effect_kind_desc(kind: String) -> String:
+	match kind:
+		"scale":
+			return "Scales stroke depth by a factor (×0.5 = shallower, ×2 = deeper)."
+		"clamp":
+			return "Restricts strokes to a min/max position range."
+		"reverse":
+			return "Inverts stroke direction (top ↔ bottom)."
+		"block":
+			return "Blocks output — the device holds position."
+		"blackout":
+			return "Hides the video; the device keeps playing in the dark."
+		"score_multiplier":
+			return "Multiplies the round's score."
+		"score_add":
+			return (
+				"Adds score the instant it is used. In a boss round with a SCORE health bar that is "
+				+ "damage — scaled by the boss's stance, so it glances off a guard and does nothing "
+				+ "through "
+				+ "an attack. Elsewhere it is simply points."
+			)
+		"coin_jackpot":
+			return "Multiplies the round's coin payout. Settled at the next round end."
+		"coin_penalty":
+			return "Reduces the round's coin payout (fraction kept). Settled at the next round end."
+		"toll":
+			return "Deducts coins from the balance immediately when used (capped at the balance)."
+		"interest":
+			return "Grants coins equal to a fraction of the current balance, immediately when used."
+		"flag":
+			return "Sets a run flag when used — a later fork can branch on it (Conditional / required)."
+		"counter":
+			return "Changes a run counter when used (± delta) — feeds counter-gated forks and the HUD."
+		"hud_hide":
+			return "Fog — hides the HUD for the item's duration."
+		"axis_scale":
+			return (
+				"Scales every axis but the stroke around centre, each by its own factor (above ×1 "
+				+ "swings wider)."
+			)
+		"axis_clamp":
+			return "Holds every axis but the stroke inside a band, each axis its own."
+		"axis_reverse":
+			return "Every axis but the stroke moves the opposite way, easing through centre."
+		"axis_block":
+			return "Every axis but the stroke freezes where it is."
+		"pose":
+			return "Holds roll and pitch at a tilt from centre, replacing their scripts."
+		"vortex":
+			return (
+				"Roll and pitch circle once per stroke on axes the round leaves unscripted; the twist "
+				+ "follows the stroke."
+			)
+	return str(sensory_entry_by_kind(kind).get("desc", ""))
+
+
+# Picker entries for `kinds` ({id, label, desc}), in order — what CatalogPicker lists.
+static func effect_kind_entries(kinds: Array) -> Array:
+	var entries: Array = []
+	for kind: Variant in kinds:
+		entries.append(
+			{
+				"id": str(kind),
+				"label": effect_kind_label(str(kind)),
+				"desc": effect_kind_desc(str(kind))
+			}
+		)
+	return entries
+
+
+# The sensory kinds that act on what is heard (`audio`) or on what is seen, in catalog order.
+static func sensory_kinds(audio: bool) -> Array:
+	var kinds: Array = []
+	for entry: Dictionary in SENSORY_CATALOG:
+		var kind: String = str(entry.get("kind", ""))
+		if AUDIO_SENSORY_KINDS.has(kind) == audio:
+			kinds.append(kind)
+	return kinds
+
+
 # The SENSORY_CATALOG entry for a kind (carries name + imin/imax/idef intensity range). {} if none.
 static func sensory_entry_by_kind(kind: String) -> Dictionary:
 	for e: Dictionary in SENSORY_CATALOG:
@@ -473,10 +637,254 @@ static func is_stroke_effect(kind: String) -> bool:
 	return kind in STROKE_EFFECT_KINDS
 
 
+# Multi-axis modifier kinds, each with the stroke kind it stands in for. Every axis but the stroke, as
+# one group; applied by FunscriptPlayer to the serial axis stream only — never to restim, where these
+# axes drive carrier frequency and pulse settings a motion curse was never meant to touch.
+const AXIS_EFFECT_TWINS: Dictionary = {
+	"axis_scale": "scale",
+	"axis_clamp": "clamp",
+	"axis_reverse": "reverse",
+	"axis_block": "block",
+	"pose": "clamp",
+	"vortex": "scale",
+}
+# The keys only an axis effect carries — dropped when it becomes its stroke twin.
+const AXIS_ONLY_KEYS: Array = [
+	"rotary_factor", "rotary_min", "rotary_max", "substitute", "pitch", "roll", "gain", "axes"
+]
+# The kinds that create motion on an axis rather than reshape what is there, with the stroke curse each
+# becomes by default. Their own values (a tilt, a follow gain) mean nothing on the stroke, so the twin
+# takes the substitute's values as well as its name.
+const AXIS_CREATING_SUBSTITUTES: Dictionary = {"pose": "Choked", "vortex": "Surge"}
+# The axes each creating kind drives, when the device has them. Vortex moves the turning axes only:
+# surge and sway moving with the stroke push it diagonally, which reads as a fault, not a gift.
+const POSE_AXES: Array = ["R1", "R2"]
+const VORTEX_AXES: Array = ["R0", "R1", "R2"]
+
+
+static func is_axis_effect(kind: String) -> bool:
+	return AXIS_EFFECT_TWINS.has(kind)
+
+
+# Every axis but the stroke, surge to pitch, and the turning ones among them.
+const SECONDARY_AXES: Array = ["L1", "L2", "R0", "R1", "R2"]
+const ROTARY_AXES: Array = ["R0", "R1", "R2"]
+# Axes scale and axes clamp carry a value per axis — factor_R0, min_L1, max_R2 — and fall back to
+# these when one has none at all.
+const AXIS_PARAM_DEFAULTS: Dictionary = {"factor": 1.0, "min": 0.0, "max": 100.0}
+
+
+# The key holding one axis's value of an axes scale or clamp parameter: axis_key("factor", "R0").
+static func axis_key(base: String, axis: String) -> String:
+	return "%s_%s" % [base, axis]
+
+
+# One axis's value for an axes scale or clamp: its own key, else — on a turning axis — the `rotary_`
+# value data written before per-axis values existed carries for the whole group, else the plain value
+# (surge/sway's, in that data), else the default. FunscriptPlayer.AxisParam reads the same chain, so a
+# journey saved with group values plays exactly as it did.
+static func axis_value(effect: Dictionary, base: String, axis: String) -> float:
+	var own: String = axis_key(base, axis)
+	if effect.has(own):
+		return float(effect[own])
+	if axis in ROTARY_AXES and effect.has("rotary_" + base):
+		return float(effect["rotary_" + base])
+	return float(effect.get(base, AXIS_PARAM_DEFAULTS.get(base, 0.0)))
+
+
+# A tunable value by key, for the editors: a per-axis key resolves through axis_value, anything else
+# reads straight off the effect.
+static func effect_param_value(effect: Dictionary, key: String, fallback: float) -> float:
+	var cut: int = key.rfind("_")
+	if cut > 0 and key.substr(cut + 1) in SECONDARY_AXES:
+		return axis_value(effect, key.substr(0, cut), key.substr(cut + 1))
+	return float(effect.get(key, fallback))
+
+
+# A new axes scale or clamp, written per axis: the turning axes get the stronger values (they're
+# subtler, so the same ×0.6 would barely register), as the catalog's Stiffened and Braced do.
+static func default_axis_modifier(kind: String) -> Dictionary:
+	var effect: Dictionary = {"kind": kind}
+	for axis: String in SECONDARY_AXES:
+		var rotary: bool = axis in ROTARY_AXES
+		if kind == "axis_scale":
+			effect[axis_key("factor", axis)] = 0.4 if rotary else 0.6
+		elif kind == "axis_clamp":
+			effect[axis_key("min", axis)] = 45 if rotary else 40
+			effect[axis_key("max", axis)] = 55 if rotary else 60
+	return effect
+
+
+# The stroke scale an axes scale becomes: the axis scaled furthest from ×1, either way, so a curse stays a
+# curse and a blessing a blessing even when the author changed only one axis.
+static func strongest_axis_factor(effect: Dictionary) -> float:
+	var strongest: float = 1.0
+	for axis: String in SECONDARY_AXES:
+		var factor: float = axis_value(effect, "factor", axis)
+		if absf(log(maxf(factor, 0.01))) > absf(log(maxf(strongest, 0.01))):
+			strongest = factor
+	return strongest
+
+
+# The stroke band an axes clamp becomes: the narrowest axis band, its most restrictive, as Vector2(min,
+# max).
+static func narrowest_axis_band(effect: Dictionary) -> Vector2:
+	var band: Vector2 = Vector2(0, 100)
+	for axis: String in SECONDARY_AXES:
+		var low: float = axis_value(effect, "min", axis)
+		var high: float = axis_value(effect, "max", axis)
+		if absf(high - low) < absf(band.y - band.x):
+			band = Vector2(low, high)
+	return band
+
+
+# Whether a round gives an axis modifier anything to act on, for THIS player: a script on an axis
+# their device has, or Auto Twist moving the twist. Without one, every axis modifier plays as its
+# stroke twin (express_effects) — a curse the player can't feel is no curse at all. `device_axes` is
+# SettingsService.get_device_axes() (already held to the stroke alone off serial); `scripted_axes` the
+# round's loaded axis scripts; `auto_twist_on` whether Auto Twist will drive the twist this round.
+static func round_has_axis_motion(
+	device_axes: Array, scripted_axes: Array, auto_twist_on: bool
+) -> bool:
+	for axis: Variant in scripted_axes:
+		if str(axis) != "L0" and device_axes.has(str(axis)):
+			return true
+	return auto_twist_on and device_axes.has("R0")
+
+
+# What this round and this player's device give the multi-axis modifiers to act on, worked out once per
+# round: `motion` for the four that reshape (round_has_axis_motion), and for the two that create, the
+# axes each would drive. Pose holds whichever of roll and pitch the device has, scripted or not. Vortex
+# needs a stroke to circle with (not an e-stim alpha track) and drives only the turning axes the round
+# leaves unscripted, because a script on an axis always wins — with one of roll and pitch scripted, the
+# other plays its half of the circle.
+static func axis_context(
+	device_axes: Array, scripted_axes: Array, auto_twist_on: bool, has_stroke: bool
+) -> Dictionary:
+	var pose_axes: Array = []
+	for axis: String in POSE_AXES:
+		if device_axes.has(axis):
+			pose_axes.append(axis)
+	var vortex_axes: Array = []
+	if has_stroke:
+		for axis: String in VORTEX_AXES:
+			if device_axes.has(axis) and not scripted_axes.has(axis):
+				vortex_axes.append(axis)
+	return {
+		"motion": round_has_axis_motion(device_axes, scripted_axes, auto_twist_on),
+		"pose_axes": pose_axes,
+		"vortex_axes": vortex_axes,
+	}
+
+
+# A round's effects as this player will get them, for an `axis_context`: each axis modifier kept when it
+# has something to act on, otherwise swapped for its stroke twin. A kept Pose or Vortex is stamped with
+# the axes it drives, so the player needs no device profile of its own. Everything else passes untouched.
+static func express_effects(effects: Array, context: Dictionary) -> Array:
+	var out: Array = []
+	for e: Variant in effects:
+		if not (e is Dictionary):
+			continue
+		var effect: Dictionary = e
+		var kind: String = str(effect.get("kind", ""))
+		if not is_axis_effect(kind):
+			out.append(effect)
+		elif not AXIS_CREATING_SUBSTITUTES.has(kind):
+			out.append(effect if bool(context.get("motion", false)) else stroke_twin(effect))
+		else:
+			var drives: Array = _created_axes(kind, context)
+			if drives.is_empty():
+				out.append(stroke_twin(effect))
+			else:
+				var kept: Dictionary = effect.duplicate(true)
+				kept["axes"] = drives
+				out.append(kept)
+	return out
+
+
+# The axes Pose or Vortex would drive in `context`; empty when the device gives it none.
+static func _created_axes(kind: String, context: Dictionary) -> Array:
+	var key: String = "pose_axes" if kind == "pose" else "vortex_axes"
+	return context.get(key, []) as Array
+
+
+# Readable names for the raw axis kinds (boss forced modifiers and timeline windows carry kinds, not
+# catalog names).
+const AXIS_EFFECT_LABELS: Dictionary = {
+	"axis_scale": "Axes scale",
+	"axis_clamp": "Axes clamp",
+	"axis_reverse": "Axes reverse",
+	"axis_block": "Axes stilled",
+	"pose": "Pose",
+	"vortex": "Vortex",
+}
+
+
+# Every multi-axis modifier a round can apply, by name: catalog entries it ticks, raw kinds among its
+# boss forced modifiers, and raw kinds in its timeline windows (its own and each pool entry's). In
+# first-seen order, no repeats — what the audit lists so an author knows which rounds play differently
+# on a stroke-only device.
+static func axis_effects_in_round(data: Dictionary) -> Array:
+	var names: Array = []
+	for n: Variant in data.get("effects", []):
+		var entry: Dictionary = effect_entry(str(n))
+		if is_axis_effect(str(entry.get("kind", ""))) and not names.has(str(n)):
+			names.append(str(n))
+	var raw: Array = (data.get("boss_modifiers", []) as Array).duplicate()
+	var holders: Array = [data]
+	for pool_entry: Variant in data.get("pool_entries", []) as Array:
+		if pool_entry is Dictionary:
+			holders.append(pool_entry)
+	for holder: Dictionary in holders:
+		var timeline: Variant = holder.get("timeline", {})
+		if not (timeline is Dictionary):
+			continue
+		for event: Variant in (timeline as Dictionary).get("events", []) as Array:
+			if event is Dictionary:
+				raw.append_array((event as Dictionary).get("effects", []) as Array)
+	for e: Variant in raw:
+		if not (e is Dictionary):
+			continue
+		var label: String = str(AXIS_EFFECT_LABELS.get(str((e as Dictionary).get("kind", "")), ""))
+		if label != "" and not names.has(label):
+			names.append(label)
+	return names
+
+
+# The stroke modifier an axis modifier becomes on a device that can't feel it. A catalog entry plays its
+# named substitute exactly as catalogued — Stiffened is Shrunken, Braced is Choked — so the effect card
+# names a curse that really exists and it does what that curse does (owner, 2026-10-15). An authored one
+# with no substitute (a boss modifier, a timeline window, an item) passes on its strongest axis: the
+# scale furthest from ×1, or the narrowest clamp band.
+static func stroke_twin(effect: Dictionary) -> Dictionary:
+	var kind: String = str(effect.get("kind", ""))
+	var twin: Dictionary = effect.duplicate(true)
+	twin["kind"] = AXIS_EFFECT_TWINS.get(kind, kind)
+	if kind == "axis_scale":
+		twin["factor"] = strongest_axis_factor(effect)
+	elif kind == "axis_clamp":
+		var band: Vector2 = narrowest_axis_band(effect)
+		twin["min"] = int(band.x)
+		twin["max"] = int(band.y)
+	var substitute: String = str(effect.get("substitute", AXIS_CREATING_SUBSTITUTES.get(kind, "")))
+	var named: Dictionary = effect_entry(substitute)
+	if not named.is_empty():
+		for key: Variant in named:
+			twin[key] = named[key]
+		twin["_ref"] = named["name"]
+	for key: String in AXIS_ONLY_KEYS:
+		twin.erase(key)
+	for axis: String in SECONDARY_AXES:
+		for base: String in AXIS_PARAM_DEFAULTS:
+			twin.erase(axis_key(base, axis))
+	return twin
+
+
 # The tunable numeric parameter(s) for an effect kind, each a spec the authoring controls
 # read: {key, label, ctl, min, max, step}. `ctl` picks the control style — "pct" (0–1 shown
-# as %), "mult" (× multiplier), "coins" (whole coins), "pos" (0–100 stroke position). Empty
-# for binary kinds (reverse/block/hud_hide/no_pause/gift/lingering).
+# as %), "mult" (× multiplier), "coins" (whole coins), "pos" (0–100 stroke position), "tilt" (−50 to +50 from centre). Empty
+# for binary kinds (reverse/block/hud_hide/no_pause/gift/lingering), and for axes scale and axes clamp,
+# whose value per axis is edited through AxisEffectFields.
 static func effect_param_specs(kind: String) -> Array:
 	match kind:
 		"scale":
@@ -494,6 +902,36 @@ static func effect_param_specs(kind: String) -> Array:
 			return [
 				{"key": "min", "label": "Range min", "ctl": "pos", "min": 0, "max": 100, "step": 1},
 				{"key": "max", "label": "Range max", "ctl": "pos", "min": 0, "max": 100, "step": 1},
+			]
+		"pose":
+			return [
+				{
+					"key": "pitch",
+					"label": "Pitch tilt",
+					"ctl": "tilt",
+					"min": -50,
+					"max": 50,
+					"step": 1
+				},
+				{
+					"key": "roll",
+					"label": "Roll tilt",
+					"ctl": "tilt",
+					"min": -50,
+					"max": 50,
+					"step": 1
+				},
+			]
+		"vortex":
+			return [
+				{
+					"key": "gain",
+					"label": "Circle size",
+					"ctl": "pct",
+					"min": 0.1,
+					"max": 1.0,
+					"step": 0.05
+				}
 			]
 		"coin_penalty":
 			return [
@@ -591,6 +1029,12 @@ static func resolved_effect(name: String, overrides: Dictionary) -> Dictionary:
 	return out
 
 
+static func _without_axis_effects(catalog: Array) -> Array:
+	return catalog.filter(
+		func(e: Dictionary) -> bool: return not is_axis_effect(str(e.get("kind", "")))
+	)
+
+
 # All names in `catalog`, in order. Used to bake a legacy round's "empty = full random
 # pool" into an explicit effects list at migration, so the roll scope (hindrances-only /
 # boons-only) survives the drop of the theme concept.
@@ -629,7 +1073,9 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 		"cursed":
 			var curses: Array = src.get("curses", [])
 			if curses.is_empty():
-				effects = _catalog_names(CURSE_CATALOG)  # was "empty = full curse pool"
+				# Was "empty = full curse pool" — the pool as it stood then, so the axis curses added
+				# since don't quietly change the odds of a journey nobody has re-tuned.
+				effects = _catalog_names(_without_axis_effects(CURSE_CATALOG))
 			else:
 				for n: Variant in curses:
 					effects.append(str(n))
@@ -647,7 +1093,8 @@ static func normalize_effect_round(src: Dictionary) -> Dictionary:
 				if str(n) != "Ward":  # retired boon — dropped on migration
 					effects.append(str(n))
 			if effects.is_empty():
-				effects = _catalog_names(BLESSING_CATALOG)  # was "empty = full boon pool"
+				# Was "empty = full boon pool" — as it stood then (see the curse branch above).
+				effects = _catalog_names(_without_axis_effects(BLESSING_CATALOG))
 			effect_random = bool(src.get("boon_random", true))
 			resolvable = false
 			endure_reward = 0
@@ -1157,6 +1604,9 @@ static func coerce_journey_item(item: Dictionary) -> Dictionary:
 		# plays), same shape a modifier uses.
 		out["ImmuneToEffects"] = bool(item.get("immune_to_effects", false))
 		out["DurationMs"] = maxi(0, int(item.get("duration_ms", 0)))
+		# How long it plays (looping or cutting the script) — only when set; absent plays it once.
+		if int(item.get("play_ms", 0)) > 0:
+			out["PlayMs"] = int(item["play_ms"])
 		out["Scripts"] = _coerce_override_scripts(item.get("scripts", {}))
 		var override_effects: Array = []
 		for e: Variant in item.get("effects", []):
@@ -1219,6 +1669,8 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 		# so it stays manually usable (unlike a key). Scripts resolve to absolute in the scanner.
 		item["immune_to_effects"] = bool(raw.get("ImmuneToEffects", false))
 		item["duration_ms"] = int(raw.get("DurationMs", 0))
+		if int(raw.get("PlayMs", 0)) > 0:
+			item["play_ms"] = int(raw["PlayMs"])
 		item["scripts"] = _parse_override_scripts(raw.get("Scripts", {}))
 		var override_effects: Array = []
 		for e: Variant in raw.get("Effects", []):
@@ -1238,6 +1690,13 @@ static func parse_journey_item(raw: Dictionary) -> Dictionary:
 			effects.append((e as Dictionary).duplicate(true))
 	item["effects"] = effects
 	return item
+
+
+# How long an item lasts when used, as its card shows it: an override's play length when it has one (a
+# looping or cut override), else the item's own duration — an override's clip length, a modifier's timer.
+static func item_play_ms(item: Dictionary) -> int:
+	var play_ms: int = int(item.get("play_ms", 0))
+	return play_ms if play_ms > 0 else int(item.get("duration_ms", 0))
 
 
 static func parse_journey_items(raw: Array) -> Array:

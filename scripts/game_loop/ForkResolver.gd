@@ -7,7 +7,7 @@ extends RefCounted
 # read from autoloads or RNG. The callers stay thin glue.
 #
 #   Random      → weighted_pick(weights, r)         (caller supplies r = randi() % total)
-#   Conditional → conditional_path(...)             (caller supplies score/coins value + is_owned)
+#   Conditional → conditional_path(...)             (caller supplies score/coins value + is_owned + r)
 #   Sacrifice   → path_affordable(...)              (caller supplies coins + is_owned)
 #   Player Choice → no logic here; the index is whatever the player clicks.
 
@@ -26,68 +26,69 @@ static func weighted_pick(weights: Array, r: int) -> int:
 	return weights.size() - 1
 
 
-# Resolves a conditional fork to a path index.
-#   metric "item"          → first path whose required_item is owned (is_owned), else default.
-#   metric "flag"          → first path whose required_flag is set (is_owned = flag-checker), else default.
-#   metric "counter"       → highest threshold met wins, but each path is compared against ITS OWN
-#                            counter (paths[i].cond_counter) via counter_of; ties → earliest, else default.
-#   metric "score"/"coins" → highest threshold `value` meets wins (ties → earliest), else default.
-# `value` is the score or coin balance (caller picks which by metric; unused for counter). `is_owned`
-# is a Callable(String) -> bool. `counter_of` is a Callable(String) -> int giving a counter's current
-# value (only consulted for the counter metric). `default_path` is clamped into range.
+# Resolves a conditional fork to a path index: one of the paths whose condition is met, chosen at random
+# with equal odds, else the default. Every metric works the same way (owner, 2026-10-17) — a fork that
+# lets the game decide used to take the FIRST unlocked flag or item path, or the HIGHEST threshold met,
+# so the same path came up every time several were unlocked. An author who wants tiers raises the low
+# thresholds so they stop overlapping. `r` is the caller's random draw (any int; r mod the met count
+# picks), `value` the score or coin balance for those metrics, `is_owned` a Callable(String) -> bool
+# (items, or the flag-checker for flags), `counter_of` a Callable(String) -> int for counters.
+# `default_path` is clamped into range.
 static func conditional_path(
 	paths: Array,
 	metric: String,
 	default_path: int,
 	value: int,
 	is_owned: Callable,
-	counter_of: Callable = Callable()
+	counter_of: Callable = Callable(),
+	r: int = 0
 ) -> int:
 	if paths.is_empty():
 		return 0
-	var default_idx: int = clampi(default_path, 0, paths.size() - 1)
+	var met: Array = met_paths(paths, metric, value, is_owned, counter_of)
+	if met.is_empty():
+		return clampi(default_path, 0, paths.size() - 1)
+	return met[posmod(r, met.size())]
 
-	if metric == "item":
-		for i in paths.size():
-			var req: String = str(paths[i].get("required_item", ""))
-			if req != "" and is_owned.call(req):
-				return i
-		return default_idx
 
-	# Flag: first path whose required_flag is currently set wins (is_owned is the flag-checker here).
-	if metric == "flag":
-		for i in paths.size():
-			var rf: String = str(paths[i].get("required_flag", ""))
-			if rf != "" and is_owned.call(rf):
-				return i
-		return default_idx
+# The indices of every path whose condition is met, in path order.
+static func met_paths(
+	paths: Array, metric: String, value: int, is_owned: Callable, counter_of: Callable = Callable()
+) -> Array:
+	var met: Array = []
+	for i: int in paths.size():
+		if path_met(paths[i], metric, value, is_owned, counter_of):
+			met.append(i)
+	return met
 
-	# Counter: same "highest satisfied threshold wins" tiering as score/coins, except the compared
-	# value is per-path — each choice gates on its own counter, so a single fork can mix (prod ≥ 2)
-	# with (test ≥ 3). counter_of resolves the already-effective per-path counter name to its value.
-	if metric == "counter":
-		var c_best_idx: int = -1
-		var c_best_threshold: int = -1
-		for i in paths.size():
-			var t: int = int(paths[i].get("threshold", 0))
-			var cv: int = (
-				counter_of.call(str(paths[i].get("cond_counter", "")))
+
+# Whether one path's condition is met.
+#   item / flag      → its required item is owned / required flag is set (none named = never met).
+#   counter          → ITS OWN counter (cond_counter, read through counter_of) reaches its threshold.
+#   score / coins    → `value` reaches its threshold.
+static func path_met(
+	path: Dictionary,
+	metric: String,
+	value: int,
+	is_owned: Callable,
+	counter_of: Callable = Callable()
+) -> bool:
+	var threshold: int = int(path.get("threshold", 0))
+	match metric:
+		"item":
+			var item: String = str(path.get("required_item", ""))
+			return item != "" and is_owned.call(item)
+		"flag":
+			var flag: String = str(path.get("required_flag", ""))
+			return flag != "" and is_owned.call(flag)
+		"counter":
+			var counter: int = (
+				int(counter_of.call(str(path.get("cond_counter", ""))))
 				if counter_of.is_valid()
 				else 0
 			)
-			if cv >= t and t > c_best_threshold:
-				c_best_threshold = t
-				c_best_idx = i
-		return c_best_idx if c_best_idx >= 0 else default_idx
-
-	var best_idx: int = -1
-	var best_threshold: int = -1
-	for i in paths.size():
-		var t: int = int(paths[i].get("threshold", 0))
-		if value >= t and t > best_threshold:
-			best_threshold = t
-			best_idx = i
-	return best_idx if best_idx >= 0 else default_idx
+			return counter >= threshold
+	return value >= threshold
 
 
 # Sacrifice gating: can the player afford this path? Affordable when its coin cost
