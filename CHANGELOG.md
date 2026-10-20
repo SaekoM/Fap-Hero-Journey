@@ -102,14 +102,32 @@ the effects above take hold the moment they start instead of at an axis's next k
 script could be seconds away. Rounds and resumes ease every axis in from where it is, so nothing jumps
 into place.
 
-### ◆ Your device
+### ◆ Your device — set this first
 
-**Options → Device → Your device** tells the app which motion axes you have — **Stroke only, OSR2,
-OSR2 + twist or SR6**, the name on the box. There is no reliable way to ask the hardware, so you say. It
-decides what the game offers you, never what it sends: Auto Twist is offered only on a profile with
-twist, and the multi-axis effects play as their stroke versions for any axis you don't have. It defaults
-to Stroke only, and counts as Stroke only whenever the stroke isn't going to a serial device, since
-serial is the only output that carries the other axes.
+**Options → Device → Your device** is where you tell the game which device you own: **Stroke only,
+OSR2, OSR2 + twist or SR6** — pick the name on the box. A device can't report which axes it has fitted,
+so the game has to ask you.
+
+**Why it matters.** The game uses it to decide what you get to feel:
+
+- **Curses and blessings for the other axes.** When a round, a boss or an item brings Posed, Vortex,
+  Stiffened or any of the others, the game checks your device. If you have the axes, you get the real
+  effect. If not, you get its stroke version instead — Vortex becomes Surge, Posed becomes Choked, and
+  so on — so a curse is never spent on an axis you don't have.
+- **Auto Twist** can only be switched on when your device has a twist axis: OSR2 + twist or SR6.
+
+**It starts on Stroke only.** That keeps players with a single-axis stroker safe, but it means **if you
+own an OSR2 or an SR6, none of the new multi-axis effects reach you until you change it.** Every one
+quietly plays as its stroke version, and Auto Twist stays locked.
+
+**It never changes what's sent.** A video's own axis scripts and an override's other axes always play
+on your device, whatever you pick here — the setting only decides which effects the game hands you.
+Picking a bigger device than you own won't break anything, but you'll get effects you can't feel;
+picking a smaller one just means stroke versions.
+
+**Serial only.** The other axes only travel over a serial connection. If your stroke goes to the Handy
+or through Intiface, the setting is greyed out and counts as Stroke only, even if you own an SR6. Make
+Serial the stroker under **Device Routing** to use it.
 
 ### ◆ Builder
 
