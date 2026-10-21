@@ -1316,6 +1316,8 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			out["resolution"] = str(data.get("resolution", "choice"))
 			out["cond_metric"] = str(data.get("cond_metric", "score"))
 			out["cond_decider"] = str(data.get("cond_decider", "game"))
+			# When the game decides and several paths are met: one at random, or the highest (tiers).
+			out["cond_pick"] = str(data.get("cond_pick", ForkResolver.PICK_RANDOM))
 			out["default_path"] = int(data.get("default_path", 0))
 			out["timeout_path"] = int(data.get("timeout_path", -1))
 			out["after_order"] = int(data.get("after_order", 0))
@@ -3155,7 +3157,8 @@ static func new_item(type: String) -> Dictionary:
 			}
 		"fork":
 			# resolution: "choice" | "random" | "conditional" | "sacrifice"
-			# cond_metric (conditional only): "score" | "coins" | "item"
+			# cond_metric (conditional only): "score" | "coins" | "item" | "flag" | "counter"
+			# cond_pick (game-decided conditional): "random" | "highest" when several paths are met
 			# default_path (conditional only): index taken when no rule matches
 			# timeout_path (choice/sacrifice): auto-advance fallback; -1 = random affordable
 			# Per-path config (only the field(s) for the active resolution are used):

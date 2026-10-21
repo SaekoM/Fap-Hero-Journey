@@ -1504,7 +1504,8 @@ static func _pick_edge(
 				value,
 				checker,
 				counter_of,
-				rng.randi()
+				rng.randi(),
+				str(data.get("cond_pick", ForkResolver.PICK_RANDOM))
 			)
 		"sacrifice":
 			var affordable: Array = []

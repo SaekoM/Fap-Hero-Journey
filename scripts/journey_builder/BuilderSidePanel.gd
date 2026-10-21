@@ -5126,6 +5126,32 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		)
 		col.add_child(decider_dd)
 
+		# When the game decides and several paths are met: any of them at random, or the highest — the
+		# way to build tiers (Pass / Great / Perfect) without making the thresholds stop overlapping.
+		if str(data.get("cond_decider", "game")) != "player":
+			col.add_child(_side_field_label("WHEN SEVERAL ARE MET"))
+			var pick_values: Array = [ForkResolver.PICK_RANDOM, ForkResolver.PICK_HIGHEST]
+			var pick_dd: OptionButton = OptionButton.new()
+			pick_dd.add_item("One at random")
+			pick_dd.add_item(
+				(
+					"The highest threshold"
+					if ForkResolver.THRESHOLD_METRICS.has(metric)
+					else "The one highest in the list"
+				)
+			)
+			pick_dd.selected = max(
+				0, pick_values.find(str(data.get("cond_pick", ForkResolver.PICK_RANDOM)))
+			)
+			pick_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			UITheme.style_option_button(pick_dd)
+			pick_dd.item_selected.connect(
+				func(i: int) -> void:
+					data["cond_pick"] = pick_values[i]
+					reselect.call(0)
+			)
+			col.add_child(pick_dd)
+
 		col.add_child(_side_field_label("DEFAULT CHOICE (FALLBACK / ALWAYS AVAILABLE)"))
 		var def_dd: OptionButton = OptionButton.new()
 		for ej in out.size():
@@ -5157,7 +5183,12 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		col.add_child(silent_chk)
 
 	var res_hint: Label = Label.new()
-	res_hint.text = _fork_resolution_hint(resolution, metric, data.get("cond_decider", "game"))
+	res_hint.text = _fork_resolution_hint(
+		resolution,
+		metric,
+		str(data.get("cond_decider", "game")),
+		str(data.get("cond_pick", ForkResolver.PICK_RANDOM))
+	)
 	res_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
 	res_hint.add_theme_font_size_override("font_size", 10)
 	res_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -7840,7 +7871,9 @@ func _add_required_item_field(
 
 
 # Short human description of a fork resolution type for the editor.
-func _fork_resolution_hint(resolution: String, metric: String, decider: String) -> String:
+func _fork_resolution_hint(
+	resolution: String, metric: String, decider: String, pick: String
+) -> String:
 	match resolution:
 		"choice":
 			return "The player picks a path."
@@ -7858,15 +7891,39 @@ func _fork_resolution_hint(resolution: String, metric: String, decider: String) 
 					"flag":
 						return "The player picks — but only paths whose required flag is set are selectable (plus the default)."
 				return "The player picks among the paths they qualify for (plus the default)."
+			var which: String = "at random"
+			if pick == ForkResolver.PICK_HIGHEST:
+				which = (
+					"taking the one with the highest threshold"
+					if ForkResolver.THRESHOLD_METRICS.has(metric)
+					else "taking the one highest in the list"
+				)
 			match metric:
 				"score":
-					return "The game auto-picks one of the paths whose score threshold the last round met, at random, else the default path. Thresholds that overlap all count — raise the low ones to make tiers."
+					return (
+						"The game auto-picks one of the paths whose score threshold the last round met, %s, else the default path."
+						% which
+					)
 				"coins":
-					return "The game auto-picks one of the paths whose coin threshold the player's balance meets, at random, else the default path. Coins are NOT spent."
+					return (
+						"The game auto-picks one of the paths whose coin threshold the player's balance meets, %s, else the default path. Coins are NOT spent."
+						% which
+					)
+				"counter":
+					return (
+						"The game auto-picks one of the paths whose counter reaches its threshold, %s, else the default path."
+						% which
+					)
 				"item":
-					return "The game auto-picks one of the paths whose required item the player owns, at random (a pure check — the item is NOT consumed), else the default path."
+					return (
+						"The game auto-picks one of the paths whose required item the player owns, %s (a pure check — the item is NOT consumed), else the default path."
+						% which
+					)
 				"flag":
-					return "The game auto-picks one of the paths whose required flag is set (by a node played or a choice taken earlier), at random, else the default path."
+					return (
+						"The game auto-picks one of the paths whose required flag is set (by a node played or a choice taken earlier), %s, else the default path."
+						% which
+					)
 		"sacrifice":
 			return "The player picks a path and spends its cost — coins and/or an item (e.g. a Key), both consumed. Paths they can't afford are disabled, so include at least one free (0 coins, item None) path."
 	return ""

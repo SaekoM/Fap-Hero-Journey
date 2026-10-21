@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.1
+
+### ◆ Forks
+
+- **Conditional forks can pick the highest path again.** v0.9.0 made a fork that lets the game decide
+  pick at random among every path the player has unlocked, which broke tiers: a fork with paths for a
+  score of 50, 80 and 95 could send a player who scored 97 down any of the three. A new **WHEN SEVERAL
+  ARE MET** setting chooses between **One at random** (the default, and what every existing fork keeps
+  doing) and **The highest**: the highest threshold met on a score, coin or counter fork, and the
+  unlocked path highest in the list on a flag or item fork. When two paths have the same threshold,
+  the one higher in the list wins.
+
 ## v0.9.0
 
 ### ◆ Curses for the other axes

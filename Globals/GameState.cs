@@ -437,6 +437,8 @@ public partial class GameState : Node
             ["cond_metric"] = data.ContainsKey("cond_metric") ? data["cond_metric"].AsString() : "score",
             ["cond_counter"] = data.ContainsKey("cond_counter") ? data["cond_counter"].AsString() : "",
             ["cond_decider"] = data.ContainsKey("cond_decider") ? data["cond_decider"].AsString() : "game",
+            // When the game decides and several paths are met: "random" (any of them) or "highest".
+            ["cond_pick"] = data.ContainsKey("cond_pick") ? data["cond_pick"].AsString() : "random",
             ["default_path"] = data.ContainsKey("default_path") ? data["default_path"].AsInt32() : 0,
             // Auto-advance fallback for choice/sacrifice forks; -1 = pick randomly among affordable.
             ["timeout_path"] = data.ContainsKey("timeout_path") ? data["timeout_path"].AsInt32() : -1,

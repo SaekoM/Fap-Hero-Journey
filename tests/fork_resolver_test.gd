@@ -128,6 +128,65 @@ func test_conditional_empty_paths() -> void:
 	assert_int(ForkResolver.conditional_path([], "score", 0, 100, _owns([]))).is_equal(0)
 
 
+# ── conditional_path with PICK_HIGHEST: the best met path, for tiers ──────────
+
+
+func _highest(
+	paths: Array, metric: String, value: int, owned: Array = [], counter_of: Callable = Callable()
+) -> int:
+	return ForkResolver.conditional_path(
+		paths, metric, 0, value, _owns(owned), counter_of, 7, ForkResolver.PICK_HIGHEST
+	)
+
+
+# Overlapping thresholds: the highest one met wins, whatever the draw and wherever it sits in the list.
+func test_highest_takes_the_highest_threshold_met() -> void:
+	var paths := [{"threshold": 100}, {"threshold": 0}, {"threshold": 200}]
+	assert_int(_highest(paths, "score", 250)).is_equal(2)
+	assert_int(_highest(paths, "score", 150)).is_equal(0)
+	assert_int(_highest(paths, "coins", 50)).is_equal(1)
+
+
+# Equal thresholds: the path nearer the top of the list.
+func test_highest_breaks_a_threshold_tie_by_list_order() -> void:
+	var paths := [{"threshold": 0}, {"threshold": 50}, {"threshold": 50}]
+	assert_int(_highest(paths, "score", 60)).is_equal(1)
+
+
+# Each counter path compares its own threshold.
+func test_highest_ranks_counter_paths_by_threshold() -> void:
+	var paths := [
+		{"cond_counter": "prod", "threshold": 2},
+		{"cond_counter": "test", "threshold": 3},
+	]
+	assert_int(_highest(paths, "counter", 0, [], _counters({"prod": 5, "test": 4}))).is_equal(1)
+	assert_int(_highest(paths, "counter", 0, [], _counters({"prod": 5, "test": 0}))).is_equal(0)
+
+
+# Flags and items have no threshold: the met path highest in the list wins.
+func test_highest_on_flags_and_items_takes_the_top_met_path() -> void:
+	var flags := [
+		{"required_flag": "perfect"}, {"required_flag": "pass"}, {"required_flag": "tried"}
+	]
+	assert_int(_highest(flags, "flag", 0, ["pass", "tried"])).is_equal(1)
+	assert_int(_highest(flags, "flag", 0, ["perfect", "pass", "tried"])).is_equal(0)
+	var items := [{"required_item": "gem"}, {"required_item": "key"}]
+	assert_int(_highest(items, "item", 0, ["key", "gem"])).is_equal(0)
+
+
+# Nothing met still falls back to the default.
+func test_highest_with_nothing_met_uses_the_default() -> void:
+	var paths := [{"threshold": 100}, {"threshold": 200}]
+	(
+		assert_int(
+			ForkResolver.conditional_path(
+				paths, "score", 1, 50, _owns([]), Callable(), 0, ForkResolver.PICK_HIGHEST
+			)
+		)
+		. is_equal(1)
+	)
+
+
 # ── path_affordable (Sacrifice gating) ──────────────────────────────────────
 
 

@@ -994,11 +994,13 @@ func _weighted_random_path(paths: Array) -> int:
 	return ForkResolver.weighted_pick(weights, randi() % total)
 
 
-# Resolves a conditional fork to a path index: a random one of the paths whose condition is met, else the
-# default. Items are checked, not consumed. The resolution logic lives in ForkResolver.conditional_path
-# (pure, tested) — here we just gather the current score / coins / ownership and draw the random number.
+# Resolves a conditional fork to a path index: one of the paths whose condition is met (at random, or the
+# highest when the fork says so), else the default. Items are checked, not consumed. The resolution logic
+# lives in ForkResolver.conditional_path (pure, tested) — here we just gather the current score / coins /
+# ownership and draw the random number.
 func _conditional_path(fork_data: Dictionary) -> int:
 	var metric: String = fork_data.get("cond_metric", "score")
+	var pick: String = str(fork_data.get("cond_pick", ForkResolver.PICK_RANDOM))
 	# Flag metric: the "ownership" check is a flag-set check against GameState's run flags.
 	if metric == "flag":
 		return ForkResolver.conditional_path(
@@ -1008,7 +1010,8 @@ func _conditional_path(fork_data: Dictionary) -> int:
 			0,
 			Callable(GameState, "HasFlag"),
 			Callable(),
-			randi()
+			randi(),
+			pick
 		)
 	# Counter: each choice gates on its OWN counter (paths carry the effective cond_counter, already
 	# resolved against the fork default in GameState.ParseFork), so it can't collapse to one scalar
@@ -1022,7 +1025,8 @@ func _conditional_path(fork_data: Dictionary) -> int:
 			0,
 			Callable(InventoryService, "OwnsItem"),
 			counter_of,
-			randi()
+			randi(),
+			pick
 		)
 	# score / coins resolve by threshold against one scalar — only the source of the value differs.
 	var value: int
@@ -1038,7 +1042,8 @@ func _conditional_path(fork_data: Dictionary) -> int:
 		value,
 		Callable(InventoryService, "OwnsItem"),
 		Callable(),
-		randi()
+		randi(),
+		pick
 	)
 
 
