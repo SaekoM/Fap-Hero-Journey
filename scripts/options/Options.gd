@@ -12,6 +12,8 @@ const PANEL_HALF_W: int = 480
 const PANEL_PAD_V: int = 24
 const BORDER_WIDTH: int = 3
 const ROW_LABEL_W: int = 260
+# An oscillate channel's source dropdown, in item order ("" = Off).
+const OSCILLATE_SOURCE_CHOICES: Array = ["", "stroke_rate", "vibe1", "vibe2"]
 
 # The ffmpeg pack lives on its own permanent tag rather than riding each release.
 # UpdateService.release_url() resolves to the LATEST game release, so a pack attached to one
@@ -126,6 +128,14 @@ var _auto_twist_dd: OptionButton = null
 var _auto_twist_row: HBoxContainer = null
 var _auto_twist_note: Label = null
 var _device_profile_dd: OptionButton = null
+var _oscillate_section: VBoxContainer = null  # the full-speed setting, shown with an oscillating device
+# The oscillating device a HOLD TO TEST is running, {device_index, dev_id, channels}, or {} when none.
+# Kept so every way out of the test stops the motor, not just letting go of the button.
+var _oscillate_test: Dictionary = {}
+var _oscillate_test_timer: SceneTreeTimer = null
+# The longest a HOLD TO TEST runs, even with the button still held: a stuck button, a dropped mouse-up
+# or a lost window must never leave a machine running.
+const OSCILLATE_TEST_MAX_S: float = 5.0
 var _device_profile_row: HBoxContainer = null
 var _device_profile_note: Label = null
 var _max_speed_value_lbl: Label = null
@@ -397,7 +407,7 @@ func _apply_layout() -> void:
 	var ui_sound_hint: Label = Label.new()
 	ui_sound_hint.text = "Click feedback blips on menus and buttons."
 	ui_sound_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(ui_sound_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(ui_sound_hint, UITheme.TEXT_HINT, 11, false)
 	audio_section.add_child(ui_sound_hint)
 
 	# ── UI Sound Volume row (code-generated, appended to AudioSection) ────────
@@ -580,7 +590,7 @@ func _apply_layout() -> void:
 	var story_hint: Label = Label.new()
 	story_hint.text = "Enlarges fork, boss-intro and storyboard text only — the HUD and buttons keep their size. Applies to the next screen that opens."
 	story_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(story_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(story_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(story_hint)
 
 	var tip_row: HBoxContainer = HBoxContainer.new()
@@ -619,13 +629,13 @@ func _apply_layout() -> void:
 	var tip_hint: Label = Label.new()
 	tip_hint.text = "Enlarges every tooltip, including the journey builder's."
 	tip_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(tip_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(tip_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(tip_hint)
 
 	var ui_scale_hint: Label = Label.new()
 	ui_scale_hint.text = "Scales the entire interface. Raise it if menus look small on a high-resolution or 4K display."
 	ui_scale_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(ui_scale_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(ui_scale_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(ui_scale_hint)
 
 	# ── Beat Bar row (code-generated, appended to DisplaySection) ────────────
@@ -663,7 +673,7 @@ func _apply_layout() -> void:
 	var beat_hint: Label = Label.new()
 	beat_hint.text = "Shows upcoming stroke beats scrolling toward a hit-line during play. Pick the marker shape on the right."
 	beat_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(beat_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(beat_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(beat_hint)
 
 	# ── Round Timer row ─────────────────────────────────────────────────────
@@ -691,7 +701,7 @@ func _apply_layout() -> void:
 	var timer_hint: Label = Label.new()
 	timer_hint.text = "Shows the time left in the current round on the HUD. Hidden along with the rest of the HUD by effects that conceal it."
 	timer_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(timer_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(timer_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(timer_hint)
 
 	# ── Animated builder background row ──────────────────────────────────────
@@ -719,7 +729,7 @@ func _apply_layout() -> void:
 	var bldbg_hint: Label = Label.new()
 	bldbg_hint.text = "Animated orbs behind the journey builder canvas. Turn off for a plain black background (less motion, lighter on the GPU). Applies next time the builder opens."
 	bldbg_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(bldbg_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(bldbg_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(bldbg_hint)
 
 	# ── Update Check row (code-generated, appended to DisplaySection) ─────────
@@ -747,7 +757,7 @@ func _apply_layout() -> void:
 	var upd_hint: Label = Label.new()
 	upd_hint.text = "Pings GitHub once per launch for a newer build and shows a banner. Off = no network call."
 	upd_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(upd_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(upd_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(upd_hint)
 
 	for label_path in [
@@ -807,7 +817,7 @@ func _apply_layout() -> void:
 
 	_range_min_lbl = Label.new()
 	_range_min_lbl.text = "MIN: 0"
-	_style_label(_range_min_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_range_min_lbl, UITheme.PURPLE_TEXT, 11, true)
 	val_row.add_child(_range_min_lbl)
 
 	var val_spacer: Control = Control.new()
@@ -816,7 +826,7 @@ func _apply_layout() -> void:
 
 	_range_max_lbl = Label.new()
 	_range_max_lbl.text = "MAX: 100"
-	_style_label(_range_max_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_range_max_lbl, UITheme.PURPLE_TEXT, 11, true)
 	val_row.add_child(_range_max_lbl)
 
 	# Update labels, push live into the player, and auto-save whenever a handle is moved.
@@ -835,7 +845,7 @@ func _apply_layout() -> void:
 	var hint: Label = Label.new()
 	hint.text = "Hard-clamps the stroke (main) axis to this range. Affects both Buttplug and Serial outputs."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(hint)
 
 	# ── Your device (declared axis profile) ─────────────────────────────────
@@ -864,7 +874,7 @@ func _apply_layout() -> void:
 		+ "Twist is offered, so you never get one you can't feel. It doesn't change what is sent."
 	)
 	profile_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(profile_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(profile_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(profile_hint)
 
 	_device_profile_note = Label.new()
@@ -885,7 +895,7 @@ func _apply_layout() -> void:
 	var axis_hint: Label = Label.new()
 	axis_hint.text = "Per-axis range for multi-axis devices (e.g. SR6). The stroke axis uses Stroke Range above."
 	axis_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(axis_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(axis_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(axis_hint)
 
 	for axis_def: Array in SECONDARY_AXES:
@@ -918,7 +928,7 @@ func _apply_layout() -> void:
 
 		var ax_min_lbl: Label = Label.new()
 		ax_min_lbl.text = "MIN: 0"
-		_style_label(ax_min_lbl, UITheme.PURPLE_MID, 11, true)
+		_style_label(ax_min_lbl, UITheme.PURPLE_TEXT, 11, true)
 		ax_val_row.add_child(ax_min_lbl)
 		_axis_range_min_lbls[axis_id] = ax_min_lbl
 
@@ -928,7 +938,7 @@ func _apply_layout() -> void:
 
 		var ax_max_lbl: Label = Label.new()
 		ax_max_lbl.text = "MAX: 100"
-		_style_label(ax_max_lbl, UITheme.PURPLE_MID, 11, true)
+		_style_label(ax_max_lbl, UITheme.PURPLE_TEXT, 11, true)
 		ax_val_row.add_child(ax_max_lbl)
 		_axis_range_max_lbls[axis_id] = ax_max_lbl
 
@@ -969,7 +979,7 @@ func _apply_layout() -> void:
 		+ "instead. Scaled by the Twist range above, so a narrow window makes even Strong subtle."
 	)
 	twist_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(twist_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(twist_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(twist_hint)
 
 	_auto_twist_note = Label.new()
@@ -1005,7 +1015,7 @@ func _apply_layout() -> void:
 
 	_home_value_lbl = Label.new()
 	_home_value_lbl.text = "50"
-	_style_label(_home_value_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_home_value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	home_slider_col.add_child(_home_value_lbl)
 
 	_home_slider.value_changed.connect(
@@ -1034,7 +1044,7 @@ func _apply_layout() -> void:
 
 	var home_ease_hint_lbl: Label = Label.new()
 	home_ease_hint_lbl.text = "ms"
-	_style_label(home_ease_hint_lbl, UITheme.SEPARATOR, 12, false)
+	_style_label(home_ease_hint_lbl, UITheme.TEXT_HINT, 12, false)
 	home_ease_row.add_child(home_ease_hint_lbl)
 
 	_home_ease_input.text_changed.connect(func(_t: String) -> void: _save_settings())
@@ -1042,7 +1052,7 @@ func _apply_layout() -> void:
 	var home_hint: Label = Label.new()
 	home_hint.text = "L0 target position when playback pauses or stops. Secondary axes always return to centre."
 	home_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(home_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(home_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(home_hint)
 
 	# ── Vibration Intensity row ──────────────────────────────────────────────
@@ -1072,7 +1082,7 @@ func _apply_layout() -> void:
 
 	_vibe_value_lbl = Label.new()
 	_vibe_value_lbl.text = "100%"
-	_style_label(_vibe_value_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_vibe_value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	vibe_col.add_child(_vibe_value_lbl)
 
 	_vibe_slider.value_changed.connect(
@@ -1084,7 +1094,7 @@ func _apply_layout() -> void:
 	var vibe_hint: Label = Label.new()
 	vibe_hint.text = "Scales output strength for vibrators. No effect on linear (stroker) devices."
 	vibe_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(vibe_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(vibe_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(vibe_hint)
 
 	# ── Max Stroke Speed row ─────────────────────────────────────────────────
@@ -1114,7 +1124,7 @@ func _apply_layout() -> void:
 
 	_max_speed_value_lbl = Label.new()
 	_max_speed_value_lbl.text = "Off"
-	_style_label(_max_speed_value_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_max_speed_value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	speed_col.add_child(_max_speed_value_lbl)
 
 	_max_speed_slider.value_changed.connect(
@@ -1126,7 +1136,7 @@ func _apply_layout() -> void:
 	var speed_hint: Label = Label.new()
 	speed_hint.text = "Caps how fast linear devices move — faster strokes are slowed to this limit. Off = unlimited. No effect on vibrators."
 	speed_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(speed_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(speed_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(speed_hint)
 
 	# ── Storyboard Filler section (built entirely in code) ────────────────────
@@ -1187,7 +1197,7 @@ func _apply_layout() -> void:
 
 	var allow_hint: Label = Label.new()
 	allow_hint.text = "a scene may use its own range + speed"
-	_style_label(allow_hint, UITheme.SEPARATOR, 12, false)
+	_style_label(allow_hint, UITheme.TEXT_HINT, 12, false)
 	allow_row.add_child(allow_hint)
 
 	# Speed row
@@ -1210,7 +1220,7 @@ func _apply_layout() -> void:
 
 	var filler_speed_hint: Label = Label.new()
 	filler_speed_hint.text = "ms per half-stroke"
-	_style_label(filler_speed_hint, UITheme.SEPARATOR, 12, false)
+	_style_label(filler_speed_hint, UITheme.TEXT_HINT, 12, false)
 	filler_speed_row.add_child(filler_speed_hint)
 
 	# Range row
@@ -1239,7 +1249,7 @@ func _apply_layout() -> void:
 
 	_filler_range_min_lbl = Label.new()
 	_filler_range_min_lbl.text = "MIN: 0"
-	_style_label(_filler_range_min_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_filler_range_min_lbl, UITheme.PURPLE_TEXT, 11, true)
 	filler_val_row.add_child(_filler_range_min_lbl)
 
 	var filler_val_spacer: Control = Control.new()
@@ -1248,7 +1258,7 @@ func _apply_layout() -> void:
 
 	_filler_range_max_lbl = Label.new()
 	_filler_range_max_lbl.text = "MAX: 100"
-	_style_label(_filler_range_max_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(_filler_range_max_lbl, UITheme.PURPLE_TEXT, 11, true)
 	filler_val_row.add_child(_filler_range_max_lbl)
 
 	_filler_range_slider.range_changed.connect(
@@ -1284,7 +1294,7 @@ func _apply_layout() -> void:
 	var filler_hint: Label = Label.new()
 	filler_hint.text = "Keeps the device active during storyboard scenes with a repeating alternating stroke. Respects the Position Clamp above. A scene that sets its own range and speed uses those instead, unless you switch that off."
 	filler_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(filler_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(filler_hint, UITheme.TEXT_HINT, 11, false)
 	filler_section.add_child(filler_hint)
 
 	# ── Journey storage location row (inserted into JourneysSection) ──────────
@@ -1348,21 +1358,23 @@ func _build_tabs() -> void:
 	_on_tab_changed(0)
 
 
+# The selected tab is white on a filled purple tab with a bright edge; the others are readable purple
+# on the dark fill (they were 1.8:1), so the open tab stands out by brightness, not hue alone.
 func _style_tab_bar(tabs: TabBar) -> void:
-	tabs.add_theme_color_override("font_selected_color", UITheme.PURPLE_BRIGHT)
-	tabs.add_theme_color_override("font_unselected_color", UITheme.PURPLE_MID)
+	tabs.add_theme_color_override("font_selected_color", UITheme.WHITE_SOFT)
+	tabs.add_theme_color_override("font_unselected_color", UITheme.PURPLE_TEXT)
 	tabs.add_theme_color_override("font_hovered_color", UITheme.WHITE_SOFT)
 	tabs.add_theme_font_size_override("font_size", 14)
 	tabs.add_theme_stylebox_override(
 		"tab_selected", _make_btn_style(UITheme.PURPLE_BRIGHT, UITheme.PURPLE_MID)
 	)
 	tabs.add_theme_stylebox_override(
-		"tab_unselected", _make_btn_style(UITheme.PURPLE_MID, UITheme.PURPLE_DARK)
+		"tab_unselected", _make_btn_style(UITheme.BORDER, UITheme.PURPLE_DARK)
 	)
 	tabs.add_theme_stylebox_override(
 		"tab_hovered", _make_btn_style(UITheme.PURPLE_BRIGHT, UITheme.PURPLE_DARK)
 	)
-	tabs.add_theme_stylebox_override("tab_focus", StyleBoxEmpty.new())
+	tabs.add_theme_stylebox_override("tab_focus", UITheme.focus_ring_style())
 
 
 # Shows the sections that belong to tab `idx` and hides all others.
@@ -1512,27 +1524,30 @@ func _make_btn_style(border: Color, fill: Color) -> StyleBoxFlat:
 	return UITheme.make_btn_style(border, fill, 18, 10)
 
 
+# ON is white text on a filled purple button with a bright edge; OFF is readable purple on the dark
+# fill. The words say which, so the state never rests on colour alone.
 func _style_toggle(btn: Button, pressed: bool) -> void:
-	var active_color: Color = UITheme.PURPLE_BRIGHT
-	var inactive_color: Color = UITheme.PURPLE_MID
-	var accent: Color = active_color if pressed else inactive_color
-	btn.add_theme_color_override("font_color", accent)
-	btn.add_theme_color_override("font_hover_color", UITheme.WHITE_SOFT)
-	btn.add_theme_color_override("font_pressed_color", UITheme.BG)
-	btn.add_theme_font_size_override("font_size", 14)
-	btn.text = btn.text.to_upper()
+	var edge: Color = UITheme.PURPLE_BRIGHT if pressed else UITheme.BORDER
 	var fill: Color = UITheme.PURPLE_MID if pressed else UITheme.PURPLE_DARK
-	btn.add_theme_stylebox_override("normal", _make_btn_style(accent, fill))
-	btn.add_theme_stylebox_override("hover", _make_btn_style(accent, UITheme.PURPLE_MID))
-	btn.add_theme_stylebox_override("pressed", _make_btn_style(active_color, active_color))
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_color_override(
+		"font_color", UITheme.WHITE_SOFT if pressed else UITheme.PURPLE_TEXT
+	)
+	btn.add_theme_color_override("font_hover_color", UITheme.WHITE_SOFT)
+	btn.add_theme_color_override("font_pressed_color", UITheme.text_on(UITheme.PURPLE_BRIGHT))
+	btn.add_theme_font_size_override("font_size", 14)
+	btn.add_theme_stylebox_override("normal", _make_btn_style(edge, fill))
+	btn.add_theme_stylebox_override("hover", _make_btn_style(edge, UITheme.PURPLE_MID))
+	btn.add_theme_stylebox_override(
+		"pressed", _make_btn_style(UITheme.PURPLE_BRIGHT, UITheme.PURPLE_BRIGHT)
+	)
+	btn.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 	btn.text = "ON" if pressed else "OFF"
 
 
 func _style_slider(slider: HSlider) -> void:
 	var track: StyleBoxFlat = StyleBoxFlat.new()
 	track.bg_color = UITheme.PURPLE_DARK
-	track.border_color = UITheme.PURPLE_MID
+	track.border_color = UITheme.BORDER
 	track.border_width_left = 1
 	track.border_width_right = 1
 	track.border_width_top = 1
@@ -1547,6 +1562,7 @@ func _style_slider(slider: HSlider) -> void:
 
 	slider.add_theme_stylebox_override("slider", track)
 	slider.add_theme_stylebox_override("grabber_area", fill)
+	slider.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 	slider.add_theme_color_override("grabber_color", UITheme.MAGENTA)
 	slider.custom_minimum_size.y = 24
 
@@ -1555,13 +1571,11 @@ func _style_option_button(opt: OptionButton) -> void:
 	opt.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 	opt.add_theme_color_override("font_hover_color", UITheme.PURPLE_BRIGHT)
 	opt.add_theme_font_size_override("font_size", 14)
-	opt.add_theme_stylebox_override(
-		"normal", _make_btn_style(UITheme.PURPLE_MID, UITheme.PURPLE_DARK)
-	)
+	opt.add_theme_stylebox_override("normal", _make_btn_style(UITheme.BORDER, UITheme.PURPLE_DARK))
 	opt.add_theme_stylebox_override(
 		"hover", _make_btn_style(UITheme.PURPLE_BRIGHT, UITheme.PURPLE_MID)
 	)
-	opt.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	opt.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 
 
 func _style_line_edit(edit: LineEdit) -> void:
@@ -1581,7 +1595,7 @@ func _style_line_edit(edit: LineEdit) -> void:
 
 	edit.add_theme_stylebox_override("normal", s)
 	edit.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
-	edit.add_theme_color_override("font_placeholder_color", UITheme.PURPLE_MID)
+	edit.add_theme_color_override("font_placeholder_color", UITheme.PURPLE_TEXT)
 	edit.add_theme_color_override("caret_color", UITheme.PURPLE_BRIGHT)
 	edit.add_theme_color_override(
 		"selection_color",
@@ -2030,7 +2044,7 @@ func _build_transcode_section() -> void:
 
 	_ffmpeg_status_label = Label.new()
 	_ffmpeg_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(_ffmpeg_status_label, UITheme.SEPARATOR, 11, false)
+	_style_label(_ffmpeg_status_label, UITheme.TEXT_HINT, 11, false)
 	section.add_child(_ffmpeg_status_label)
 
 	# Whether ffmpeg is actually present, stated up front rather than only after pressing TEST.
@@ -2069,7 +2083,7 @@ func _build_transcode_section() -> void:
 	var get_hint: Label = Label.new()
 	get_hint.text = "Needed to build journeys and to play randomizer runs — playing a downloaded journey doesn't need it. Unzip the download into the install folder above: that folder lives in your user data and survives game updates, whereas a copy placed beside the game's .exe is replaced by every new build."
 	get_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(get_hint, UITheme.SEPARATOR, 11, false)
+	_style_label(get_hint, UITheme.TEXT_HINT, 11, false)
 	section.add_child(get_hint)
 
 	# Auto-transcode master toggle.
@@ -2100,7 +2114,7 @@ func _build_transcode_section() -> void:
 	var hint: Label = Label.new()
 	hint.text = "On (recommended): videos are converted on save so they'll play — a codec the player can't decode is transcoded, H.264 in a format it can't sample cheaply (10-bit, 4:2:2) is re-encoded, and a playable stream in a container it can't open (.ts, .ogv, .wmv) is remuxed. Off: videos are copied as-is and ffmpeg isn't needed — only use this if you prepare compatible videos yourself. Leave FFmpeg Folder empty to use the bundled copy; set it only if the bundled ffmpeg won't run (e.g. under Wine)."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	section.add_child(hint)
 
 
@@ -2652,8 +2666,9 @@ func _build_routing_section() -> void:
 	var hint: Label = Label.new()
 	hint.text = "Scan for Buttplug devices, then map each actuator. Exactly one linear device (or serial) is the stroker; constrict runs automatically from stroke activity."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	section.add_child(hint)
+	_build_oscillate_section(section)
 
 	# Seed sliders BEFORE connecting so setup doesn't fire the change handlers.
 	_intiface_delay_slider.value = SettingsService.get_intiface_delay_ms()
@@ -2728,7 +2743,7 @@ func _build_handy_section() -> void:
 	key_row.add_child(key_edit)
 
 	_handy_status_lbl = Label.new()
-	_style_label(_handy_status_lbl, UITheme.PURPLE_MID, 11, true)  # size + uppercase; colour set per state
+	_style_label(_handy_status_lbl, UITheme.PURPLE_TEXT, 11, true)  # size + uppercase; colour set per state
 	key_row.add_child(_handy_status_lbl)
 	# Reflect the LIVE connection state (the service holds it across rounds) instead of always starting at
 	# "Not checked" — reopening Options mid-session now shows you're still connected.
@@ -2793,7 +2808,7 @@ func _build_handy_section() -> void:
 		+ "a fraction of a second later."
 	)
 	disclosure.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(disclosure, UITheme.SEPARATOR, 11, false)
+	_style_label(disclosure, UITheme.TEXT_HINT, 11, false)
 	section.add_child(disclosure)
 
 
@@ -2843,13 +2858,13 @@ func _build_restim_section() -> void:
 	_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
 	conn_row.add_child(_restim_connect_btn)
 	_restim_status_lbl = Label.new()
-	_style_label(_restim_status_lbl, UITheme.SEPARATOR, 12, true)
+	_style_label(_restim_status_lbl, UITheme.TEXT_HINT, 12, true)
 	conn_row.add_child(_restim_status_lbl)
 
 	var hint: Label = Label.new()
 	hint.text = "Streams the round's funscripts to restim as E-Stim Full T-code over WebSocket. Connecting turns the serial device off. Per-axis levels (Volume, Alpha/Beta, Carrier, Pulse, Vibration) live under E-STIM DEVICE on the Device tab."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	section.add_child(hint)
 
 	# Seed controls BEFORE connecting handlers so setup doesn't fire saves.
@@ -2906,7 +2921,7 @@ func _build_restim_axes_section() -> void:
 		+ "with an e-stim device connected."
 	)
 	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(summary, UITheme.SEPARATOR, 11, false)
+	_style_label(summary, UITheme.TEXT_HINT, 11, false)
 	section.add_child(summary)
 
 	# Full-width and bordered — the builder's expander look — so the closed section is still obvious.
@@ -2928,7 +2943,7 @@ func _build_restim_axes_section() -> void:
 	var hint: Label = Label.new()
 	hint.text = "Motion axes (Alpha/Beta/Carrier/Pulse-freq/Vib1) follow their funscripts when a round provides them; these sliders set every other axis. Raise Volume — at 0 restim is silent. Changes apply live to a connected session."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(hint, UITheme.SEPARATOR, 11, false)
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	_restim_axes_body.add_child(hint)
 
 	for group: Array in RESTIM_AXIS_GROUPS:
@@ -2990,7 +3005,7 @@ func _add_restim_axis_row(parent: VBoxContainer, axis: String, label_text: Strin
 
 	var value_lbl: Label = Label.new()
 	value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
-	_style_label(value_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	row.add_child(value_lbl)
 
 	var initial: int = SettingsService.get_restim_axis(axis)
@@ -3127,7 +3142,7 @@ func _add_delay_row(parent: VBoxContainer, label_text: String, tip: String = "")
 	var value_lbl: Label = Label.new()
 	value_lbl.text = "0 ms"
 	value_lbl.custom_minimum_size = Vector2(60, 0)
-	_style_label(value_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	row.add_child(value_lbl)
 
 	return {"slider": slider, "value": value_lbl}
@@ -3159,7 +3174,7 @@ func _add_factor_row(parent: VBoxContainer, label_text: String, tip: String) -> 
 	var value_lbl: Label = Label.new()
 	value_lbl.text = "1.0×"
 	value_lbl.custom_minimum_size = Vector2(60, 0)
-	_style_label(value_lbl, UITheme.PURPLE_MID, 11, true)
+	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	row.add_child(value_lbl)
 
 	return {"slider": slider, "value": value_lbl}
@@ -3169,6 +3184,7 @@ func _add_factor_row(parent: VBoxContainer, label_text: String, tip: String) -> 
 func _refresh_routing_cards() -> void:
 	if _routing_cards_vbox == null:
 		return
+	_stop_oscillate_test()  # the button running it is about to be freed, and never sends its mouse-up
 	for c in _routing_cards_vbox.get_children():
 		c.queue_free()
 
@@ -3184,15 +3200,16 @@ func _refresh_routing_cards() -> void:
 		var handy_note: Label = Label.new()
 		handy_note.text = "Stroke items, curses & range all reach this device."
 		handy_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_style_label(handy_note, UITheme.SEPARATOR, 10, false)
+		_style_label(handy_note, UITheme.TEXT_HINT, 10, false)
 		handy_body.add_child(handy_note)
 
 	var catalog: Array = ButtplugService.GetDeviceCatalog()
+	var any_oscillate: bool = false
 	if catalog.is_empty():
 		var none_body: VBoxContainer = _make_routing_card("BUTTPLUG", UITheme.PURPLE_MID)
 		var lbl: Label = Label.new()
 		lbl.text = "No devices — connect Intiface and Scan."
-		_style_label(lbl, UITheme.SEPARATOR, 11, false)
+		_style_label(lbl, UITheme.TEXT_HINT, 11, false)
 		none_body.add_child(lbl)
 	else:
 		for entry: Dictionary in catalog:
@@ -3216,9 +3233,16 @@ func _refresh_routing_cards() -> void:
 					DeviceRouting.make_actuator_id(dev_id, "constrict", ch),
 					"Constrict %d" % (ch + 1)
 				)
-			_add_device_test_row(
-				body, int(entry.get("index", -1)), bool(entry.get("linear", false))
-			)
+			for ch in int(entry.get("oscillate_channels", 0)):
+				any_oscillate = true
+				_add_oscillate_row(
+					body,
+					DeviceRouting.make_actuator_id(dev_id, "oscillate", ch),
+					"Oscillate %d" % (ch + 1)
+				)
+			_add_device_test_row(body, entry)
+	if _oscillate_section != null:
+		_oscillate_section.visible = any_oscillate
 
 	_update_stroker_summary()
 
@@ -3318,13 +3342,221 @@ func _add_constrict_row(body: VBoxContainer, actuator_id: String, label_text: St
 	row.add_child(btn)
 
 
-func _add_device_test_row(body: VBoxContainer, device_index: int, is_linear: bool) -> void:
+# An oscillating channel (a thrusting machine's motor): what sets its speed, and the slowest and fastest
+# it may run. The device's TEST button runs it at the fastest. See OSCILLATE_DESIGN.md.
+func _add_oscillate_row(body: VBoxContainer, actuator_id: String, label_text: String) -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	body.add_child(row)
+
+	var lbl: Label = Label.new()
+	lbl.text = label_text
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_label(lbl, UITheme.WHITE_SOFT, 12, false)
+	row.add_child(lbl)
+
+	var dd: OptionButton = OptionButton.new()
+	dd.custom_minimum_size = Vector2(160, 0)
+	dd.focus_mode = Control.FOCUS_NONE
+	dd.add_item("Off")
+	dd.add_item("Stroke rate")
+	dd.add_item("vibe1")
+	dd.add_item("vibe2")
+	dd.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Stroke rate: runs faster the faster the script strokes, and stops when it holds still. "
+				+ "vibe1 / vibe2: a round's vibration script sets the speed."
+			)
+		)
+	)
+	UITheme.style_option_button(dd)
+	var cur: String = str(SettingsService.get_oscillate_routes().get(actuator_id, ""))
+	dd.selected = maxi(0, OSCILLATE_SOURCE_CHOICES.find(cur))
+	dd.item_selected.connect(
+		func(idx: int) -> void: _on_oscillate_source_selected(actuator_id, idx)
+	)
+	row.add_child(dd)
+
+	var limits_row: HBoxContainer = HBoxContainer.new()
+	limits_row.add_theme_constant_override("separation", 10)
+	body.add_child(limits_row)
+	var limits_lbl: Label = Label.new()
+	limits_lbl.text = "Speed limits"
+	limits_lbl.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"The slowest it runs while the script is moving (some machines stall when too slow), and the "
+				+ "fastest it ever runs. It still stops when the script holds still."
+			)
+		)
+	)
+	limits_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	_style_label(limits_lbl, UITheme.DARK_TEXT, 11, false)
+	limits_row.add_child(limits_lbl)
+	var limits: Dictionary = DeviceRouting.oscillate_limits_for(
+		SettingsService.get_oscillate_limits(), actuator_id
+	)
+	var slider: RangeSlider = RangeSlider.new()
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.value_format = func(v: float) -> String: return "%d%%" % roundi(v)
+	slider.set_range_values(float(limits["min"]), float(limits["max"]))
+	slider.range_changed.connect(
+		func(lo: float, hi: float) -> void: _on_oscillate_limits_changed(actuator_id, lo, hi)
+	)
+	limits_row.add_child(slider)
+
+
+func _on_oscillate_source_selected(actuator_id: String, idx: int) -> void:
+	var routes: Dictionary = SettingsService.get_oscillate_routes()
+	var source: String = OSCILLATE_SOURCE_CHOICES[idx]
+	if source == "":
+		routes.erase(actuator_id)
+	else:
+		routes[actuator_id] = source
+	SettingsService.set_oscillate_routes(routes)
+	SettingsService.save()
+
+
+func _on_oscillate_limits_changed(actuator_id: String, lo: float, hi: float) -> void:
+	var limits: Dictionary = SettingsService.get_oscillate_limits()
+	limits[actuator_id] = {"min": roundi(lo), "max": roundi(hi)}
+	SettingsService.set_oscillate_limits(limits)
+	SettingsService.save()
+
+
+# Runs each of a device's oscillate channels at its saved max limit while HOLD TO TEST is held.
+# Independent of the routing, like the other device tests. It stops on release, and also when the
+# pointer leaves the button, the cards are rebuilt, the window loses focus, Options closes, or
+# OSCILLATE_TEST_MAX_S passes, whichever comes first.
+func _start_oscillate_test(device_index: int, dev_id: String, channels: int) -> void:
+	if not ButtplugService.BpConnected or device_index < 0:
+		return
+	_stop_oscillate_test()
+	_oscillate_test = {"device_index": device_index, "dev_id": dev_id, "channels": channels}
+	_send_oscillate_test(true)
+	var timer: SceneTreeTimer = get_tree().create_timer(OSCILLATE_TEST_MAX_S)
+	_oscillate_test_timer = timer
+	timer.timeout.connect(
+		func() -> void:
+			if _oscillate_test_timer == timer:
+				_stop_oscillate_test()
+	)
+
+
+func _stop_oscillate_test() -> void:
+	if _oscillate_test.is_empty():
+		return
+	_send_oscillate_test(false)
+	_oscillate_test = {}
+	_oscillate_test_timer = null
+
+
+func _send_oscillate_test(run: bool) -> void:
+	if not ButtplugService.BpConnected:
+		return
+	var device_index: int = int(_oscillate_test["device_index"])
+	var dev_id: String = str(_oscillate_test["dev_id"])
+	var all_limits: Dictionary = SettingsService.get_oscillate_limits()
+	for ch: int in int(_oscillate_test["channels"]):
+		var actuator_id: String = DeviceRouting.make_actuator_id(dev_id, "oscillate", ch)
+		var limits: Dictionary = DeviceRouting.oscillate_limits_for(all_limits, actuator_id)
+		var speed: float = float(limits["max"]) / 100.0 if run else 0.0
+		ButtplugService.SendOscillateChannel(device_index, ch, speed)
+
+
+func _notification(what: int) -> void:
+	match what:
+		NOTIFICATION_WM_WINDOW_FOCUS_OUT, NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_EXIT_TREE:
+			_stop_oscillate_test()
+
+
+# One setting for every oscillating device, under its own header like the other device sections: the
+# stroke rate that means full speed (the max limit). Slower scripts scale down toward the min limit.
+# Shown by _refresh_routing_cards while an oscillating device is connected.
+func _build_oscillate_section(parent: VBoxContainer) -> void:
+	_oscillate_section = VBoxContainer.new()
+	_oscillate_section.add_theme_constant_override("separation", 10)
+	_oscillate_section.visible = false
+	parent.add_child(_oscillate_section)
+
+	var header: Label = Label.new()
+	header.text = "OSCILLATING DEVICES"
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	_oscillate_section.add_child(header)
+
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	_oscillate_section.add_child(divider)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	_oscillate_section.add_child(row)
+
+	var tip: String = (
+		"How fast the script has to stroke for an oscillating device to reach its max speed limit. "
+		+ "Lower it if the machine rarely gets going; raise it if it's always flat out."
+	)
+	var lbl: Label = Label.new()
+	lbl.text = "Full speed at"
+	lbl.tooltip_text = UITheme.wrap_tip(tip)
+	lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(lbl, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(lbl)
+
+	var slider: HSlider = HSlider.new()
+	slider.min_value = SettingsService.OSCILLATE_FULL_RATE_MIN
+	slider.max_value = SettingsService.OSCILLATE_FULL_RATE_MAX
+	slider.step = 0.25
+	slider.value = SettingsService.get_oscillate_full_rate()
+	slider.tooltip_text = UITheme.wrap_tip(tip)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(slider)
+	row.add_child(slider)
+
+	var value_lbl: Label = Label.new()
+	value_lbl.custom_minimum_size = Vector2(110, 0)
+	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
+	value_lbl.text = _strokes_per_second_text(slider.value)
+	row.add_child(value_lbl)
+	slider.value_changed.connect(
+		func(v: float) -> void:
+			value_lbl.text = _strokes_per_second_text(v)
+			SettingsService.set_oscillate_full_rate(v)
+			SettingsService.save()
+			FunscriptPlayer.SetOscillateFullRate(v)
+	)
+
+
+func _strokes_per_second_text(rate: float) -> String:
+	return "%s strokes/s" % String.num(rate, 2)
+
+
+# The device's TEST button. A stroker sweeps and a vibrator pulses on a press; an oscillating device
+# runs every oscillate channel at its max speed limit for as long as the button is held, which is how
+# the limits get set without starting a round.
+func _add_device_test_row(body: VBoxContainer, entry: Dictionary) -> void:
+	var device_index: int = int(entry.get("index", -1))
+	var is_linear: bool = bool(entry.get("linear", false))
+	var oscillate_channels: int = int(entry.get("oscillate_channels", 0))
 	var btn: Button = Button.new()
-	btn.text = "TEST"
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+	if oscillate_channels > 0 and not is_linear:
+		var dev_id: String = str(entry.get("id", ""))
+		btn.text = "HOLD TO TEST"
+		btn.tooltip_text = UITheme.wrap_tip("Runs at the max speed limit while held.")
+		btn.button_down.connect(
+			func() -> void: _start_oscillate_test(device_index, dev_id, oscillate_channels)
+		)
+		btn.button_up.connect(_stop_oscillate_test)
+		btn.mouse_exited.connect(_stop_oscillate_test)
+	else:
+		btn.text = "TEST"
+		btn.pressed.connect(func() -> void: _test_bp_device(device_index, is_linear, btn))
 	UITheme.style_button_subtle(btn, UITheme.PURPLE_MID)
-	btn.pressed.connect(func() -> void: _test_bp_device(device_index, is_linear, btn))
 	body.add_child(btn)
 
 

@@ -517,7 +517,7 @@ func _add_map_button() -> void:
 	var h: StyleBoxFlat = n.duplicate()
 	h.bg_color = Color(accent.r, accent.g, accent.b, 0.28)
 	_map_btn.add_theme_stylebox_override("hover", h)
-	_map_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	_map_btn.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 
 
 # ---------------------------------------------------------------------------
@@ -646,4 +646,4 @@ func _apply_theme() -> void:
 	var sk_p: StyleBoxFlat = sk_n.duplicate()
 	sk_p.bg_color = UITheme.DARK_TEXT
 	_skip_btn.add_theme_stylebox_override("pressed", sk_p)
-	_skip_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	_skip_btn.add_theme_stylebox_override("focus", UITheme.focus_ring_style())

@@ -51,7 +51,7 @@ func apply_tooltip_scale() -> void:
 # (see the README there). Missing files no-op — nothing breaks, you just keep depending on the OS.
 const GLYPH_FALLBACK_FONTS: Array[String] = [
 	"res://assets/fonts/NotoSansSymbols2-Regular.ttf",  # monochrome symbols: ⑂ ✎ ✕ ⚔ ✂ ★ ⬆ ⬇ ⚙ …
-	"res://assets/fonts/NotoColorEmoji.ttf",  # colour emoji: 📂 🔥 🎲 🎭 🏁 …
+	"res://assets/fonts/NotoColorEmoji-Regular.ttf",  # colour emoji: 📂 🔥 🎲 🎭 🏁 …
 ]
 
 
@@ -143,6 +143,17 @@ const SUCCESS: Color = Color(0.3, 1.0, 0.5, 1.0)
 # Aliases for clarity at the call site
 const STORYBOARD: Color = Color(0.0, 0.78, 0.88, 1.0)  # used by JourneyBuilder
 
+# Readable colours (COLOUR_MODES_DESIGN.md, phase 0). Measured against PANEL_BG: text needs 4.5:1 and
+# control edges 3:1 (WCAG). SEPARATOR and PURPLE_MID used as text read at 1.9:1 and 2.1:1, and
+# PURPLE_MID borders at 2.1:1, so text and controls take these instead; backgrounds and the brand
+# purples stay as they are.
+const TEXT_HINT: Color = Color(0.659, 0.561, 0.816, 1.0)  # #a88fd0 hints and secondary text, 7.2:1
+const PURPLE_TEXT: Color = Color(0.725, 0.549, 0.941, 1.0)  # #b98cf0 purple as text, 7.8:1
+const BORDER: Color = Color(0.522, 0.286, 0.788, 1.0)  # #8549c9 control edges, 3.6:1
+const FOCUS_RING: Color = WHITE_SOFT  # keyboard focus, 13:1
+const MIN_TEXT_CONTRAST: float = 4.5
+const MIN_UI_CONTRAST: float = 3.0
+
 # Graph view (canvas) extras
 const GRID: Color = Color(0.10, 0.04, 0.18, 0.4)
 const EDGE: Color = Color(0.55, 0.30, 0.85, 0.85)
@@ -157,10 +168,61 @@ const CORNER_RADIUS: int = 4
 
 
 # Apply standard font-color + size + uppercase override to a Label.
+# The colour is lifted to readable on the dark panels if it isn't already (see `readable`).
 func style_label(label: Label, color: Color, size: int, uppercase: bool = false) -> void:
-	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_color", readable(color, PANEL_BG))
 	label.add_theme_font_size_override("font_size", size)
 	label.uppercase = uppercase
+
+
+# ── Readability ────────────────────────────────────────────────────────────
+
+
+# WCAG contrast ratio between two opaque colours (1 = identical, 21 = black on white).
+static func contrast_ratio(a: Color, b: Color) -> float:
+	var la: float = _relative_luminance(a)
+	var lb: float = _relative_luminance(b)
+	return (maxf(la, lb) + 0.05) / (minf(la, lb) + 0.05)
+
+
+static func _relative_luminance(c: Color) -> float:
+	var l: Color = c.srgb_to_linear()
+	return 0.2126 * l.r + 0.7152 * l.g + 0.0722 * l.b
+
+
+# `color` as drawn on `background`, made opaque and lifted toward white until it reaches `minimum`
+# contrast. A colour that already passes comes back unchanged (bar any transparency, which is flattened
+# onto the background), so a call site only changes when it was unreadable. A colour darker than the
+# background is meant for a light fill (black text on a bright pill) and is left alone.
+static func readable(color: Color, background: Color, minimum: float = MIN_TEXT_CONTRAST) -> Color:
+	var drawn: Color = background.lerp(Color(color.r, color.g, color.b, 1.0), color.a)
+	drawn.a = 1.0
+	if _relative_luminance(drawn) <= _relative_luminance(background):
+		return color
+	var lifted: Color = drawn
+	var step: int = 0
+	while contrast_ratio(lifted, background) < minimum and step < 20:
+		step += 1
+		lifted = drawn.lerp(Color.WHITE, step / 20.0)
+	return lifted
+
+
+# Black or soft white, whichever reads better on `fill` — for text on a solid accent (a pressed button).
+static func text_on(fill: Color) -> Color:
+	return BG if contrast_ratio(BG, fill) >= contrast_ratio(WHITE_SOFT, fill) else WHITE_SOFT
+
+
+# The ring a control shows while it has keyboard focus. Godot only draws it for pointer clicks on
+# controls that take typing (gui/common/show_focus_state_on_pointer_event), so mouse users don't see
+# it on every button they click.
+func focus_ring_style() -> StyleBoxFlat:
+	var s: StyleBoxFlat = StyleBoxFlat.new()
+	s.draw_center = false
+	s.border_color = FOCUS_RING
+	s.set_border_width_all(2)
+	s.set_corner_radius_all(CORNER_RADIUS + 2)
+	s.set_expand_margin_all(3)
+	return s
 
 
 # Build a StyleBoxFlat with the cyberpunk border + fill scheme.
@@ -182,19 +244,21 @@ func make_btn_style(border: Color, fill: Color, h_pad: int = 16, v_pad: int = 10
 
 
 # Full button styling: font colors, size, uppercases text, and applies the
-# three-state stylebox (normal/hover/pressed) plus an empty focus rect.
+# three-state stylebox (normal/hover/pressed) plus the keyboard focus ring. A dim accent is lifted
+# to readable for the text and to 3:1 for the edge.
 func style_button(
 	btn: Button, accent: Color, h_pad: int = 16, v_pad: int = 10, font_size: int = 14
 ) -> void:
-	btn.add_theme_color_override("font_color", accent)
+	var edge: Color = readable(accent, PANEL_BG, MIN_UI_CONTRAST)
+	btn.add_theme_color_override("font_color", readable(accent, PURPLE_DARK))
 	btn.add_theme_color_override("font_hover_color", WHITE_SOFT)
-	btn.add_theme_color_override("font_pressed_color", BG)
+	btn.add_theme_color_override("font_pressed_color", text_on(accent))
 	btn.add_theme_font_size_override("font_size", font_size)
 	btn.text = btn.text.to_upper()
-	btn.add_theme_stylebox_override("normal", make_btn_style(accent, PURPLE_DARK, h_pad, v_pad))
-	btn.add_theme_stylebox_override("hover", make_btn_style(accent, PURPLE_MID, h_pad, v_pad))
-	btn.add_theme_stylebox_override("pressed", make_btn_style(accent, accent, h_pad, v_pad))
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("normal", make_btn_style(edge, PURPLE_DARK, h_pad, v_pad))
+	btn.add_theme_stylebox_override("hover", make_btn_style(edge, PURPLE_MID, h_pad, v_pad))
+	btn.add_theme_stylebox_override("pressed", make_btn_style(edge, accent, h_pad, v_pad))
+	btn.add_theme_stylebox_override("focus", focus_ring_style())
 
 
 # Compact icon-only button (used by JourneyBuilder rows for ↑ ↓ ✕ etc.).
@@ -312,14 +376,15 @@ func make_icon_btn(icon: String, disabled: bool, accent: Color) -> Button:
 	btn.text = icon
 	btn.custom_minimum_size = Vector2(32, 0)
 	btn.disabled = disabled
-	btn.add_theme_color_override("font_color", accent)
+	var edge: Color = readable(accent, PANEL_BG, MIN_UI_CONTRAST)
+	btn.add_theme_color_override("font_color", readable(accent, PURPLE_DARK))
 	btn.add_theme_color_override("font_hover_color", WHITE_SOFT)
-	btn.add_theme_color_override("font_pressed_color", BG)
+	btn.add_theme_color_override("font_pressed_color", text_on(accent))
 	btn.add_theme_font_size_override("font_size", 14)
-	btn.add_theme_stylebox_override("normal", make_btn_style(accent, PURPLE_DARK))
-	btn.add_theme_stylebox_override("hover", make_btn_style(accent, PURPLE_MID))
-	btn.add_theme_stylebox_override("pressed", make_btn_style(accent, accent))
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("normal", make_btn_style(edge, PURPLE_DARK))
+	btn.add_theme_stylebox_override("hover", make_btn_style(edge, PURPLE_MID))
+	btn.add_theme_stylebox_override("pressed", make_btn_style(edge, accent))
+	btn.add_theme_stylebox_override("focus", focus_ring_style())
 	return btn
 
 
@@ -334,16 +399,16 @@ func style_button_subtle(
 	font_size: int = 13,
 	uppercase: bool = false
 ) -> void:
-	btn.add_theme_color_override("font_color", accent)
+	btn.add_theme_color_override("font_color", readable(accent, PANEL_BG))
 	btn.add_theme_color_override("font_hover_color", WHITE_SOFT)
-	btn.add_theme_color_override("font_pressed_color", BG)
+	btn.add_theme_color_override("font_pressed_color", text_on(accent))
 	btn.add_theme_font_size_override("font_size", font_size)
 	if uppercase:
 		btn.text = btn.text.to_upper()
 
 	var s: StyleBoxFlat = StyleBoxFlat.new()
 	s.bg_color = Color(accent.r, accent.g, accent.b, 0.12)
-	s.border_color = accent
+	s.border_color = readable(accent, PANEL_BG, MIN_UI_CONTRAST)
 	s.border_width_left = 1
 	s.border_width_right = 1
 	s.border_width_top = 1
@@ -368,7 +433,7 @@ func style_button_subtle(
 	s_disabled.border_color = Color(accent.r, accent.g, accent.b, 0.4)
 	btn.add_theme_stylebox_override("disabled", s_disabled)
 
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("focus", focus_ring_style())
 
 
 # Small square ✕ / close button — magenta outline, transparent fill, magenta-tinted hover. Used by the
@@ -400,18 +465,19 @@ func style_close_button(btn: Button) -> void:
 	var s_pressed: StyleBoxFlat = s.duplicate()
 	s_pressed.bg_color = MAGENTA
 	btn.add_theme_stylebox_override("pressed", s_pressed)
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("focus", focus_ring_style())
 
 
-# LineEdit styling: purple-dark fill, mid-purple border, bright caret/focus.
+# LineEdit styling: purple-dark fill, a 3:1 border, a readable placeholder, and a white edge while
+# it has focus.
 func style_line_edit(line_edit: LineEdit) -> void:
 	line_edit.add_theme_color_override("font_color", WHITE_SOFT)
-	line_edit.add_theme_color_override("font_placeholder_color", PURPLE_MID)
+	line_edit.add_theme_color_override("font_placeholder_color", TEXT_HINT)
 	line_edit.add_theme_color_override("caret_color", PURPLE_BRIGHT)
 	line_edit.add_theme_font_size_override("font_size", 14)
 	var normal_style: StyleBoxFlat = StyleBoxFlat.new()
 	normal_style.bg_color = PURPLE_DARK
-	normal_style.border_color = PURPLE_MID
+	normal_style.border_color = BORDER
 	normal_style.border_width_left = 2
 	normal_style.border_width_right = 2
 	normal_style.border_width_top = 2
@@ -423,7 +489,7 @@ func style_line_edit(line_edit: LineEdit) -> void:
 	normal_style.set_corner_radius_all(CORNER_RADIUS)
 	line_edit.add_theme_stylebox_override("normal", normal_style)
 	var focus_style: StyleBoxFlat = normal_style.duplicate()
-	focus_style.border_color = PURPLE_BRIGHT
+	focus_style.border_color = FOCUS_RING
 	line_edit.add_theme_stylebox_override("focus", focus_style)
 
 
@@ -453,7 +519,7 @@ func style_text_edit(text_edit: TextEdit) -> void:
 	text_edit.add_theme_font_size_override("font_size", 13)
 	var normal_style: StyleBoxFlat = StyleBoxFlat.new()
 	normal_style.bg_color = PURPLE_DARK
-	normal_style.border_color = PURPLE_MID
+	normal_style.border_color = BORDER
 	normal_style.border_width_left = 2
 	normal_style.border_width_right = 2
 	normal_style.border_width_top = 2
@@ -465,7 +531,7 @@ func style_text_edit(text_edit: TextEdit) -> void:
 	normal_style.set_corner_radius_all(CORNER_RADIUS)
 	text_edit.add_theme_stylebox_override("normal", normal_style)
 	var focus_style: StyleBoxFlat = normal_style.duplicate()
-	focus_style.border_color = PURPLE_BRIGHT
+	focus_style.border_color = FOCUS_RING
 	text_edit.add_theme_stylebox_override("focus", focus_style)
 
 
@@ -486,7 +552,7 @@ func _apply_dropdown_style(btn: Button) -> void:
 	btn.add_theme_font_size_override("font_size", 14)
 	var normal_style: StyleBoxFlat = StyleBoxFlat.new()
 	normal_style.bg_color = PURPLE_DARK
-	normal_style.border_color = PURPLE_MID
+	normal_style.border_color = BORDER
 	normal_style.border_width_left = 2
 	normal_style.border_width_right = 2
 	normal_style.border_width_top = 2
@@ -501,7 +567,7 @@ func _apply_dropdown_style(btn: Button) -> void:
 	hover_style.border_color = PURPLE_BRIGHT
 	btn.add_theme_stylebox_override("hover", hover_style)
 	btn.add_theme_stylebox_override("pressed", hover_style)
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("focus", focus_ring_style())
 
 
 # Read-only tag chip: a small rounded pill, `text` in `accent`, on a near-opaque
@@ -511,7 +577,7 @@ func make_tag_chip(text: String, accent: Color) -> Control:
 	var chip: PanelContainer = PanelContainer.new()
 	var s: StyleBoxFlat = StyleBoxFlat.new()
 	s.bg_color = Color(0.03, 0.0, 0.05, 0.9)
-	s.border_color = accent
+	s.border_color = readable(accent, PANEL_BG, MIN_UI_CONTRAST)
 	s.border_width_left = 1
 	s.border_width_right = 1
 	s.border_width_top = 1
@@ -528,7 +594,7 @@ func make_tag_chip(text: String, accent: Color) -> Control:
 
 	var lbl: Label = Label.new()
 	lbl.text = text.to_upper()
-	lbl.add_theme_color_override("font_color", accent)
+	lbl.add_theme_color_override("font_color", readable(accent, PANEL_BG))
 	lbl.add_theme_font_size_override("font_size", 10)
 	chip.add_child(lbl)
 	return chip

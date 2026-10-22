@@ -157,7 +157,7 @@ func _add_delay(vb: VBoxContainer, title: String) -> Dictionary:
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vb.add_child(slider)
 	var value_lbl: Label = Label.new()
-	value_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	value_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	value_lbl.add_theme_font_size_override("font_size", 11)
 	vb.add_child(value_lbl)
 	return {"slider": slider, "value": value_lbl}

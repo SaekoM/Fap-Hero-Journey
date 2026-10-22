@@ -218,9 +218,7 @@ func _ready() -> void:
 	_empty_hint.anchor_right = 1.0
 	_empty_hint.anchor_bottom = 1.0
 	_empty_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_empty_hint.add_theme_color_override(
-		"font_color", Color(UITheme.PURPLE_MID.r, UITheme.PURPLE_MID.g, UITheme.PURPLE_MID.b, 0.75)
-	)
+	_empty_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	_empty_hint.add_theme_font_size_override("font_size", 16)
 	_empty_hint.visible = false
 	add_child(_empty_hint)
@@ -524,9 +522,7 @@ func _make_fog_node() -> Control:
 	lbl.text = "?"
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	lbl.add_theme_color_override(
-		"font_color", Color(UITheme.SEPARATOR.r, UITheme.SEPARATOR.g, UITheme.SEPARATOR.b, 0.8)
-	)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 28)
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(lbl)

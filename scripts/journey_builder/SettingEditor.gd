@@ -304,7 +304,7 @@ func _build_preview() -> Control:
 	_empty_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_empty_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_empty_hint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_empty_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	_empty_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	_empty_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_preview_frame.add_child(_empty_hint)
 
@@ -602,7 +602,7 @@ func _hint(text: String) -> Label:
 	var l: Label = Label.new()
 	l.text = text
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	l.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	l.add_theme_font_size_override("font_size", 10)
 	return l
 
@@ -610,7 +610,7 @@ func _hint(text: String) -> Label:
 func _label(text: String) -> Label:
 	var l: Label = Label.new()
 	l.text = text
-	l.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	l.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	l.add_theme_font_size_override("font_size", 11)
 	return l
 

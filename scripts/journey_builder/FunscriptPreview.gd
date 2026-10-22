@@ -357,7 +357,7 @@ func _build_timeline_column() -> Control:
 	var hint: Label = Label.new()
 	hint.text = "Ctrl+Z / Ctrl+Y"
 	hint.add_theme_font_size_override("font_size", 10)
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	head.add_child(hint)
 	box.add_child(head)
 
@@ -524,7 +524,7 @@ func _build_sensory_strip() -> Control:
 	var lead: Label = Label.new()
 	lead.text = "SENSORY  —  previewed at author strength, before the player's comfort setting"
 	lead.add_theme_font_size_override("font_size", 11)
-	lead.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lead.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	box.add_child(lead)
 
 	var rows: HBoxContainer = HBoxContainer.new()
@@ -577,7 +577,7 @@ func _sensory_slider_row(roll: Dictionary) -> Control:
 	rate_lbl.tooltip_text = str(roll.get("rdesc", ""))
 	rate_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	rate_lbl.add_theme_font_size_override("font_size", 11)
-	rate_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rate_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	row.add_child(rate_lbl)
 	var rate01: float = float(_sensory_rate.get(nm, roll.get("rdef", 0.5)))
 	var rate_value_lbl: Label = Label.new()
@@ -609,12 +609,12 @@ func _refresh_modified() -> void:
 	if _modifiers.is_empty():
 		_graph.set_modified([], false)
 		_caption.text = "No %s on this round — showing the raw script." % _mod_label.to_lower()
-		_caption.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		_caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		return
 	if not _show_modifiers:
 		_graph.set_modified([], false)
 		_caption.text = "Modifiers hidden. " + _modifier_summary()
-		_caption.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		_caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		return
 
 	# `block` suppresses all device output — the script is ignored and the device
@@ -646,7 +646,7 @@ func _build_tuning_strip() -> Control:
 	var lead: Label = Label.new()
 	lead.text = "TUNE"
 	lead.add_theme_font_size_override("font_size", 11)
-	lead.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	lead.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	strip.add_child(lead)
 
 	var any: bool = false
@@ -682,7 +682,7 @@ func _build_tuning_strip() -> Control:
 	var caption: Label = Label.new()
 	caption.text = "Drag to reshape the strokes — the curve updates live and saves to the round."
 	caption.add_theme_font_size_override("font_size", 10)
-	caption.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	box.add_child(caption)
 	return box
 
@@ -696,7 +696,7 @@ func _labeled_spin(
 	var lab: Label = Label.new()
 	lab.text = label
 	lab.add_theme_font_size_override("font_size", 9)
-	lab.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lab.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	box.add_child(lab)
 	var spin: SpinBox = SpinBox.new()
 	spin.min_value = mn

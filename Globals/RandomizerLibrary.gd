@@ -157,7 +157,23 @@ static func _coerce_entry(e: Dictionary) -> Dictionary:
 		# {part_id: unix} — the part-level counterpart of last_used. Both coexist:
 		# a whole-clip entry decays on last_used, its parts decay individually.
 		"part_used": _coerce_part_used(e.get("part_used", {})),
+		# A clip imported from Stash: {scene_id, fingerprint}, which scene it is, so SYNC can find it
+		# again. Empty for a clip imported from files or a folder.
+		"stash": _coerce_stash_link(e.get("stash", {})),
+		# The tags Stash gave it last time, so SYNC can drop one Stash removed without touching the
+		# tags the player added here.
+		"stash_tags": normalize_tags(e.get("stash_tags", [])),
+		# Why the last SYNC couldn't find this clip's scene (StashSync.FLAG_*), or "" when it did.
+		# A flagged clip stays in the library but Generate skips it.
+		"stash_flag": str(e.get("stash_flag", "")),
 	}
+
+
+static func _coerce_stash_link(raw: Variant) -> Dictionary:
+	if not (raw is Dictionary) or str((raw as Dictionary).get("scene_id", "")) == "":
+		return {}
+	var link: Dictionary = raw
+	return {"scene_id": str(link["scene_id"]), "fingerprint": str(link.get("fingerprint", ""))}
 
 
 # Tags as the filter compares them: lower-case, trimmed, no blanks, no repeats, first-seen order.
@@ -283,6 +299,79 @@ func update_entry(id: String, changes: Dictionary) -> void:
 	# Deliberately NO library_changed here: tag/weight/intensity edits aren't
 	# structural, and rebuilding the list would free the control being edited
 	# mid-drag. Add/remove (which change the row set) do emit.
+
+
+# Marks a clip as Stash's scene `scene_id` with the tags Stash gives it now, after an import or SYNC
+# found it. Tags Stash has dropped since last time come off; the player's own stay (StashSync.merged_tags).
+# Clears any flag, since the scene was just found.
+func link_to_stash(id: String, scene_id: String, fingerprint: String, stash_tags: Array) -> void:
+	var entry: Dictionary = get_entry(id)
+	if entry.is_empty():
+		return
+	update_entry(
+		id,
+		{
+			"stash": {"scene_id": scene_id, "fingerprint": fingerprint},
+			"tags": StashSync.merged_tags(entry["tags"], entry["stash_tags"], stash_tags),
+			"stash_tags": normalize_tags(stash_tags),
+			"stash_flag": "",
+		}
+	)
+
+
+# The clip linked to Stash scene `scene_id`, or {}.
+func find_by_stash_scene(scene_id: String) -> Dictionary:
+	for entry: Dictionary in _entries:
+		if str((entry["stash"] as Dictionary).get("scene_id", "")) == scene_id:
+			return entry.duplicate(true)
+	return {}
+
+
+# Every clip that came from Stash.
+func stash_entries() -> Array:
+	return _entries.filter(
+		func(e: Dictionary) -> bool: return not (e["stash"] as Dictionary).is_empty()
+	)
+
+
+func set_stash_flag(id: String, flag: String) -> void:
+	if str(get_entry(id).get("stash_flag", "")) != flag:
+		update_entry(id, {"stash_flag": flag})
+
+
+# When a Stash file moves, re-importing it makes a new clip (ids come from the file's path). This hands
+# the old clip's player-set state to the new one before the old is removed: weight, freshness, tags and
+# which tags were Stash's. Part freshness doesn't carry, since part ids are made from the clip id.
+func carry_over(from_id: String, to_id: String) -> void:
+	var old: Dictionary = get_entry(from_id)
+	var new: Dictionary = get_entry(to_id)
+	if old.is_empty() or new.is_empty():
+		return
+	update_entry(
+		to_id,
+		{
+			"weight": old["weight"],
+			"last_used": old["last_used"],
+			"tags": normalize_tags((old["tags"] as Array) + (new["tags"] as Array)),
+			"stash_tags": old["stash_tags"],
+		}
+	)
+
+
+# Removes every flagged Stash clip (and its pooled files). Returns how many went.
+func remove_stash_flagged() -> int:
+	var flagged: Array = []
+	for entry: Dictionary in _entries:
+		if str(entry["stash_flag"]) != "":
+			flagged.append(entry)
+	if flagged.is_empty():
+		return 0
+	for entry: Dictionary in flagged:
+		_entries.erase(entry)
+		_delete_orphan_pooled(entry)
+	save_registry()
+	library_changed.emit()
+	return flagged.size()
 
 
 func remove_entry(id: String, delete_pooled: bool = true) -> void:
@@ -450,6 +539,9 @@ func add_clip(
 		# that came out identical keeps its history. No pruning of orphaned keys — a
 		# dead one costs a few bytes and re-adding the same file usually reproduces it.
 		entry["part_used"] = (_entries[existing].get("part_used", {}) as Dictionary).duplicate(true)
+		# A clip that came from Stash stays linked when its folder is imported again by hand.
+		entry["stash"] = (_entries[existing].get("stash", {}) as Dictionary).duplicate(true)
+		entry["stash_tags"] = (_entries[existing].get("stash_tags", []) as Array).duplicate()
 		_entries[existing] = entry
 	else:
 		_entries.append(entry)

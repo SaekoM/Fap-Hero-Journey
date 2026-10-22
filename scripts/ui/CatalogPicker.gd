@@ -89,7 +89,7 @@ static func _fill(
 			continue
 		var heading: Label = Label.new()
 		heading.text = str(group.get("title", "")).to_upper()
-		UITheme.style_label(heading, UITheme.PURPLE_MID, 10, true)
+		UITheme.style_label(heading, UITheme.PURPLE_TEXT, 10, true)
 		list.add_child(heading)
 		for entry: Dictionary in matches:
 			list.add_child(_make_entry(entry, pick))

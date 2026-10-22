@@ -1162,7 +1162,7 @@ func _audit_counters_block(counters: Array) -> Control:
 	for head: String in ["COUNTER", "RANGE", "HIGHEST", "ENDS AT", "AT ITS LIMIT"]:
 		var h: Label = Label.new()
 		h.text = head
-		UITheme.style_label(h, UITheme.SEPARATOR, 10, false)
+		UITheme.style_label(h, UITheme.TEXT_HINT, 10, false)
 		grid.add_child(h)
 
 	for row: Variant in counters:
@@ -1371,7 +1371,7 @@ func _audit_stat_card(
 
 	var caption: Label = Label.new()
 	caption.text = caption_text
-	UITheme.style_label(caption, UITheme.PURPLE_MID, 10, true)
+	UITheme.style_label(caption, UITheme.PURPLE_TEXT, 10, true)
 	col.add_child(caption)
 
 	var value: Label = Label.new()
@@ -1401,7 +1401,7 @@ func _audit_endings_bar(endings: Array) -> Control:
 	box.add_theme_constant_override("separation", 3)
 	var caption: Label = Label.new()
 	caption.text = "ENDINGS  (SHARE OF SIMULATED RUNS)"
-	UITheme.style_label(caption, UITheme.PURPLE_MID, 10, true)
+	UITheme.style_label(caption, UITheme.PURPLE_TEXT, 10, true)
 	box.add_child(caption)
 
 	var bar: HBoxContainer = HBoxContainer.new()
@@ -1441,7 +1441,7 @@ func _audit_checkpoint_bar(cp_bar: Dictionary) -> Control:
 	box.add_theme_constant_override("separation", 3)
 	var caption: Label = Label.new()
 	caption.text = "CHECKPOINT SPACING  (WORST-CASE ROUTE)"
-	UITheme.style_label(caption, UITheme.PURPLE_MID, 10, true)
+	UITheme.style_label(caption, UITheme.PURPLE_TEXT, 10, true)
 	box.add_child(caption)
 
 	var bar: HBoxContainer = HBoxContainer.new()
@@ -2395,7 +2395,7 @@ func _show_shortcuts_overlay() -> void:
 	for group: Array in groups:
 		var section_lbl: Label = Label.new()
 		section_lbl.text = group[0]
-		section_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		section_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		section_lbl.add_theme_font_size_override("font_size", 11)
 		section_lbl.uppercase = true
 		list.add_child(section_lbl)
@@ -7093,7 +7093,7 @@ func _create_transcode_modal() -> Control:
 	var status_lbl: Label = Label.new()
 	status_lbl.name = "Status"
 	status_lbl.text = "Starting..."
-	UITheme.style_label(status_lbl, UITheme.PURPLE_MID, 12, false)
+	UITheme.style_label(status_lbl, UITheme.PURPLE_TEXT, 12, false)
 	status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(status_lbl)
 
@@ -9016,7 +9016,7 @@ func _make_save_error_row(err: Dictionary, jump: Callable = Callable()) -> Contr
 		var hint_lbl: Label = Label.new()
 		hint_lbl.text = "→  " + hint_text
 		hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		UITheme.style_label(hint_lbl, UITheme.SEPARATOR, 11, false)
+		UITheme.style_label(hint_lbl, UITheme.TEXT_HINT, 11, false)
 		col.add_child(hint_lbl)
 
 	# A node-specific error becomes a clickable row that locates its node on the canvas (mirrors
@@ -9212,7 +9212,7 @@ func _show_stale_staging_dialog(stale: Array) -> void:
 	var recover_hint: Label = Label.new()
 	recover_hint.text = "Advanced: to recover one manually, rename its folder to remove the `.~save_` prefix using your file manager. The journey will reappear in the catalogue. Most of the time, just deleting them is fine."
 	recover_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_label(recover_hint, UITheme.SEPARATOR, 11, false)
+	UITheme.style_label(recover_hint, UITheme.TEXT_HINT, 11, false)
 	vbox.add_child(recover_hint)
 
 	var btn_row: HBoxContainer = HBoxContainer.new()

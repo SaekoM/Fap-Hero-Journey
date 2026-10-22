@@ -152,7 +152,7 @@ func _setup_version_label() -> void:
 		return
 	var ver_lbl: Label = Label.new()
 	ver_lbl.text = "v" + version
-	ver_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	ver_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	ver_lbl.add_theme_font_size_override("font_size", 12)
 	ver_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	ver_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -219,7 +219,7 @@ func _show_update_banner(latest_version: String) -> void:
 	s_hover.bg_color = Color(UITheme.MAGENTA.r, UITheme.MAGENTA.g, UITheme.MAGENTA.b, 0.34)
 	banner.add_theme_stylebox_override("hover", s_hover)
 	banner.add_theme_stylebox_override("pressed", s_hover)
-	banner.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	banner.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 
 	# Pinned to top-centre, sizing to its content.
 	banner.anchor_left = 0.5

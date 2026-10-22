@@ -348,8 +348,8 @@ func _apply_theme() -> void:
 	_title_lbl.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 
-	_style_label(_sort_lbl, UITheme.PURPLE_MID, 13, true)
-	_style_label(_empty_lbl, UITheme.PURPLE_MID, 15, true)
+	_style_label(_sort_lbl, UITheme.PURPLE_TEXT, 13, true)
+	_style_label(_empty_lbl, UITheme.PURPLE_TEXT, 15, true)
 	_empty_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_empty_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_empty_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -366,12 +366,12 @@ func _apply_theme() -> void:
 	UITheme.style_line_edit(_search_field)
 	UITheme.style_option_button(_diff_filter)
 	UITheme.style_option_button(_tag_filter)
-	_style_label(_count_label, UITheme.PURPLE_MID, 12, true)
+	_style_label(_count_label, UITheme.PURPLE_TEXT, 12, true)
 
 	_style_modal_panel()
 
 	_style_label(_modal_title, UITheme.PURPLE_BRIGHT, 22, true)
-	_style_label(_modal_author, UITheme.PURPLE_MID, 13, false)
+	_style_label(_modal_author, UITheme.PURPLE_TEXT, 13, false)
 	_style_label(_modal_diff, UITheme.MAGENTA, 15, true)
 	_style_label(_modal_desc, UITheme.WHITE_SOFT, 12, false)
 	_modal_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -386,7 +386,7 @@ func _apply_theme() -> void:
 	stats_row.get_parent().add_child(_stat_finish)
 	stats_row.get_parent().move_child(_stat_finish, stats_row.get_index() + 1)
 
-	_style_label(_rounds_hdr, UITheme.SEPARATOR, 11, true)
+	_style_label(_rounds_hdr, UITheme.TEXT_HINT, 11, true)
 
 	var sep_style: StyleBoxFlat = StyleBoxFlat.new()
 	sep_style.bg_color = UITheme.SEPARATOR
@@ -1928,7 +1928,7 @@ func _populate_scoreboard(journey: Dictionary) -> void:
 		var empty: Label = Label.new()
 		empty.text = "No runs yet — play it!"
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		empty.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+		empty.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 		empty.add_theme_font_size_override("font_size", 11)
 		_scoreboard_content.add_child(empty)
 	else:
@@ -1957,7 +1957,7 @@ func _make_score_row(rank: int, run: Dictionary) -> Control:
 	var rank_lbl: Label = Label.new()
 	rank_lbl.text = "%d." % rank
 	rank_lbl.custom_minimum_size = Vector2(22, 0)
-	rank_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rank_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	rank_lbl.add_theme_font_size_override("font_size", 12)
 	row.add_child(rank_lbl)
 
@@ -1984,7 +1984,7 @@ func _make_score_row(rank: int, run: Dictionary) -> Control:
 	date_lbl.text = _format_short_date(str(run.get("date", "")))
 	date_lbl.custom_minimum_size = Vector2(56, 0)
 	date_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	date_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	date_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	date_lbl.add_theme_font_size_override("font_size", 11)
 	row.add_child(date_lbl)
 
@@ -2086,7 +2086,7 @@ func _update_node_view(journey: Dictionary) -> void:
 			lbl.custom_minimum_size = Vector2(col[1], 0)
 		if col[2]:
 			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		lbl.add_theme_font_size_override("font_size", 10)
 		lbl.uppercase = true
 		hdr.add_child(lbl)
@@ -2724,7 +2724,7 @@ func _add_seq_to_list(
 				var order_lbl: Label = Label.new()
 				order_lbl.text = "%02d." % order
 				order_lbl.custom_minimum_size = Vector2(36, 0)
-				order_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				order_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				order_lbl.add_theme_font_size_override("font_size", 12)
 				row.add_child(order_lbl)
 				var name_lbl: Label = Label.new()
@@ -2750,7 +2750,7 @@ func _add_seq_to_list(
 				acts_lbl.text = str(round_data.get("action_count", 0)) + " actions"
 				acts_lbl.custom_minimum_size = Vector2(72, 0)
 				acts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-				acts_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				acts_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				acts_lbl.add_theme_font_size_override("font_size", 12)
 				row.add_child(acts_lbl)
 				var coins_lbl: Label = Label.new()

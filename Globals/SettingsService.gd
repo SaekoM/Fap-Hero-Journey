@@ -69,6 +69,12 @@ const DEFAULT_STROKE_TARGET: String = ""
 const DEFAULT_VIBRATION_ROUTES: Dictionary = {}  # { actuator_id: "vibe1"|"vibe2"|"stroke" }
 const DEFAULT_CONSTRICT_ROUTES: Dictionary = {}  # { actuator_id: true }
 
+# Oscillating devices: the stroke rate (strokes per second) that means full speed. 3 is a very fast
+# script; the community tester tunes it (OSCILLATE_DESIGN.md).
+const DEFAULT_OSCILLATE_FULL_RATE: float = 3.0
+const OSCILLATE_FULL_RATE_MIN: float = 0.5
+const OSCILLATE_FULL_RATE_MAX: float = 8.0
+
 # Constrict auto state machine (activity-driven squeeze). WHICH actuators = constrict_routes above;
 # these globals tune the level transitions. Activity is the stroke speed in funscript units/sec.
 const DEFAULT_CONSTRICT_MAX_LEVEL: int = 1  # 1 or 2
@@ -340,6 +346,27 @@ func get_vibration_routes() -> Dictionary:
 func get_constrict_routes() -> Dictionary:
 	var v: Variant = _config.get_value("routing", "constrict_routes", {})
 	return (v as Dictionary).duplicate() if v is Dictionary else {}
+
+
+# Oscillating devices (OSCILLATE_DESIGN.md): {actuator id: source} for each mapped channel.
+func get_oscillate_routes() -> Dictionary:
+	var v: Variant = _config.get_value("routing", "oscillate_routes", {})
+	return (v as Dictionary).duplicate() if v is Dictionary else {}
+
+
+# {actuator id: {min, max}}, each channel's speed limits in percent. DeviceRouting.oscillate_limits_for
+# reads one with its defaults.
+func get_oscillate_limits() -> Dictionary:
+	var v: Variant = _config.get_value("routing", "oscillate_limits", {})
+	return (v as Dictionary).duplicate(true) if v is Dictionary else {}
+
+
+# The stroke rate, in strokes per second, that runs an oscillating device at its max limit.
+func get_oscillate_full_rate() -> float:
+	var rate: float = float(
+		_config.get_value("routing", "oscillate_full_rate", DEFAULT_OSCILLATE_FULL_RATE)
+	)
+	return clampf(rate, OSCILLATE_FULL_RATE_MIN, OSCILLATE_FULL_RATE_MAX)
 
 
 # Per-backend output delay (ms). Both default to the legacy single latency_offset_ms, so a
@@ -719,6 +746,19 @@ func set_vibration_routes(value: Dictionary) -> void:
 	_config.set_value("routing", "vibration_routes", value)
 
 
+func set_oscillate_routes(value: Dictionary) -> void:
+	_config.set_value("routing", "oscillate_routes", value)
+
+
+func set_oscillate_limits(value: Dictionary) -> void:
+	_config.set_value("routing", "oscillate_limits", value)
+
+
+func set_oscillate_full_rate(value: float) -> void:
+	var rate: float = clampf(value, OSCILLATE_FULL_RATE_MIN, OSCILLATE_FULL_RATE_MAX)
+	_config.set_value("routing", "oscillate_full_rate", rate)
+
+
 func set_constrict_routes(value: Dictionary) -> void:
 	_config.set_value("routing", "constrict_routes", value)
 
@@ -803,6 +843,55 @@ func set_ui_sound_enabled(value: bool) -> void:
 
 func set_ui_sound_volume(value: float) -> void:
 	_config.set_value("audio", "ui_sound_volume", value)
+
+
+# ── Stash (the randomizer's Stash import, STASH_DESIGN.md) ───────────────────
+
+
+# The Stash instance's address as the player typed it; StashClient cleans it up.
+func get_stash_address() -> String:
+	return str(_config.get_value("stash", "address", ""))
+
+
+func set_stash_address(value: String) -> void:
+	_config.set_value("stash", "address", value.strip_edges())
+
+
+# The Stash API key. Kept here like the Handy's connection key; the panel shows it masked, and it is
+# never copied into the randomizer library or a log.
+func get_stash_api_key() -> String:
+	return str(_config.get_value("stash", "api_key", ""))
+
+
+func set_stash_api_key(value: String) -> void:
+	_config.set_value("stash", "api_key", value.strip_edges())
+
+
+# Path mappings, [{from, to}]: a folder as Stash sees it → the same folder as this PC reaches it
+# (a mapped drive or a network share). See StashClient.map_path.
+func get_stash_path_mappings() -> Array:
+	var raw: Variant = _config.get_value("stash", "path_mappings", [])
+	var mappings: Array = []
+	if raw is Array:
+		for mapping: Variant in raw:
+			if mapping is Dictionary:
+				var pair: Dictionary = mapping
+				mappings.append({"from": str(pair.get("from", "")), "to": str(pair.get("to", ""))})
+	return mappings
+
+
+func set_stash_path_mappings(mappings: Array) -> void:
+	_config.set_value("stash", "path_mappings", mappings.duplicate(true))
+
+
+# The Stash tag ids the last import was narrowed to, so the next import and SYNC start from them.
+func get_stash_tag_filter() -> Array:
+	var raw: Variant = _config.get_value("stash", "tag_filter", [])
+	return (raw as Array).duplicate() if raw is Array else []
+
+
+func set_stash_tag_filter(tag_ids: Array) -> void:
+	_config.set_value("stash", "tag_filter", tag_ids.duplicate())
 
 
 # ── Last browse directory (file pickers reopen where you left off) ──────────

@@ -259,19 +259,19 @@ func _populate_score() -> void:
 					% [round_num, rname.to_upper(), "   ⏭ SKIPPED" if was_skipped else ""]
 				)
 				name_lbl.add_theme_color_override(
-					"font_color", UITheme.SEPARATOR if was_skipped else UITheme.WHITE_SOFT
+					"font_color", UITheme.TEXT_HINT if was_skipped else UITheme.WHITE_SOFT
 				)
 				name_lbl.add_theme_font_size_override("font_size", 17)
 
 				var time_lbl: Label = Label.new()
 				var secs: int = (entry.get("length_ms", 0) as int) / 1000
 				time_lbl.text = _fmt(secs)
-				time_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				time_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				time_lbl.add_theme_font_size_override("font_size", 15)
 
 				var act_lbl: Label = Label.new()
 				act_lbl.text = "%d ACTIONS" % breakdown.get("actions", 0)
-				act_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				act_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				act_lbl.add_theme_font_size_override("font_size", 15)
 
 				var detail_lbl: Label = Label.new()
@@ -283,7 +283,7 @@ func _populate_score() -> void:
 						breakdown.get("large", 0)
 					]
 				)
-				detail_lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				detail_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				detail_lbl.add_theme_font_size_override("font_size", 15)
 
 				var pts_lbl: Label = Label.new()
@@ -586,7 +586,7 @@ func _apply_layout() -> void:
 	var hero_caption: Label = Label.new()
 	hero_caption.text = "FINAL SCORE"
 	hero_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hero_caption.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	hero_caption.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	hero_caption.add_theme_font_size_override("font_size", 13)
 	hero_caption.uppercase = true
 	_hero_box.add_child(hero_caption)

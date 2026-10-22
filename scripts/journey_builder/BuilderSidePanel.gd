@@ -467,7 +467,7 @@ func _build_map_settings_section(side_vbox: VBoxContainer) -> void:
 	var reveal_lbl: Label = Label.new()
 	reveal_lbl.text = "STEPS REVEALED AHEAD"
 	reveal_lbl.add_theme_font_size_override("font_size", 11)
-	reveal_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	reveal_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	reveal_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	reveal_row.add_child(reveal_lbl)
 	var reveal_spin: SpinBox = SpinBox.new()
@@ -582,7 +582,7 @@ func _build_map_backdrop_section(side_vbox: VBoxContainer) -> void:
 	side_vbox.add_child(_side_field_label("MAP BACKDROPS"))
 	var hint: Label = Label.new()
 	hint.text = "Images drawn behind the graph — and behind the in-game map — so you can align nodes to places. Stack several; each has its own placement + rotation. Top of the list is in FRONT. Static images only."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	side_vbox.add_child(hint)
@@ -657,7 +657,7 @@ func _make_locked_backdrop_row(b: Dictionary, i: int) -> Control:
 	titles.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var t1: Label = Label.new()
 	t1.text = "🔒 BASE LAYER %d" % (i + 1)
-	t1.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	t1.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	t1.add_theme_font_size_override("font_size", 11)
 	t1.uppercase = true
 	titles.add_child(t1)
@@ -795,7 +795,7 @@ func _make_backdrop_row(i: int) -> Control:
 func _backdrop_filename_label(path: String) -> Label:
 	var lbl: Label = Label.new()
 	lbl.text = path.get_file() if path != "" else "—"
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 10)
 	lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	lbl.clip_text = true
@@ -812,7 +812,7 @@ func _make_seconds_row(
 	var lbl: Label = Label.new()
 	lbl.text = label_text
 	lbl.add_theme_font_size_override("font_size", 11)
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(lbl)
 	var spin: SpinBox = SpinBox.new()
@@ -875,7 +875,7 @@ func _build_finish_section(box: VBoxContainer) -> void:
 		+ "with neither has no button. Aftercare sits off the main graph and ends in a node with no exit."
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
@@ -991,7 +991,7 @@ func _make_custom_items_section() -> Control:
 	var hint: Label = Label.new()
 	hint.text = "Journey-specific items that bundle tuned effects or an override stroke. They appear in the item dropdowns."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
@@ -1088,7 +1088,7 @@ func _rebuild_custom_items_list() -> void:
 	if _owner._journey_items.is_empty():
 		var empty: Label = Label.new()
 		empty.text = "No custom items yet — add one below."
-		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		empty.add_theme_font_size_override("font_size", 11)
 		_custom_items_list.add_child(empty)
 		return
@@ -1634,7 +1634,7 @@ func _make_scene_override_section(node: Dictionary) -> Control:
 
 	var header: Label = Label.new()
 	header.text = "JUST THIS NODE  (OPTIONAL)"
-	header.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	header.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	header.add_theme_font_size_override("font_size", 10)
 	header.tooltip_text = (
 		UITheme
@@ -1856,7 +1856,7 @@ func _make_journey_bgm_section() -> Control:
 		+ "for a round and picks up where it left off."
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
@@ -1896,7 +1896,7 @@ func _rebuild_journey_bgm_list() -> void:
 	row.add_theme_constant_override("separation", 8)
 	var label: Label = Label.new()
 	label.text = "VOLUME"
-	label.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	label.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	label.add_theme_font_size_override("font_size", 10)
 	row.add_child(label)
 	var spin: SpinBox = SpinBox.new()
@@ -1969,7 +1969,7 @@ func _make_settings_section() -> Control:
 		)
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
@@ -2051,7 +2051,7 @@ func _make_setting_row(setting_idx: int) -> Control:
 	var uses: int = _setting_uses(str(setting.get("id", "")))
 	var used: String = "  ·  used %d×" % uses if uses > 0 else "  ·  unused"
 	badge.text = "%d background%s%s%s" % [n_bg, "" if n_bg == 1 else "s", music, used]
-	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.SEPARATOR)
+	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.TEXT_HINT)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
 
@@ -2082,7 +2082,7 @@ func _locked_base_badge() -> Label:
 	lbl.text = "🔒 BASE"
 	lbl.tooltip_text = "Defined by the base journey. A rendition can use it, not change it."
 	lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 11)
 	lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	return lbl
@@ -2161,7 +2161,7 @@ func _build_counters_section(side_vbox: VBoxContainer) -> void:
 		+ "declare keep working exactly as before, unbounded and hidden."
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	side_vbox.add_child(hint)
 
@@ -2275,7 +2275,7 @@ func _make_counter_row(counter_idx: int) -> Control:
 	)
 	if bool(def.get("shown", false)):
 		badge.text += "  ·  👁 shown"
-	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.SEPARATOR)
+	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.TEXT_HINT)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
 
@@ -2541,7 +2541,7 @@ func _add_counter_bound_field(
 		var none: Label = Label.new()
 		none.text = "no floor" if is_floor else "no ceiling"
 		none.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		none.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		none.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		none.add_theme_font_size_override("font_size", 11)
 		row.add_child(none)
 
@@ -2561,7 +2561,7 @@ func _build_flags_section(side_vbox: VBoxContainer) -> void:
 		+ "never typed twice and never typed wrong. Flags you never declare keep working as before."
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	side_vbox.add_child(hint)
 
@@ -2664,7 +2664,7 @@ func _make_flag_row(flag_idx: int) -> Control:
 	var note: String = str(def.get("note", "")).strip_edges()
 	if note != "":
 		badge.text += "  ·  %s" % note
-	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.SEPARATOR)
+	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.TEXT_HINT)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
 
@@ -2903,7 +2903,7 @@ func _make_characters_section() -> Control:
 		)
 	)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	box.add_child(hint)
 
@@ -2981,7 +2981,7 @@ func _make_character_row(char_idx: int) -> Control:
 	var n_portraits: int = (chr.get("portraits", []) as Array).size()
 	badge.text = "%d portrait%s" % [n_portraits, "" if n_portraits == 1 else "s"]
 	badge.add_theme_color_override(
-		"font_color", UITheme.PURPLE_BRIGHT if n_portraits > 0 else UITheme.SEPARATOR
+		"font_color", UITheme.PURPLE_BRIGHT if n_portraits > 0 else UITheme.TEXT_HINT
 	)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
@@ -3633,7 +3633,7 @@ func _override_window_summary(scripts: Dictionary, in_ms: int, out_ms: int) -> S
 func _side_hint(text: String) -> Label:
 	var lbl: Label = Label.new()
 	lbl.text = text
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 11)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return lbl
@@ -3736,7 +3736,7 @@ func _make_item_effect_row(
 				var none: Label = Label.new()
 				none.text = "(no tuning)"
 				none.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-				none.add_theme_color_override("font_color", UITheme.SEPARATOR)
+				none.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 				none.add_theme_font_size_override("font_size", 10)
 				row.add_child(none)
 
@@ -3809,7 +3809,7 @@ func _item_axis_note(text: String) -> Label:
 	note.text = "↳ " + text
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 10)
-	note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	note.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	return note
 
 
@@ -3916,7 +3916,7 @@ func _make_tag_toggle(tag_def: Dictionary) -> Button:
 	btn.add_theme_stylebox_override("hover", off_style)
 	btn.add_theme_stylebox_override("pressed", on_style)
 	btn.add_theme_stylebox_override("hover_pressed", on_style)
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 	btn.add_theme_color_override("font_color", color)
 	btn.add_theme_color_override("font_hover_color", color)
 	btn.add_theme_color_override("font_pressed_color", UITheme.BG)
@@ -4130,7 +4130,7 @@ func show_comment_editor(idx: int) -> void:
 		pin_hint.text = "Drag this note onto a node to pin it — it then moves with that node."
 		pin_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		pin_hint.add_theme_font_size_override("font_size", 11)
-		pin_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		pin_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		side_vbox.add_child(pin_hint)
 
 	side_vbox.add_child(_side_section_separator())
@@ -4229,7 +4229,7 @@ func show_graph_multi_select_panel(ids: Array) -> void:
 
 	var hint: Label = Label.new()
 	hint.text = "Drag any selected node to move the group. Ctrl/Shift-click a node to adjust the selection; click empty space to clear."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	side_vbox.add_child(hint)
@@ -4703,14 +4703,14 @@ func _make_rendition_round_editor(node_id: String, node: Dictionary) -> Control:
 	var rname: String = str(data.get("name", "")).strip_edges()
 	var subl: Label = Label.new()
 	subl.text = ("Round: %s" % rname) if rname != "" else "Round (unnamed)"
-	subl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	subl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	subl.add_theme_font_size_override("font_size", 11)
 	subl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(subl)
 
 	var note: Label = Label.new()
 	note.text = "The base round is locked. Drop axis / vibe funscripts to overlay them onto its EMPTY channels — routed by filename suffix (_L1, _R1, _vib1…). The base's own channels stay untouched."
-	note.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	note.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	note.add_theme_font_size_override("font_size", 10)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(note)
@@ -4776,10 +4776,10 @@ func _channel_overlay_row(
 	row.add_child(lbl)
 
 	if (data.get(field, {}) as Dictionary).has(channel):
-		lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		var s: Label = Label.new()
 		s.text = "in base"
-		s.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		s.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		s.add_theme_font_size_override("font_size", 10)
 		row.add_child(s)
 		return row
@@ -4831,7 +4831,7 @@ func _make_rendition_fork_editor(node_id: String, node: Dictionary) -> Control:
 
 	var note: Label = Label.new()
 	note.text = "The base fork is locked. Add choices that appear only when this rendition is installed."
-	note.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	note.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	note.add_theme_font_size_override("font_size", 10)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(note)
@@ -4841,7 +4841,7 @@ func _make_rendition_fork_editor(node_id: String, node: Dictionary) -> Control:
 		col.add_child(_side_field_label("BASE PROMPT"))
 		var pl: Label = Label.new()
 		pl.text = title
-		pl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		pl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		pl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		col.add_child(pl)
 
@@ -4873,7 +4873,7 @@ func _make_rendition_fork_editor(node_id: String, node: Dictionary) -> Control:
 	else:
 		var capped: Label = Label.new()
 		capped.text = "Fork is full — 4 choices max."
-		capped.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		capped.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		capped.add_theme_font_size_override("font_size", 10)
 		col.add_child(capped)
 
@@ -4891,7 +4891,7 @@ func _make_base_choice_summary(out: Array, ei: int) -> Control:
 	var to: String = str(edge.get("to", "")).strip_edges()
 	var dest: String = _graph_node_label(to) if to != "" else "(open)"
 	lbl.text = "%d. %s → %s" % [ei + 1, nm if nm != "" else "Choice", dest]
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 11)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -5189,7 +5189,7 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		str(data.get("cond_decider", "game")),
 		str(data.get("cond_pick", ForkResolver.PICK_RANDOM))
 	)
-	res_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	res_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	res_hint.add_theme_font_size_override("font_size", 10)
 	res_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(res_hint)
@@ -5784,7 +5784,7 @@ func _make_side_checkpoint_editor(arr: Array, idx: int) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "A SAVE POINT BETWEEN ROUNDS. PLAYERS REACHING IT CAN SAVE & QUIT TO RESUME FROM HERE LATER, OR CONTINUE. PLACE IT BEFORE A ROUND YOU WANT TO ACT AS A CHECKPOINT."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -5808,7 +5808,7 @@ func _make_side_loop_start_editor() -> Control:
 	col.add_theme_constant_override("separation", 8)
 	var hint: Label = Label.new()
 	hint.text = "MARKS THE TOP OF A LOOPED STRETCH. EVERYTHING WIRED FROM HERE DOWN TO ITS LOOP END PLAYS AGAIN EACH TIME. THE EXIT RULES LIVE ON THE LOOP END."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -5853,7 +5853,7 @@ func _make_side_loop_editor(arr: Array, idx: int, reselect: Callable) -> Control
 	if conds.is_empty():
 		var empty: Label = Label.new()
 		empty.text = "No exit rule — the body plays once, then continues. Add a rule to loop it."
-		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		empty.add_theme_font_size_override("font_size", 10)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		col.add_child(empty)
@@ -6161,7 +6161,7 @@ func _journey_has_loops() -> bool:
 func _side_field_label(text: String, tip: String = "") -> Label:
 	var lbl: Label = Label.new()
 	lbl.text = text
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 10)
 	lbl.uppercase = true
 	if tip != "":
@@ -6204,7 +6204,7 @@ func _update_funscript_readout(lbl: Label, round_data: Dictionary) -> void:
 		lbl.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
 		lbl.text = "⚠ funscript has no actions"
 		return
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	var raw_ms: int = int(stats.get("length_ms", 0))
 	var segments: Array = JourneyData.normalize_segments(round_data)
 	if segments.is_empty():
@@ -6237,9 +6237,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 	# Multi-drop hint — shown at the top so it's the first thing the user sees.
 	var drop_hint: Label = Label.new()
 	drop_hint.text = "TIP: DROP ALL SCRIPTS AT ONCE TO AUTO-ROUTE BY AXIS"
-	drop_hint.add_theme_color_override(
-		"font_color", Color(UITheme.PURPLE_MID.r, UITheme.PURPLE_MID.g, UITheme.PURPLE_MID.b, 0.7)
-	)
+	drop_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	drop_hint.add_theme_font_size_override("font_size", 10)
 	drop_hint.uppercase = true
 	drop_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -6290,7 +6288,7 @@ func _make_side_round_editor(arr: Array, idx: int, reselect: Callable) -> Contro
 		# Declared before the drop handler so the closure can refresh it in place.
 		var fs_stats_lbl: Label = Label.new()
 		fs_stats_lbl.add_theme_font_size_override("font_size", 11)
-		fs_stats_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		fs_stats_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		var fs_zone: PanelContainer = DropZoneScript.new()
 		fs_zone.accepted_extensions = JourneyData.FUNSCRIPT_EXTENSIONS.duplicate()
 		fs_zone.picker_title = "Select Funscript"
@@ -6422,7 +6420,7 @@ func _make_round_templates_section(arr: Array, idx: int, reselect: Callable) -> 
 
 	var hint: Label = Label.new()
 	hint.text = "Save this round's setup — type, effects, modifiers, rewards, cards — to reuse on other rounds. Applying replaces a round's setup and never its video, scripts, pool entries or name."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(hint)
@@ -6664,7 +6662,7 @@ func _make_segments_section(round_data: Dictionary) -> Control:
 	readout.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	if segs.is_empty():
 		readout.text = "NO CUT — THE FULL CLIP PLAYS."
-		readout.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		readout.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	else:
 		var total: int = JourneyData.segments_total_ms(segs, int(round_data.get("length_ms", 0)))
 		var first: Dictionary = segs[0]
@@ -6690,7 +6688,7 @@ func _make_segments_section(round_data: Dictionary) -> Control:
 	var hint: Label = Label.new()
 	hint.text = "EDIT IN 📈 PREVIEW & CUT ABOVE."
 	hint.add_theme_font_size_override("font_size", 10)
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	box.add_child(hint)
 	return box
 
@@ -6760,10 +6758,7 @@ func _make_arrival_audit_block(node_id: String) -> Control:
 	if info.is_empty():
 		var hint: Label = Label.new()
 		hint.text = "COMPUTE THE AUDIT TO SEE COINS / SCORE / COUNTERS ARRIVING AT THIS NODE."
-		hint.add_theme_color_override(
-			"font_color",
-			Color(UITheme.PURPLE_MID.r, UITheme.PURPLE_MID.g, UITheme.PURPLE_MID.b, 0.7)
-		)
+		hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		hint.add_theme_font_size_override("font_size", 10)
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		box.add_child(hint)
@@ -6812,7 +6807,7 @@ func _arrival_stat_row(key_text: String, value_text: String) -> Control:
 	var key: Label = Label.new()
 	key.text = key_text
 	key.custom_minimum_size = Vector2(84, 0)
-	key.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	key.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	key.add_theme_font_size_override("font_size", 10)
 	row.add_child(key)
 	var value: Label = Label.new()
@@ -6869,9 +6864,7 @@ func _shop_item_multiselect(
 	section.add_child(_side_field_label(label))
 	var hint: Label = Label.new()
 	hint.text = hint_text
-	hint.add_theme_color_override(
-		"font_color", Color(UITheme.PURPLE_MID.r, UITheme.PURPLE_MID.g, UITheme.PURPLE_MID.b, 0.7)
-	)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -7062,7 +7055,7 @@ func _make_filler_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "A plain up/down stroke while this storyboard is on screen, at your range and speed instead of the player's."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -7295,7 +7288,7 @@ func _show_paste_lines_popup(lines_arr: Array, refresh_storyboard: Callable) -> 
 
 	var hint: Label = Label.new()
 	hint.text = "ONE LINE PER DIALOGUE.  FORMAT:  SPEAKER: text  (LINES WITHOUT A COLON BECOME NARRATION.)"
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -7747,7 +7740,7 @@ func _stage_entry_dropdown(
 	var lbl: Label = Label.new()
 	lbl.text = label
 	lbl.custom_minimum_size = Vector2(72, 0)
-	lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 11)
 	row.add_child(lbl)
 
@@ -7807,7 +7800,7 @@ func _make_insert_line_btn(lines_arr: Array, insert_at: int, refresh: Callable) 
 	var s_p: StyleBoxFlat = s_n.duplicate()
 	s_p.bg_color = Color(c.r, c.g, c.b, 0.28)
 	btn.add_theme_stylebox_override("pressed", s_p)
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	btn.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 
 	btn.add_theme_color_override("font_color", Color(c.r, c.g, c.b, 0.45))
 	btn.add_theme_color_override("font_hover_color", c)
@@ -7958,7 +7951,7 @@ func _make_axis_expander(arr: Array, idx: int) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "SECONDARY-AXIS .FUNSCRIPT FILES FOR T-CODE SR6 / OSR2+ DEVICES.  SERIAL OUTPUT ONLY — IGNORED FOR BUTTPLUG."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8040,7 +8033,7 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "PER-CHANNEL FUNSCRIPTS FOR MULTI-MOTOR VIBRATORS (E.G. WE-VIBE, LOVENSE NORA).  LEAVE EMPTY TO USE THE MAIN FUNSCRIPT FOR ALL CHANNELS."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8137,7 +8130,7 @@ func _make_warmup_toggle(arr: Array, idx: int) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "PLAYERS GET A FREE SKIP BUTTON ON THIS ROUND. COMPLETING IT PAYS OUT NORMALLY; SKIPPING PAYS NOTHING AND IS MARKED ON THE END-SCREEN ROUTE."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8315,7 +8308,7 @@ func _make_boss_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "BOSS ROUNDS APPLY FORCED MODIFIERS THE PLAYER CANNOT REMOVE AND OPEN WITH A TELEGRAPHED INTRO CARD. ITEMS ARE LOCKED OUT UNLESS AN ENCOUNTER ALLOWS THEM."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8457,7 +8450,7 @@ func _make_pool_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "One encounter is picked at random (by weight) each play, behind a mystery card. Each encounter carries its own video + funscript — the round's own Video/Funscript fields above are ignored."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(hint)
@@ -8533,7 +8526,7 @@ func _make_pool_drop_zone() -> PanelContainer:
 	lbl.text = "⧉  DROP VIDEOS OR FOLDERS HERE\nOne encounter per video · scripts matched by name"
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	lbl.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	lbl.add_theme_font_size_override("font_size", 10)
 	zone.add_child(lbl)
 	return zone
@@ -8636,7 +8629,7 @@ func _rebuild_pool_entries(arr: Array, idx: int, list: VBoxContainer, reselect: 
 	if entries.is_empty():
 		var empty: Label = Label.new()
 		empty.text = "No encounters yet — add at least one."
-		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		empty.add_theme_font_size_override("font_size", 10)
 		list.add_child(empty)
 		return
@@ -8646,7 +8639,7 @@ func _rebuild_pool_entries(arr: Array, idx: int, list: VBoxContainer, reselect: 
 	if summary_text != "":
 		var summary: Label = Label.new()
 		summary.text = summary_text
-		summary.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		summary.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		summary.add_theme_font_size_override("font_size", 10)
 		summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		list.add_child(summary)
@@ -8802,7 +8795,7 @@ func _make_pool_entry_row(
 	wrow.add_theme_constant_override("separation", 6)
 	var wlbl: Label = Label.new()
 	wlbl.text = "WEIGHT"
-	wlbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	wlbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	wlbl.add_theme_font_size_override("font_size", 10)
 	wlbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	wrow.add_child(wlbl)
@@ -8872,7 +8865,7 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "Applies a mix of gameplay effects (hindrances and/or boons) plus optional sensory modifiers at the start. Items stay usable. Add no effects for a pure visual round (intro card + border only)."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8946,7 +8939,7 @@ func _make_effect_expander(arr: Array, idx: int, reselect: Callable) -> Control:
 		"Random rolls only from the effects you add below — add at least one, or the round "
 		+ "applies no effect."
 	)
-	rand_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rand_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	rand_hint.add_theme_font_size_override("font_size", 10)
 	rand_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(rand_hint)
@@ -8984,7 +8977,7 @@ func _build_effect_catalog_picker(arr: Array, idx: int) -> Control:
 
 	var hint: Label = Label.new()
 	hint.text = "Add the effects this round uses. Open one to rename it, reflavor it, or tune its strength."
-	hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	hint.add_theme_font_size_override("font_size", 10)
 	hint.uppercase = true
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -9086,7 +9079,7 @@ func _make_selected_effect_row(arr: Array, idx: int, nm: String, refill: Callabl
 		elif JourneyData.is_stroke_effect(kind):
 			if not JourneyData.effect_param_specs(kind).is_empty():
 				var h: Label = _side_field_label("↳ tune magnitude in the funscript preview")
-				h.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+				h.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				editor.add_child(h)
 		else:
 			for spec: Dictionary in JourneyData.effect_param_specs(kind):
@@ -9730,7 +9723,7 @@ func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String)
 	var note: Label = Label.new()
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_size_override("font_size", 10)
-	note.add_theme_color_override("font_color", UITheme.PURPLE_MID)
+	note.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 	var scripted: Array = ImportScanner.scripted_axes(round_data)
 	if kind == "pose":
 		note.text = (
@@ -9793,7 +9786,7 @@ func _rebuild_boss_modifiers(arr: Array, idx: int, list: VBoxContainer) -> void:
 	if mods.is_empty():
 		var empty: Label = Label.new()
 		empty.text = "NO MODIFIERS — THE BOSS PLAYS ITS SCRIPT AS-IS."
-		empty.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		empty.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		empty.add_theme_font_size_override("font_size", 10)
 		empty.uppercase = true
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -9914,7 +9907,7 @@ func _make_boss_modifier_row(arr: Array, idx: int, list: VBoxContainer, m_idx: i
 		_:
 			var none_lbl: Label = Label.new()
 			none_lbl.text = "NO PARAMETERS"
-			none_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+			none_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 			none_lbl.add_theme_font_size_override("font_size", 10)
 			col.add_child(none_lbl)
 

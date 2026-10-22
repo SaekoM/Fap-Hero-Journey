@@ -238,6 +238,7 @@ public partial class ButtplugService : Node
                 ["linear"] = DeviceSupportsLinear(deviceIndex),
                 ["vibrate_channels"] = GetVibrationChannelCount(deviceIndex),
                 ["constrict_channels"] = GetConstrictChannelCount(deviceIndex),
+                ["oscillate_channels"] = GetOscillateChannelCount(deviceIndex),
             });
         }
         return result;
@@ -317,6 +318,46 @@ public partial class ButtplugService : Node
         catch
         {
             return 0;
+        }
+    }
+
+    // Number of oscillate actuators on the device: speed-driven outputs such as a thrusting machine's
+    // motor. 0 for everything else (the common case).
+    public int GetOscillateChannelCount(int deviceIndex)
+    {
+        var device = GetDeviceAt(deviceIndex);
+        if (device == null)
+            return 0;
+
+        try
+        {
+            return device.GetFeaturesWithOutput(OutputType.Oscillate).Count();
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    // Run an oscillate actuator at `speed` (0–1; 0 stops it). Channel 0 = the primary oscillator. Unlike
+    // vibrate there is no all-channels fallback: an out-of-range channel sends nothing, since starting a
+    // machine's other motor by mistake is worse than not starting one.
+    public async void SendOscillateChannel(int deviceIndex, int channelIndex, double speed)
+    {
+        var device = GetDeviceAt(deviceIndex);
+        if (device == null)
+            return;
+
+        try
+        {
+            var feature = device.GetFeaturesWithOutput(OutputType.Oscillate).ElementAtOrDefault(channelIndex);
+            if (feature == null)
+                return;
+            await feature.RunOutputAsync(DeviceOutput.Oscillate.Percent(Math.Clamp(speed, 0.0, 1.0)), default);
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"ButtplugService: SendOscillateChannel failed: {e.Message}");
         }
     }
 

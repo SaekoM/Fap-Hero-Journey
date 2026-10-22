@@ -146,6 +146,18 @@ public partial class FunscriptPlayer : Node
     private int _strokeDeviceIndex = -1;   // Buttplug linear device index when _strokeBackend == Buttplug
     private readonly List<(int Index, int Channel, string Source)> _vibeRoutes = new List<(int Index, int Channel, string Source)>();
     private readonly List<(int Index, int Channel)> _constrictRoutes = new List<(int Index, int Channel)>();
+    // Oscillate actuators (OSCILLATE_DESIGN.md): each runs at a speed set by its source — the stroke's
+    // rhythm or a vibe script's level — within its own min/max limits (percent). _oscSpeed is the eased
+    // speed now, _oscSent the last one sent (-1 = nothing yet, so the first tick always sends).
+    private readonly List<(int Index, int Channel, string Source, double Min, double Max)> _oscRoutes =
+        new List<(int Index, int Channel, string Source, double Min, double Max)>();
+    private readonly List<double> _oscSpeed = new List<double>();
+    private readonly List<double> _oscSent = new List<double>();
+    private readonly StrokeRateTracker _strokeRate = new StrokeRateTracker();
+    // The latest vibe1 / vibe2 level (0–1), for oscillate channels that take a vibe script as their speed.
+    private readonly double[] _vibLevel = new double[2];
+    private double _oscFullRate = 3.0;  // strokes per second that mean full speed
+    private double _oscTickMs = 0.0;
     // Smooth output clock. The video reports its position a whole frame at a time (~33ms at 30fps)
     // and micro-jitters; forwarding stroke commands on that raw clock is what jerks the OSR. So our
     // clock free-runs on real time (advanced in _Process) and SyncTo only NUDGES it toward the
@@ -206,6 +218,12 @@ public partial class FunscriptPlayer : Node
     private double _constrictTickMs = 0.0;
     private int _lastConstrictLevel = -1;
     private const double ConstrictTickIntervalMs = 200.0;
+    // Oscillate output: sent at most this often (BLE can't take a stream), only when the speed moved by
+    // at least OscillateSendStep, and eased by at most OscillateMaxChangePerSec so a machine never jumps
+    // from stopped to full. Starting points — the community tester tunes them on hardware.
+    private const double OscillateTickIntervalMs = 100.0;
+    private const double OscillateSendStep = 0.01;
+    private const double OscillateMaxChangePerSec = 1.5;
     private const double ActivityDecayHalfLifeMs = 2000.0;
     private bool _outputResolved = false;
     private int _rangeMin = 0;
@@ -1192,6 +1210,8 @@ public partial class FunscriptPlayer : Node
         _strokeDeviceIndex = -1;
         _vibeRoutes.Clear();
         _constrictRoutes.Clear();
+        ClearOscillateRoutes();
+        System.Array.Clear(_vibLevel, 0, _vibLevel.Length);
         _outputResolved = false;
     }
 
@@ -1358,6 +1378,10 @@ public partial class FunscriptPlayer : Node
                 if ((route.Source == "vibe1" && !_vibScripts.ContainsKey(0))
                     || (route.Source == "vibe2" && !_vibScripts.ContainsKey(1)))
                     bp.SendVibrateChannel(route.Index, route.Channel, 0.0);
+        // Oscillate channels on a vibe source the override doesn't carry ease to a stop on their next tick.
+        for (int ch = 0; ch < _vibLevel.Length; ch++)
+            if (!_vibScripts.ContainsKey(ch))
+                _vibLevel[ch] = 0.0;
 
         ForgetSentAxes();
     }
@@ -1505,11 +1529,12 @@ public partial class FunscriptPlayer : Node
         ResetVortex();
         ForgetSentAxes();
 
-        // Silence every mapped vibe actuator.
+        // Silence every mapped vibe actuator, and stop every oscillating one.
         var bpv = _buttplug;
         if (bpv != null && bpv.BpConnected)
             foreach (var route in _vibeRoutes)
                 bpv.SendVibrateChannel(route.Index, route.Channel, 0.0);
+        StopOscillating();
 
         // restim: position axes home (L0 → user home, mapped motion axes → centre).
         var restim = _restim;
@@ -1660,8 +1685,10 @@ public partial class FunscriptPlayer : Node
                         if (vstate.Actions[vstate.Index].AtMs > _positionMs - _intifaceDelayMs)
                             break;
 
-                        double intensity = vstate.Actions[vstate.Index].Pos / 100.0 * _vibeIntensity;
-                        SendToVibeSource(source, intensity);
+                        double level = vstate.Actions[vstate.Index].Pos / 100.0;
+                        if (vibEntry.Key >= 0 && vibEntry.Key < _vibLevel.Length)
+                            _vibLevel[vibEntry.Key] = level;
+                        SendToVibeSource(source, level * _vibeIntensity);
                         vstate.Index++;
                     }
                 }
@@ -1716,7 +1743,160 @@ public partial class FunscriptPlayer : Node
                 }
             }
         }
+
+        // Oscillate speed — throttled like constrict, since BLE can't take a stream.
+        if (_oscRoutes.Count > 0)
+        {
+            _oscTickMs += delta * 1000.0;
+            if (_oscTickMs >= OscillateTickIntervalMs)
+            {
+                double dtSec = _oscTickMs / 1000.0;
+                _oscTickMs = 0.0;
+                TickOscillate(dtSec);
+            }
+        }
     }
+
+    // Eases each oscillate channel toward the speed its source asks for and sends it when it moved.
+    // Nothing runs while playback is stopped or paused, except a storyboard's filler stroke.
+    private void TickOscillate(double dtSec)
+    {
+        var bp = _buttplug;
+        if (bp == null || !bp.BpConnected)
+            return;
+        bool running = _playing || _fillerActive;
+        double strokeFraction = OscillateStrokeFraction();
+        for (int i = 0; i < _oscRoutes.Count; i++)
+        {
+            var route = _oscRoutes[i];
+            double fraction = route.Source switch
+            {
+                "vibe1" => _vibLevel[0],
+                "vibe2" => _vibLevel[1],
+                _ => strokeFraction,
+            };
+            double target = running ? OscillateSpeed(fraction, route.Min, route.Max) : 0.0;
+            double speed = OscillateEase(_oscSpeed[i], target, dtSec);
+            _oscSpeed[i] = speed;
+            bool stopping = speed <= 0.0 && _oscSent[i] != 0.0;
+            if (stopping || Math.Abs(speed - _oscSent[i]) >= OscillateSendStep)
+            {
+                bp.SendOscillateChannel(route.Index, route.Channel, speed);
+                _oscSent[i] = speed;
+            }
+        }
+    }
+
+    // How hard the stroke is driving an oscillating device, as a fraction of full speed: the round's
+    // stroke, or the storyboard filler's steady one while it runs between rounds.
+    private double OscillateStrokeFraction()
+    {
+        if (_fillerActive && !_playing)
+            return OscillateStrokeFraction(
+                1000.0 / (2.0 * _fillerHalfCycleMs), Math.Abs(_fillerHi - _fillerLo), _oscFullRate);
+        return OscillateStrokeFraction(_strokeRate.Rate, _strokeRate.Depth, _oscFullRate);
+    }
+
+    // How much rhythm and depth each count toward an oscillating device's speed, as points to draw a
+    // line through: (share of full-speed rhythm or of full depth, weight). Set by the owner on a virtual
+    // device (2026-10-22): full strokes at half the full-speed rhythm = 0.6, a fast 0–20 flutter = 0.3,
+    // fast 25–75 strokes = 0.7. Both curves rise faster than a straight line, so slower or shallower
+    // strokes still drive the machine noticeably.
+    private static readonly (double At, double Weight)[] OscillateRhythmCurve =
+        { (0.0, 0.0), (0.5, 0.6), (1.0, 1.0) };
+    private static readonly (double At, double Weight)[] OscillateDepthCurve =
+        { (0.0, 0.0), (0.2, 0.3), (0.5, 0.7), (1.0, 1.0) };
+
+    /// The fraction of full speed (0–1) a stroke `rate` (strokes per second) at `depth` (0–100 travel)
+    /// asks for: the rhythm's weight (against the full-speed rate, capped there) times the depth's
+    /// weight, each read off its curve above. Fast full strokes are full speed; a fast 0–20 flutter is
+    /// gentle, as it feels on a stroker. Public so the unit tests can pin it.
+    public double OscillateStrokeFraction(double rate, double depth, double fullRate)
+    {
+        if (fullRate <= 0.0)
+            return 0.0;
+        double rhythm = OnCurve(OscillateRhythmCurve, Math.Clamp(rate / fullRate, 0.0, 1.0));
+        double travel = OnCurve(OscillateDepthCurve, Math.Clamp(depth, 0.0, 100.0) / 100.0);
+        return rhythm * travel;
+    }
+
+    // `x` read off a curve given as points in rising order: straight lines between them, flat past the
+    // ends.
+    private static double OnCurve((double At, double Weight)[] curve, double x)
+    {
+        if (x <= curve[0].At)
+            return curve[0].Weight;
+        for (int i = 1; i < curve.Length; i++)
+        {
+            if (x <= curve[i].At)
+            {
+                var (fromAt, fromWeight) = curve[i - 1];
+                var (toAt, toWeight) = curve[i];
+                return fromWeight + (toWeight - fromWeight) * (x - fromAt) / (toAt - fromAt);
+            }
+        }
+        return curve[curve.Length - 1].Weight;
+    }
+
+    // Stops every oscillate channel at once — pause, end of round, and anything else that homes the
+    // device. No easing: a machine should stop when the player stops.
+    private void StopOscillating()
+    {
+        var bp = _buttplug;
+        bool connected = bp != null && bp.BpConnected;
+        for (int i = 0; i < _oscRoutes.Count; i++)
+        {
+            if (connected)
+                bp.SendOscillateChannel(_oscRoutes[i].Index, _oscRoutes[i].Channel, 0.0);
+            _oscSpeed[i] = 0.0;
+            _oscSent[i] = 0.0;
+        }
+        _strokeRate.Reset();
+    }
+
+    /// The speed (0–1) an oscillate channel runs at for `fraction` of full speed: nothing at 0 (a hold
+    /// stops it), otherwise between its min and max limits (percent), scaling linearly and capped at
+    /// max. Public so the unit tests can pin it.
+    public double OscillateSpeed(double fraction, double minPct, double maxPct)
+    {
+        if (fraction <= 0.0)
+            return 0.0;
+        double hi = Math.Clamp(maxPct, 0.0, 100.0) / 100.0;
+        double lo = Math.Clamp(minPct, 0.0, 100.0) / 100.0;
+        lo = Math.Min(lo, hi);
+        return lo + (hi - lo) * Math.Clamp(fraction, 0.0, 1.0);
+    }
+
+    /// One easing step from `current` toward `target` over `dtSec`, moving at most
+    /// OscillateMaxChangePerSec. Public so the unit tests can pin it.
+    public double OscillateEase(double current, double target, double dtSec)
+    {
+        double maxStep = OscillateMaxChangePerSec * Math.Max(0.0, dtSec);
+        return current + Math.Clamp(target - current, -maxStep, maxStep);
+    }
+
+    /// The stroke rate (strokes per second) and depth (0–100) a fresh tracker reads after `segments`,
+    /// each [startMs, startPos, endMs, endPos], or [] for a hold (an effect freezing the stroke). The
+    /// test hooks for StrokeRateTracker, which GDScript can't construct.
+    public double StrokeRateOf(Godot.Collections.Array segments) => TrackerAfter(segments).Rate;
+
+    public double StrokeDepthOf(Godot.Collections.Array segments) => TrackerAfter(segments).Depth;
+
+    private static StrokeRateTracker TrackerAfter(Godot.Collections.Array segments)
+    {
+        var tracker = new StrokeRateTracker();
+        foreach (var segmentVariant in segments)
+        {
+            var segment = segmentVariant.AsGodotArray();
+            if (segment.Count < 4)
+                tracker.Hold();
+            else
+                tracker.FeedSegment(segment[0].AsDouble(), segment[1].AsDouble(), segment[2].AsDouble(), segment[3].AsDouble());
+        }
+        return tracker;
+    }
+
+    public void SetOscillateFullRate(double strokesPerSecond) => _oscFullRate = Math.Max(0.1, strokesPerSecond);
 
     // Streams the SERIAL stroke position at the fixed physics rate. Instead of forwarding raw
     // keyframes on the coarse, jittery video clock, we sample the script at the current time every
@@ -1905,6 +2085,7 @@ public partial class FunscriptPlayer : Node
         _maxStrokeSpeed = Math.Max(0, _settings.Call("get_max_stroke_speed").AsInt32());
         _autoTwistGain = Math.Clamp(_settings.Call("get_auto_twist_gain").AsDouble(), 0.0, 1.0);
         _serialInterpFactor = _settings.Call("get_serial_interp_factor").AsDouble();
+        _oscFullRate = _settings.Call("get_oscillate_full_rate").AsDouble();
 
         // Seed the constrict state machine's tuning from settings.
         _constrict.MaxLevel = _settings.Call("get_constrict_max_level").AsInt32();
@@ -1933,12 +2114,15 @@ public partial class FunscriptPlayer : Node
         _strokeDeviceIndex = -1;
         _vibeRoutes.Clear();
         _constrictRoutes.Clear();
+        ClearOscillateRoutes();
 
         string strokeTarget = _settings.Call("get_stroke_target").AsString();
         var vibRoutes = _settings.Call("get_vibration_routes").AsGodotDictionary();
         var constrictRoutes = _settings.Call("get_constrict_routes").AsGodotDictionary();
+        var oscillateRoutes = _settings.Call("get_oscillate_routes").AsGodotDictionary();
+        var oscillateLimits = _settings.Call("get_oscillate_limits").AsGodotDictionary();
 
-        if (string.IsNullOrEmpty(strokeTarget) && vibRoutes.Count == 0)
+        if (string.IsNullOrEmpty(strokeTarget) && vibRoutes.Count == 0 && oscillateRoutes.Count == 0)
         {
             BuildLegacyPlan();
             return;
@@ -1946,7 +2130,7 @@ public partial class FunscriptPlayer : Node
 
         var catalog = _buttplug != null ? _buttplug.GetDeviceCatalog() : new Godot.Collections.Array();
         var plan = _deviceRoutingScript
-            .Call("resolve", strokeTarget, vibRoutes, constrictRoutes, catalog)
+            .Call("resolve", strokeTarget, vibRoutes, constrictRoutes, catalog, oscillateRoutes, oscillateLimits)
             .AsGodotDictionary();
 
         var stroke = plan["stroke"].AsGodotDictionary();
@@ -1983,6 +2167,25 @@ public partial class FunscriptPlayer : Node
             if (idx >= 0)
                 _constrictRoutes.Add((idx, route["channel"].AsInt32()));
         }
+
+        foreach (var o in plan["oscillate"].AsGodotArray())
+        {
+            var route = o.AsGodotDictionary();
+            int idx = _buttplug != null ? _buttplug.GetDeviceIndexById(route["device"].AsString()) : -1;
+            if (idx < 0)
+                continue;
+            _oscRoutes.Add((idx, route["channel"].AsInt32(), route["source"].AsString(),
+                route["min"].AsDouble(), route["max"].AsDouble()));
+            _oscSpeed.Add(0.0);
+            _oscSent.Add(-1.0);
+        }
+    }
+
+    private void ClearOscillateRoutes()
+    {
+        _oscRoutes.Clear();
+        _oscSpeed.Clear();
+        _oscSent.Clear();
     }
 
     // Backward-compat: derive a plan from the pre-routing output_mode / selected_device so a user who
@@ -2042,7 +2245,10 @@ public partial class FunscriptPlayer : Node
             UpdateMirrorBlend(effects);
 
         if (effects != null && HasBlockEffect(effects))
+        {
+            _strokeRate.Hold();  // a frozen stroke stops an oscillating device too
             return;
+        }
 
         // Score + activity from the post-effects amplitude BEFORE the comfort range-clamp, so
         // narrowing the range to taste never costs points (range is comfort, not difficulty).
@@ -2055,6 +2261,14 @@ public partial class FunscriptPlayer : Node
             double segMs = _actions[index + 1].AtMs - _actions[index].AtMs;
             double speed = segMs > 0.0 ? Math.Abs(_actions[index + 1].Pos - _actions[index].Pos) / (segMs / 1000.0) : 0.0;
             _strokeActivity += (speed - _strokeActivity) * 0.5;
+
+            // The rhythm oscillating devices follow, from the stroke after effects (not the comfort
+            // range, which changes how far it goes but not how often it turns).
+            _strokeRate.FeedSegment(_actions[index].AtMs, cur, _actions[index + 1].AtMs, nxt);
+        }
+        else
+        {
+            _strokeRate.Hold();  // the script has ended
         }
 
         // Follow-stroke vibe actuators track the commanded stroke position as intensity.

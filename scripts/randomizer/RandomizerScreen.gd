@@ -112,6 +112,10 @@ var _selection_new_tag: LineEdit
 # that follow every script edit, so editing a clip's channels doesn't collapse its panel each time.
 var _expanded_ids: Dictionary = {}
 
+# The STASH panel while it's open (Esc closes it before leaving the screen).
+var _stash_panel: StashPanel = null
+var _sync_btn: Button  # shown once the library has clips from Stash
+
 
 func _ready() -> void:
 	anchor_right = 1.0
@@ -139,8 +143,10 @@ func _input(event: InputEvent) -> void:
 	if not event.is_action_pressed("ui_cancel") or _busy:
 		return
 	get_viewport().set_input_as_handled()
-	# Esc closes the preview first; otherwise leaves the screen.
-	if _preview_overlay != null:
+	# Esc closes the STASH panel or the preview first; otherwise leaves the screen.
+	if is_instance_valid(_stash_panel):
+		_stash_panel.close()
+	elif _preview_overlay != null:
 		_close_preview()
 	else:
 		Transition.change_scene("res://scenes/main/Main.tscn")
@@ -238,6 +244,29 @@ func _build_library_column() -> Control:
 	UITheme.style_button(add_btn, UITheme.CYAN)
 	add_btn.pressed.connect(_on_add_pressed)
 	bar.add_child(add_btn)
+	var stash_btn := Button.new()
+	stash_btn.text = "+ STASH"
+	stash_btn.tooltip_text = UITheme.wrap_tip(
+		"Import the interactive scenes from a Stash library on this PC or your network."
+	)
+	UITheme.style_button(stash_btn, UITheme.CYAN)
+	stash_btn.pressed.connect(_on_stash_pressed)
+	bar.add_child(stash_btn)
+	_sync_btn = Button.new()
+	_sync_btn.text = "⟳ SYNC STASH"
+	_sync_btn.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Bring the clips from Stash up to date: new scenes are added, tags follow Stash, and clips "
+				+ "whose scene is gone are flagged."
+			)
+		)
+	)
+	UITheme.style_button(_sync_btn, UITheme.CYAN)
+	_sync_btn.pressed.connect(_sync_stash)
+	_sync_btn.visible = false
+	bar.add_child(_sync_btn)
 	var clear_btn := Button.new()
 	clear_btn.text = "CLEAR ALL"
 	UITheme.style_button(clear_btn, UITheme.DANGER)
@@ -563,7 +592,10 @@ func _apply_settings(s: Dictionary) -> void:
 		_tag_filter[t] = TAG_ONLY
 	for t: Variant in RandomizerLibrary.normalize_tags(s.get("tags_exclude", [])):
 		_tag_filter[t] = TAG_NEVER
-	_refresh_tag_chips()
+	if _lib_list != null:
+		_refresh_library()  # rebuilds the chips too
+	else:
+		_refresh_tag_chips()
 	_sync_mode_rows()
 
 
@@ -656,12 +688,23 @@ func _refresh_library() -> void:
 	for c: Node in _lib_list.get_children():
 		c.queue_free()
 	var entries: Array = RandomizerLibrary.get_all()
+	_sync_btn.visible = not RandomizerLibrary.stash_entries().is_empty()
 	_refresh_tag_chips()
 	_prune_selection(entries)
 	_row_checks.clear()
 	_shown_ids = []
 	var query: String = _lib_search.text.strip_edges().to_lower() if _lib_search != null else ""
-	var shown: Array = entries.filter(func(e: Dictionary) -> bool: return _matches_search(e, query))
+	# The run's tag filter narrows the list too, so ticking a tag shows the clips a run would draw from
+	# and ✕-ing one hides them.
+	var include: Array = _filtered_tags(TAG_ONLY)
+	var exclude: Array = _filtered_tags(TAG_NEVER)
+	var shown: Array = entries.filter(
+		func(e: Dictionary) -> bool:
+			return (
+				_matches_search(e, query)
+				and RandomizerGenerator.matches_tags(e.get("tags", []), include, exclude)
+			)
+	)
 	for e: Dictionary in shown:
 		_shown_ids.append(str(e["id"]))
 	_lib_count.text = (
@@ -674,7 +717,11 @@ func _refresh_library() -> void:
 		empty.text = (
 			"No clips yet — add videos (their .funscript is paired automatically)."
 			if entries.is_empty()
-			else 'No clips match "%s".' % query
+			else (
+				'No clips match "%s".' % query
+				if query != "" and _tag_filter.is_empty()
+				else "No clips match the search and tag filter."
+			)
 		)
 		UITheme.style_label(empty, UITheme.DARK_TEXT, 13)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -743,7 +790,7 @@ func _cycle_tag(tag: String) -> void:
 			_tag_filter[tag] = TAG_NEVER
 		_:
 			_tag_filter.erase(tag)
-	_refresh_tag_chips()
+	_refresh_library()  # rebuilds the chips too
 
 
 func _filtered_tags(state: int) -> Array:
@@ -1053,6 +1100,19 @@ func _make_row(entry: Dictionary) -> Control:
 	meta_lbl.text = "%d:%02d  •  %s" % [secs / 60, secs % 60, fs_note]
 	UITheme.style_label(meta_lbl, note_color, 11)
 	name_box.add_child(meta_lbl)
+	var flag_note: String = StashSync.flag_text(str(entry.get("stash_flag", "")))
+	if flag_note != "":
+		var flag_lbl := Label.new()
+		flag_lbl.text = flag_note
+		flag_lbl.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"The last SYNC didn't find this clip's Stash scene. SYNC again once it's back, or remove it."
+			)
+		)
+		flag_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+		UITheme.style_label(flag_lbl, UITheme.AMBER, 11)
+		name_box.add_child(flag_lbl)
 
 	# Parts line: shows the stored beats (from import-time analysis), not the
 	# tiling that only exists once Generate runs with a live rng — the card can't
@@ -1246,7 +1306,7 @@ func _on_folder_pressed() -> void:
 
 
 func _on_files_dropped(files: PackedStringArray) -> void:
-	if _busy or not is_visible_in_tree():
+	if _busy or not is_visible_in_tree() or is_instance_valid(_stash_panel):
 		return
 	_import_paths(files)
 
@@ -1340,6 +1400,220 @@ func _import_paths(paths: PackedStringArray) -> void:
 	if cancelled:
 		msg += " (cancelled)"
 	_status.text = msg + "."
+
+
+func _on_stash_pressed() -> void:
+	if _busy or is_instance_valid(_stash_panel):
+		return
+	_stash_panel = StashPanel.new()
+	_stash_panel.import_requested.connect(_import_from_stash)
+	add_child(_stash_panel)
+
+
+# Imports the interactive scenes Stash has under `tag_ids` (all when empty), each through
+# _apply_stash_scene. A scene already in the library is brought up to date rather than doubled.
+func _import_from_stash(tag_ids: Array) -> void:
+	var run: Dictionary = await _run_stash_scenes("IMPORTING FROM STASH", tag_ids)
+	if not run.is_empty():
+		_status.text = _stash_summary(run, "from Stash") + "."
+
+
+# SYNC: the same pass over the saved tag filter, then a flag on every Stash clip whose scene it no
+# longer found, with REMOVE offered for them. Nothing is flagged after a cancelled or failed pass,
+# since a partial list would wrongly flag every scene it didn't get to.
+func _sync_stash() -> void:
+	var tag_ids: Array = SettingsService.get_stash_tag_filter()
+	var run: Dictionary = await _run_stash_scenes("SYNCING WITH STASH", tag_ids)
+	if run.is_empty():
+		return
+	var summary: String = _stash_summary(run, "")
+	if bool(run["cancelled"]):
+		_status.text = summary + "."
+		return
+
+	var matched: Dictionary = run["matched"]
+	var linked: Array = []
+	var unmatched: Array = []
+	for entry: Dictionary in RandomizerLibrary.stash_entries():
+		var scene_id: String = str(entry["stash"]["scene_id"])
+		linked.append(scene_id)
+		if not matched.has(scene_id):
+			unmatched.append(scene_id)
+	# Without a tag filter every interactive scene was fetched, so anything missing is gone. With one,
+	# Stash is asked which of the rest it still has.
+	var still_present: Dictionary = {}
+	if not tag_ids.is_empty() and not unmatched.is_empty():
+		var present: Dictionary = await _stash_client().fetch_present_ids(unmatched)
+		if not present["ok"]:
+			_status.text = summary + ". " + StashClient.error_text(present)
+			return
+		still_present = present["ids"]
+	var flags: Dictionary = StashSync.flags(linked, matched, still_present)
+	var flagged: int = 0
+	for entry: Dictionary in RandomizerLibrary.stash_entries():
+		var flag: String = str(flags.get(str(entry["stash"]["scene_id"]), ""))
+		RandomizerLibrary.set_stash_flag(str(entry["id"]), flag)
+		if flag != "":
+			flagged += 1
+	_refresh_library()  # flags change rows' badges, and update_entry doesn't refresh on its own
+	_status.text = summary + "."
+	if flagged > 0:
+		_offer_remove_flagged(flagged)
+
+
+# Fetches the scenes under `tag_ids` and applies each, behind a progress card titled `title`. Returns
+# the tallies ({added, updated, unchanged, failed, unreachable, first_unreachable, cancelled, matched:
+# {scene_id: true}}), or {} when the fetch failed or was cancelled (the status line says so).
+func _run_stash_scenes(title: String, tag_ids: Array) -> Dictionary:
+	if _busy:
+		return {}
+	_set_busy(true)
+	_cancel_requested = false
+	var modal: Dictionary = _show_progress_modal(title, 1)
+	_update_import_modal(modal, 0, 1, "Asking Stash for its scenes…")
+	var fetched: Dictionary = await _stash_client().fetch_scenes(tag_ids)
+	if not fetched["ok"] or _cancel_requested:
+		_close_progress_modal(modal)
+		_set_busy(false)
+		_status.text = StashClient.error_text(fetched) if not fetched["ok"] else "Cancelled."
+		return {}
+
+	var scenes: Array = fetched["scenes"]
+	(modal["bar"] as ProgressBar).max_value = maxi(1, scenes.size())
+	var mappings: Array = SettingsService.get_stash_path_mappings()
+	var listings: Dictionary = {}  # each folder is listed once for sibling scripts
+	var run: Dictionary = {
+		"added": 0,
+		"updated": 0,
+		"unchanged": 0,
+		"failed": 0,
+		"unreachable": 0,
+		"first_unreachable": "",
+		"cancelled": false,
+		"matched": {},
+	}
+	for i: int in scenes.size():
+		var scene: Dictionary = scenes[i]
+		_update_import_modal(modal, i, scenes.size(), str(scene["name"]))
+		await get_tree().process_frame
+		if _cancel_requested:
+			run["cancelled"] = true
+			break
+		(run["matched"] as Dictionary)[str(scene["id"])] = true
+		var outcome: String = await _apply_stash_scene(scene, mappings, listings)
+		run[outcome] = int(run[outcome]) + 1
+		if outcome == "unreachable" and str(run["first_unreachable"]) == "":
+			run["first_unreachable"] = str(scene["path"])
+
+	_update_import_modal(modal, scenes.size(), scenes.size(), "")
+	_close_progress_modal(modal)
+	_set_busy(false)
+	return run
+
+
+# Brings one Stash scene into the library: imported as a folder import would (multi-axis scripts
+# beside it included) when it's new, imported again when its file moved, changed or has new scripts
+# (StashSync.needs_reimport), and otherwise just retagged. Returns "added", "updated", "unchanged",
+# "failed" or "unreachable" (this PC can't see its file).
+func _apply_stash_scene(scene: Dictionary, mappings: Array, listings: Dictionary) -> String:
+	var scene_id: String = str(scene["id"])
+	var stash_tags: Array = scene["tags"]
+	var existing: Dictionary = RandomizerLibrary.find_by_stash_scene(scene_id)
+	var local: String = StashClient.local_path(str(scene["path"]), mappings)
+	if local == "":
+		return "unreachable"
+	var siblings: Dictionary = ImportScanner.find_sibling_scripts(
+		local.get_base_dir(), local.get_file().get_basename(), listings
+	)
+	var fingerprint: String = str(scene["fingerprint"])
+	if (
+		not existing.is_empty()
+		and not StashSync.needs_reimport(existing, local, fingerprint, siblings)
+	):
+		RandomizerLibrary.link_to_stash(str(existing["id"]), scene_id, fingerprint, stash_tags)
+		return "unchanged"
+
+	# "Tags for new clips" is for new clips: a clip being updated keeps the tags it has.
+	var tags: Array = _parse_tags(_import_tags.text) if existing.is_empty() else []
+	var add_res: Dictionary = await RandomizerLibrary.add_clip(
+		local,
+		str(siblings["funscript"]),
+		siblings["axis"],
+		siblings["vib"],
+		tags + stash_tags,
+		1.0,
+		3,
+		str(scene["name"])
+	)
+	if not bool(add_res["ok"]):
+		push_warning(
+			"RandomizerScreen: Stash add failed (%s): %s" % [scene["name"], add_res["reason"]]
+		)
+		return "failed"
+	var id: String = str(add_res["entry"]["id"])
+	# A moved file is a new clip id: the old clip's weight, tags and freshness move across first.
+	if not existing.is_empty() and str(existing["id"]) != id:
+		RandomizerLibrary.carry_over(str(existing["id"]), id)
+		RandomizerLibrary.remove_entry(str(existing["id"]))
+	RandomizerLibrary.link_to_stash(id, scene_id, fingerprint, stash_tags)
+	return "added" if existing.is_empty() else "updated"
+
+
+# The status line for a pass: what changed, what failed, and what this PC couldn't reach.
+func _stash_summary(run: Dictionary, source: String) -> String:
+	var added: int = int(run["added"])
+	var parts: PackedStringArray = [
+		(
+			"Added %d clip%s%s"
+			% [added, "" if added == 1 else "s", " " + source if source != "" else ""]
+		)
+	]
+	if int(run["updated"]) > 0:
+		parts.append("updated %d" % int(run["updated"]))
+	if int(run["failed"]) > 0:
+		parts.append("%d failed" % int(run["failed"]))
+	var text: String = ", ".join(parts)
+	if int(run["unreachable"]) > 0:
+		text += (
+			". %d not found from this PC (e.g. %s): add its folder under + STASH"
+			% [int(run["unreachable"]), run["first_unreachable"]]
+		)
+	if bool(run["cancelled"]):
+		text += " (cancelled)"
+	return text
+
+
+# After a SYNC that flagged clips: remove them now, or keep them (still skipped) until a later SYNC
+# finds their scenes again.
+func _offer_remove_flagged(count: int) -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "Clips Missing From Stash"
+	dialog.dialog_text = (
+		(
+			"%d clip%s from Stash %s no longer found: deleted from Stash, or without the tags you "
+			% [count, "" if count == 1 else "s", "was" if count == 1 else "were"]
+		)
+		+ "import. Generate skips them until a SYNC finds them again.\n\nRemove them from the "
+		+ "library? Your video files are NOT touched."
+	)
+	dialog.ok_button_text = "REMOVE FLAGGED"
+	dialog.cancel_button_text = "KEEP"
+	dialog.get_ok_button().add_theme_color_override("font_color", UITheme.DANGER)
+	dialog.confirmed.connect(
+		func() -> void:
+			var removed: int = RandomizerLibrary.remove_stash_flagged()
+			_status.text = "Removed %d clip%s." % [removed, "" if removed == 1 else "s"]
+			dialog.queue_free()
+	)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered()
+
+
+func _stash_client() -> StashClient:
+	return StashClient.new(
+		self, SettingsService.get_stash_address(), SettingsService.get_stash_api_key()
+	)
 
 
 # Full-screen progress card: a title, a bar over `total` steps, a count line, the current clip's name,
@@ -1491,7 +1765,10 @@ func _generate_and_preview(force_random: bool) -> void:
 	# place it is replaced. Clearing it in _close_preview would empty it before it is
 	# ever read, because Play/Keep close the overlay before baking (see _close_preview).
 	_pending_entries = {}
-	var lib: Array = RandomizerLibrary.get_all()
+	# Clips SYNC flagged as missing from Stash sit out until a SYNC finds them again.
+	var lib: Array = RandomizerLibrary.get_all().filter(
+		func(e: Dictionary) -> bool: return str(e["stash_flag"]) == ""
+	)
 	var entries: Array = RandomizerParts.expand(lib, settings, rng)
 	# Cutting is on but nothing survived it. The generator can only answer "no_matches"
 	# here — its inputs were already dropped before it saw them — which reads like a tag

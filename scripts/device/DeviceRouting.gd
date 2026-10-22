@@ -9,13 +9,14 @@ extends RefCounted
 # Buttplug-only; the serial T-code device is addressed by the sentinel "serial".
 #
 # Actuator id: "<device_id>:<kind>:<channel>", where device_id = "<name>#<occ>",
-# kind is linear / vibrate / constrict, channel is 0-based. The stroke target is
+# kind is linear / vibrate / constrict / oscillate, channel is 0-based. The stroke target is
 # such an id (a Buttplug linear) or a backend sentinel: "serial" (T-code) or
 # "handy" (The Handy over its cloud API — GameLoop drives it, not FunscriptPlayer,
 # so the C# plan consumer leaves the stroke backend unset for it by design).
 #
 # Catalog entry (one connected Buttplug device):
-#   { "id": "Edge 2#0", "linear": bool, "vibrate_channels": int, "constrict_channels": int }
+#   { "id": "Edge 2#0", "linear": bool, "vibrate_channels": int, "constrict_channels": int,
+#     "oscillate_channels": int }
 # ---------------------------------------------------------------------------
 
 const SERIAL_TARGET: String = "serial"
@@ -24,6 +25,12 @@ const HANDY_TARGET: String = "handy"
 # name of its own wherever the backend itself is what's being talked about.
 const BP_BACKEND: String = "bp"
 const VIBE_SOURCES: Array = ["vibe1", "vibe2", "stroke"]  # "stroke" = follow the L0 envelope
+# What can set an oscillating device's speed (OSCILLATE_DESIGN.md): the stroke's rhythm, or a round's
+# vibration script read as a speed.
+const OSCILLATE_SOURCES: Array = ["stroke_rate", "vibe1", "vibe2"]
+# An oscillate channel's speed limits when none are saved: the device's whole range.
+const DEFAULT_OSCILLATE_MIN: int = 0
+const DEFAULT_OSCILLATE_MAX: int = 100
 
 
 # Which backend a stroke target belongs to, without needing a device catalog to say so. The sync
@@ -57,18 +64,23 @@ static func parse_actuator_id(id: String) -> Dictionary:
 #     "stroke":    {} | {"backend": "serial"} | {"backend": "bp", "device": <id>, "channel": <int>},
 #     "vibration": [ {"device": <id>, "channel": <int>, "source": "vibe1"|"vibe2"|"stroke"}, ... ],
 #     "constrict": [ {"device": <id>, "channel": <int>}, ... ],
+#     "oscillate": [ {"device": <id>, "channel": <int>, "source": <OSCILLATE_SOURCES>,
+#                     "min": <0–100>, "max": <0–100>}, ... ],
 #   }
+# `oscillate_limits` is {actuator id: {min, max}} as saved; see oscillate_limits_for.
 static func resolve(
 	stroke_target: String,
 	vibration_routes: Dictionary,
 	constrict_routes: Dictionary,
-	catalog: Array
+	catalog: Array,
+	oscillate_routes: Dictionary = {},
+	oscillate_limits: Dictionary = {}
 ) -> Dictionary:
 	var by_id: Dictionary = {}
 	for entry: Dictionary in catalog:
 		by_id[str(entry.get("id", ""))] = entry
 
-	var plan: Dictionary = {"stroke": {}, "vibration": [], "constrict": []}
+	var plan: Dictionary = {"stroke": {}, "vibration": [], "constrict": [], "oscillate": []}
 
 	# Stroke — exactly one target, or none when it isn't available. Backend
 	# sentinels resolve unconditionally (availability is a runtime concern the
@@ -113,4 +125,41 @@ static func resolve(
 			continue
 		(plan["constrict"] as Array).append({"device": c["device"], "channel": int(c["channel"])})
 
+	# Oscillate — each mapped actuator that's present with a valid channel + source, with its limits.
+	for aid: String in oscillate_routes:
+		var o: Dictionary = parse_actuator_id(aid)
+		var source: String = str(oscillate_routes[aid])
+		if o.is_empty() or o["kind"] != "oscillate" or not OSCILLATE_SOURCES.has(source):
+			continue
+		if not by_id.has(o["device"]):
+			continue
+		if (
+			int(o["channel"])
+			>= int((by_id[o["device"]] as Dictionary).get("oscillate_channels", 0))
+		):
+			continue
+		var limits: Dictionary = oscillate_limits_for(oscillate_limits, aid)
+		(
+			(plan["oscillate"] as Array)
+			. append(
+				{
+					"device": o["device"],
+					"channel": int(o["channel"]),
+					"source": source,
+					"min": limits["min"],
+					"max": limits["max"],
+				}
+			)
+		)
+
 	return plan
+
+
+# One oscillate channel's speed limits, {min, max} in percent of the device's range: the saved ones,
+# clamped to 0–100 with min never above max, or the whole range when none are saved.
+static func oscillate_limits_for(oscillate_limits: Dictionary, actuator_id: String) -> Dictionary:
+	var saved: Variant = oscillate_limits.get(actuator_id, {})
+	var limits: Dictionary = saved if saved is Dictionary else {}
+	var hi: int = clampi(int(limits.get("max", DEFAULT_OSCILLATE_MAX)), 0, 100)
+	var lo: int = clampi(int(limits.get("min", DEFAULT_OSCILLATE_MIN)), 0, hi)
+	return {"min": lo, "max": hi}

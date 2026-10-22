@@ -698,6 +698,6 @@ func _confirm_discard_unnamed() -> void:
 func _label(text: String) -> Label:
 	var l: Label = Label.new()
 	l.text = text
-	l.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	l.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	l.add_theme_font_size_override("font_size", 11)
 	return l

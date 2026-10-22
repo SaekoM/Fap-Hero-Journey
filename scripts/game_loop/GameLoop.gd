@@ -1541,7 +1541,7 @@ func _show_checkpoint_gate() -> void:
 	hint.text = "Your progress is saved here. Leave whenever you like and you'll come back to this point — or quit now and put it down properly."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UITheme.style_label(hint, UITheme.PURPLE_MID, 12, false)
+	UITheme.style_label(hint, UITheme.PURPLE_TEXT, 12, false)
 	vbox.add_child(hint)
 
 	var btn_row: HBoxContainer = HBoxContainer.new()
@@ -1785,7 +1785,7 @@ func _show_boss_intro(round: Dictionary) -> void:
 	rules_lbl.text = "NO ITEMS  ·  FORCED MODIFIERS"
 	rules_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	rules_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	rules_lbl.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	rules_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	rules_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(11))
 	col.add_child(rules_lbl)
 

@@ -134,7 +134,7 @@ func _build_ui(background: Dictionary) -> void:
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_hint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_hint.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	_hint.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hint.text = ("This node has no background yet — pick a setting first.\nYou can still arrange against the empty frame.")
 	_hint.visible = str(background.get("path", "")) == ""
@@ -494,7 +494,7 @@ func _make_item_row(key: String) -> Control:
 	var caption: Label = Label.new()
 	caption.text = "Item"
 	caption.custom_minimum_size = Vector2(58, 0)
-	caption.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	caption.add_theme_font_size_override("font_size", 10)
 	row.add_child(caption)
 
@@ -555,7 +555,7 @@ func _add_pin_note(col: VBoxContainer, element: Dictionary, item_id: String) -> 
 
 	if _pin_is_certain(element, item_id):
 		note.text = "This shop always stocks it, so the spot is always filled."
-		note.add_theme_color_override("font_color", UITheme.SEPARATOR)
+		note.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		col.add_child(note)
 		return
 
@@ -617,7 +617,7 @@ func _make_fit_row(key: String) -> Control:
 	var caption: Label = Label.new()
 	caption.text = "Fit"
 	caption.custom_minimum_size = Vector2(58, 0)
-	caption.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	caption.add_theme_font_size_override("font_size", 10)
 	row.add_child(caption)
 
@@ -673,7 +673,7 @@ func _make_color_row(key: String, field: String, label: String) -> Control:
 	var caption: Label = Label.new()
 	caption.text = label
 	caption.custom_minimum_size = Vector2(58, 0)
-	caption.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	caption.add_theme_font_size_override("font_size", 10)
 	row.add_child(caption)
 
@@ -724,6 +724,6 @@ func _select(key: String) -> void:
 func _side_label(text: String) -> Label:
 	var l: Label = Label.new()
 	l.text = text
-	l.add_theme_color_override("font_color", UITheme.SEPARATOR)
+	l.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	l.add_theme_font_size_override("font_size", 11)
 	return l

@@ -184,7 +184,7 @@ func _update_style() -> void:
 
 	if _label:
 		_label.add_theme_color_override(
-			"font_color", UITheme.WHITE_SOFT if filled else UITheme.PURPLE_MID
+			"font_color", UITheme.WHITE_SOFT if filled else UITheme.PURPLE_TEXT
 		)
 
 	if _browse_btn:
@@ -201,7 +201,7 @@ func _update_style() -> void:
 		bs.content_margin_bottom = 2
 		bs.set_corner_radius_all(UITheme.CORNER_RADIUS)
 		_browse_btn.add_theme_stylebox_override("normal", bs)
-		_browse_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+		_browse_btn.add_theme_stylebox_override("focus", UITheme.focus_ring_style())
 		var bs_h: StyleBoxFlat = bs.duplicate()
 		bs_h.border_color = UITheme.PURPLE_BRIGHT
 		_browse_btn.add_theme_stylebox_override("hover", bs_h)
