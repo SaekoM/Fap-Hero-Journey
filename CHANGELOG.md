@@ -2,6 +2,104 @@
 
 ## v0.9.1
 
+### ◆ Colour modes and accessibility
+
+**Options → GENERAL → ACCESSIBILITY** is new, with a **Colour mode** for colour-blind and low-vision
+players: **Off**, **Red-green safe**, **Blue-yellow safe** and **High contrast**. A live preview under
+the dropdown shows the colours that matter — status lines, curse and boon, the beat bar, difficulty —
+and changes the moment you pick a mode; every other screen takes the new colours as it opens, and the
+game HUD changes at once if you pick a mode mid-round.
+
+- **Red-green safe** and **Blue-yellow safe** swap the colours that carry meaning (worked or failed,
+  curse or boon, gain or loss, how intense, how hard) for ones that stay apart with that kind of colour
+  blindness. In red-green safe, good is blue and bad is orange.
+- **High contrast** is for low vision: white text, near-white control edges, a yellow focus ring, boss
+  subtitles always white, and much less glow.
+- The purple look and the backgrounds never change, and the video and authors' art are never
+  recoloured.
+
+**Nothing depends on colour alone any more:**
+
+- Connection statuses read **✓** when something worked, **✕** when it failed and **●** while it's still
+  going — they used to show the same dot for connected and disconnected. The builder's save message
+  gets ✓ or ✕ too.
+- Effects named on a boss intro or a reveal card are marked **✦** for a boon and **☠** for a hindrance.
+- An effect round's border carries the round's icon in its corner.
+- Beat-bar markers grow with the stroke's intensity as well as changing colour.
+- A sacrifice price you can't afford is marked ✕.
+- Old cursed and blessed rounds had a green and gold border that red-green colour blindness can't tell
+  apart; they now take each mode's curse and boon colours (pink and gold when no mode is set).
+
+**Everyone gets readable text.** Hints, values, unselected tabs and OFF toggles were drawn in a purple
+too dim to read comfortably (under 2:1 against the panels). They're lifted to well over the 4.5:1 that
+accessibility guidelines ask for, control edges to 3:1, and every button, field and dropdown shows a
+ring when it has keyboard focus. The look stays purple.
+
+**Reduce flashing** (in the same section) slows the Flicker effect to under three dark flashes a
+second and makes them lighter, and fades in boss cues that would otherwise snap onto the screen.
+Fast Flicker used to reach about five flashes a second.
+
+**Options works from the keyboard.** It opens on the tabs (←/→ to switch), Tab moves through every
+control and the page scrolls to follow, range sliders take ←/→ (Shift for bigger steps) with
+Enter/Space to switch handles, and **Esc** closes it.
+
+### ◆ Options, reorganised
+
+Options now has five tabs, each with one job:
+
+- **GENERAL** — Journeys, Audio, Display, a new **HUD** section (auto-hide, beat bar, round timer),
+  Accessibility and Transcoding.
+- **CONNECTION** — how each device connects: Intiface, Serial, The Handy and Restim.
+- **DEVICES** — what the devices do: Device Routing, **Multi-axis** (your device, axis ranges, Auto
+  Twist), **Stroke** (range, home position and ease, max speed), **Vibration**, **Oscillating
+  devices**, E-stim levels and Storyboard filler. The old "T-CODE DEVICE" section is gone — most of it
+  reached every device, not just T-code ones.
+- **TIMING** — Calibrate sync and every device's delay in one place, with serial smoothing. The Handy's
+  delay used to live on its own in the Handy section.
+- **ABOUT** — the update check (moved out of Display) and credits.
+
+Rows read the same throughout: every label in capitals, toggles lined up with the sliders and
+dropdowns, explanations shown under the row instead of only on hover, no duplicate MIN/MAX readouts
+under range sliders, Home ease a slider instead of a typed number, and Max stroke speed in **units/s**
+with the unit explained.
+
+### ◆ Stash library import
+
+The randomizer can import straight from a **Stash** library on this PC or your network. **+ STASH**
+on the randomizer screen opens a panel where you enter Stash's address and API key, check the
+connection, and tell the randomizer where this PC finds Stash's folders — a mapped drive or a network
+share. A few of Stash's real file paths show where your mappings send each one, ✓ or ✕, as you type.
+
+Pick Stash tags to import only the scenes carrying them (or none for every interactive scene), check
+the count, and **IMPORT**. Each scene comes in like a folder import, multi-axis scripts beside the video
+included, and brings its Stash tags along.
+
+**⟳ SYNC STASH** keeps the library up to date afterwards: new scenes are added, tags follow Stash's
+(tags you added yourself stay), and a scene whose file moved or changed is re-imported without losing
+its weight, tags or freshness. A clip whose scene has gone from Stash, or no longer has the tags you
+import, is marked ⚠ and skipped by Generate, and SYNC offers to remove those clips or keep them until
+the scene comes back.
+
+The randomizer's clip list now follows the run's tag filter too: tick a tag to see only the clips
+carrying it, ✕ it to hide them.
+
+### ◆ Oscillating devices
+
+Thrusting machines and other devices Intiface drives by **speed** rather than position are supported.
+Each one appears in **DEVICES → Device Routing** with:
+
+- **A source** — **Stroke rate** (the script's rhythm) or a round's vibration script (vibe1 / vibe2).
+- **Speed limits** — the slowest it runs while the script moves, and the fastest it ever runs.
+- **HOLD TO TEST** — runs it at its max limit while held. It stops when you let go, move off the
+  button, switch windows or close Options, and after five seconds whatever happens.
+
+Following the stroke, the machine runs faster the faster the script strokes, and **stops when the
+script holds still**. Shallow strokes count for less than full ones, so a fast flutter is gentle the way
+it is on a stroker. **OSCILLATING DEVICES → FULL SPEED AT** sets how fast the script has to stroke for
+the max limit (3 strokes a second unless you change it). Speed changes are eased so the machine never
+jumps from stopped to full; a curse that freezes the stroke stops it, and pausing stops it at once.
+Between rounds, a storyboard scene's filler stroke drives it.
+
 ### ◆ Forks
 
 - **Conditional forks can pick the highest path again.** v0.9.0 made a fork that lets the game decide
@@ -11,6 +109,13 @@
   doing) and **The highest**: the highest threshold met on a score, coin or counter fork, and the
   unlocked path highest in the list on a flag or item fork. When two paths have the same threshold,
   the one higher in the list wins.
+
+### 🩹 Fixes
+
+- **Keys pressed in Options no longer reach the round behind it.** With Options open mid-round, Space
+  paused or resumed the game underneath, Tab opened the inventory and Esc started the hold-to-exit.
+- **Colour emoji the system fonts lack now show.** The bundled emoji font was listed under the wrong
+  file name, so it never loaded.
 
 ## v0.9.0
 
