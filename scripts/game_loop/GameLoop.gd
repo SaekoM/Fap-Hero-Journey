@@ -103,7 +103,7 @@ const BOSS_EFFECT_PARAMS: Array = [
 @onready var _coin_lbl: Label = $HUD/HUDBar/HUDLayout/CoinLabel
 @onready var _progress: ProgressBar = $HUD/ProgressBar
 @onready var _score_lbl: Label = $HUD/HUDBar/HUDLayout/ScoreLabel
-# Round timer (opt-in, Options → Display). Built in code and added to the HUD bar, so it hides
+# Round timer (opt-in, Options → HUD). Built in code and added to the HUD bar, so it hides
 # with the rest of the HUD when a Fog effect conceals it.
 var _timer_lbl: Label = null
 @onready var _pause_btn: Button = $HUD/HUDBar/HUDLayout/PauseBtn

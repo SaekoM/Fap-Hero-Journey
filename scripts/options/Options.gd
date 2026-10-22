@@ -12,6 +12,9 @@ const PANEL_HALF_W: int = 480
 const PANEL_PAD_V: int = 24
 const BORDER_WIDTH: int = 3
 const ROW_LABEL_W: int = 260
+const ROW_LABEL_SIZE: int = 14
+const HOME_EASE_MIN_MS: int = 100
+const HOME_EASE_MAX_MS: int = 5000
 # An oscillate channel's source dropdown, in item order ("" = Off).
 const OSCILLATE_SOURCE_CHOICES: Array = ["", "stroke_rate", "vibe1", "vibe2"]
 
@@ -23,7 +26,9 @@ const SLIDER_MIN_W: int = 260
 const VALUE_LABEL_W: int = 64
 
 # Tab categories. Each groups a set of sections; only one tab is shown at a time.
-const TAB_NAMES: Array = ["GENERAL", "CONNECTION", "DEVICE", "ABOUT"]
+# GENERAL: the app. CONNECTION: how each device connects. DEVICES: what the devices do. TIMING: when
+# they do it (sync and delays). ABOUT: updates and credits.
+const TAB_NAMES: Array = ["GENERAL", "CONNECTION", "DEVICES", "TIMING", "ABOUT"]
 
 const DEFAULT_BP_ADDRESS: String = "ws://localhost:12345"
 const DEFAULT_BAUD_RATE: int = 115200
@@ -102,8 +107,6 @@ var _music_slider: HSlider = null
 var _music_value_lbl: Label = null
 
 var _range_slider: RangeSlider = null
-var _range_min_lbl: Label = null
-var _range_max_lbl: Label = null
 
 # Secondary positional axes (T-code id, human name) — each gets its own range row.
 const SECONDARY_AXES: Array = [
@@ -114,12 +117,11 @@ const SECONDARY_AXES: Array = [
 	["R2", "Pitch"],
 ]
 var _axis_range_sliders: Dictionary = {}  # axis id → RangeSlider
-var _axis_range_min_lbls: Dictionary = {}  # axis id → MIN Label
-var _axis_range_max_lbls: Dictionary = {}  # axis id → MAX Label
 
 var _home_slider: HSlider = null
 var _home_value_lbl: Label = null
-var _home_ease_input: LineEdit = null
+var _home_ease_slider: HSlider = null
+var _home_ease_value_lbl: Label = null
 
 var _vibe_slider: HSlider = null
 var _vibe_value_lbl: Label = null
@@ -165,13 +167,20 @@ var _filler_toggle: Button = null
 var _allow_journey_filler_toggle: Button = null
 var _filler_speed_input: LineEdit = null
 var _filler_range_slider: RangeSlider = null
-var _filler_range_min_lbl: Label = null
-var _filler_range_max_lbl: Label = null
 
 # Tab bar + references to the three code-built sections, needed so tab
 # switching can toggle their visibility alongside the scene-built sections.
 var _tab_bar: TabBar = null
-var _range_section: VBoxContainer = null
+var _range_section: VBoxContainer = null  # STROKE: range, home, ease, max speed
+var _multi_axis_section: VBoxContainer = null  # MULTI-AXIS: your device, axis ranges, Auto Twist
+var _vibration_section: VBoxContainer = null  # VIBRATION: intensity
+var _hud_section: VBoxContainer = null  # HUD: auto-hide, beat bar, round timer
+var _updates_section: VBoxContainer = null  # UPDATES (ABOUT)
+var _timing_section: VBoxContainer = null  # TIMING: calibrate sync, every delay, serial smoothing
+# The "reaches max at N strokes/s" line under each oscillate channel's speed limits, kept so the
+# FULL SPEED AT slider can update them as it moves.
+var _oscillate_rate_notes: Array = []
+var _full_rate_dragging: bool = false
 var _filler_section: VBoxContainer = null
 
 # Device-routing section (built in code) — device cards + per-actuator source assignment.
@@ -254,6 +263,8 @@ func _ready() -> void:
 	_connect_signals()
 	_sync_buttplug_state()
 	_sync_serial_state()
+	_order_sections()
+	_on_tab_changed(_tab_bar.current_tab)
 	# Keyboard: Tab walks the controls (the page scrolls to follow), and it starts on the tabs, so
 	# ←/→ pick a page straight away.
 	($ContentPanel/ContentScroll as ScrollContainer).follow_focus = true
@@ -405,7 +416,7 @@ func _apply_layout() -> void:
 
 	var ui_sound_lbl: Label = Label.new()
 	ui_sound_lbl.text = "UI SOUNDS"
-	ui_sound_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ui_sound_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(ui_sound_lbl, UITheme.WHITE_SOFT, 14, false)
 	ui_sound_row.add_child(ui_sound_lbl)
 
@@ -462,11 +473,12 @@ func _apply_layout() -> void:
 	# Audible preview when the drag finishes (not on every tick).
 	_ui_sound_slider.drag_ended.connect(func(_changed: bool) -> void: UISound.click())
 
-	# ── HUD Auto-Hide row (code-generated, appended to DisplaySection) ────────
+	# ── HUD section: what shows over the video while playing ─────────────────
 	var display_section: VBoxContainer = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection
+	_hud_section = _make_section("HUD")
 	var hud_delay_row: HBoxContainer = HBoxContainer.new()
 	hud_delay_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(hud_delay_row)
+	_hud_section.add_child(hud_delay_row)
 
 	var hud_delay_lbl: Label = Label.new()
 	hud_delay_lbl.text = "HUD AUTO-HIDE"
@@ -660,11 +672,11 @@ func _apply_layout() -> void:
 	# ── Beat Bar row (code-generated, appended to DisplaySection) ────────────
 	var beat_row: HBoxContainer = HBoxContainer.new()
 	beat_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(beat_row)
+	_hud_section.add_child(beat_row)
 
 	var beat_lbl: Label = Label.new()
 	beat_lbl.text = "BEAT BAR"
-	beat_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	beat_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(beat_lbl, UITheme.WHITE_SOFT, 14, false)
 	beat_row.add_child(beat_lbl)
 
@@ -692,16 +704,16 @@ func _apply_layout() -> void:
 	beat_hint.text = "Shows upcoming stroke beats scrolling toward a hit-line during play. Pick the marker shape on the right."
 	beat_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(beat_hint, UITheme.TEXT_HINT, 11, false)
-	display_section.add_child(beat_hint)
+	_hud_section.add_child(beat_hint)
 
 	# ── Round Timer row ─────────────────────────────────────────────────────
 	var timer_row: HBoxContainer = HBoxContainer.new()
 	timer_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(timer_row)
+	_hud_section.add_child(timer_row)
 
 	var timer_lbl: Label = Label.new()
 	timer_lbl.text = "ROUND TIMER"
-	timer_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	timer_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(timer_lbl, UITheme.WHITE_SOFT, 14, false)
 	timer_row.add_child(timer_lbl)
 
@@ -719,7 +731,7 @@ func _apply_layout() -> void:
 	timer_hint.text = "Shows the time left in the current round on the HUD. Hidden along with the rest of the HUD by effects that conceal it."
 	timer_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(timer_hint, UITheme.TEXT_HINT, 11, false)
-	display_section.add_child(timer_hint)
+	_hud_section.add_child(timer_hint)
 
 	# ── Animated builder background row ──────────────────────────────────────
 	var bldbg_row: HBoxContainer = HBoxContainer.new()
@@ -728,7 +740,7 @@ func _apply_layout() -> void:
 
 	var bldbg_lbl: Label = Label.new()
 	bldbg_lbl.text = "ANIMATED BUILDER BACKGROUND"
-	bldbg_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bldbg_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(bldbg_lbl, UITheme.WHITE_SOFT, 14, false)
 	bldbg_row.add_child(bldbg_lbl)
 
@@ -749,13 +761,14 @@ func _apply_layout() -> void:
 	display_section.add_child(bldbg_hint)
 
 	# ── Update Check row (code-generated, appended to DisplaySection) ─────────
+	_updates_section = _make_section("UPDATES")
 	var upd_row: HBoxContainer = HBoxContainer.new()
 	upd_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(upd_row)
+	_updates_section.add_child(upd_row)
 
 	var upd_lbl: Label = Label.new()
 	upd_lbl.text = "CHECK FOR UPDATES ON LAUNCH"
-	upd_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	upd_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(upd_lbl, UITheme.WHITE_SOFT, 14, false)
 	upd_row.add_child(upd_lbl)
 
@@ -773,7 +786,7 @@ func _apply_layout() -> void:
 	upd_hint.text = "Pings GitHub once per launch for a newer build and shows a banner. Off = no network call."
 	upd_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(upd_hint, UITheme.TEXT_HINT, 11, false)
-	display_section.add_child(upd_hint)
+	_updates_section.add_child(upd_hint)
 
 	for label_path in [
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/OutputSection/OutputModeRow/OutputModeLabel",
@@ -785,25 +798,29 @@ func _apply_layout() -> void:
 		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialBaudRow/SerialBaudLabel",
 	]:
 		(get_node(label_path) as Label).custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	# The auto-connect toggles sit in the same column as every other control, not pushed far right.
+	for label_path in [
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/IntifaceSection/AutoConnectRow/AutoConnectLabel",
+		"ContentPanel/ContentScroll/MarginWrapper/ContentVBox/SerialSection/SerialAutoRow/SerialAutoLabel",
+	]:
+		var row_label: Label = get_node_or_null(label_path) as Label
+		if row_label != null:
+			row_label.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+			row_label.size_flags_horizontal = Control.SIZE_FILL
 
 	_res_dropdown.custom_minimum_size = Vector2(220, 0)
 	_device_dropdown.custom_minimum_size = Vector2(220, 0)
 	_serial_port_dropdown.custom_minimum_size = Vector2(180, 0)
 
-	# ── Device Range section (built entirely in code) ─────────────────────────
-	var range_section: VBoxContainer = VBoxContainer.new()
-	range_section.add_theme_constant_override("separation", 12)
-	_content_vbox.add_child(range_section)
+	# ── STROKE, MULTI-AXIS and VIBRATION (built entirely in code) ──────────────
+	# Once one "T-CODE DEVICE" section, though most of it reaches every device; split by what each
+	# setting shapes, and each hint says which devices it reaches.
+	var range_section: VBoxContainer = _make_section("STROKE")
 	_range_section = range_section
-
-	var range_header: Label = Label.new()
-	range_header.text = "T-CODE DEVICE"
-	_style_label(range_header, UITheme.PURPLE_BRIGHT, 13, true)
-	range_section.add_child(range_header)
-
-	var range_divider: HSeparator = HSeparator.new()
-	range_divider.add_theme_stylebox_override("separator", _make_separator_style())
-	range_section.add_child(range_divider)
+	var multi_axis_section: VBoxContainer = _make_section("MULTI-AXIS")
+	_multi_axis_section = multi_axis_section
+	var vibration_section: VBoxContainer = _make_section("VIBRATION")
+	_vibration_section = vibration_section
 
 	var range_row: HBoxContainer = HBoxContainer.new()
 	range_row.add_theme_constant_override("separation", 16)
@@ -825,30 +842,9 @@ func _apply_layout() -> void:
 	_range_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider_col.add_child(_range_slider)
 
-	# Min / max value row beneath the slider
-	var val_row: HBoxContainer = HBoxContainer.new()
-	val_row.add_theme_constant_override("separation", 0)
-	slider_col.add_child(val_row)
-
-	_range_min_lbl = Label.new()
-	_range_min_lbl.text = "MIN: 0"
-	_style_label(_range_min_lbl, UITheme.PURPLE_TEXT, 11, true)
-	val_row.add_child(_range_min_lbl)
-
-	var val_spacer: Control = Control.new()
-	val_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	val_row.add_child(val_spacer)
-
-	_range_max_lbl = Label.new()
-	_range_max_lbl.text = "MAX: 100"
-	_style_label(_range_max_lbl, UITheme.PURPLE_TEXT, 11, true)
-	val_row.add_child(_range_max_lbl)
-
-	# Update labels, push live into the player, and auto-save whenever a handle is moved.
+	# Push live into the player and auto-save whenever a handle is moved.
 	_range_slider.range_changed.connect(
 		func(lo: float, hi: float) -> void:
-			_range_min_lbl.text = "MIN: %d" % roundi(lo)
-			_range_max_lbl.text = "MAX: %d" % roundi(hi)
 			FunscriptPlayer.SetRangeClamp(roundi(lo), roundi(hi))
 			# Handy-direct maps the range to the device slider zone (debounced).
 			if SettingsService.get_stroke_target() == DeviceRouting.HANDY_TARGET:
@@ -858,7 +854,7 @@ func _apply_layout() -> void:
 
 	# Hint beneath the slider
 	var hint: Label = Label.new()
-	hint.text = "Hard-clamps the stroke (main) axis to this range. Affects both Buttplug and Serial outputs."
+	hint.text = "Hard-clamps the stroke to this range. Reaches every stroker: serial, Intiface and the Handy."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(hint)
@@ -868,7 +864,7 @@ func _apply_layout() -> void:
 	# (multi-axis curses and items, Auto Twist) and never what is sent — see DeviceProfile.
 	_device_profile_row = HBoxContainer.new()
 	_device_profile_row.add_theme_constant_override("separation", 16)
-	range_section.add_child(_device_profile_row)
+	multi_axis_section.add_child(_device_profile_row)
 
 	var profile_lbl: Label = Label.new()
 	profile_lbl.text = "Your device"
@@ -890,7 +886,7 @@ func _apply_layout() -> void:
 	)
 	profile_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(profile_hint, UITheme.TEXT_HINT, 11, false)
-	range_section.add_child(profile_hint)
+	multi_axis_section.add_child(profile_hint)
 
 	_device_profile_note = Label.new()
 	_device_profile_note.text = (
@@ -900,7 +896,7 @@ func _apply_layout() -> void:
 	_device_profile_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(_device_profile_note, UITheme.AMBER, 11, false)
 	_device_profile_note.visible = false
-	range_section.add_child(_device_profile_note)
+	multi_axis_section.add_child(_device_profile_note)
 
 	# ── Secondary-axis ranges (one per positional T-code axis) ────────────────
 	# L1/L2/R0/R1/R2 → surge/sway/twist/roll/pitch. Each axis has its own travel
@@ -908,10 +904,10 @@ func _apply_layout() -> void:
 	# 50), so a symmetric range narrows the swing around centre. Only axes with a
 	# loaded script on a multi-axis device actually move (OSR2: roll + pitch; SR6: all).
 	var axis_hint: Label = Label.new()
-	axis_hint.text = "Per-axis range for multi-axis devices (e.g. SR6). The stroke axis uses Stroke Range above."
+	axis_hint.text = "Per-axis range for multi-axis devices (OSR2, SR6), serial only. The stroke uses STROKE RANGE under STROKE."
 	axis_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(axis_hint, UITheme.TEXT_HINT, 11, false)
-	range_section.add_child(axis_hint)
+	multi_axis_section.add_child(axis_hint)
 
 	for axis_def: Array in SECONDARY_AXES:
 		var axis_id: String = axis_def[0]
@@ -919,7 +915,7 @@ func _apply_layout() -> void:
 
 		var ax_row: HBoxContainer = HBoxContainer.new()
 		ax_row.add_theme_constant_override("separation", 16)
-		range_section.add_child(ax_row)
+		multi_axis_section.add_child(ax_row)
 
 		var ax_lbl: Label = Label.new()
 		ax_lbl.text = "%s (%s)" % [axis_name, axis_id]
@@ -937,31 +933,9 @@ func _apply_layout() -> void:
 		ax_col.add_child(ax_slider)
 		_axis_range_sliders[axis_id] = ax_slider
 
-		var ax_val_row: HBoxContainer = HBoxContainer.new()
-		ax_val_row.add_theme_constant_override("separation", 0)
-		ax_col.add_child(ax_val_row)
-
-		var ax_min_lbl: Label = Label.new()
-		ax_min_lbl.text = "MIN: 0"
-		_style_label(ax_min_lbl, UITheme.PURPLE_TEXT, 11, true)
-		ax_val_row.add_child(ax_min_lbl)
-		_axis_range_min_lbls[axis_id] = ax_min_lbl
-
-		var ax_val_spacer: Control = Control.new()
-		ax_val_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		ax_val_row.add_child(ax_val_spacer)
-
-		var ax_max_lbl: Label = Label.new()
-		ax_max_lbl.text = "MAX: 100"
-		_style_label(ax_max_lbl, UITheme.PURPLE_TEXT, 11, true)
-		ax_val_row.add_child(ax_max_lbl)
-		_axis_range_max_lbls[axis_id] = ax_max_lbl
-
 		# Live-push this axis's window and autosave on drag (mirrors Stroke Range).
 		ax_slider.range_changed.connect(
 			func(lo: float, hi: float) -> void:
-				ax_min_lbl.text = "MIN: %d" % roundi(lo)
-				ax_max_lbl.text = "MAX: %d" % roundi(hi)
 				FunscriptPlayer.SetAxisRangeClamp(axis_id, roundi(lo), roundi(hi))
 				_save_settings()
 		)
@@ -970,7 +944,7 @@ func _apply_layout() -> void:
 	# Beside the per-axis ranges because it is one: it only ever drives R0, through R0's window above.
 	var twist_row: HBoxContainer = HBoxContainer.new()
 	twist_row.add_theme_constant_override("separation", 16)
-	range_section.add_child(twist_row)
+	multi_axis_section.add_child(twist_row)
 	_auto_twist_row = twist_row
 
 	var twist_lbl: Label = Label.new()
@@ -995,13 +969,13 @@ func _apply_layout() -> void:
 	)
 	twist_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(twist_hint, UITheme.TEXT_HINT, 11, false)
-	range_section.add_child(twist_hint)
+	multi_axis_section.add_child(twist_hint)
 
 	_auto_twist_note = Label.new()
 	_auto_twist_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(_auto_twist_note, UITheme.AMBER, 11, false)
 	_auto_twist_note.visible = false
-	range_section.add_child(_auto_twist_note)
+	multi_axis_section.add_child(_auto_twist_note)
 
 	# ── Home Position row ────────────────────────────────────────────────────
 	var home_row: HBoxContainer = HBoxContainer.new()
@@ -1045,27 +1019,38 @@ func _apply_layout() -> void:
 	range_section.add_child(home_ease_row)
 
 	var home_ease_lbl: Label = Label.new()
-	home_ease_lbl.text = "Home Ease (ms)"
+	home_ease_lbl.text = "Home ease"
 	home_ease_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(home_ease_lbl, UITheme.WHITE_SOFT, 14, false)
 	home_ease_row.add_child(home_ease_lbl)
 
-	_home_ease_input = LineEdit.new()
-	_home_ease_input.text = "2000"
-	_home_ease_input.custom_minimum_size = Vector2(100, 0)
-	_home_ease_input.placeholder_text = "2000"
-	_style_line_edit(_home_ease_input)
-	home_ease_row.add_child(_home_ease_input)
+	var home_ease_col: VBoxContainer = VBoxContainer.new()
+	home_ease_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	home_ease_col.add_theme_constant_override("separation", 4)
+	home_ease_row.add_child(home_ease_col)
 
-	var home_ease_hint_lbl: Label = Label.new()
-	home_ease_hint_lbl.text = "ms"
-	_style_label(home_ease_hint_lbl, UITheme.TEXT_HINT, 12, false)
-	home_ease_row.add_child(home_ease_hint_lbl)
+	_home_ease_slider = HSlider.new()
+	_home_ease_slider.min_value = HOME_EASE_MIN_MS
+	_home_ease_slider.max_value = HOME_EASE_MAX_MS
+	_home_ease_slider.step = 100
+	_home_ease_slider.value = 2000
+	_home_ease_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_slider(_home_ease_slider)
+	home_ease_col.add_child(_home_ease_slider)
 
-	_home_ease_input.text_changed.connect(func(_t: String) -> void: _save_settings())
+	_home_ease_value_lbl = Label.new()
+	_home_ease_value_lbl.text = "2000 ms"
+	_style_label(_home_ease_value_lbl, UITheme.PURPLE_TEXT, 11, true)
+	home_ease_col.add_child(_home_ease_value_lbl)
+
+	_home_ease_slider.value_changed.connect(
+		func(v: float) -> void:
+			_home_ease_value_lbl.text = "%d ms" % roundi(v)
+			_save_settings()
+	)
 
 	var home_hint: Label = Label.new()
-	home_hint.text = "L0 target position when playback pauses or stops. Secondary axes always return to centre."
+	home_hint.text = "Where the stroke rests when playback pauses or stops, and how long it takes to get there. Other axes always return to centre."
 	home_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(home_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(home_hint)
@@ -1073,7 +1058,7 @@ func _apply_layout() -> void:
 	# ── Vibration Intensity row ──────────────────────────────────────────────
 	var vibe_row: HBoxContainer = HBoxContainer.new()
 	vibe_row.add_theme_constant_override("separation", 16)
-	range_section.add_child(vibe_row)
+	vibration_section.add_child(vibe_row)
 
 	var vibe_lbl: Label = Label.new()
 	vibe_lbl.text = "Vibration Intensity"
@@ -1107,10 +1092,10 @@ func _apply_layout() -> void:
 	)
 
 	var vibe_hint: Label = Label.new()
-	vibe_hint.text = "Scales output strength for vibrators. No effect on linear (stroker) devices."
+	vibe_hint.text = "Scales output strength for vibrators connected through Intiface. No effect on strokers."
 	vibe_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(vibe_hint, UITheme.TEXT_HINT, 11, false)
-	range_section.add_child(vibe_hint)
+	vibration_section.add_child(vibe_hint)
 
 	# ── Max Stroke Speed row ─────────────────────────────────────────────────
 	var speed_row: HBoxContainer = HBoxContainer.new()
@@ -1144,12 +1129,12 @@ func _apply_layout() -> void:
 
 	_max_speed_slider.value_changed.connect(
 		func(v: float) -> void:
-			_max_speed_value_lbl.text = ("Off" if roundi(v) <= 0 else "%d u/s" % roundi(v))
+			_max_speed_value_lbl.text = _max_speed_text(roundi(v))
 			_save_settings()
 	)
 
 	var speed_hint: Label = Label.new()
-	speed_hint.text = "Caps how fast linear devices move — faster strokes are slowed to this limit. Off = unlimited. No effect on vibrators."
+	speed_hint.text = "Caps how fast strokers move: faster strokes are slowed to this limit. Measured in units per second, where a stroke runs 0–100 units from end to end, so 200 units/s is one full stroke down and back up each second. Off = unlimited."
 	speed_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(speed_hint, UITheme.TEXT_HINT, 11, false)
 	range_section.add_child(speed_hint)
@@ -1256,28 +1241,8 @@ func _apply_layout() -> void:
 	_filler_range_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	filler_slider_col.add_child(_filler_range_slider)
 
-	var filler_val_row: HBoxContainer = HBoxContainer.new()
-	filler_val_row.add_theme_constant_override("separation", 0)
-	filler_slider_col.add_child(filler_val_row)
-
-	_filler_range_min_lbl = Label.new()
-	_filler_range_min_lbl.text = "MIN: 0"
-	_style_label(_filler_range_min_lbl, UITheme.PURPLE_TEXT, 11, true)
-	filler_val_row.add_child(_filler_range_min_lbl)
-
-	var filler_val_spacer: Control = Control.new()
-	filler_val_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	filler_val_row.add_child(filler_val_spacer)
-
-	_filler_range_max_lbl = Label.new()
-	_filler_range_max_lbl.text = "MAX: 100"
-	_style_label(_filler_range_max_lbl, UITheme.PURPLE_TEXT, 11, true)
-	filler_val_row.add_child(_filler_range_max_lbl)
-
 	_filler_range_slider.range_changed.connect(
 		func(lo: float, hi: float) -> void:
-			_filler_range_min_lbl.text = "MIN: %d" % roundi(lo)
-			_filler_range_max_lbl.text = "MAX: %d" % roundi(hi)
 			# Apply live so an active storyboard's filler picks up the new range
 			# immediately, not just on the next storyboard.
 			DeviceFiller.set_params(roundi(lo), roundi(hi), _filler_speed_input.text.to_int())
@@ -1305,7 +1270,7 @@ func _apply_layout() -> void:
 	)
 
 	var filler_hint: Label = Label.new()
-	filler_hint.text = "Keeps the device active during storyboard scenes with a repeating alternating stroke. Respects the Position Clamp above. A scene that sets its own range and speed uses those instead, unless you switch that off."
+	filler_hint.text = "Keeps the device active during storyboard scenes with a repeating alternating stroke. Stays inside STROKE RANGE. A scene that sets its own range and speed uses those instead, unless you switch that off."
 	filler_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(filler_hint, UITheme.TEXT_HINT, 11, false)
 	filler_section.add_child(filler_hint)
@@ -1338,6 +1303,78 @@ func _apply_layout() -> void:
 
 	# ── Tab bar — groups all sections above into navigable categories ─────────
 	_build_tabs()
+
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+
+# A titled section (header + divider) added to the content column. Where it sits among the others is
+# _order_sections' job, so a section can be made wherever its rows are built.
+func _make_section(title: String) -> VBoxContainer:
+	var section: VBoxContainer = VBoxContainer.new()
+	section.add_theme_constant_override("separation", 12)
+	_content_vbox.add_child(section)
+	var header: Label = Label.new()
+	header.text = title
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	section.add_child(header)
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	section.add_child(divider)
+	return section
+
+
+# Each tab's sections, top to bottom.
+func _tab_pages() -> Array:
+	var vbox: String = "ContentPanel/ContentScroll/MarginWrapper/ContentVBox/"
+	return [
+		# GENERAL
+		[
+			get_node(vbox + "JourneysSection"),
+			get_node(vbox + "AudioSection"),
+			get_node(vbox + "DisplaySection"),
+			_hud_section,
+			_accessibility_section,
+			_transcode_section,
+		],
+		# CONNECTION
+		[
+			get_node(vbox + "IntifaceSection"),
+			get_node(vbox + "SerialSection"),
+			_handy_section,
+			_restim_section,
+		],
+		# DEVICES
+		[
+			_routing_section,
+			_multi_axis_section,
+			_range_section,
+			_vibration_section,
+			_oscillate_section,
+			_restim_axes_section,
+			_filler_section,
+		],
+		# TIMING
+		[_timing_section],
+		# ABOUT
+		[_updates_section, _credits_section],
+	]
+
+
+# MAX STROKE SPEED's readout: Off, or the cap in units per second.
+func _max_speed_text(units_per_second: int) -> String:
+	return "Off" if units_per_second <= 0 else "%d units/s" % units_per_second
+
+
+# Puts the sections in tab order in the content column, so each tab reads top to bottom as listed in
+# _tab_pages however the build order went.
+func _order_sections() -> void:
+	for page: Array in _tab_pages():
+		for section: Control in page:
+			if section != null:
+				_content_vbox.move_child(section, -1)
 
 
 # ---------------------------------------------------------------------------
@@ -1401,7 +1438,7 @@ func _build_accessibility_section(display_section: VBoxContainer) -> VBoxContain
 	section.add_child(flash_row)
 	var flash_lbl: Label = Label.new()
 	flash_lbl.text = "REDUCE FLASHING"
-	flash_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	flash_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(flash_lbl, UITheme.WHITE_SOFT, 14, false)
 	flash_row.add_child(flash_lbl)
 	var flash_toggle: Button = Button.new()
@@ -1486,29 +1523,7 @@ func _style_tab_bar(tabs: TabBar) -> void:
 
 # Shows the sections that belong to tab `idx` and hides all others.
 func _on_tab_changed(idx: int) -> void:
-	const VBOX: String = "ContentPanel/ContentScroll/MarginWrapper/ContentVBox/"
-	var pages: Array = [
-		# GENERAL
-		[
-			get_node(VBOX + "JourneysSection"),
-			get_node(VBOX + "AudioSection"),
-			get_node(VBOX + "DisplaySection"),
-			_accessibility_section,
-			_transcode_section
-		],
-		# CONNECTION
-		[
-			get_node(VBOX + "IntifaceSection"),
-			get_node(VBOX + "SerialSection"),
-			_routing_section,
-			_handy_section,
-			_restim_section,
-		],
-		# DEVICE
-		[_range_section, _restim_axes_section, _filler_section],
-		# ABOUT
-		[_credits_section],
-	]
+	var pages: Array = _tab_pages()
 	for page_idx: int in pages.size():
 		var on_this_tab: bool = page_idx == idx
 		for section: Control in pages[page_idx]:
@@ -1620,8 +1635,10 @@ func _make_separator_style() -> StyleBoxFlat:
 
 
 # Thin delegates to UITheme — the canonical styling lives there. Args preserve this screen's padding.
+# A row's label (white, 14px) is always ALL CAPS, so every row reads the same whatever its source text.
 func _style_label(label: Label, color: Color, size: int, uppercase: bool = false) -> void:
-	UITheme.style_label(label, color, size, uppercase)
+	var is_row_label: bool = size == ROW_LABEL_SIZE and color == UITheme.WHITE_SOFT
+	UITheme.style_label(label, color, size, uppercase or is_row_label)
 
 
 func _style_button(btn: Button, accent: Color) -> void:
@@ -1790,8 +1807,6 @@ func _load_settings() -> void:
 	var range_hi: float = float(SettingsService.get_range_max())
 	if _range_slider != null:
 		_range_slider.set_range_values(range_lo, range_hi)
-		_range_min_lbl.text = "MIN: %d" % roundi(range_lo)
-		_range_max_lbl.text = "MAX: %d" % roundi(range_hi)
 
 	for axis_def: Array in SECONDARY_AXES:
 		var axis_id: String = axis_def[0]
@@ -1800,16 +1815,15 @@ func _load_settings() -> void:
 			var ax_lo: float = float(SettingsService.get_axis_range_min(axis_id))
 			var ax_hi: float = float(SettingsService.get_axis_range_max(axis_id))
 			ax_slider.set_range_values(ax_lo, ax_hi)
-			(_axis_range_min_lbls[axis_id] as Label).text = "MIN: %d" % roundi(ax_lo)
-			(_axis_range_max_lbls[axis_id] as Label).text = "MAX: %d" % roundi(ax_hi)
 
 	var home_pos: int = SettingsService.get_home_position()
 	var home_ease: int = SettingsService.get_home_ease_ms()
 	if _home_slider != null:
 		_home_slider.value = home_pos
 		_home_value_lbl.text = str(home_pos)
-	if _home_ease_input != null:
-		_home_ease_input.text = str(home_ease)
+	if _home_ease_slider != null:
+		_home_ease_slider.set_value_no_signal(home_ease)
+		_home_ease_value_lbl.text = "%d ms" % home_ease
 	FunscriptPlayer.SetHomePosition(home_pos, home_ease)
 
 	var vibe: int = SettingsService.get_vibe_intensity()
@@ -1821,7 +1835,7 @@ func _load_settings() -> void:
 	var max_speed: int = SettingsService.get_max_stroke_speed()
 	if _max_speed_slider != null:
 		_max_speed_slider.value = max_speed
-		_max_speed_value_lbl.text = ("Off" if max_speed <= 0 else "%d u/s" % max_speed)
+		_max_speed_value_lbl.text = _max_speed_text(max_speed)
 	FunscriptPlayer.SetMaxStrokeSpeed(max_speed)
 
 	if _device_profile_dd != null:
@@ -1898,8 +1912,6 @@ func _load_settings() -> void:
 	var filler_hi: float = float(SettingsService.get_filler_hi())
 	if _filler_range_slider != null:
 		_filler_range_slider.set_range_values(filler_lo, filler_hi)
-		_filler_range_min_lbl.text = "MIN: %d" % roundi(filler_lo)
-		_filler_range_max_lbl.text = "MAX: %d" % roundi(filler_hi)
 
 	var filler_enabled: bool = SettingsService.get_filler_enabled()
 	if _filler_toggle != null:
@@ -1955,9 +1967,7 @@ func _save_settings() -> void:
 
 	if _home_slider != null:
 		var home_position: int = roundi(_home_slider.value)
-		var home_ease_ms: int = _home_ease_input.text.to_int()
-		if home_ease_ms <= 0:
-			home_ease_ms = 2000
+		var home_ease_ms: int = roundi(_home_ease_slider.value)
 		SettingsService.set_home_position(home_position)
 		SettingsService.set_home_ease_ms(home_ease_ms)
 		FunscriptPlayer.SetHomePosition(home_position, home_ease_ms)
@@ -2201,7 +2211,7 @@ func _build_transcode_section() -> void:
 
 	var auto_lbl: Label = Label.new()
 	auto_lbl.text = "AUTO-TRANSCODE VIDEOS"
-	auto_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	auto_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
 	_style_label(auto_lbl, UITheme.WHITE_SOFT, 14, false)
 	auto_row.add_child(auto_lbl)
 
@@ -2710,6 +2720,10 @@ func _build_routing_section() -> void:
 	_style_label(_stroker_summary_lbl, UITheme.CYAN, 12, false)
 	section.add_child(_stroker_summary_lbl)
 
+	# TIMING gathers sync calibration and every device's delay, once spread over three sections.
+	_timing_section = _make_section("TIMING")
+	var timing: VBoxContainer = _timing_section
+
 	# The delay sliders below are the only settings on this screen that can't be judged by looking at
 	# them. This opens something to judge them against.
 	var calibrate: Button = Button.new()
@@ -2726,10 +2740,10 @@ func _build_routing_section() -> void:
 		)
 	)
 	calibrate.pressed.connect(_open_sync_calibration)
-	section.add_child(calibrate)
+	timing.add_child(calibrate)
 
 	var d_intiface: Dictionary = _add_delay_row(
-		section,
+		timing,
 		"Intiface delay",
 		(
 			"Timing offset for Buttplug / Intiface devices, in milliseconds. Positive = the device "
@@ -2740,7 +2754,7 @@ func _build_routing_section() -> void:
 	_intiface_delay_slider = d_intiface["slider"]
 	_intiface_delay_lbl = d_intiface["value"]
 	var d_serial: Dictionary = _add_delay_row(
-		section,
+		timing,
 		"Serial delay",
 		(
 			"Timing offset for the serial (T-code) stroker, in milliseconds. Positive = the device "
@@ -2751,10 +2765,31 @@ func _build_routing_section() -> void:
 	_serial_delay_slider = d_serial["slider"]
 	_serial_delay_lbl = d_serial["value"]
 
+	# Kept on the instance, not local: the sync calibration writes this same setting and
+	# _reread_delay_sliders has to be able to put the new value back on the slider when it closes.
+	var d_handy: Dictionary = _add_delay_row(
+		timing,
+		"Handy delay",
+		(
+			"Timing offset for the Handy over WiFi, in milliseconds. Positive = the device fires "
+			+ "later, negative = earlier."
+		)
+	)
+	_handy_delay_slider = d_handy["slider"]
+	_handy_delay_lbl = d_handy["value"]
+	_handy_delay_slider.value = SettingsService.get_handy_delay_ms()
+	_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
+	_handy_delay_slider.value_changed.connect(
+		func(v: float) -> void:
+			_handy_delay_lbl.text = "%d ms" % roundi(v)
+			SettingsService.set_handy_delay_ms(roundi(v))
+			SettingsService.save()
+	)
+
 	# Serial stroke smoothing (the T-code interp interval factor) — a per-device/firmware tuning for
 	# the OSR/SR6 stream. Same row shape as the delays, but a ×factor rather than milliseconds.
 	var d_interp: Dictionary = _add_factor_row(
-		section,
+		timing,
 		"Serial smoothing",
 		(
 			"How smoothly motion is streamed to a T-code stroker (OSR2 / SR6). Higher = smoother, "
@@ -2775,7 +2810,7 @@ func _build_routing_section() -> void:
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(hint, UITheme.TEXT_HINT, 11, false)
 	section.add_child(hint)
-	_build_oscillate_section(section)
+	_build_oscillate_section()
 
 	# Seed sliders BEFORE connecting so setup doesn't fire the change handlers.
 	_intiface_delay_slider.value = SettingsService.get_intiface_delay_ms()
@@ -2896,19 +2931,7 @@ func _build_handy_section() -> void:
 				_set_handy_status("✕ Test failed", UITheme.STATUS_ERROR)
 	)
 
-	# Kept on the instance, not local: the sync calibration writes this same setting and _reread_delay_sliders
-	# has to be able to put the new value back on the slider when it closes.
-	var d_handy: Dictionary = _add_delay_row(section, "Handy delay")
-	_handy_delay_slider = d_handy["slider"]
-	_handy_delay_lbl = d_handy["value"]
-	_handy_delay_slider.value = SettingsService.get_handy_delay_ms()
-	_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
-	_handy_delay_slider.value_changed.connect(
-		func(v: float) -> void:
-			_handy_delay_lbl.text = "%d ms" % roundi(v)
-			SettingsService.set_handy_delay_ms(roundi(v))
-			SettingsService.save()
-	)
+	# Its delay is under TIMING, with the other devices'.
 
 	var disclosure: Label = Label.new()
 	disclosure.text = (
@@ -3003,7 +3026,7 @@ func _build_restim_section() -> void:
 	_sync_restim_state()
 
 
-# Per-axis e-stim levels. Deliberately on the DEVICE tab rather than CONNECTION:
+# Per-axis e-stim levels. Deliberately on the DEVICES tab rather than CONNECTION:
 # these are ongoing output tuning (the same kind of thing as the T-code ranges
 # above them), not part of getting connected. Each row seeds and saves itself.
 # Collapsed by default: it is 18 sliders only an e-stim owner needs, and left open it
@@ -3252,8 +3275,20 @@ func _add_delay_row(parent: VBoxContainer, label_text: String, tip: String = "")
 	value_lbl.custom_minimum_size = Vector2(60, 0)
 	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	row.add_child(value_lbl)
+	_add_row_hint(parent, tip)
 
 	return {"slider": slider, "value": value_lbl}
+
+
+# A row's explanation, visible under it (hover tooltips alone hide it from keyboard and touch users).
+func _add_row_hint(parent: VBoxContainer, text: String) -> void:
+	if text == "":
+		return
+	var hint: Label = Label.new()
+	hint.text = text
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
+	parent.add_child(hint)
 
 
 # A labelled 1.0–4.0 ×factor slider row (mirrors _add_delay_row's shape). Returns {slider, value};
@@ -3285,6 +3320,7 @@ func _add_factor_row(parent: VBoxContainer, label_text: String, tip: String) -> 
 	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	row.add_child(value_lbl)
 
+	_add_row_hint(parent, tip)
 	return {"slider": slider, "value": value_lbl}
 
 
@@ -3293,6 +3329,7 @@ func _refresh_routing_cards() -> void:
 	if _routing_cards_vbox == null:
 		return
 	_stop_oscillate_test()  # the button running it is about to be freed, and never sends its mouse-up
+	_oscillate_rate_notes.clear()
 	for c in _routing_cards_vbox.get_children():
 		c.queue_free()
 
@@ -3312,7 +3349,6 @@ func _refresh_routing_cards() -> void:
 		handy_body.add_child(handy_note)
 
 	var catalog: Array = ButtplugService.GetDeviceCatalog()
-	var any_oscillate: bool = false
 	if catalog.is_empty():
 		var none_body: VBoxContainer = _make_routing_card("BUTTPLUG", UITheme.PURPLE_MID)
 		var lbl: Label = Label.new()
@@ -3342,15 +3378,12 @@ func _refresh_routing_cards() -> void:
 					"Constrict %d" % (ch + 1)
 				)
 			for ch in int(entry.get("oscillate_channels", 0)):
-				any_oscillate = true
 				_add_oscillate_row(
 					body,
 					DeviceRouting.make_actuator_id(dev_id, "oscillate", ch),
 					"Oscillate %d" % (ch + 1)
 				)
 			_add_device_test_row(body, entry)
-	if _oscillate_section != null:
-		_oscillate_section.visible = any_oscillate
 
 	_update_stroker_summary()
 
@@ -3511,6 +3544,12 @@ func _add_oscillate_row(body: VBoxContainer, actuator_id: String, label_text: St
 		func(lo: float, hi: float) -> void: _on_oscillate_limits_changed(actuator_id, lo, hi)
 	)
 	limits_row.add_child(slider)
+	var rate_note: Label = Label.new()
+	rate_note.text = _oscillate_rate_note_text(SettingsService.get_oscillate_full_rate())
+	rate_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(rate_note, UITheme.TEXT_HINT, 11, false)
+	body.add_child(rate_note)
+	_oscillate_rate_notes.append(rate_note)
 
 
 func _on_oscillate_source_selected(actuator_id: String, idx: int) -> void:
@@ -3580,28 +3619,18 @@ func _notification(what: int) -> void:
 # One setting for every oscillating device, under its own header like the other device sections: the
 # stroke rate that means full speed (the max limit). Slower scripts scale down toward the min limit.
 # Shown by _refresh_routing_cards while an oscillating device is connected.
-func _build_oscillate_section(parent: VBoxContainer) -> void:
-	_oscillate_section = VBoxContainer.new()
-	_oscillate_section.add_theme_constant_override("separation", 10)
-	_oscillate_section.visible = false
-	parent.add_child(_oscillate_section)
-
-	var header: Label = Label.new()
-	header.text = "OSCILLATING DEVICES"
-	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
-	_oscillate_section.add_child(header)
-
-	var divider: HSeparator = HSeparator.new()
-	divider.add_theme_stylebox_override("separator", _make_separator_style())
-	_oscillate_section.add_child(divider)
+func _build_oscillate_section() -> void:
+	_oscillate_section = _make_section("OSCILLATING DEVICES")
 
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 16)
 	_oscillate_section.add_child(row)
 
 	var tip: String = (
-		"How fast the script has to stroke for an oscillating device to reach its max speed limit. "
-		+ "Lower it if the machine rarely gets going; raise it if it's always flat out."
+		"How fast the script has to stroke, in strokes per second, for an oscillating device to reach "
+		+ "its max speed limit. Slower strokes run it slower, down to its min limit, and shallow strokes "
+		+ "count for less than full ones. Lower it if the machine rarely gets going; raise it if it's "
+		+ "always flat out."
 	)
 	var lbl: Label = Label.new()
 	lbl.text = "Full speed at"
@@ -3621,16 +3650,44 @@ func _build_oscillate_section(parent: VBoxContainer) -> void:
 	row.add_child(slider)
 
 	var value_lbl: Label = Label.new()
-	value_lbl.custom_minimum_size = Vector2(110, 0)
+	value_lbl.custom_minimum_size = Vector2(150, 0)  # wide enough that no value changes the row's size
 	_style_label(value_lbl, UITheme.PURPLE_TEXT, 11, true)
 	value_lbl.text = _strokes_per_second_text(slider.value)
 	row.add_child(value_lbl)
+	_add_row_hint(_oscillate_section, tip)
+
+	# The rate notes under each channel are wrapped text: rewriting them on every step of a drag made
+	# the whole page re-lay out and the scroll jump. They follow when the drag ends (or at once for a
+	# keyboard change, which is a single step), and the setting is saved then too.
+	slider.drag_started.connect(func() -> void: _full_rate_dragging = true)
+	slider.drag_ended.connect(
+		func(_changed: bool) -> void:
+			_full_rate_dragging = false
+			_commit_full_rate(slider.value)
+	)
 	slider.value_changed.connect(
 		func(v: float) -> void:
 			value_lbl.text = _strokes_per_second_text(v)
-			SettingsService.set_oscillate_full_rate(v)
-			SettingsService.save()
 			FunscriptPlayer.SetOscillateFullRate(v)
+			if not _full_rate_dragging:
+				_commit_full_rate(v)
+	)
+
+
+# Saves FULL SPEED AT and brings each channel's "reaches max at" note up to date.
+func _commit_full_rate(rate: float) -> void:
+	SettingsService.set_oscillate_full_rate(rate)
+	SettingsService.save()
+	for note: Variant in _oscillate_rate_notes:
+		if is_instance_valid(note):
+			(note as Label).text = _oscillate_rate_note_text(rate)
+
+
+# Under each oscillate channel's speed limits: when it reaches the max one.
+func _oscillate_rate_note_text(rate: float) -> String:
+	return (
+		"Runs at the slowest limit while the script moves and stops when it holds; reaches the max "
+		+ "limit at %s (FULL SPEED AT, under OSCILLATING DEVICES)." % _strokes_per_second_text(rate)
 	)
 
 

@@ -23,7 +23,7 @@ const ORB_SCALE_MAX: float = 1.25
 const ORB_GLOW_MULT: float = 1.7  # glow-halo radius relative to the orb
 const OUTLINE_WIDTH: float = 1.5  # crisp rim that keeps the shape readable over video
 
-# Marker shapes, chosen in Options → Display. Each is a UNIT polygon (radius 1, centred on the
+# Marker shapes, chosen in Options → HUD. Each is a UNIT polygon (radius 1, centred on the
 # origin, y-down for Godot) built once in _rebuild_shape and scaled per draw — generating these
 # per orb per frame would be wasteful with the trail ghosts.
 const SHAPE_ORB: String = "orb"
