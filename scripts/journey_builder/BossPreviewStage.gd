@@ -107,7 +107,7 @@ func build(characters: Array) -> void:
 	_message.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_message.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	UITheme.style_label(_message, UITheme.AMBER, 13)
+	UITheme.style_label(_message, UITheme.STATUS_WARNING, 13)
 	add_child(_message)
 
 	_audio = BossAudioCues.new()

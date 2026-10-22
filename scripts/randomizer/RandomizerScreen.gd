@@ -817,7 +817,9 @@ func _update_tag_match() -> void:
 		if RandomizerGenerator.matches_tags(e.get("tags", []), include, exclude):
 			matching += 1
 	_tag_match_lbl.text = "%d of %d clips match." % [matching, entries.size()]
-	UITheme.style_label(_tag_match_lbl, UITheme.AMBER if matching == 0 else UITheme.CYAN, 12)
+	UITheme.style_label(
+		_tag_match_lbl, UITheme.STATUS_WARNING if matching == 0 else UITheme.STATUS_INFO, 12
+	)
 
 
 # ── Tagging (library) ────────────────────────────────────────────────────────
@@ -1111,7 +1113,7 @@ func _make_row(entry: Dictionary) -> Control:
 			)
 		)
 		flag_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-		UITheme.style_label(flag_lbl, UITheme.AMBER, 11)
+		UITheme.style_label(flag_lbl, UITheme.STATUS_WARNING, 11)
 		name_box.add_child(flag_lbl)
 
 	# Parts line: shows the stored beats (from import-time analysis), not the

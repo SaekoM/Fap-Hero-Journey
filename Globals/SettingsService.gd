@@ -137,6 +137,7 @@ func _ready() -> void:
 	DisplayServer.window_set_mode(mode)
 
 	apply_ui_scale()
+	UITheme.set_colour_mode(get_colour_mode())  # UITheme loads first, so the saved mode is applied here
 
 
 # F11 toggles fullscreen everywhere. Handled here on the autoload so it works in every scene (menus,
@@ -843,6 +844,30 @@ func set_ui_sound_enabled(value: bool) -> void:
 
 func set_ui_sound_volume(value: float) -> void:
 	_config.set_value("audio", "ui_sound_volume", value)
+
+
+# ── Colour mode (COLOUR_MODES_DESIGN.md) ─────────────────────────────────────
+
+
+# The player's colour mode (a UITheme.COLOUR_MODES id). Unknown ids read as Off.
+func get_colour_mode() -> String:
+	var mode: String = str(_config.get_value("display", "colour_mode", UITheme.COLOUR_MODE_OFF))
+	return mode if UITheme.COLOUR_MODES.has(mode) else UITheme.COLOUR_MODE_OFF
+
+
+# Reduce flashing (COLOUR_MODES_DESIGN.md): Flicker slowed below three dips a second and softened, and
+# boss cues that would snap in fade in briefly instead. Off by default.
+func get_reduce_flashing() -> bool:
+	return bool(_config.get_value("display", "reduce_flashing", false))
+
+
+func set_reduce_flashing(on: bool) -> void:
+	_config.set_value("display", "reduce_flashing", on)
+
+
+func set_colour_mode(mode: String) -> void:
+	var known: bool = UITheme.COLOUR_MODES.has(mode)
+	_config.set_value("display", "colour_mode", mode if known else UITheme.COLOUR_MODE_OFF)
 
 
 # ── Stash (the randomizer's Stash import, STASH_DESIGN.md) ───────────────────

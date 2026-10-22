@@ -1252,7 +1252,7 @@ func _make_node(item: Dictionary, is_terminal: bool = false) -> Control:
 		panel.tooltip_text = warning
 		var warn_lbl: Label = Label.new()
 		warn_lbl.text = "⚠"
-		warn_lbl.add_theme_color_override("font_color", UITheme.AMBER)
+		warn_lbl.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 		warn_lbl.add_theme_font_size_override("font_size", 18)
 		warn_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		warn_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1418,9 +1418,9 @@ func _type_icon(item_type: String) -> String:
 func _effect_look(item: Dictionary) -> Dictionary:
 	match str(item.get("round_type", "")):
 		"cursed":
-			return {"color": Color.html(JourneyData.EFFECT_COLOR_HINDER), "icon": "☠"}
+			return {"color": UITheme.PAIR_CURSE, "icon": "☠"}
 		"blessed":
-			return {"color": Color.html(JourneyData.EFFECT_COLOR_BOON), "icon": "✦"}
+			return {"color": UITheme.PAIR_BOON, "icon": "✦"}
 		_:
 			var hex: String = str(item.get("frame_color", ""))
 			var color: Color = (
@@ -1429,7 +1429,7 @@ func _effect_look(item: Dictionary) -> Dictionary:
 				else Color.html(JourneyData.EFFECT_COLOR_NEUTRAL)
 			)
 			var glyph: String = str(item.get("card_icon", ""))
-			return {"color": color, "icon": glyph if glyph != "" else "✦"}
+			return {"color": UITheme.effect_colour(color), "icon": glyph if glyph != "" else "✦"}
 
 
 func _type_label(item: Dictionary) -> String:

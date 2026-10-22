@@ -125,34 +125,272 @@ const PURPLE_BRIGHT: Color = Color(0.698, 0.118, 1.0, 1.0)  # #b21eff
 
 # Accent colors
 const MAGENTA: Color = Color(0.878, 0.0, 0.878, 1.0)  # #e000e0
-const WHITE_SOFT: Color = Color(0.878, 0.780, 1.0, 1.0)  # #e0c7ff
+# WHITE_SOFT (text) is a variable: see "Colour modes" below.
 const AUDIO_TEST_BTN_WIDTH: int = 84  # compact: a utility beside its field, not a section action
 const AMBER: Color = Color(1.0, 0.65, 0.15, 1.0)
 const TOXIC_GREEN: Color = Color(0.45, 1.0, 0.35, 1.0)
 const CYAN: Color = Color(0.10, 0.85, 0.90, 1.0)
-const DARK_TEXT: Color = Color(0.55, 0.47, 0.72, 1.0)
 
-# Semantic colors
-const SEPARATOR: Color = Color(0.698, 0.118, 1.0, 0.5)
+# Semantic colors (SEPARATOR, ERROR, ERROR_SOFT, OK and SUCCESS are variables: see "Colour modes")
 const DANGER: Color = Color(0.9, 0.15, 0.15, 1.0)
-const ERROR: Color = Color(1.0, 0.25, 0.05, 1.0)
-const ERROR_SOFT: Color = Color(1.0, 0.3, 0.3, 1.0)
-const OK: Color = Color(0.35, 0.95, 0.35, 1.0)
-const SUCCESS: Color = Color(0.3, 1.0, 0.5, 1.0)
 
 # Aliases for clarity at the call site
 const STORYBOARD: Color = Color(0.0, 0.78, 0.88, 1.0)  # used by JourneyBuilder
 
-# Readable colours (COLOUR_MODES_DESIGN.md, phase 0). Measured against PANEL_BG: text needs 4.5:1 and
-# control edges 3:1 (WCAG). SEPARATOR and PURPLE_MID used as text read at 1.9:1 and 2.1:1, and
-# PURPLE_MID borders at 2.1:1, so text and controls take these instead; backgrounds and the brand
-# purples stay as they are.
-const TEXT_HINT: Color = Color(0.659, 0.561, 0.816, 1.0)  # #a88fd0 hints and secondary text, 7.2:1
-const PURPLE_TEXT: Color = Color(0.725, 0.549, 0.941, 1.0)  # #b98cf0 purple as text, 7.8:1
-const BORDER: Color = Color(0.522, 0.286, 0.788, 1.0)  # #8549c9 control edges, 3.6:1
-const FOCUS_RING: Color = WHITE_SOFT  # keyboard focus, 13:1
+# Readability thresholds (WCAG), measured against PANEL_BG: text 4.5:1, control edges 3:1.
 const MIN_TEXT_CONTRAST: float = 4.5
 const MIN_UI_CONTRAST: float = 3.0
+
+# ── Colour modes (COLOUR_MODES_DESIGN.md) ────────────────────────────────────
+# A player-wide setting for colour-blind and low-vision players. A mode swaps the colours that MEAN
+# something (status, curse vs boon, ordered scales) and, in High contrast, the text and control
+# colours; backgrounds and the brand purples never change. Screens take the colours when they're
+# built, so a change shows on the next screen that opens (Options' preview strip shows it at once);
+# anything drawn continuously listens to colour_mode_changed.
+
+signal colour_mode_changed(mode: String)
+
+const COLOUR_MODE_OFF: String = "off"
+const COLOUR_MODE_RED_GREEN: String = "red_green"
+const COLOUR_MODE_BLUE_YELLOW: String = "blue_yellow"
+const COLOUR_MODE_HIGH_CONTRAST: String = "high_contrast"
+# Setting ids in dropdown order, and what the player reads.
+const COLOUR_MODES: Array = [
+	COLOUR_MODE_OFF, COLOUR_MODE_RED_GREEN, COLOUR_MODE_BLUE_YELLOW, COLOUR_MODE_HIGH_CONTRAST
+]
+const COLOUR_MODE_NAMES: Dictionary = {
+	COLOUR_MODE_OFF: "Off",
+	COLOUR_MODE_RED_GREEN: "Red-green safe",
+	COLOUR_MODE_BLUE_YELLOW: "Blue-yellow safe",
+	COLOUR_MODE_HIGH_CONTRAST: "High contrast",
+}
+
+# Each mode's palette. Off is today's look made readable (phase 0); the others were proposed with a
+# simulated preview and checked under each colour-vision type (red-green safe follows the Okabe–Ito
+# set: good is blue, bad is orange). Ordered scales run in lightness order so they read in greyscale.
+# `ok`/`success` and `error`/`error_soft` are today's two shades of each, kept apart only in Off.
+const _TEXT_OFF: Dictionary = {
+	"text": Color(0.878, 0.780, 1.0),  # #e0c7ff, 13:1
+	"hint": Color(0.659, 0.561, 0.816),  # #a88fd0, 7.2:1
+	"purple_text": Color(0.725, 0.549, 0.941),  # #b98cf0, 7.8:1
+	"dark_text": Color(0.55, 0.47, 0.72),  # #8c78b8, 5.3:1
+	"border": Color(0.522, 0.286, 0.788),  # #8549c9, 3.6:1
+	"focus": Color(0.878, 0.780, 1.0),
+	"separator": Color(0.698, 0.118, 1.0, 0.5),
+}
+const PALETTES: Dictionary = {
+	COLOUR_MODE_OFF:
+	{
+		"text": _TEXT_OFF,
+		"ok": Color(0.35, 0.95, 0.35),
+		"success": Color(0.3, 1.0, 0.5),
+		"warning": Color(1.0, 0.65, 0.15),
+		"error": Color(1.0, 0.25, 0.05),
+		"error_soft": Color(1.0, 0.3, 0.3),
+		"info": Color(0.10, 0.85, 0.90),
+		"curse": Color("#ff5c8a"),
+		"boon": Color("#ffd64d"),
+		"gain": Color(0.3, 1.0, 0.5),
+		"loss": Color(0.878, 0.0, 0.878),
+		"coin": Color(1.0, 0.65, 0.15),
+		"intensity":
+		[Color("#3fd28c"), Color("#d8e23a"), Color("#ff9a2e"), Color("#ff4a3a"), Color("#ff4fd8")],
+		"difficulty":
+		[
+			Color("#59f259"),
+			Color("#f2f240"),
+			Color("#ff9a2e"),
+			Color("#ff5a3a"),
+			Color("#ff2a6a"),
+			Color("#d75cff"),
+		],
+	},
+	COLOUR_MODE_RED_GREEN:
+	{
+		"text": _TEXT_OFF,
+		"ok": Color("#56b4e9"),
+		"success": Color("#56b4e9"),
+		"warning": Color("#f0e442"),
+		"error": Color("#ff7b2e"),
+		"error_soft": Color("#ff7b2e"),
+		"info": Color("#e3e3e3"),
+		"curse": Color("#ff7b2e"),
+		"boon": Color("#56b4e9"),
+		"gain": Color("#56b4e9"),
+		"loss": Color("#ff7b2e"),
+		"coin": Color("#f0e442"),
+		"intensity":
+		[Color("#3d6fd8"), Color("#4f9bd8"), Color("#a7b9a0"), Color("#e3c94a"), Color("#fff27a")],
+		"difficulty":
+		[
+			Color("#6b9bf2"),
+			Color("#56b4e9"),
+			Color("#9fc8c8"),
+			Color("#e0c260"),
+			Color("#ffdf3d"),
+			Color("#ffffff"),
+		],
+	},
+	COLOUR_MODE_BLUE_YELLOW:
+	{
+		"text": _TEXT_OFF,
+		"ok": Color("#2ad4c4"),
+		"success": Color("#2ad4c4"),
+		"warning": Color("#ff8fd0"),
+		"error": Color("#ff4040"),
+		"error_soft": Color("#ff4040"),
+		"info": Color("#e3e3e3"),
+		"curse": Color("#ff4040"),
+		"boon": Color("#2ad4c4"),
+		"gain": Color("#2ad4c4"),
+		"loss": Color("#ff4040"),
+		"coin": Color("#ffa626"),
+		"intensity":
+		[Color("#a83232"), Color("#e05050"), Color("#f08a7a"), Color("#f7c2b8"), Color("#ffffff")],
+		"difficulty":
+		[
+			Color("#e65c5c"),
+			Color("#ec7a6e"),
+			Color("#f29a88"),
+			Color("#f5b8a8"),
+			Color("#f9d8cf"),
+			Color("#ffffff"),
+		],
+	},
+	# Low vision: white text, near-white control edges (panels and cards are told apart only by their
+	# edges), a yellow focus ring so focus stands out from those edges, and less glow (see
+	# GlowEnvironment). Hues stay, so it still works for anyone who sees them.
+	COLOUR_MODE_HIGH_CONTRAST:
+	{
+		"text":
+		{
+			"text": Color("#ffffff"),
+			"hint": Color("#e6e6e6"),
+			"purple_text": Color("#ffffff"),
+			"dark_text": Color("#d9d9d9"),
+			"border": Color("#d9d9d9"),
+			"focus": Color("#ffd400"),
+			"separator": Color(1.0, 1.0, 1.0, 0.6),
+		},
+		"ok": Color("#5cff8f"),
+		"success": Color("#5cff8f"),
+		"warning": Color("#ffd400"),
+		"error": Color("#ff7070"),
+		"error_soft": Color("#ff7070"),
+		"info": Color("#7fdcff"),
+		"curse": Color("#ff7070"),
+		"boon": Color("#7fdcff"),
+		"gain": Color("#5cff8f"),
+		"loss": Color("#ff7070"),
+		"coin": Color("#ffd400"),
+		"intensity":
+		[Color("#3fd28c"), Color("#d8e23a"), Color("#ff9a2e"), Color("#ff4a3a"), Color("#ff4fd8")],
+		"difficulty":
+		[
+			Color("#59f259"),
+			Color("#f2f240"),
+			Color("#ff9a2e"),
+			Color("#ff5a3a"),
+			Color("#ff2a6a"),
+			Color("#d75cff"),
+		],
+	},
+}
+
+var colour_mode: String = COLOUR_MODE_OFF
+
+# Text and controls (phase 0 made them readable; High contrast lifts them further).
+var WHITE_SOFT: Color = _TEXT_OFF["text"]
+var TEXT_HINT: Color = _TEXT_OFF["hint"]  # hints and secondary text
+var PURPLE_TEXT: Color = _TEXT_OFF["purple_text"]  # purple as text
+var DARK_TEXT: Color = _TEXT_OFF["dark_text"]
+var BORDER: Color = _TEXT_OFF["border"]  # control edges
+var FOCUS_RING: Color = _TEXT_OFF["focus"]  # keyboard focus
+var SEPARATOR: Color = _TEXT_OFF["separator"]  # divider lines
+
+# Status: something worked, needs attention, failed, or is just information.
+var STATUS_OK: Color = PALETTES[COLOUR_MODE_OFF]["ok"]
+var STATUS_WARNING: Color = PALETTES[COLOUR_MODE_OFF]["warning"]
+var STATUS_ERROR: Color = PALETTES[COLOUR_MODE_OFF]["error"]
+var STATUS_INFO: Color = PALETTES[COLOUR_MODE_OFF]["info"]
+# Today's names for the same meanings, kept so existing call sites follow the mode.
+var OK: Color = PALETTES[COLOUR_MODE_OFF]["ok"]
+var SUCCESS: Color = PALETTES[COLOUR_MODE_OFF]["success"]
+var ERROR: Color = PALETTES[COLOUR_MODE_OFF]["error"]
+var ERROR_SOFT: Color = PALETTES[COLOUR_MODE_OFF]["error_soft"]
+
+# Pairs: two-way meanings — curse vs boon, and a number going up vs down (counters).
+var PAIR_CURSE: Color = PALETTES[COLOUR_MODE_OFF]["curse"]
+var PAIR_BOON: Color = PALETTES[COLOUR_MODE_OFF]["boon"]
+var PAIR_GAIN: Color = PALETTES[COLOUR_MODE_OFF]["gain"]
+var PAIR_LOSS: Color = PALETTES[COLOUR_MODE_OFF]["loss"]
+# Coins: amber, except where amber would sit too close to the error colour beside it (prices you can't
+# afford), so red-green safe makes it yellow.
+var COIN: Color = PALETTES[COLOUR_MODE_OFF]["coin"]
+
+# Ordered scales, low to high: stroke intensity (5 steps) and journey difficulty (6, in
+# JourneyData.DIFFICULTIES order).
+var SCALE_INTENSITY: Array = PALETTES[COLOUR_MODE_OFF]["intensity"]
+var SCALE_DIFFICULTY: Array = PALETTES[COLOUR_MODE_OFF]["difficulty"]
+
+
+# Switches every mode-driven colour to `mode`'s palette (an unknown id reads as Off) and tells
+# whatever draws continuously. SettingsService applies the saved mode at startup.
+func set_colour_mode(mode: String) -> void:
+	colour_mode = mode if PALETTES.has(mode) else COLOUR_MODE_OFF
+	var palette: Dictionary = PALETTES[colour_mode]
+	var text: Dictionary = palette["text"]
+	WHITE_SOFT = text["text"]
+	TEXT_HINT = text["hint"]
+	PURPLE_TEXT = text["purple_text"]
+	DARK_TEXT = text["dark_text"]
+	BORDER = text["border"]
+	FOCUS_RING = text["focus"]
+	SEPARATOR = text["separator"]
+	STATUS_OK = palette["ok"]
+	STATUS_WARNING = palette["warning"]
+	STATUS_ERROR = palette["error"]
+	STATUS_INFO = palette["info"]
+	OK = palette["ok"]
+	SUCCESS = palette["success"]
+	ERROR = palette["error"]
+	ERROR_SOFT = palette["error_soft"]
+	PAIR_CURSE = palette["curse"]
+	PAIR_BOON = palette["boon"]
+	PAIR_GAIN = palette["gain"]
+	PAIR_LOSS = palette["loss"]
+	COIN = palette["coin"]
+	SCALE_INTENSITY = palette["intensity"]
+	SCALE_DIFFICULTY = palette["difficulty"]
+	colour_mode_changed.emit(colour_mode)
+
+
+func is_high_contrast() -> bool:
+	return colour_mode == COLOUR_MODE_HIGH_CONTRAST
+
+
+# A journey difficulty's colour (a JourneyData.DIFFICULTIES name); an unknown one reads as text.
+func difficulty_color(difficulty: String) -> Color:
+	var index: int = JourneyData.DIFFICULTIES.find(difficulty)
+	return SCALE_DIFFICULTY[index] if index >= 0 else WHITE_SOFT
+
+
+# The colour to draw an effect round's frame or accent in, from the author's colour. Legacy cursed and
+# blessed rounds were baked with a toxic-green / gold pair that red-green colour blindness can't tell
+# apart; those two take the mode's curse and boon colours instead. Every other colour is the author's.
+func effect_colour(author_colour: Color) -> Color:
+	if author_colour.is_equal_approx(Color.html(JourneyData.EFFECT_COLOR_HINDER)):
+		return PAIR_CURSE
+	if author_colour.is_equal_approx(Color.html(JourneyData.EFFECT_COLOR_BOON)):
+		return PAIR_BOON
+	return author_colour
+
+
+# A step of an ordered scale for a 0–1 position (0 = lowest step, 1 = highest).
+func scale_step(scale: Array, position: float) -> Color:
+	var index: int = clampi(roundi(position * (scale.size() - 1)), 0, scale.size() - 1)
+	return scale[index]
+
 
 # Graph view (canvas) extras
 const GRID: Color = Color(0.10, 0.04, 0.18, 0.4)
@@ -208,7 +446,7 @@ static func readable(color: Color, background: Color, minimum: float = MIN_TEXT_
 
 
 # Black or soft white, whichever reads better on `fill` — for text on a solid accent (a pressed button).
-static func text_on(fill: Color) -> Color:
+func text_on(fill: Color) -> Color:
 	return BG if contrast_ratio(BG, fill) >= contrast_ratio(WHITE_SOFT, fill) else WHITE_SOFT
 
 

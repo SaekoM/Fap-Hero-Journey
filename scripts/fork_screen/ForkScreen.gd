@@ -277,9 +277,9 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 			cost_lbl.text = "FREE"
 			cost_lbl.add_theme_color_override("font_color", UITheme.SUCCESS)
 		else:
-			cost_lbl.text = _cost_text(sac_cost, sac_req)
+			cost_lbl.text = _cost_text(sac_cost, sac_req) + ("" if sac_affordable else "  ✕")
 			cost_lbl.add_theme_color_override(
-				"font_color", UITheme.AMBER if sac_affordable else UITheme.ERROR_SOFT
+				"font_color", UITheme.COIN if sac_affordable else UITheme.ERROR_SOFT
 			)
 		col.add_child(cost_lbl)
 

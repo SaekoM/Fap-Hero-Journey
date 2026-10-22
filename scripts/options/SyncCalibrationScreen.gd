@@ -234,7 +234,9 @@ func _toggle_pattern() -> void:
 	if driving:
 		_set_status("Playing on your device.", UITheme.SUCCESS)
 	else:
-		_set_status("Couldn't reach the device — the pattern is on screen only.", UITheme.DANGER)
+		_set_status(
+			"Couldn't reach the device — the pattern is on screen only.", UITheme.STATUS_ERROR
+		)
 
 
 func _stop_pattern() -> void:

@@ -24,10 +24,22 @@ const GLOW_INTENSITY: float = 0.9  # overall bloom strength
 const GLOW_BLOOM: float = 0.05  # small constant bloom added everywhere
 const GLOW_STRENGTH: float = 1.1  # per-sample blur strength
 const GLOW_THRESHOLD: float = 0.85  # pixels brighter than this glow (neon sits ~0.88–1.0)
+# High contrast (a colour mode for low vision) turns the bloom down: its white text and edges sit above
+# the threshold and would smear (COLOUR_MODES_DESIGN.md).
+const HIGH_CONTRAST_INTENSITY: float = 0.25
 
 
 func _ready() -> void:
 	environment = _build_environment()
+	_apply_colour_mode(UITheme.colour_mode)
+	UITheme.colour_mode_changed.connect(_apply_colour_mode)
+
+
+func _apply_colour_mode(_mode: String) -> void:
+	if environment != null:
+		environment.glow_intensity = (
+			HIGH_CONTRAST_INTENSITY if UITheme.is_high_contrast() else GLOW_INTENSITY
+		)
 
 
 func _build_environment() -> Environment:

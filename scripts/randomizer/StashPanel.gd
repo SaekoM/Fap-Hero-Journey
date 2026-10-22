@@ -310,13 +310,13 @@ func _refresh_samples() -> void:
 		var mapped: String = StashClient.map_path(stash_path, _mappings)
 		if found != "":
 			result_lbl.text = "    ✓ %s" % found
-			UITheme.style_label(result_lbl, UITheme.OK, 11)
+			UITheme.style_label(result_lbl, UITheme.STATUS_OK, 11)
 		elif mapped == "":
 			result_lbl.text = "    ✗ no folder above covers this"
-			UITheme.style_label(result_lbl, UITheme.AMBER, 11)
+			UITheme.style_label(result_lbl, UITheme.STATUS_WARNING, 11)
 		else:
 			result_lbl.text = "    ✗ %s — not found from this PC" % mapped
-			UITheme.style_label(result_lbl, UITheme.AMBER, 11)
+			UITheme.style_label(result_lbl, UITheme.STATUS_WARNING, 11)
 		_samples_box.add_child(result_lbl)
 
 

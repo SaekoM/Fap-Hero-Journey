@@ -23,6 +23,9 @@ extends Control
 # OLDEST animated cue is retired — a new attack hit matters more than the tail of the last one.
 const MAX_ANIMATED_CUES: int = 3
 
+# Reduce flashing: a cue authored to snap in ("flash") fades in over this long instead.
+const REDUCED_FLASH_FADE_MS: int = 250
+
 # Fallback hold for a one-shot cue that gives no timings at all, so it cannot linger forever.
 const DEFAULT_HOLD_MS: int = 1200
 
@@ -249,11 +252,14 @@ func _add_subtitle(root: Control, cue: Dictionary) -> Control:
 	label.anchor_left = 0.15
 	label.anchor_right = 0.85
 	_place_subtitle(label, float(cue.get("text_y", RoundTimeline.DEFAULT_TEXT_Y)))
+	# High contrast (low vision) overrides the author's colour with white; the outline below stays.
+	var text_color: Color = (
+		UITheme.WHITE_SOFT
+		if UITheme.is_high_contrast()
+		else RoundTimeline.cue_text_color(cue, UITheme.WHITE_SOFT)
+	)
 	UITheme.style_label(
-		label,
-		RoundTimeline.cue_text_color(cue, UITheme.WHITE_SOFT),
-		int(cue.get("text_size", RoundTimeline.DEFAULT_TEXT_SIZE)),
-		false
+		label, text_color, int(cue.get("text_size", RoundTimeline.DEFAULT_TEXT_SIZE)), false
 	)
 	# An outline instead of a panel: video is unpredictable behind text, and a box would fight the
 	# art the cue is there to show.
@@ -279,8 +285,8 @@ func _place_subtitle(label: Control, y: float) -> void:
 # ── Timing ───────────────────────────────────────────────────────────────────
 
 
-# Fades the cue in, and for a one-shot schedules its own exit. `flash` snaps in with no fade at all;
-# `slide` drifts in from the side while fading.
+# Fades the cue in, and for a one-shot schedules its own exit. `flash` snaps in with no fade at all
+# (a short fade with Reduce flashing on); `slide` drifts in from the side while fading.
 func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 	if not _cues.has(id):
 		return
@@ -290,7 +296,9 @@ func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 	var subtitle: Control = _live(entry, "subtitle")
 	var transition: String = str(cue.get("transition", RoundTimeline.TRANSITION_FADE))
 	var flash: bool = transition == RoundTimeline.TRANSITION_FLASH
-	var in_ms: int = 0 if flash else int(cue.get("in_ms", 0))
+	var in_ms: int = int(cue.get("in_ms", 0))
+	if flash:
+		in_ms = REDUCED_FLASH_FADE_MS if SettingsService.get_reduce_flashing() else 0
 	# Remembered for clear(), which has only the id to go on by then.
 	entry["out_ms"] = int(cue.get("out_ms", 0))
 

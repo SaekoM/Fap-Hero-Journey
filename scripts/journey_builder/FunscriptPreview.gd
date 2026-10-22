@@ -624,7 +624,7 @@ func _refresh_modified() -> void:
 		_caption.text = (
 			"BLOCK active — the device ignores the script (holds position). " + _modifier_summary()
 		)
-		_caption.add_theme_color_override("font_color", UITheme.AMBER)
+		_caption.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 		return
 
 	var raw: Array = _graph.get_raw()

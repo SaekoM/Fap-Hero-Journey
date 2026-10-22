@@ -39,7 +39,8 @@ const PHASE_BANNER_HOLD_SECS: float = 1.6
 # player most needs to distinguish.
 const STANCE_IMMUNE_TINT: Color = Color(0.62, 0.62, 0.68, 1.0)  # grey — nothing reaches her
 const STANCE_GUARD_TINT: Color = Color(0.45, 0.75, 1.0, 1.0)  # light blue — she is covering up
-const STANCE_HEAL_TINT: Color = UITheme.SUCCESS  # green — the one state that runs the bar backwards
+# Healing (the one state that runs the bar backwards) takes the colour mode's "ok" colour, read when
+# drawn: UITheme.SUCCESS, green unless a colour mode changes it.
 
 # How far the stance glow spreads beyond the bar. NORMAL gets none: the glow's PRESENCE is the signal,
 # so one that never went out would say nothing.
@@ -363,7 +364,7 @@ func _stance_color() -> Color:
 		RoundTimeline.STANCE_VULNERABLE:
 			return UITheme.PURPLE_BRIGHT
 		RoundTimeline.STANCE_RECOVERING:
-			return STANCE_HEAL_TINT
+			return UITheme.SUCCESS
 	return UITheme.DARK_TEXT
 
 

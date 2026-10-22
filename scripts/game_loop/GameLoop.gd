@@ -253,6 +253,9 @@ const DOUBLE_EFFECT_CHANCE: float = 0.22
 const CLEANSE_COST_DEFAULT: int = 50
 
 var _effect_frame: Panel = null  # optional coloured edge border (author-toggled per round)
+var _effect_badge: Label = null  # the round's card icon, in the frame's top-left corner
+const EFFECT_BADGE_INSET: float = 14.0
+const EFFECT_BADGE_SIZE: int = 30
 # The non-gameplay (visual/audio) modifier engine — overlays, video shader,
 # audio bus, tremor, mute. Built in _build_effect_overlay; every hex routes
 # through it first (see _apply_hex). Gameplay hexes below stay here.
@@ -425,6 +428,9 @@ func _ready() -> void:
 	MusicService.stop()
 	_apply_layout()
 	_apply_theme()
+	# The HUD bar is built once per round; a colour mode picked mid-round in Options recolours it
+	# here (the beat bar and boss bar follow the mode by themselves).
+	UITheme.colour_mode_changed.connect(_on_colour_mode_changed)
 	_build_boss_frame()
 	_build_effect_overlay()
 	_build_beat_bar()
@@ -1764,17 +1770,18 @@ func _show_boss_intro(round: Dictionary) -> void:
 
 	# Name the gameplay effects the boss carries so the player isn't blindsided — the boss
 	# equivalent of the effect round's reveal card, folded onto the intro. Each coloured by
-	# valence (boon green, hindrance red). Empty for a boss with only raw modifiers. Resolved
+	# valence (the colour mode's ok / error) and signed ✦ boon / ☠ hindrance, so it never rests on
+	# colour alone. Empty for a boss with only raw modifiers. Resolved
 	# fresh here because the card is built before _enter_boss_mode applies them.
 	var boss_fx: Array = _resolve_gameplay_effects(
 		round, JourneyData.catalog_subset(JourneyData.gameplay_effects(), round.get("effects", []))
 	)
 	for fx: Dictionary in boss_fx:
 		var fx_lbl: Label = Label.new()
-		fx_lbl.text = (fx.get("name", "") as String).to_upper()
+		var benefit: bool = JourneyData.effect_is_benefit(str(fx.get("_ref", fx.get("name", ""))))
+		fx_lbl.text = _effect_sign(benefit) + (fx.get("name", "") as String).to_upper()
 		fx_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		fx_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var benefit: bool = JourneyData.effect_is_benefit(str(fx.get("_ref", fx.get("name", ""))))
 		fx_lbl.add_theme_color_override(
 			"font_color", UITheme.SUCCESS if benefit else UITheme.ERROR_SOFT
 		)
@@ -1892,7 +1899,7 @@ func _enter_effect_mode(round: Dictionary) -> void:
 
 	# Optional coloured border (author-toggled); the resolvable cleanse layer when enabled.
 	var v: Dictionary = _effect_visuals(round)
-	_show_effect_overlay(v["frame"], bool(round.get("show_border", false)))
+	_show_effect_overlay(v["frame"], bool(round.get("show_border", false)), str(v["icon"]))
 	if _effect_resolvable:
 		_effect_resolved = false
 		_show_cleanse_button()
@@ -1960,9 +1967,20 @@ func _effect_visuals(round: Dictionary) -> Dictionary:
 	return {
 		"icon": _nonblank_str(str(round.get("card_icon", "")), "✦"),
 		"header": _nonblank_str(str(round.get("card_header", "")), "EFFECT"),
-		"accent": _hex_color(round.get("card_accent", ""), JourneyData.EFFECT_COLOR_NEUTRAL),
-		"frame": _hex_color(round.get("frame_color", ""), JourneyData.EFFECT_COLOR_NEUTRAL),
+		"accent":
+		UITheme.effect_colour(
+			_hex_color(round.get("card_accent", ""), JourneyData.EFFECT_COLOR_NEUTRAL)
+		),
+		"frame":
+		UITheme.effect_colour(
+			_hex_color(round.get("frame_color", ""), JourneyData.EFFECT_COLOR_NEUTRAL)
+		),
 	}
+
+
+# The sign before an effect's name in the boss intro and the reveal card: ✦ a boon, ☠ a hindrance.
+func _effect_sign(benefit: bool) -> String:
+	return "✦  " if benefit else "☠  "
 
 
 # Parses an "#rrggbb" string to a Color, falling back to `fallback_hex` when blank/invalid.
@@ -2025,7 +2043,9 @@ func _show_reveal_card(round: Dictionary) -> Control:
 
 	for fx: Dictionary in _reveal_effects:
 		var name_lbl: Label = Label.new()
-		name_lbl.text = (fx.get("name", "") as String).to_upper()
+		name_lbl.text = (
+			_effect_sign(bool(fx.get("benefit", false))) + (fx.get("name", "") as String).to_upper()
+		)
 		name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		name_lbl.add_theme_color_override(
@@ -2879,12 +2899,22 @@ func _build_effect_overlay() -> void:
 	s.bg_color = Color(0, 0, 0, 0)
 	s.set_border_width_all(5)
 	_effect_frame.add_theme_stylebox_override("panel", s)
+	# The round's card icon (☠, ✦ or the author's own) in the frame's corner, so a curse frame and a
+	# boon frame differ by more than their colour.
+	_effect_badge = Label.new()
+	_effect_badge.position = Vector2(EFFECT_BADGE_INSET, EFFECT_BADGE_INSET)
+	_effect_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_effect_badge.add_theme_font_size_override("font_size", EFFECT_BADGE_SIZE)
+	_effect_badge.add_theme_color_override("font_outline_color", UITheme.BG)
+	_effect_badge.add_theme_constant_override("outline_size", 6)
+	_effect_frame.add_child(_effect_badge)
 	add_child(_effect_frame)
 	_send_frame_behind_hud(_effect_frame)
 
 
-# Shows the coloured edge border for this round — but only when the author enabled it.
-func _show_effect_overlay(frame_color: Color, show_border: bool) -> void:
+# Shows the coloured edge border for this round — but only when the author enabled it — with the
+# round's card icon in its corner.
+func _show_effect_overlay(frame_color: Color, show_border: bool, icon: String) -> void:
 	if _effect_frame == null:
 		return
 	if not show_border:
@@ -2893,6 +2923,8 @@ func _show_effect_overlay(frame_color: Color, show_border: bool) -> void:
 	var s: StyleBox = _effect_frame.get_theme_stylebox("panel")
 	if s is StyleBoxFlat:
 		(s as StyleBoxFlat).border_color = frame_color
+	_effect_badge.text = icon
+	_effect_badge.add_theme_color_override("font_color", frame_color)
 	_effect_frame.visible = true
 
 
@@ -3875,13 +3907,14 @@ func _alloc_counter_pop_slot() -> int:
 	return i
 
 
-# A counter changed: "BELT  +1  → 3". Green for a gain, magenta for a loss.
+# A counter changed: "BELT  +1  → 3". The colour mode's gain colour for a gain, its loss colour for a
+# loss (green and magenta when no mode is set); the sign says which either way.
 func _show_counter_pop(name: String, value: int, delta: int) -> void:
 	_show_pop(
 		JourneyData.counter_display_name(_journey_counters, name),
 		"%+d" % delta,
 		"→ %d" % value,
-		UITheme.SUCCESS if delta >= 0 else UITheme.MAGENTA
+		UITheme.PAIR_GAIN if delta >= 0 else UITheme.PAIR_LOSS
 	)
 
 
@@ -4165,13 +4198,13 @@ func _handy_journey_sync_gate() -> void:
 
 	var ok: bool = await HandyService.connect_and_sync()
 	if ok:
-		status.text = "● Connected"
+		status.text = "✓ Connected"
 		status.add_theme_color_override("font_color", UITheme.SUCCESS)
 		await HandyService.test_stroke()  # a quick buzz so you can feel it's live
 		await get_tree().create_timer(0.7).timeout
 	else:
 		status.text = "✕ Not reachable — playing without the Handy"
-		status.add_theme_color_override("font_color", UITheme.DANGER)
+		status.add_theme_color_override("font_color", UITheme.STATUS_ERROR)
 		await get_tree().create_timer(1.4).timeout
 	overlay.queue_free()
 
@@ -5552,6 +5585,11 @@ func _input(event: InputEvent) -> void:
 		if (event as InputEventMouseMotion).relative.length() >= MOUSE_MOTION_DEADZONE_PX:
 			_show_hud()
 
+	# Options (opened mid-round) has the keyboard to itself: Tab, Space, arrows and Esc move through
+	# and close it, and must not also pause, open the inventory or start the exit hold underneath.
+	if _options_open:
+		return
+
 	# Keyboard hotkeys — evaluated in order of specificity.
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
@@ -5700,7 +5738,7 @@ func _animate_counter(
 		_counter_tweens[lbl] = []
 		return
 
-	var pulse_color: Color = UITheme.OK if to_val > from_val else UITheme.DANGER
+	var pulse_color: Color = UITheme.PAIR_GAIN if to_val > from_val else UITheme.PAIR_LOSS
 
 	var count_tw: Tween = create_tween()
 	(
@@ -5836,7 +5874,7 @@ func _refresh_device_warning() -> void:
 	# Nothing connected right now. Only warn if a device WAS present this run — so a funscript-only
 	# session with no toy never nags — and the banner clears itself the moment a device returns.
 	if _device_ever_seen:
-		_device_warning_label.text = "●  DEVICE DISCONNECTED  —  RECONNECT IN OPTIONS"
+		_device_warning_label.text = "✕  DEVICE DISCONNECTED  —  RECONNECT IN OPTIONS"
 		_device_warning_banner.visible = true
 	else:
 		_device_warning_banner.visible = false
@@ -6159,6 +6197,10 @@ func _apply_layout() -> void:
 # ---------------------------------------------------------------------------
 
 
+func _on_colour_mode_changed(_mode: String) -> void:
+	_apply_theme()
+
+
 func _apply_theme() -> void:
 	_bg.color = UITheme.BG
 
@@ -6180,7 +6222,7 @@ func _apply_theme() -> void:
 	_score_lbl.add_theme_font_size_override("font_size", 13)
 	_score_lbl.uppercase = true
 
-	_coin_lbl.add_theme_color_override("font_color", UITheme.AMBER)
+	_coin_lbl.add_theme_color_override("font_color", UITheme.COIN)
 	_coin_lbl.add_theme_font_size_override("font_size", 13)
 	_coin_lbl.uppercase = true
 

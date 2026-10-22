@@ -8,16 +8,7 @@ const BORDER_WIDTH: int = 2
 const CORNER_RADIUS: int = 8
 const HOVER_SCALE: float = 1.03
 
-# Difficulty → pill colour. Mirrors JourneySelect.DIFF_COLORS (kept local so the
-# card is self-contained — JourneySelect is not a class_name singleton).
-const DIFF_COLORS: Dictionary = {
-	"Easy": Color(0.35, 0.95, 0.35),
-	"Medium": Color(0.95, 0.95, 0.25),
-	"Hard": Color(1.0, 0.55, 0.1),
-	"Very Hard": Color(1.0, 0.25, 0.05),
-	"Extreme": Color(1.0, 0.1, 0.1),
-	"Impossible": Color(0.9, 0.05, 0.5),
-}
+# Difficulty pill colours come from the colour mode's difficulty scale: UITheme.difficulty_color.
 
 # Accent palette for generated placeholders — picked deterministically per title
 # so a cover-less journey always renders with the same colour.
@@ -209,7 +200,7 @@ func _build_gradient_scrim() -> void:
 func _build_difficulty_pill(difficulty: String) -> void:
 	if difficulty == "":
 		return
-	var color: Color = DIFF_COLORS.get(difficulty, UITheme.WHITE_SOFT)
+	var color: Color = UITheme.difficulty_color(difficulty)
 	var pill: Control = UITheme.make_tag_chip(difficulty, color)
 	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pill.position = Vector2(8, 8)

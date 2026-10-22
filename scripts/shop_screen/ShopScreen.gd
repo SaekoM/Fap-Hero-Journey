@@ -179,7 +179,7 @@ func _slot_element(index: int, id: String) -> Dictionary:
 	if not _purchased.get(id, false):
 		var affordable: bool = CoinService.CanAfford(price)
 		sub = "♦ %d" % price if affordable else "✕ ♦ %d" % price
-		accent = UITheme.AMBER if affordable else UITheme.DANGER
+		accent = UITheme.COIN if affordable else UITheme.STATUS_ERROR
 	return {
 		"key": "slot_%d" % index,
 		"label": str(data.get("name", id)),
@@ -653,7 +653,7 @@ func _apply_theme() -> void:
 	# row is as tall as the 30 px Title, so a FILL badge stretched to that height and read as
 	# bigger than the button beside it. Their content heights already match to within a pixel.
 	_coin_badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_coin_lbl.add_theme_color_override("font_color", UITheme.AMBER)
+	_coin_lbl.add_theme_color_override("font_color", UITheme.COIN)
 	_coin_lbl.add_theme_font_size_override("font_size", 18)
 
 	_subtitle.add_theme_color_override("font_color", UITheme.DARK_TEXT)

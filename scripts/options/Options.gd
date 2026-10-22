@@ -186,6 +186,8 @@ var _serial_interp_lbl: Label = null
 var _intiface_delay_slider: HSlider = null
 var _intiface_delay_lbl: Label = null
 var _transcode_section: VBoxContainer = null
+# ACCESSIBILITY, right after DISPLAY: colour mode with its preview, text sizes, sensory strength.
+var _accessibility_section: VBoxContainer = null
 var _credits_section: VBoxContainer = null
 
 # restim (e-stim), split across two tabs: the connection block (server/path/
@@ -252,6 +254,22 @@ func _ready() -> void:
 	_connect_signals()
 	_sync_buttplug_state()
 	_sync_serial_state()
+	# Keyboard: Tab walks the controls (the page scrolls to follow), and it starts on the tabs, so
+	# ←/→ pick a page straight away.
+	($ContentPanel/ContentScroll as ScrollContainer).follow_focus = true
+	_tab_bar.grab_focus.call_deferred()
+
+
+# Esc closes Options, the same as BACK — unless something opened on top of it (a dialog, the sync
+# calibration) has it first.
+func _unhandled_input(event: InputEvent) -> void:
+	if not event.is_action_pressed("ui_cancel"):
+		return
+	for child: Node in get_children():
+		if child is Window or child is SyncCalibrationScreen or child.is_in_group("ui_modal"):
+			return
+	get_viewport().set_input_as_handled()
+	_on_back_pressed()
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +411,6 @@ func _apply_layout() -> void:
 
 	_ui_sound_toggle = Button.new()
 	_ui_sound_toggle.toggle_mode = true
-	_ui_sound_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_ui_sound_toggle, false)
 	ui_sound_row.add_child(_ui_sound_toggle)
 	_ui_sound_toggle.toggled.connect(
@@ -479,12 +496,14 @@ func _apply_layout() -> void:
 			_save_settings()
 	)
 
-	# ── Sensory Strength row (code-generated, appended to DisplaySection) ────
+	var access_section: VBoxContainer = _build_accessibility_section(display_section)
+
+	# ── Sensory Strength row (ACCESSIBILITY) ─────────────────────────────────
 	# Scales every visual/audio round effect. Softens rather than disables — which effects a
 	# round uses stays the author's call; this is how strongly they land.
 	var sensory_row: HBoxContainer = HBoxContainer.new()
 	sensory_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(sensory_row)
+	access_section.add_child(sensory_row)
 
 	var sensory_lbl: Label = Label.new()
 	sensory_lbl.text = "SENSORY STRENGTH"
@@ -553,11 +572,11 @@ func _apply_layout() -> void:
 			_save_settings()
 	)
 
-	# ── Readability rows ────────────────────────────────────────────────────
-	# Text-only scales, distinct from UI SCALE above (which resizes layout too).
+	# ── Readability rows (ACCESSIBILITY) ────────────────────────────────────
+	# Text-only scales, distinct from DISPLAY's UI SCALE (which resizes layout too).
 	var story_row: HBoxContainer = HBoxContainer.new()
 	story_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(story_row)
+	access_section.add_child(story_row)
 
 	var story_lbl: Label = Label.new()
 	story_lbl.text = "STORY TEXT"
@@ -591,11 +610,11 @@ func _apply_layout() -> void:
 	story_hint.text = "Enlarges fork, boss-intro and storyboard text only — the HUD and buttons keep their size. Applies to the next screen that opens."
 	story_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(story_hint, UITheme.TEXT_HINT, 11, false)
-	display_section.add_child(story_hint)
+	access_section.add_child(story_hint)
 
 	var tip_row: HBoxContainer = HBoxContainer.new()
 	tip_row.add_theme_constant_override("separation", 16)
-	display_section.add_child(tip_row)
+	access_section.add_child(tip_row)
 
 	var tip_lbl: Label = Label.new()
 	tip_lbl.text = "TOOLTIP TEXT"
@@ -630,7 +649,7 @@ func _apply_layout() -> void:
 	tip_hint.text = "Enlarges every tooltip, including the journey builder's."
 	tip_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(tip_hint, UITheme.TEXT_HINT, 11, false)
-	display_section.add_child(tip_hint)
+	access_section.add_child(tip_hint)
 
 	var ui_scale_hint: Label = Label.new()
 	ui_scale_hint.text = "Scales the entire interface. Raise it if menus look small on a high-resolution or 4K display."
@@ -651,7 +670,6 @@ func _apply_layout() -> void:
 
 	_beat_bar_toggle = Button.new()
 	_beat_bar_toggle.toggle_mode = true
-	_beat_bar_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_beat_bar_toggle, false)
 	beat_row.add_child(_beat_bar_toggle)
 	_beat_bar_toggle.toggled.connect(
@@ -689,7 +707,6 @@ func _apply_layout() -> void:
 
 	_round_timer_toggle = Button.new()
 	_round_timer_toggle.toggle_mode = true
-	_round_timer_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_round_timer_toggle, false)
 	timer_row.add_child(_round_timer_toggle)
 	_round_timer_toggle.toggled.connect(
@@ -717,7 +734,6 @@ func _apply_layout() -> void:
 
 	_builder_bg_toggle = Button.new()
 	_builder_bg_toggle.toggle_mode = true
-	_builder_bg_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_builder_bg_toggle, true)
 	bldbg_row.add_child(_builder_bg_toggle)
 	_builder_bg_toggle.toggled.connect(
@@ -745,7 +761,6 @@ func _apply_layout() -> void:
 
 	_update_check_toggle = Button.new()
 	_update_check_toggle.toggle_mode = true
-	_update_check_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_update_check_toggle, false)
 	upd_row.add_child(_update_check_toggle)
 	_update_check_toggle.toggled.connect(
@@ -1172,7 +1187,6 @@ func _apply_layout() -> void:
 
 	_filler_toggle = Button.new()
 	_filler_toggle.toggle_mode = true
-	_filler_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_filler_toggle, false)
 	filler_enable_row.add_child(_filler_toggle)
 
@@ -1191,7 +1205,6 @@ func _apply_layout() -> void:
 
 	_allow_journey_filler_toggle = Button.new()
 	_allow_journey_filler_toggle.toggle_mode = true
-	_allow_journey_filler_toggle.focus_mode = Control.FOCUS_NONE
 	_style_toggle(_allow_journey_filler_toggle, true)
 	allow_row.add_child(_allow_journey_filler_toggle)
 
@@ -1328,6 +1341,100 @@ func _apply_layout() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Accessibility
+# ---------------------------------------------------------------------------
+
+
+# The ACCESSIBILITY section, placed right after `display_section`, with the colour mode and its live
+# preview. The caller adds the text-size and sensory rows below. See COLOUR_MODES_DESIGN.md.
+func _build_accessibility_section(display_section: VBoxContainer) -> VBoxContainer:
+	var section: VBoxContainer = VBoxContainer.new()
+	section.add_theme_constant_override("separation", 10)
+	var parent: Node = display_section.get_parent()
+	parent.add_child(section)
+	parent.move_child(section, display_section.get_index() + 1)
+	_accessibility_section = section
+
+	var header: Label = Label.new()
+	header.text = "ACCESSIBILITY"
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	section.add_child(header)
+
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	section.add_child(divider)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	section.add_child(row)
+
+	var label: Label = Label.new()
+	label.text = "COLOUR MODE"
+	label.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(label, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(label)
+
+	var dropdown: OptionButton = OptionButton.new()
+	for mode: String in UITheme.COLOUR_MODES:
+		dropdown.add_item(str(UITheme.COLOUR_MODE_NAMES[mode]))
+	dropdown.selected = maxi(0, UITheme.COLOUR_MODES.find(SettingsService.get_colour_mode()))
+	dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_option_button(dropdown)
+	dropdown.item_selected.connect(_on_colour_mode_selected)
+	row.add_child(dropdown)
+
+	var hint: Label = Label.new()
+	hint.text = (
+		"Red-green and blue-yellow safe swap the colours that carry meaning (worked or failed, curse "
+		+ "or boon, how intense) for ones that stay apart with that kind of colour blindness. High "
+		+ "contrast is for low vision: whiter text, brighter edges, less glow. The preview changes at "
+		+ "once; each screen takes the new colours as it opens."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
+	section.add_child(hint)
+
+	section.add_child(ColourModePreview.new())
+
+	var flash_row: HBoxContainer = HBoxContainer.new()
+	flash_row.add_theme_constant_override("separation", 16)
+	section.add_child(flash_row)
+	var flash_lbl: Label = Label.new()
+	flash_lbl.text = "REDUCE FLASHING"
+	flash_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_label(flash_lbl, UITheme.WHITE_SOFT, 14, false)
+	flash_row.add_child(flash_lbl)
+	var flash_toggle: Button = Button.new()
+	flash_toggle.toggle_mode = true
+	flash_toggle.button_pressed = SettingsService.get_reduce_flashing()
+	_style_toggle(flash_toggle, flash_toggle.button_pressed)
+	flash_toggle.toggled.connect(
+		func(pressed: bool) -> void:
+			_style_toggle(flash_toggle, pressed)
+			SettingsService.set_reduce_flashing(pressed)
+			SettingsService.save()
+	)
+	flash_row.add_child(flash_toggle)
+	var flash_hint: Label = Label.new()
+	flash_hint.text = (
+		"Slows the Flicker effect to under three dark flashes a second and makes them lighter, and "
+		+ "fades in boss cues that would otherwise snap onto the screen. For players sensitive to "
+		+ "flashing light. Applies from the next effect or cue."
+	)
+	flash_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(flash_hint, UITheme.TEXT_HINT, 11, false)
+	section.add_child(flash_hint)
+	return section
+
+
+func _on_colour_mode_selected(index: int) -> void:
+	var mode: String = UITheme.COLOUR_MODES[index]
+	SettingsService.set_colour_mode(mode)
+	SettingsService.save()
+	UITheme.set_colour_mode(mode)
+
+
+# ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
 
@@ -1342,7 +1449,7 @@ func _build_tabs() -> void:
 		_tab_bar.add_tab(tab_name)
 	_tab_bar.clip_tabs = false
 	_tab_bar.tab_alignment = TabBar.ALIGNMENT_CENTER
-	_tab_bar.focus_mode = Control.FOCUS_NONE
+	_tab_bar.focus_mode = Control.FOCUS_ALL  # ←/→ switch tabs once it has focus
 	_tab_bar.anchor_left = 0.5
 	_tab_bar.anchor_right = 0.5
 	_tab_bar.anchor_top = 0.0
@@ -1386,6 +1493,7 @@ func _on_tab_changed(idx: int) -> void:
 			get_node(VBOX + "JourneysSection"),
 			get_node(VBOX + "AudioSection"),
 			get_node(VBOX + "DisplaySection"),
+			_accessibility_section,
 			_transcode_section
 		],
 		# CONNECTION
@@ -2099,7 +2207,6 @@ func _build_transcode_section() -> void:
 
 	_auto_transcode_toggle = Button.new()
 	_auto_transcode_toggle.toggle_mode = true
-	_auto_transcode_toggle.focus_mode = Control.FOCUS_NONE
 	var auto_on: bool = SettingsService.get_auto_transcode()
 	_auto_transcode_toggle.button_pressed = auto_on
 	_style_toggle(_auto_transcode_toggle, auto_on)
@@ -2498,13 +2605,13 @@ func _on_connect_pressed() -> void:
 		var address: String = _address_input.text.strip_edges()
 		if address.is_empty():
 			address = DEFAULT_BP_ADDRESS
-		_set_status("● CONNECTING…", UITheme.PURPLE_MID)
+		_set_status("● CONNECTING…", UITheme.PURPLE_TEXT)
 		_connect_btn.disabled = true
 		ButtplugService.ConnectToIntiface(address)
 
 
 func _on_scan_pressed() -> void:
-	_set_status("● SCANNING…", UITheme.PURPLE_MID)
+	_set_status("● SCANNING…", UITheme.PURPLE_TEXT)
 	_scan_btn.disabled = true
 	ButtplugService.StartScan()
 
@@ -2561,14 +2668,14 @@ func _on_bp_scan_finished() -> void:
 	_scan_btn.disabled = false
 	var count: int = _device_dropdown.item_count
 	if count > 0:
-		_set_status("● %d DEVICE%s FOUND" % [count, "S" if count > 1 else ""], UITheme.OK)
+		_set_status("✓ %d DEVICE%s FOUND" % [count, "S" if count > 1 else ""], UITheme.OK)
 	else:
-		_set_status("● NO DEVICES FOUND", UITheme.ERROR)
+		_set_status("✕ NO DEVICES FOUND", UITheme.ERROR)
 
 
 func _on_bp_error(message: String) -> void:
 	_connect_btn.disabled = false
-	_set_status("● ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
+	_set_status("✕ ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
 	_is_connected = false
 	_set_connected_ui(false)
 
@@ -2762,9 +2869,13 @@ func _build_handy_section() -> void:
 			SettingsService.set_handy_connection_key(key_edit.text)
 			SettingsService.save()
 			_refresh_routing_cards()  # the routing card appears once a key exists
-			_set_handy_status("Checking…", UITheme.PURPLE_MID)
+			_set_handy_status("Checking…", UITheme.PURPLE_TEXT)
 			var ok: bool = await HandyService.connect_and_sync()
-			_refresh_handy_status() if ok else _set_handy_status("✕ Not reachable", UITheme.DANGER)
+			(
+				_refresh_handy_status()
+				if ok
+				else _set_handy_status("✕ Not reachable", UITheme.STATUS_ERROR)
+			)
 	)
 
 	# Fires a quick stroke so you can physically confirm the device is reachable (a cloud "connected" alone
@@ -2775,14 +2886,14 @@ func _build_handy_section() -> void:
 	test_btn.pressed.connect(
 		func() -> void:
 			if not HandyService.is_connected_ok():
-				_set_handy_status("Connect first", UITheme.PURPLE_MID)
+				_set_handy_status("Connect first", UITheme.PURPLE_TEXT)
 				return
-			_set_handy_status("Testing…", UITheme.PURPLE_MID)
+			_set_handy_status("Testing…", UITheme.PURPLE_TEXT)
 			var ok: bool = await HandyService.test_stroke()
 			if ok:
-				_set_handy_status("● Stroke sent", UITheme.SUCCESS)
+				_set_handy_status("✓ Stroke sent", UITheme.SUCCESS)
 			else:
-				_set_handy_status("✕ Test failed", UITheme.DANGER)
+				_set_handy_status("✕ Test failed", UITheme.STATUS_ERROR)
 	)
 
 	# Kept on the instance, not local: the sync calibration writes this same setting and _reread_delay_sliders
@@ -2846,7 +2957,6 @@ func _build_restim_section() -> void:
 	auto_row.add_child(auto_lbl)
 	_restim_auto_toggle = Button.new()
 	_restim_auto_toggle.toggle_mode = true
-	_restim_auto_toggle.focus_mode = Control.FOCUS_NONE
 	auto_row.add_child(_restim_auto_toggle)
 
 	var conn_row: HBoxContainer = HBoxContainer.new()
@@ -2854,7 +2964,6 @@ func _build_restim_section() -> void:
 	section.add_child(conn_row)
 	_restim_connect_btn = Button.new()
 	_restim_connect_btn.text = "> CONNECT"
-	_restim_connect_btn.focus_mode = Control.FOCUS_NONE
 	_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
 	conn_row.add_child(_restim_connect_btn)
 	_restim_status_lbl = Label.new()
@@ -2929,7 +3038,6 @@ func _build_restim_axes_section() -> void:
 		_restim_axis_count += (group[1] as Array).size()
 	_restim_axes_toggle = Button.new()
 	_restim_axes_toggle.toggle_mode = true
-	_restim_axes_toggle.focus_mode = Control.FOCUS_NONE
 	_restim_axes_toggle.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_restim_axes_toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	section.add_child(_restim_axes_toggle)
@@ -3038,7 +3146,7 @@ func _on_restim_connect_pressed() -> void:
 
 	var server: String = _restim_server_input.text.strip_edges()
 	if server.is_empty():
-		_set_restim_status("● NO SERVER", UITheme.ERROR)
+		_set_restim_status("✕ NO SERVER", UITheme.ERROR)
 		return
 	var path: String = _restim_path_input.text.strip_edges()
 	var addr: String = server.trim_suffix("/")
@@ -3047,14 +3155,14 @@ func _on_restim_connect_pressed() -> void:
 			path = "/" + path
 		addr += path
 
-	_set_restim_status("● CONNECTING…", UITheme.PURPLE_MID)
+	_set_restim_status("● CONNECTING…", UITheme.PURPLE_TEXT)
 	_restim_connect_btn.disabled = true
 	RestimService.Connect(addr)
 
 
 func _on_restim_connected() -> void:
 	_restim_connect_btn.disabled = false
-	_set_restim_status("● CONNECTED", UITheme.OK)
+	_set_restim_status("✓ CONNECTED", UITheme.OK)
 	_style_button(_restim_connect_btn, UITheme.MAGENTA)
 	_restim_connect_btn.text = "> DISCONNECT"
 	FunscriptPlayer.SendRestimManualState()
@@ -3064,14 +3172,14 @@ func _on_restim_connected() -> void:
 
 func _on_restim_disconnected() -> void:
 	_restim_connect_btn.disabled = false
-	_set_restim_status("● DISCONNECTED", UITheme.ERROR)
+	_set_restim_status("✕ DISCONNECTED", UITheme.ERROR)
 	_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
 	_restim_connect_btn.text = "> CONNECT"
 
 
 func _on_restim_error(message: String) -> void:
 	_restim_connect_btn.disabled = false
-	_set_restim_status("● ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
+	_set_restim_status("✕ ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
 
 
 func _set_restim_status(text: String, color: Color) -> void:
@@ -3081,11 +3189,11 @@ func _set_restim_status(text: String, color: Color) -> void:
 
 func _sync_restim_state() -> void:
 	if RestimService.RestimConnected:
-		_set_restim_status("● CONNECTED", UITheme.OK)
+		_set_restim_status("✓ CONNECTED", UITheme.OK)
 		_style_button(_restim_connect_btn, UITheme.MAGENTA)
 		_restim_connect_btn.text = "> DISCONNECT"
 	else:
-		_set_restim_status("● DISCONNECTED", UITheme.ERROR)
+		_set_restim_status("✕ DISCONNECTED", UITheme.ERROR)
 		_style_button(_restim_connect_btn, UITheme.PURPLE_BRIGHT)
 		_restim_connect_btn.text = "> CONNECT"
 
@@ -3101,11 +3209,11 @@ func _set_handy_status(text: String, color: Color) -> void:
 # Paints the status line from the LIVE state: no key → prompt; connected → green ● Connected; else unverified.
 func _refresh_handy_status() -> void:
 	if SettingsService.get_handy_connection_key() == "":
-		_set_handy_status("No key set", UITheme.PURPLE_MID)
+		_set_handy_status("No key set", UITheme.PURPLE_TEXT)
 	elif HandyService.is_connected_ok():
-		_set_handy_status("● Connected", UITheme.SUCCESS)
+		_set_handy_status("✓ Connected", UITheme.SUCCESS)
 	else:
-		_set_handy_status("Not checked", UITheme.PURPLE_MID)
+		_set_handy_status("Not checked", UITheme.PURPLE_TEXT)
 
 
 # Keeps the Options status label in step with the live connection (connect / test / round-start all flip it).
@@ -3113,7 +3221,7 @@ func _on_handy_connection_changed(connected: bool) -> void:
 	if connected:
 		_refresh_handy_status()
 	else:
-		_set_handy_status("✕ Not reachable", UITheme.DANGER)
+		_set_handy_status("✕ Not reachable", UITheme.STATUS_ERROR)
 
 
 func _add_delay_row(parent: VBoxContainer, label_text: String, tip: String = "") -> Dictionary:
@@ -3289,7 +3397,6 @@ func _add_stroker_row(body: VBoxContainer, target_id: String, label_text: String
 	btn.toggle_mode = true
 	btn.button_pressed = is_stroker
 	btn.text = "◉ STROKER" if is_stroker else "○ STROKER"
-	btn.focus_mode = Control.FOCUS_NONE
 	UITheme.style_button_subtle(btn, UITheme.CYAN)
 	btn.pressed.connect(func() -> void: _set_stroker(target_id))
 	row.add_child(btn)
@@ -3308,7 +3415,6 @@ func _add_vibe_row(body: VBoxContainer, actuator_id: String, label_text: String)
 
 	var dd: OptionButton = OptionButton.new()
 	dd.custom_minimum_size = Vector2(160, 0)
-	dd.focus_mode = Control.FOCUS_NONE
 	dd.add_item("Off")
 	dd.add_item("vibe1")
 	dd.add_item("vibe2")
@@ -3336,7 +3442,6 @@ func _add_constrict_row(body: VBoxContainer, actuator_id: String, label_text: St
 	btn.toggle_mode = true
 	btn.button_pressed = on
 	btn.text = "AUTO" if on else "OFF"
-	btn.focus_mode = Control.FOCUS_NONE
 	UITheme.style_button_subtle(btn, Color(0.45, 0.95, 0.30))
 	btn.pressed.connect(func() -> void: _on_constrict_toggled(actuator_id, btn.button_pressed))
 	row.add_child(btn)
@@ -3357,7 +3462,6 @@ func _add_oscillate_row(body: VBoxContainer, actuator_id: String, label_text: St
 
 	var dd: OptionButton = OptionButton.new()
 	dd.custom_minimum_size = Vector2(160, 0)
-	dd.focus_mode = Control.FOCUS_NONE
 	dd.add_item("Off")
 	dd.add_item("Stroke rate")
 	dd.add_item("vibe1")
@@ -3542,7 +3646,6 @@ func _add_device_test_row(body: VBoxContainer, entry: Dictionary) -> void:
 	var is_linear: bool = bool(entry.get("linear", false))
 	var oscillate_channels: int = int(entry.get("oscillate_channels", 0))
 	var btn: Button = Button.new()
-	btn.focus_mode = Control.FOCUS_NONE
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_END
 	if oscillate_channels > 0 and not is_linear:
 		var dev_id: String = str(entry.get("id", ""))
@@ -3692,11 +3795,11 @@ func _set_connected_ui(connected: bool) -> void:
 	if connected:
 		_style_button(_connect_btn, UITheme.MAGENTA)
 		_connect_btn.text = "> DISCONNECT"
-		_set_status("● CONNECTED", UITheme.OK)
+		_set_status("✓ CONNECTED", UITheme.OK)
 	else:
 		_style_button(_connect_btn, UITheme.PURPLE_BRIGHT)
 		_connect_btn.text = "> CONNECT"
-		_set_status("● DISCONNECTED", UITheme.ERROR)
+		_set_status("✕ DISCONNECTED", UITheme.ERROR)
 
 
 func _set_status(text: String, color: Color) -> void:
@@ -3732,20 +3835,20 @@ func _on_serial_connect_pressed() -> void:
 		SerialDeviceService.Disconnect()
 		return
 	if _serial_port_dropdown.selected < 0 or _serial_port_dropdown.item_count == 0:
-		_set_serial_status("● NO PORT SELECTED", UITheme.ERROR)
+		_set_serial_status("✕ NO PORT SELECTED", UITheme.ERROR)
 		return
 	var port: String = _serial_port_dropdown.get_item_text(_serial_port_dropdown.selected)
 	var baud: int = _serial_baud_input.text.to_int()
 	if baud <= 0:
 		baud = DEFAULT_BAUD_RATE
-	_set_serial_status("● CONNECTING…", UITheme.PURPLE_MID)
+	_set_serial_status("● CONNECTING…", UITheme.PURPLE_TEXT)
 	_serial_connect_btn.disabled = true
 	SerialDeviceService.Connect(port, baud)
 
 
 func _on_serial_test_pressed() -> void:
 	if not SerialDeviceService.SerialConnected:
-		_set_serial_status("● NOT CONNECTED", UITheme.ERROR)
+		_set_serial_status("✕ NOT CONNECTED", UITheme.ERROR)
 		return
 	# Quick stroke: top in 600ms, bottom in 600ms, midpoint in 400ms.
 	SerialDeviceService.SendLinear(600, 1.0)
@@ -3757,21 +3860,21 @@ func _on_serial_test_pressed() -> void:
 
 func _on_serial_connected() -> void:
 	_serial_connect_btn.disabled = false
-	_set_serial_status("● CONNECTED", UITheme.OK)
+	_set_serial_status("✓ CONNECTED", UITheme.OK)
 	_style_button(_serial_connect_btn, UITheme.MAGENTA)
 	_serial_connect_btn.text = "> DISCONNECT"
 
 
 func _on_serial_disconnected() -> void:
 	_serial_connect_btn.disabled = false
-	_set_serial_status("● DISCONNECTED", UITheme.ERROR)
+	_set_serial_status("✕ DISCONNECTED", UITheme.ERROR)
 	_style_button(_serial_connect_btn, UITheme.PURPLE_BRIGHT)
 	_serial_connect_btn.text = "> CONNECT"
 
 
 func _on_serial_error(message: String) -> void:
 	_serial_connect_btn.disabled = false
-	_set_serial_status("● ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
+	_set_serial_status("✕ ERROR: " + message.left(60).to_upper(), UITheme.ERROR)
 
 
 func _set_serial_status(text: String, color: Color) -> void:
@@ -3781,10 +3884,10 @@ func _set_serial_status(text: String, color: Color) -> void:
 
 func _sync_serial_state() -> void:
 	if SerialDeviceService.SerialConnected:
-		_set_serial_status("● CONNECTED", UITheme.OK)
+		_set_serial_status("✓ CONNECTED", UITheme.OK)
 		_style_button(_serial_connect_btn, UITheme.MAGENTA)
 		_serial_connect_btn.text = "> DISCONNECT"
 	else:
-		_set_serial_status("● DISCONNECTED", UITheme.ERROR)
+		_set_serial_status("✕ DISCONNECTED", UITheme.ERROR)
 		_style_button(_serial_connect_btn, UITheme.PURPLE_BRIGHT)
 		_serial_connect_btn.text = "> CONNECT"

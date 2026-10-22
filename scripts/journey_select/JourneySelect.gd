@@ -28,16 +28,8 @@ const BORDER_WIDTH: int = 3
 # Journeys root is configurable via Options → Journey Storage Location.
 # Read via SettingsService.get_journeys_dir() so changes take effect next scan.
 
-# Difficulty list is owned by JourneyData (canonical schema) — JourneyData.DIFFICULTIES.
-
-const DIFF_COLORS: Dictionary = {
-	"Easy": Color(0.35, 0.95, 0.35),
-	"Medium": Color(0.95, 0.95, 0.25),
-	"Hard": Color(1.0, 0.55, 0.1),
-	"Very Hard": Color(1.0, 0.25, 0.05),
-	"Extreme": Color(1.0, 0.1, 0.1),
-	"Impossible": Color(0.9, 0.05, 0.5),
-}
+# Difficulty list is owned by JourneyData (canonical schema) — JourneyData.DIFFICULTIES; their colours
+# by the colour mode — UITheme.difficulty_color.
 
 const JourneyCardScene = preload("res://scenes/journey_select/JourneyCard.tscn")
 
@@ -1808,7 +1800,7 @@ func _populate_modal(journey: Dictionary) -> void:
 
 	var diff: String = journey.get("difficulty", "Unknown")
 	_modal_diff.text = "◆  " + diff.to_upper()
-	var diff_color: Color = DIFF_COLORS.get(diff, UITheme.WHITE_SOFT)
+	var diff_color: Color = UITheme.difficulty_color(diff)
 	_modal_diff.add_theme_color_override("font_color", diff_color)
 
 	# Tag chips — rebuilt each time the modal opens (named so the prior row,

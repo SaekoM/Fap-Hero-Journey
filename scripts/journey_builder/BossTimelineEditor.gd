@@ -2510,7 +2510,7 @@ func _make_amber_callout(text: String, font_size: int) -> PanelContainer:
 	var label: Label = Label.new()
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	UITheme.style_label(label, UITheme.AMBER, font_size)
+	UITheme.style_label(label, UITheme.STATUS_WARNING, font_size)
 	panel.add_child(label)
 	return panel
 

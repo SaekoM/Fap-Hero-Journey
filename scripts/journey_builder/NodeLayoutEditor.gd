@@ -563,7 +563,7 @@ func _add_pin_note(col: VBoxContainer, element: Dictionary, item_id: String) -> 
 		"This shop draws its stock at random — the spot sits empty on visits where this item "
 		+ "isn't drawn."
 	)
-	note.add_theme_color_override("font_color", UITheme.AMBER)
+	note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 	col.add_child(note)
 
 	# The fix, next to the problem. Writing to the shop's Guaranteed list from here reaches outside this

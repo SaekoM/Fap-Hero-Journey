@@ -162,6 +162,10 @@ const BLOODSHOT_BASE_PERIOD: float = 1.8  # seconds per pulse (0.9 up, 0.9 down)
 const FLICKER_BASE_PERIOD: float = 1.67  # seconds per three-burst cycle
 const FLICKER_DIPS_SECS: float = 0.25  # the six dip tweens' fixed lengths, summed
 const FLICKER_BASE_REST: float = 1.42  # the three rests (0.8 + 0.12 + 0.5) that the period stretches
+# Reduce flashing: one three-dip cycle takes at least this long (so no second holds more than three
+# dips — WCAG's flash limit — with room to spare), and the dips are this much as dark.
+const REDUCED_FLICKER_MIN_PERIOD: float = 2.0
+const REDUCED_FLICKER_DEPTH: float = 0.4
 const TREMOR_BASE_HZ: float = 15.44  # the dominant term, sin(t * 97), in Hz
 # Per-pixel shader effects → [uniform name, identity/off value]. Also the set used to decide when the
 # shader material can be dropped (no shader kind applied or fading).
@@ -614,6 +618,9 @@ func _start_flicker(scale: float = 1.0, period: float = FLICKER_BASE_PERIOD) -> 
 	# Intensity scales the dip darkness. clampf keeps the scaled peaks valid even
 	# when the catalog range pushes above 1.0.
 	var s: float = clampf(scale, 0.0, 1.0 / 0.85)  # 0.85 is the tallest dip below
+	if SettingsService.get_reduce_flashing():
+		period = maxf(period, REDUCED_FLICKER_MIN_PERIOD)
+		s *= REDUCED_FLICKER_DEPTH
 	var rest: float = maxf(period - FLICKER_DIPS_SECS, 0.05) / FLICKER_BASE_REST
 	_flicker.modulate.a = 0.0
 	_flicker_tween = create_tween().set_loops()

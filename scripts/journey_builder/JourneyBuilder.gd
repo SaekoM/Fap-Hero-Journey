@@ -1206,7 +1206,7 @@ func _audit_counters_block(counters: Array) -> Control:
 		pinned.text = "—" if pct <= 0.0 else "%d%% of runs" % roundi(pct)
 		UITheme.style_label(
 			pinned,
-			UITheme.AMBER if pct >= JourneyAudit.COUNTER_PINNED_PCT else UITheme.DARK_TEXT,
+			UITheme.STATUS_WARNING if pct >= JourneyAudit.COUNTER_PINNED_PCT else UITheme.DARK_TEXT,
 			11,
 			false
 		)
@@ -4453,7 +4453,9 @@ func _restore_graph_snapshot(snap: Dictionary) -> void:
 
 
 func _show_status(msg: String, is_error: bool) -> void:
-	_status_lbl.text = msg
+	# A sign as well as the colour, unless the message brings its own.
+	var signed: bool = msg.begins_with("✓") or msg.begins_with("✕") or msg.begins_with("⚠")
+	_status_lbl.text = msg if signed else ("✕ " if is_error else "✓ ") + msg
 	_status_lbl.add_theme_color_override(
 		"font_color", UITheme.ERROR_SOFT if is_error else UITheme.SUCCESS
 	)

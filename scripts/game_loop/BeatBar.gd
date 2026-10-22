@@ -15,7 +15,11 @@ extends Control
 
 const LOOKAHEAD_MS: float = 2000.0  # how far ahead an orb becomes visible
 const HIT_X_FRAC: float = 0.16  # hit-line x, as a fraction of the width
-const ORB_RADIUS: float = 10.0  # uniform orb size — intensity shows as colour
+const ORB_RADIUS: float = 10.0  # orb size at middling intensity
+# Intensity shows as size as well as colour: the shallowest strokes draw at MIN of the radius, the
+# deepest at MAX, so the scale reads without colour (COLOUR_MODES_DESIGN.md, cues).
+const ORB_SCALE_MIN: float = 0.75
+const ORB_SCALE_MAX: float = 1.25
 const ORB_GLOW_MULT: float = 1.7  # glow-halo radius relative to the orb
 const OUTLINE_WIDTH: float = 1.5  # crisp rim that keeps the shape readable over video
 
@@ -46,24 +50,26 @@ var _shape: String = SHAPE_HEART
 var _unit_shape: PackedVector2Array = PackedVector2Array()  # empty = draw circles
 
 
+func _on_colour_mode_changed(_mode: String) -> void:
+	_apply_intensity_scale()
+
+
+func _apply_intensity_scale() -> void:
+	_intensity_grad.colors = PackedColorArray(UITheme.SCALE_INTENSITY)
+	queue_redraw()
+
+
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_shape = SettingsService.get_beat_bar_shape()
 	_rebuild_shape()
 
-	# Orb colour runs green → yellow → orange → red → purple from the shallowest
-	# V motion to the deepest.
+	# Orb colour runs along the colour mode's intensity scale, from the shallowest V motion to the
+	# deepest (green → yellow → orange → red → pink when no mode is set).
 	_intensity_grad = Gradient.new()
 	_intensity_grad.offsets = PackedFloat32Array([0.0, 0.25, 0.5, 0.75, 1.0])
-	_intensity_grad.colors = PackedColorArray(
-		[
-			Color(0.30, 0.85, 0.35),  # green  — least intense
-			Color(0.95, 0.90, 0.20),  # yellow
-			Color(1.00, 0.55, 0.10),  # orange
-			Color(1.00, 0.22, 0.15),  # red
-			Color(0.70, 0.12, 1.00),  # purple — most intense
-		]
-	)
+	_apply_intensity_scale()
+	UITheme.colour_mode_changed.connect(_on_colour_mode_changed)
 
 	# Soft scrim — a dark vertical fade behind the bar so orbs stay legible on
 	# any footage, with no hard top/bottom edge.
@@ -192,6 +198,7 @@ func _draw() -> void:
 			continue
 		var depth: float = clampf(b.y, 0.0, 100.0) / 100.0
 		var col: Color = _intensity_grad.sample(depth)
+		var radius: float = ORB_RADIUS * lerpf(ORB_SCALE_MIN, ORB_SCALE_MAX, depth)
 
 		# Spawn fade-in / post-line fade-out.
 		var base_a: float = 1.0
@@ -212,10 +219,7 @@ func _draw() -> void:
 			var g_col: Color = col
 			g_col.a = base_a * g_t * 0.4
 			_draw_marker(
-				Vector2(_orb_x(g_lead, hit_x, w), mid_y),
-				ORB_RADIUS * (0.4 + 0.5 * g_t),
-				g_col,
-				false  # ghosts stay soft; outlining them would read as clutter
+				Vector2(_orb_x(g_lead, hit_x, w), mid_y), radius * (0.4 + 0.5 * g_t), g_col, false  # ghosts stay soft; outlining them would read as clutter
 			)
 
 		# Glow halo — two soft concentric circles under the orb.
@@ -223,14 +227,14 @@ func _draw() -> void:
 		# the old 2.1x halo is what made the markers read as fuzzy blobs.
 		var glow_col: Color = col
 		glow_col.a = base_a * 0.16
-		_draw_marker(Vector2(ox, mid_y), ORB_RADIUS * ORB_GLOW_MULT, glow_col, false)
+		_draw_marker(Vector2(ox, mid_y), radius * ORB_GLOW_MULT, glow_col, false)
 		glow_col.a = base_a * 0.22
-		_draw_marker(Vector2(ox, mid_y), ORB_RADIUS * 1.3, glow_col, false)
+		_draw_marker(Vector2(ox, mid_y), radius * 1.3, glow_col, false)
 
 		# The marker itself, rimmed so it stays a distinct shape over any footage.
 		var orb_col: Color = col
 		orb_col.a = base_a
-		_draw_marker(Vector2(ox, mid_y), ORB_RADIUS, orb_col, true)
+		_draw_marker(Vector2(ox, mid_y), radius, orb_col, true)
 
 	# Hit-line marker — a vertical bar that flares, plus an expanding ring pulse.
 	var glow: float = 0.55 + 0.45 * _pulse

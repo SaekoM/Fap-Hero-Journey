@@ -5012,7 +5012,7 @@ func _make_overlay_choice_block(
 	if to_id == "" and not connecting:
 		var warn: Label = Label.new()
 		warn.text = "Not connected — this choice is dropped on save until you wire it."
-		warn.add_theme_color_override("font_color", UITheme.AMBER)
+		warn.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 		warn.add_theme_font_size_override("font_size", 10)
 		warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		sub.add_child(warn)
@@ -9743,13 +9743,13 @@ func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String)
 				"⚠ This round scripts twist, roll and pitch, so Vortex has nothing to move. "
 				+ "Everyone gets %s." % substitute
 			)
-			note.add_theme_color_override("font_color", UITheme.AMBER)
+			note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 	elif scripted.is_empty():
 		note.text = (
 			"⚠ This round has no axis scripts, so only players running Auto Twist feel this, on "
 			+ "twist. Everyone else gets %s." % substitute
 		)
-		note.add_theme_color_override("font_color", UITheme.AMBER)
+		note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 	else:
 		note.text = (
 			"Needs a device with these axes — players without them get %s instead." % substitute
