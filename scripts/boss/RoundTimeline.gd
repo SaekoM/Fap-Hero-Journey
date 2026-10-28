@@ -404,7 +404,9 @@ static func empty() -> Dictionary:
 ## Written this way so the same thing cannot happen again: a field added to empty() and normalize() is
 ## covered here the day it is added, with nothing to remember.
 static func is_empty(timeline: Dictionary) -> bool:
-	return JSON.stringify(normalize(timeline)) == JSON.stringify(empty())
+	var normalized: Dictionary = normalize(timeline)
+	normalized.erase("built_for_ms")  # a note about the round, not something the encounter does
+	return JSON.stringify(normalized) == JSON.stringify(empty())
 
 
 ## Any dictionary → the canonical timeline shape, with defaults filled and unusable entries dropped.
@@ -472,6 +474,12 @@ static func normalize(raw: Dictionary) -> Dictionary:
 	# before this feature plays exactly as it did. Opting in is what un-gates them.
 	out["items_allowed"] = bool(raw.get("items_allowed", true))
 	out["hp_source"] = _one_of(str(raw.get("hp_source", HP_TIME)), HP_SOURCES, HP_TIME)
+	# The round length the encounter was last saved against. Cutting the round afterwards moves where
+	# every event lands, so the builder compares this with the round's length now and warns when they
+	# differ. Absent on encounters saved before it existed, which are simply never warned about.
+	var built_for: int = int(raw.get("built_for_ms", 0))
+	if built_for > 0:
+		out["built_for_ms"] = built_for
 	# Clamped above zero: a target of nothing would divide the bar by zero and read as instantly dead.
 	out["damage_target"] = maxi(1, int(raw.get("damage_target", DEFAULT_DAMAGE_TARGET)))
 	# Clamped to at least one pass: zero attempts would mean a round that cannot be played at all.

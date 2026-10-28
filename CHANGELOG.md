@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.9.2
+
+### ◆ Builder
+
+- **Renditions can add items.** A rendition brings its own custom items, the way it already brings its
+  own places, cast, counters and flags. A base item the base journey gave no image can also be given
+  one in the rendition (**🖼 IMAGE** on its row): it's used whenever that rendition plays, and the base
+  never has to be re-uploaded. Base items otherwise stay locked, marked 🔒 BASE. Before this, items
+  weren't part of a rendition at all, so anything added to one was lost on save.
+- **Shop slots can be cropped, fitted or stretched.** Arranging a shop on its background now offers
+  **Crop / Fit / Stretch** for each placed slot, as fork choices already had. It's kept with the
+  placement, so one item can be cropped on one shop's shelf and shown whole on another, and its card
+  and inventory art don't change. A slot pinned to a specific item previews that item's image in the
+  arrangement editor, framed the way you set it.
+
+- **Outline toggle on arranged controls.** Next to Backing and Show label, an element can drop its
+  border, for a hotspot over art that already marks the spot. The arrangement editor keeps a faint guide
+  so you can still find the box.
+- **Override timeline zooms with CTRL+wheel.** A plain wheel now scrolls the custom item editor instead
+  of zooming whenever the pointer crossed the timeline. The editor's scrollbar also sits clear of the
+  fields.
+
+- **A bigger audit report.** The audit now fills most of the window in two columns: the summary and
+  counters on the left, the findings on the right. Each column scrolls on its own, and DEAD / WARN / INFO
+  buttons show how many of each there are and hide or show them. It also notes counters that are used
+  but never declared, which work but have no limits and start at 0.
+
+### 🩹 Fixes
+
+- **Boss encounters say when the round's cut isn't applied.** A cut made in Preview & Cut is only
+  applied when the journey is saved, so until then the encounter editor shows the full video. The
+  encounter button and the editor now say so. An encounter also remembers the round length it was
+  built for, and warns you to check its timing if the round is cut afterwards.
+
+- **Long item lists scroll.** With many custom items, the item reward, shop stock and slot pin pickers
+  listed them off the bottom of the screen. Every dropdown now stops at 60% of the window's height and
+  scrolls past that.
+
+- **Testing from a node starts counters fresh.** "Test from here" gave every counter its starting
+  value, as if the journey had just begun, so a fork that checks a counter could behave in the test in
+  a way no real run reaching that node would. Counters now start at 0 (or at their minimum, if they
+  have one); set any you need in the test panel.
+
+- **The audit catches counters spelt two ways.** Counters match by exact name, capitals included, so
+  "Hangun Ammo" and "Handgun Ammo" — or "stress" and "Stress" — are two different counters: a fork
+  gated on one never sees the other change, and looks broken. The audit now names every undeclared
+  counter that's close to a declared one, and which one it probably meant.
+- **A requirement on a fork's default choice is flagged.** The default is the fallback — the player can
+  always pick it, and the game takes it when nothing else is met — so a requirement on it never
+  applies (an "only with ammo" choice set as the default can be taken unarmed). The fork editor and
+  the audit now say so.
+
 ## v0.9.1
 
 ### ◆ Colour modes and accessibility

@@ -224,6 +224,7 @@ static func rendition_over_handoff(
 		"characters": composed.get("characters", []),
 		"counters": composed.get("counters", []),
 		"flags": composed.get("flags", []),
+		"items": composed.get("items", []),
 	}
 
 
@@ -249,6 +250,7 @@ static func compose_play_journey(
 	var characters: Array = base.get("characters", [])
 	var counters: Array = base.get("counters", [])
 	var flags: Array = base.get("flags", [])
+	var items: Array = (base.get("items", []) as Array).duplicate(true)
 	for rf: Variant in chain_folders:
 		var delta: Dictionary = load_rendition_delta(str(rf))
 		var composed: Dictionary = JourneyCompose.compose_graph(graph, delta)
@@ -258,12 +260,17 @@ static func compose_play_journey(
 		characters = JourneyData.merge_by_id(characters, delta.get("characters", []))
 		counters = JourneyData.merge_by_id(counters, delta.get("counters", []), "name")
 		flags = JourneyData.merge_by_id(flags, delta.get("flags", []), "name")
+		# Items, like the rest: the base's first, then each rendition's own; and a rendition may give a
+		# base item that has no image one.
+		items = JourneyData.merge_by_id(items, delta.get("items", []))
+		JourneyRendition.apply_item_images(items, delta.get("item_images", []))
 	base["start"] = graph["start"]
 	base["nodes"] = graph["nodes"]
 	base["settings"] = settings
 	base["characters"] = characters
 	base["counters"] = counters
 	base["flags"] = flags
+	base["items"] = items
 	base["compose_errors"] = errors
 	base["active_rendition"] = str(chain_folders[-1]) if not chain_folders.is_empty() else ""
 	# Rebuild the catalogue preview (round/fork/shop/storyboard lists + totals) from the MERGED graph so

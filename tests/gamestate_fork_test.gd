@@ -292,3 +292,37 @@ func test_counters_reset_on_fresh_start() -> void:
 	assert_int(GameState.CounterValue("belt")).is_equal(3)
 	GameState.StartJourney(_counter_journey())  # new run → counters cleared, A not completed yet
 	assert_int(GameState.CounterValue("belt")).is_equal(0)
+
+
+# ── Test "from here" starts counters raw ─────────────────────────────────────
+# Starting values belong to the journey's start. Carrying them to a node mid-journey tested a state no
+# run could reach there, so a fork gated on a counter looked broken in test play.
+
+
+func _counter_journey() -> Dictionary:
+	return {
+		"start": "a",
+		"nodes":
+		{
+			"a": {"type": "round", "data": {}, "out": [{"to": "b"}]},
+			"b": {"type": "round", "data": {}, "out": []},
+		},
+		"counters":
+		[
+			{"name": "Ammo", "start": 7},
+			{"name": "Health", "start": 5, "has_min": true, "min": 2},
+		],
+	}
+
+
+func test_a_journey_start_applies_starting_values() -> void:
+	GameState.StartJourney(_counter_journey())
+	assert_int(GameState.CounterValue("Ammo")).is_equal(7)
+	assert_int(GameState.CounterValue("Health")).is_equal(5)
+
+
+func test_testing_from_a_node_starts_counters_at_zero_within_their_limits() -> void:
+	GameState.StartJourney(_counter_journey())
+	assert_bool(GameState.SeekToNode("b")).is_true()
+	assert_int(GameState.CounterValue("Ammo")).is_equal(0)
+	assert_int(GameState.CounterValue("Health")).is_equal(2)  # its floor, not 0

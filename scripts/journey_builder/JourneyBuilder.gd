@@ -194,6 +194,9 @@ var _rendition_parent_summary: Dictionary = {}
 # (JourneyRendition's additive contract), and only those are written on save.
 var _rendition_parent_setting_ids: Dictionary = {}  # setting id -> true
 var _rendition_parent_character_ids: Dictionary = {}  # character id -> true
+# The base's items while authoring a rendition (id -> the image the base gave it, "" for none). Locked
+# like its settings and cast, except that one with no image can be given one (ItemImages).
+var _rendition_parent_item_images: Dictionary = {}
 var _rendition_parent_counter_names: Dictionary = {}  # counter name -> true (counters key by name)
 var _rendition_parent_flag_names: Dictionary = {}  # flag name -> true (flags key by name)
 
@@ -1061,9 +1064,15 @@ func refresh_arrival_audit(node_id: String) -> void:
 
 # The audit report: findings grouped worst-first, each anchored to its node by
 # display name. Advisory only — nothing here blocks saving.
+# The audit report. Two columns: the SUMMARY (stat cards, then the counters table) on the left, the
+# FINDINGS on the right, each scrolling on its own. It used to be one 760×560 stack with the summary
+# fixed above the findings, so on a big journey — more counters, more cards — the findings list was
+# squeezed to a couple of lines.
 func _show_audit_modal(result: Dictionary) -> void:
+	var vp: Vector2 = get_viewport_rect().size
+	var modal_size: Vector2i = Vector2i(mini(1500, int(vp.x * 0.94)), mini(1000, int(vp.y * 0.92)))
 	var parts: Dictionary = UITheme.build_centered_modal(
-		"JOURNEY AUDIT", UITheme.PURPLE_BRIGHT, Vector2i(760, 560)
+		"JOURNEY AUDIT", UITheme.PURPLE_BRIGHT, modal_size
 	)
 	var modal: Control = parts["modal"]
 	var vbox: VBoxContainer = parts["vbox"]
@@ -1071,28 +1080,19 @@ func _show_audit_modal(result: Dictionary) -> void:
 	var findings: Array = result.get("findings", [])
 	var runs: int = int((result.get("visits", {}) as Dictionary).get("runs", 0))
 
-	var stats: Dictionary = result.get("stats", {})
-	if not stats.is_empty():
-		vbox.add_child(_audit_stats_strip(stats))
-		var sep: HSeparator = HSeparator.new()
-		sep.add_theme_color_override("separator", UITheme.SEPARATOR)
-		vbox.add_child(sep)
+	var columns: HBoxContainer = HBoxContainer.new()
+	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	columns.add_theme_constant_override("separation", 16)
+	vbox.add_child(columns)
 
-	var counters: Array = result.get("counters", [])
-	if not counters.is_empty():
-		vbox.add_child(_audit_counters_block(counters))
-		var csep: HSeparator = HSeparator.new()
-		csep.add_theme_color_override("separator", UITheme.SEPARATOR)
-		vbox.add_child(csep)
-
-	var scroll: ScrollContainer = ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	vbox.add_child(scroll)
-	var list: VBoxContainer = VBoxContainer.new()
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation", 8)
-	scroll.add_child(list)
+	var summary: Control = _audit_summary_column(
+		result.get("stats", {}), result.get("counters", [])
+	)
+	if summary != null:
+		columns.add_child(summary)
+		var divider: VSeparator = VSeparator.new()
+		divider.add_theme_color_override("separator", UITheme.SEPARATOR)
+		columns.add_child(divider)
 
 	# Clicking a finding closes the report and locates its node on the canvas.
 	var jump := func(node_id: String) -> void:
@@ -1102,21 +1102,7 @@ func _show_audit_modal(result: Dictionary) -> void:
 		if _graph:
 			_graph.select_graph_node(node_id)
 			_graph.center_on(node_id)
-
-	if findings.is_empty():
-		var ok_lbl: Label = Label.new()
-		ok_lbl.text = "NO ISSUES FOUND — every gate is reachable and affordable."
-		UITheme.style_label(ok_lbl, UITheme.OK, 13, true)
-		ok_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		list.add_child(ok_lbl)
-	else:
-		# Worst first: dead content, then per-route warnings, then info.
-		for severity: String in [
-			JourneyAudit.SEV_DEAD, JourneyAudit.SEV_WARN, JourneyAudit.SEV_INFO
-		]:
-			for f: Dictionary in findings:
-				if str(f.get("severity", "")) == severity:
-					list.add_child(_audit_finding_row(f, jump))
+	columns.add_child(_audit_findings_column(findings, jump))
 
 	var foot: Label = Label.new()
 	foot.text = (
@@ -1139,6 +1125,127 @@ func _show_audit_modal(result: Dictionary) -> void:
 	vbox.add_child(btn_row)
 
 	add_child(modal)
+
+
+# The report's left column: the journey-wide numbers, then the counters table. Null when the audit
+# produced neither, so the findings take the whole width instead of sitting beside an empty column.
+func _audit_summary_column(stats: Dictionary, counters: Array) -> Control:
+	if stats.is_empty() and counters.is_empty():
+		return null
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_stretch_ratio = 0.85  # a little narrower than the findings, which are prose
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	# Right-hand gutter so the scrollbar sits clear of the cards.
+	var gutter: MarginContainer = MarginContainer.new()
+	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gutter.add_theme_constant_override("margin_right", 16)
+	scroll.add_child(gutter)
+	var column: VBoxContainer = VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 10)
+	gutter.add_child(column)
+
+	var heading: Label = Label.new()
+	heading.text = "SUMMARY"
+	UITheme.style_label(heading, UITheme.CYAN, 11, true)
+	column.add_child(heading)
+	if not stats.is_empty():
+		column.add_child(_audit_stats_strip(stats))
+	if not counters.is_empty():
+		var sep: HSeparator = HSeparator.new()
+		sep.add_theme_color_override("separator", UITheme.SEPARATOR)
+		column.add_child(sep)
+		column.add_child(_audit_counters_block(counters))
+	return scroll
+
+
+# The report's right column: one toggle per severity with its count, then the findings, worst first.
+# The toggles filter rather than jump — on a large journey the INFO notes can outnumber everything
+# else, and hiding them is how an author gets to the handful of warnings that matter.
+func _audit_findings_column(findings: Array, jump: Callable) -> Control:
+	var column: VBoxContainer = VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 8)
+
+	var heading: Label = Label.new()
+	heading.text = "FINDINGS"
+	UITheme.style_label(heading, UITheme.CYAN, 11, true)
+	column.add_child(heading)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var gutter: MarginContainer = MarginContainer.new()
+	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gutter.add_theme_constant_override("margin_right", 16)
+	scroll.add_child(gutter)
+	var list: VBoxContainer = VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 8)
+	gutter.add_child(list)
+
+	if findings.is_empty():
+		column.add_child(scroll)
+		var ok_lbl: Label = Label.new()
+		ok_lbl.text = "NO ISSUES FOUND — every gate is reachable and affordable."
+		UITheme.style_label(ok_lbl, UITheme.OK, 13, true)
+		ok_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		list.add_child(ok_lbl)
+		return column
+
+	# Worst first: dead content, then per-route warnings, then info.
+	var severities: Array = [
+		{"key": JourneyAudit.SEV_DEAD, "text": "DEAD", "color": UITheme.ERROR_SOFT},
+		{"key": JourneyAudit.SEV_WARN, "text": "WARN", "color": UITheme.AMBER},
+		{"key": JourneyAudit.SEV_INFO, "text": "INFO", "color": UITheme.CYAN},
+	]
+	var shown: Dictionary = {}  # severity → whether its findings are listed
+	var fill: Callable = func() -> void:
+		for child: Node in list.get_children():
+			child.queue_free()
+		for sev: Dictionary in severities:
+			if not bool(shown.get(sev["key"], false)):
+				continue
+			for f: Dictionary in findings:
+				if str(f.get("severity", "")) == sev["key"]:
+					list.add_child(_audit_finding_row(f, jump))
+
+	var filters: HBoxContainer = HBoxContainer.new()
+	filters.add_theme_constant_override("separation", 8)
+	for sev: Dictionary in severities:
+		var count: int = 0
+		for f: Dictionary in findings:
+			if str(f.get("severity", "")) == sev["key"]:
+				count += 1
+		shown[sev["key"]] = count > 0
+		var toggle: Button = Button.new()
+		toggle.text = "%s  %d" % [sev["text"], count]
+		toggle.toggle_mode = true
+		toggle.button_pressed = count > 0
+		toggle.disabled = count == 0
+		toggle.focus_mode = Control.FOCUS_NONE
+		toggle.tooltip_text = UITheme.wrap_tip("Show or hide %s findings" % str(sev["text"]))
+		UITheme.style_button(toggle, sev["color"], 12, 6, 12)
+		# A toggle that is on and hovered has a look of its own; without these it fell back to the
+		# default theme's and flickered grey under the cursor.
+		toggle.add_theme_stylebox_override("hover_pressed", toggle.get_theme_stylebox("pressed"))
+		toggle.add_theme_color_override(
+			"font_hover_pressed_color", toggle.get_theme_color("font_pressed_color")
+		)
+		var key: String = sev["key"]
+		toggle.toggled.connect(
+			func(on: bool) -> void:
+				shown[key] = on
+				fill.call()
+		)
+		filters.add_child(toggle)
+	column.add_child(filters)
+	column.add_child(scroll)
+	fill.call()
+	return column
 
 
 # Where the simulated runs left each declared counter, against the range it was given. The bounds are
@@ -3302,6 +3409,7 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 		_journey_characters = (
 			(rendition_over.get("characters", _journey_characters) as Array).duplicate(true)
 		)
+		_journey_items = (rendition_over.get("items", _journey_items) as Array).duplicate(true)
 		_rendition_parent_id = str(rendition_over.get("parent_id", ""))
 		parent_title = str(rendition_over.get("parent_name", parent_title))
 	else:
@@ -3322,6 +3430,7 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 	_rendition_parent_character_ids = _ids_of(_journey_characters)
 	_rendition_parent_counter_names = _ids_of(_journey_counters, "name")
 	_rendition_parent_flag_names = _ids_of(_journey_flags, "name")
+	_rendition_parent_item_images = _item_images_of(_journey_items)
 	# The base's notes and frames are the base author's. A rendition can't save them, so it doesn't
 	# show them — its own arrive with its delta (_load_rendition_delta).
 	_graph_model.erase("comments")
@@ -3394,6 +3503,9 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 		_journey_counters, delta.get("counters", []), "name"
 	)
 	_journey_flags = JourneyData.merge_by_id(_journey_flags, delta.get("flags", []), "name")
+	# Its own items after the base's, and any image it gave a base item that had none.
+	_journey_items = JourneyData.merge_by_id(_journey_items, delta.get("items", []))
+	JourneyRendition.apply_item_images(_journey_items, delta.get("item_images", []))
 	# Its own notes and frames (the base's were dropped on entry — see _enter_rendition_mode).
 	_graph_model["comments"] = (delta.get("comments", []) as Array).duplicate(true)
 	_graph_model["groups"] = (delta.get("groups", []) as Array).duplicate(true)
@@ -4803,6 +4915,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 		"character_ids": _rendition_parent_character_ids,
 		"counter_names": _rendition_parent_counter_names,
 		"flag_names": _rendition_parent_flag_names,
+		"item_images": _rendition_parent_item_images,
 		"slot_fills": _rendition_slot_fills,
 	}
 
@@ -4857,6 +4970,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	_rendition_parent_character_ids = _ids_of(_journey_characters)
 	_rendition_parent_counter_names = _ids_of(_journey_counters, "name")
 	_rendition_parent_flag_names = _ids_of(_journey_flags, "name")
+	_rendition_parent_item_images = _item_images_of(_journey_items)
 	_rendition_slot_fills = []
 	_journey_id = ""
 	_journey_name = rend_name
@@ -4872,6 +4986,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	_rendition_parent_character_ids = snap_rendition["character_ids"]
 	_rendition_parent_counter_names = snap_rendition.get("counter_names", {})
 	_rendition_parent_flag_names = snap_rendition.get("flag_names", {})
+	_rendition_parent_item_images = snap_rendition.get("item_images", {})
 	_rendition_parent_id = str(snap_rendition["parent_id"])
 	_rendition_parent_folder = str(snap_rendition["parent_folder"])
 	_rendition_slot_fills = snap_rendition["slot_fills"]
@@ -5168,6 +5283,8 @@ func _apply_merge_inject(inj: Dictionary) -> void:
 	# or character the base already has by id is the base's — the rendition's copy is dropped.
 	_journey_settings = JourneyData.merge_by_id(_journey_settings, inj.get("settings", []))
 	_journey_characters = JourneyData.merge_by_id(_journey_characters, inj.get("characters", []))
+	_journey_items = JourneyData.merge_by_id(_journey_items, inj.get("items", []))
+	JourneyRendition.apply_item_images(_journey_items, inj.get("item_images", []))
 	if not _graph_model.has("comments"):
 		_graph_model["comments"] = []
 	(_graph_model["comments"] as Array).append_array(inj.get("comments", []))
@@ -5428,6 +5545,8 @@ func _write_rendition_pack() -> Dictionary:
 	var characters: Array = await _pool_characters_for_save(
 		_rendition_owned_characters(), paths, modal
 	)
+	var items: Array = _pool_items_for_save(_rendition_owned_items(), paths["abs_dir"])
+	var item_images: Array = _rendition_item_image_fills(paths["abs_dir"])
 	if modal:
 		modal.queue_free()
 	if _save_aborted:
@@ -5449,6 +5568,8 @@ func _write_rendition_pack() -> Dictionary:
 		"characters": characters,
 		"counters": _rendition_owned_counters(),
 		"flags": _rendition_owned_flags(),
+		"items": items,
+		"item_images": item_images,
 	}
 	var data: Dictionary = JourneyRendition.coerce_rendition(rendition)
 	# The rendition's OWN backdrop layers (pooled into its media/) — the base's stay in the base and are
@@ -5473,6 +5594,71 @@ func _ids_of(list: Array, key: String = "id") -> Dictionary:
 		if e is Dictionary and str((e as Dictionary).get(key, "")) != "":
 			ids[str((e as Dictionary).get(key, ""))] = true
 	return ids
+
+
+# Custom items as saved: each icon (and an override's scripts) pooled into `abs_dir`, so the Items
+# block carries relative pooled paths rather than the author's source paths. Shared by the base save
+# and a rendition's (which passes only its own items).
+func _pool_items_for_save(items: Array, abs_dir: String) -> Array:
+	var out: Array = []
+	for it: Variant in items:
+		if not (it is Dictionary):
+			continue
+		var saved_item: Dictionary = (it as Dictionary).duplicate(true)
+		var img_src: String = str(saved_item.get("image", ""))
+		if img_src != "":
+			saved_item["image"] = _pool_small_file(img_src, abs_dir)
+		if str(saved_item.get("category", "")) == "override":
+			saved_item["scripts"] = _pool_override_scripts(saved_item.get("scripts", {}), abs_dir)
+		out.append(saved_item)
+	return out
+
+
+# {id: image} over a list of items — what the base gave each one, captured as a rendition opens.
+func _item_images_of(items: Array) -> Dictionary:
+	var images: Dictionary = {}
+	for it: Variant in items:
+		if it is Dictionary and str((it as Dictionary).get("id", "")) != "":
+			images[str((it as Dictionary)["id"])] = str((it as Dictionary).get("image", ""))
+	return images
+
+
+# The items a rendition added itself — everything outside the locked base set.
+func _rendition_owned_items() -> Array:
+	var out: Array = []
+	for it: Variant in _journey_items:
+		if (
+			it is Dictionary
+			and not _rendition_parent_item_images.has(str((it as Dictionary).get("id", "")))
+		):
+			out.append(it)
+	return out
+
+
+# The images this rendition gave base items that had none ([{item, path}], pooled into `abs_dir`).
+func _rendition_item_image_fills(abs_dir: String) -> Array:
+	var fills: Array = []
+	for it: Variant in _journey_items:
+		if not (it is Dictionary):
+			continue
+		var item_id: String = str((it as Dictionary).get("id", ""))
+		var image: String = str((it as Dictionary).get("image", ""))
+		if not _rendition_parent_item_images.has(item_id) or image == "":
+			continue
+		if str(_rendition_parent_item_images[item_id]) != "":
+			continue  # the base chose this item's art; a rendition can't replace it
+		fills.append({"item": item_id, "path": _pool_small_file(image, abs_dir)})
+	return fills
+
+
+# Whether `item_id` is the base's while authoring a rendition (locked but for a missing image).
+func is_rendition_base_item(item_id: String) -> bool:
+	return _rendition_mode and _rendition_parent_item_images.has(item_id)
+
+
+# Whether the base gave this item no image, so the rendition may.
+func rendition_base_item_lacks_image(item_id: String) -> bool:
+	return str(_rendition_parent_item_images.get(item_id, "x")) == ""
 
 
 # The settings a rendition added itself — everything outside the locked base set. While editing a
@@ -6215,15 +6401,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 
 	# Pool custom-item icons into content/ (small stills, hash-deduped) so the saved Items block
 	# carries a relative pooled path rather than the author's absolute source path.
-	var items_for_save: Array = []
-	for it: Dictionary in _journey_items:
-		var saved_item: Dictionary = (it as Dictionary).duplicate(true)
-		var img_src: String = str(saved_item.get("image", ""))
-		if img_src != "":
-			saved_item["image"] = _pool_small_file(img_src, abs_dir)
-		if str(saved_item.get("category", "")) == "override":
-			saved_item["scripts"] = _pool_override_scripts(saved_item.get("scripts", {}), abs_dir)
-		items_for_save.append(saved_item)
+	var items_for_save: Array = _pool_items_for_save(_journey_items, abs_dir)
 
 	# Cast and settings pool through the helpers a rendition save shares (it writes only its own).
 	var characters_for_save: Array = await _pool_characters_for_save(

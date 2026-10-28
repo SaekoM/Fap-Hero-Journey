@@ -100,7 +100,8 @@ static func _make_hotspot(backdrop: JourneyImage, slot: Dictionary, element: Dic
 		JourneyData.slot_color(slot, "plate", accent),
 		JourneyData.slot_color(slot, "outline", accent),
 		text_color,
-		bool(slot.get("backing", true))
+		bool(slot.get("backing", true)),
+		bool(slot.get("show_outline", true))
 	)
 	# A slot may draw its art and nothing else. The label is dropped HERE rather than by the caller, so
 	# every screen gets the behaviour without each one remembering to ask.

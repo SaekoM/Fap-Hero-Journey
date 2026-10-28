@@ -558,7 +558,7 @@ func make_audio_test_button(
 # still gets an outline and a shadowed label, because "no plate" should mean the art shows through, not
 # that the control becomes invisible over a bright patch.
 func layout_hotspot_style(
-	plate: Color, outline: Color, backing: bool, hovered: bool
+	plate: Color, outline: Color, backing: bool, hovered: bool, outlined: bool = true
 ) -> StyleBoxFlat:
 	var style: StyleBoxFlat = StyleBoxFlat.new()
 	if backing:
@@ -570,7 +570,8 @@ func layout_hotspot_style(
 	else:
 		style.bg_color = Color(0, 0, 0, 0.22 if hovered else 0.0)
 	style.border_color = outline if hovered else Color(outline.r, outline.g, outline.b, 0.72)
-	style.set_border_width_all(3 if hovered else 2)
+	if outlined:
+		style.set_border_width_all(3 if hovered else 2)
 	style.set_corner_radius_all(CORNER_RADIUS)
 	style.set_content_margin_all(6)
 	return style
@@ -580,16 +581,20 @@ func layout_hotspot_style(
 # there is a plate — over a photograph, a coloured word on its own is unreadable often enough that the
 # outline costs nothing worth saving.
 func style_layout_hotspot(
-	button: Button, plate: Color, outline: Color, text: Color, backing: bool
+	button: Button, plate: Color, outline: Color, text: Color, backing: bool, outlined: bool = true
 ) -> void:
 	button.add_theme_stylebox_override(
-		"normal", layout_hotspot_style(plate, outline, backing, false)
+		"normal", layout_hotspot_style(plate, outline, backing, false, outlined)
 	)
-	button.add_theme_stylebox_override("hover", layout_hotspot_style(plate, outline, backing, true))
 	button.add_theme_stylebox_override(
-		"pressed", layout_hotspot_style(plate, outline, backing, true)
+		"hover", layout_hotspot_style(plate, outline, backing, true, outlined)
 	)
-	button.add_theme_stylebox_override("focus", layout_hotspot_style(plate, outline, backing, true))
+	button.add_theme_stylebox_override(
+		"pressed", layout_hotspot_style(plate, outline, backing, true, outlined)
+	)
+	button.add_theme_stylebox_override(
+		"focus", layout_hotspot_style(plate, outline, backing, true, outlined)
+	)
 	# A placed control that cannot be pressed — an unaffordable shop slot, a choice the player has not
 	# earned — had no disabled style of its own and fell back to the theme's, which looks identical to
 	# the normal one. It read as a button that simply ignored clicks and never lit on hover.
@@ -597,9 +602,11 @@ func style_layout_hotspot(
 		Color(plate.r * 0.5, plate.g * 0.5, plate.b * 0.5, plate.a),
 		outline.darkened(0.45),
 		backing,
-		false
+		false,
+		outlined
 	)
-	dulled.set_border_width_all(1)
+	if outlined:
+		dulled.set_border_width_all(1)
 	button.add_theme_stylebox_override("disabled", dulled)
 	button.add_theme_color_override("font_disabled_color", Color(text.r, text.g, text.b, 0.45))
 	button.add_theme_color_override("font_color", text)
@@ -806,6 +813,29 @@ func _apply_dropdown_style(btn: Button) -> void:
 	btn.add_theme_stylebox_override("hover", hover_style)
 	btn.add_theme_stylebox_override("pressed", hover_style)
 	btn.add_theme_stylebox_override("focus", focus_ring_style())
+	cap_popup_height(btn)
+
+
+# A dropdown's list can't outgrow the window: past this share of the window's height it scrolls instead.
+# PopupMenu has no height limit of its own, so a journey with thirty custom items listed every one of them
+# straight off the bottom of the screen in the reward and shop pickers. Measured each time it opens,
+# because the window can be resized while the builder is open.
+const DROPDOWN_MAX_HEIGHT_SHARE: float = 0.6
+
+
+func cap_popup_height(btn: Button) -> void:
+	var popup: PopupMenu = null
+	if btn is OptionButton:
+		popup = (btn as OptionButton).get_popup()
+	elif btn is MenuButton:
+		popup = (btn as MenuButton).get_popup()
+	if popup == null:
+		return
+	popup.about_to_popup.connect(
+		func() -> void:
+			var window: Vector2 = btn.get_viewport_rect().size
+			popup.max_size = Vector2i(int(window.x), int(window.y * DROPDOWN_MAX_HEIGHT_SHARE))
+	)
 
 
 # Read-only tag chip: a small rounded pill, `text` in `accent`, on a near-opaque

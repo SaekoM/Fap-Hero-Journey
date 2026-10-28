@@ -93,6 +93,8 @@ static func audit(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 	findings.append_array(_cold_edge_findings(graph, visits))
 	findings.append_array(_counter_findings(graph, visits))
 	findings.append_array(_flag_findings(graph, ctx))
+	findings.append_array(_counter_name_findings(graph, ctx))
+	findings.append_array(_default_choice_findings(graph))
 	findings.append_array(_axis_effect_findings(graph))
 	findings.append_array(multi_axis_tag_findings(ctx))
 
@@ -1713,6 +1715,99 @@ static func _flag_findings(graph: Dictionary, ctx: Dictionary) -> Array:
 						'Flag "%s" is declared but nothing in this journey sets or reads it — check the name matches what the nodes use.'
 						% (shown if shown != "" else name)
 					)
+				)
+			)
+		)
+	return out
+
+
+# Counters match by exact name, capitals included, and a name nobody declared is simply a separate
+# counter. So "Hangun Ammo" spends from a different counter than the "Handgun Ammo" a fork reads, and
+# "stress" rises while "Stress" stays put — both halves look right and the fork never opens. Flags
+# every undeclared name that is close to a declared one.
+static func _counter_name_findings(graph: Dictionary, ctx: Dictionary) -> Array:
+	var out: Array = []
+	var declared: Array = []
+	for d: Variant in ctx.get("counters", []):
+		if d is Dictionary:
+			declared.append(str((d as Dictionary).get("name", "")))
+	var uses: Dictionary = JourneyData.counter_uses_in_graph(graph)
+	var names: Array = uses.keys()
+	names.sort()
+	for n: Variant in names:
+		var name: String = str(n)
+		if name in declared:
+			continue
+		var nodes: Array = uses[name]
+		var likely: String = JourneyData.likely_counter_match(name, declared)
+		if likely == "":
+			# Nothing close is declared, so this is probably meant as its own counter. That works, but
+			# with no limits and a start of 0 — worth knowing, not worth a warning.
+			(
+				out
+				. append(
+					_finding(
+						SEV_INFO,
+						"counter_undeclared",
+						str(nodes[0]),
+						-1,
+						(
+							'Counter "%s" is used by %d node%s but isn\'t declared, so it has no limits and starts at 0. Declare it in the journey panel (COUNTERS) to give it a range or a starting value.'
+							% [name, nodes.size(), "" if nodes.size() == 1 else "s"]
+						)
+					)
+				)
+			)
+			continue
+		(
+			out
+			. append(
+				_finding(
+					SEV_WARN,
+					"counter_name_mismatch",
+					str(nodes[0]),
+					-1,
+					(
+						'Counter "%s" (used by %d node%s) isn\'t declared, but "%s" is. Counter names must match exactly, capitals included, so these are two different counters in play and anything reading one never sees the other change. Rename it to "%s".'
+						% [name, nodes.size(), "" if nodes.size() == 1 else "s", likely, likely]
+					)
+				)
+			)
+		)
+	return out
+
+
+# A conditional fork's default choice is its fallback, so a requirement on it never applies: the player
+# can always pick it, and the game takes it whenever nothing is met.
+static func _default_choice_findings(graph: Dictionary) -> Array:
+	var out: Array = []
+	for nid: Variant in graph.get("nodes", {}):
+		var node: Dictionary = (graph["nodes"] as Dictionary)[nid]
+		if str(node.get("type", "")) != "fork":
+			continue
+		var data: Dictionary = node.get("data", {})
+		var edges: Array = node.get("out", [])
+		if not JourneyData.fork_default_ignores_requirement(data, edges):
+			continue
+		var index: int = clampi(int(data.get("default_path", 0)), 0, edges.size() - 1)
+		var player_picks: bool = str(data.get("cond_decider", "game")) == "player"
+		out.append(
+			_finding(
+				SEV_WARN,
+				"default_choice_requirement",
+				str(nid),
+				index,
+				(
+					(
+						"Choice %d is this fork's default, so its requirement never applies: "
+						% (index + 1)
+					)
+					+ (
+						"the player can always pick it. "
+						if player_picks
+						else "the game takes it whenever nothing is met. "
+					)
+					+ "Make a choice with no requirement the default."
 				)
 			)
 		)

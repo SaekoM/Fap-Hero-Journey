@@ -9,6 +9,7 @@ var _slot_controls: Dictionary = {}
 # Which item ended up in each slot this visit — pinned assignments resolved against what the shop
 # actually drew. Index-aligned with the slot keys.
 var _slot_items: Array = []
+var _shop_data: Dictionary = {}  # kept for each placed slot's framing (its layout entry's image_fit)
 signal map_requested  # player tapped the header "◇ MAP" button (GameLoop owns the map)
 
 @onready var _backdrop: ColorRect = $Backdrop
@@ -88,6 +89,7 @@ func _animate_in() -> void:
 # GameState.CurrentShop() and carries the journey-authored shop config:
 # title, mode ("pool"/"fixed"), count, items[], price_multiplier.
 func setup(shop_data: Dictionary) -> void:
+	_shop_data = shop_data
 	var backdrop: JourneyImage = SettingBackdrop.attach(self, _backdrop, shop_data)
 	var title: String = shop_data.get("title", "")
 	if title != "":
@@ -185,6 +187,8 @@ func _slot_element(index: int, id: String) -> Dictionary:
 		"label": str(data.get("name", id)),
 		"sub": sub,
 		"image": str(data.get("image", "")),
+		"image_fit":
+		str(JourneyData.layout_slot(_shop_data, "slot_%d" % index).get("image_fit", "")),
 		"accent": accent,
 		# An owned or unaffordable slot is placed and inert rather than missing — the same thing its
 		# card does, and the shelf keeps its shape either way.

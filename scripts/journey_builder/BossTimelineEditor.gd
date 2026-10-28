@@ -146,7 +146,8 @@ func open(
 	items: Array = [],
 	allow_finish: bool = false,
 	flags: Array = [],
-	on_new_flag: Callable = Callable()
+	on_new_flag: Callable = Callable(),
+	notice: String = ""
 ) -> void:
 	_timeline = RoundTimeline.normalize(timeline)
 	_full_ms = maxi(1, full_ms)
@@ -175,6 +176,14 @@ func open(
 	# timeline width it did not need and cost the inspector the height it did: segments made the lanes
 	# tall enough to squeeze everything above them, while the inspector — which is the thing with real
 	# vertical content — was cut off at the stage's bottom edge and scrolled constantly.
+	# Something the author should know before placing anything, e.g. that the round's cut isn't baked.
+	if notice != "":
+		var banner: Label = Label.new()
+		banner.text = notice
+		banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		UITheme.style_label(banner, UITheme.STATUS_WARNING, 12)
+		column.add_child(banner)
+
 	var body: HBoxContainer = HBoxContainer.new()
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	body.add_theme_constant_override("separation", 12)

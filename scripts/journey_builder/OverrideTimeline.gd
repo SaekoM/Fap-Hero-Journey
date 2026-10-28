@@ -3,7 +3,7 @@ extends Control
 
 # A wide, seekable, ZOOMABLE funscript timeline for authoring an override's trim window. Draws the main
 # stroke big with the axis/vib channels as thin lanes beneath, shades the excluded head/tail, and exposes
-# draggable IN/OUT handles plus a scrubbable playhead. Mouse wheel zooms around the cursor and middle-drag
+# draggable IN/OUT handles plus a scrubbable playhead. CTRL+wheel zooms around the cursor and middle-drag
 # pans; a sibling scrollbar (wired by the editor via view_changed / set_view_start) pans too. It owns no
 # journey data — it reports edits through signals and the item editor writes them back — so it stays a
 # pure view/input widget.
@@ -136,17 +136,21 @@ func _zoom_at(factor: float, anchor_x: float) -> void:
 
 
 func _gui_input(event: InputEvent) -> void:
-	# accept_event() on everything handled so a wheel/drag here doesn't also scroll the editor's outer
+	# accept_event() on everything handled so a drag here doesn't also scroll the editor's outer
 	# ScrollContainer (the timeline lives inside one).
+	#
+	# A plain wheel is left unhandled so it reaches that ScrollContainer: zooming on every notch made the
+	# modal stall whenever the pointer crossed the timeline mid-scroll. Zoom is CTRL+wheel, as on the boss
+	# timeline.
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
 		match mb.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
-				if mb.pressed:
+				if mb.pressed and mb.ctrl_pressed:
 					_zoom_at(ZOOM_STEP, mb.position.x)
 					accept_event()
 			MOUSE_BUTTON_WHEEL_DOWN:
-				if mb.pressed:
+				if mb.pressed and mb.ctrl_pressed:
 					_zoom_at(1.0 / ZOOM_STEP, mb.position.x)
 					accept_event()
 			MOUSE_BUTTON_MIDDLE:

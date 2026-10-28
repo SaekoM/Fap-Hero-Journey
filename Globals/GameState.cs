@@ -88,6 +88,9 @@ public partial class GameState : Node
     // without replaying fork decisions — we just set the current node and recount).
     // Returns false, leaving the position at the journey start, when the id isn't in
     // the graph (e.g. a stale selection). RoundNumber restarts from this node.
+    // Counters start RAW — at 0, inside their declared limits — not at their starting values: those
+    // belong to the journey's start, and carrying them to a node mid-journey tested a state no run
+    // could reach there. The builder's test seeds then set any counter the author wants.
     public bool SeekToNode(string nodeId)
     {
         if (nodeId == "" || !_nodes.ContainsKey(nodeId))
@@ -100,7 +103,7 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
-        SeedCounterStarts();
+        SeedCounterFloors();
         EnterCurrent();
         return true;
     }
@@ -229,6 +232,21 @@ public partial class GameState : Node
             // Clamped first: a counter whose floor is above zero starts AT that floor even when no
             // starting value was given, so its declared range is true from the first frame.
             var seeded = ClampCounter(name, start);
+            if (seeded != 0) _counters[name] = seeded;
+        }
+    }
+
+    // Puts every declared counter at 0 held inside its declared limits (so one whose floor is above 0
+    // starts at that floor) — a raw snapshot, ignoring starting values. Test-play "from here" only.
+    private void SeedCounterFloors()
+    {
+        if (!Journey.ContainsKey("counters")) return;
+        foreach (var entry in Journey["counters"].AsGodotArray())
+        {
+            var def = entry.AsGodotDictionary();
+            var name = def.ContainsKey("name") ? def["name"].AsString() : "";
+            if (name == "") continue;
+            var seeded = ClampCounter(name, 0);
             if (seeded != 0) _counters[name] = seeded;
         }
     }

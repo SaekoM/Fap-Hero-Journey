@@ -314,6 +314,15 @@ func test_backing_defaults_on() -> void:
 	assert_bool(got["a"]["backing"]).is_true()
 
 
+func test_outline_defaults_on_and_can_be_turned_off() -> void:
+	# Layouts saved before the toggle existed keep their border; one turned off stays off.
+	var got: Dictionary = JourneyData.normalize_layout_slots(
+		{"a": {"x": 0.1, "y": 0.1}, "b": {"x": 0.1, "y": 0.1, "show_outline": false}}
+	)
+	assert_bool(got["a"]["show_outline"]).is_true()
+	assert_bool(got["b"]["show_outline"]).is_false()
+
+
 func test_normalizing_a_layout_twice_changes_nothing() -> void:
 	# Save and load both run it, so a round trip must not drift a slot a little further each time.
 	var once: Dictionary = JourneyData.normalize_layout_slots(
@@ -472,3 +481,13 @@ func test_a_shared_asset_is_only_listed_once() -> void:
 		_setting("set_b", "B", [_background("bgd_b", "", "res://same.png")]),
 	]
 	assert_int(JourneyData.settings_media_sources(shared).size()).is_equal(1)
+
+
+# A shop slot frames whichever item lands in it; the choice is kept with the placement.
+func test_a_slot_keeps_a_known_fit_and_drops_anything_else() -> void:
+	var got: Dictionary = JourneyData.normalize_layout_slots(
+		{"a": {"image_fit": "fit"}, "b": {"image_fit": "zoom"}, "c": {}}
+	)
+	assert_str(got["a"]["image_fit"]).is_equal("fit")
+	assert_str(got["b"]["image_fit"]).is_empty()
+	assert_str(got["c"]["image_fit"]).is_empty()

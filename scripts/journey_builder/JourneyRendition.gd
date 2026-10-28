@@ -17,10 +17,14 @@ extends RefCounted
 ##     "AftercareLinks": [ {"Node": <existing round id>, "To": <node id>, "Text"?: <hold text>} ],
 ##     "Settings": [ …the rendition's OWN places… ], "Characters": [ …its OWN cast… ],
 ##     "Counters": [ …its OWN declared counters… ], "Flags": [ …its OWN declared flags… ],
+##     "Items": [ …its OWN custom items… ],
+##     "ItemImages": [ {"Item": <a base item id>, "Path"} ],   # art for a base item that has none
 ##   }
 ## Envelope keys are PascalCase (journey.json convention); node data + out-edges stay lowercase, exactly
 ## as a normal journey stores them — so Anchors' `Edge` is a plain out-edge dict.
 ##
+## Items are additive too (0.9.2), and a rendition may also give a base item that has NO image one of
+## its own (ItemImages) — filling a gap, never replacing art the base chose, the same rule as SlotFills.
 ## Settings, Characters, Counters and Flags are ADDITIVE (0.8.6): a rendition brings its own places,
 ## people, counters and flags, pooled
 ## in its own folder, and the composed journey is the base's list followed by each rendition's, first
@@ -58,6 +62,8 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 		"counters": JourneyData.parse_counter_defs(data.get("Counters", [])),
 		"flags": JourneyData.parse_flag_defs(data.get("Flags", [])),
 		"characters": JourneyData.parse_journey_characters(data.get("Characters", [])),
+		"items": JourneyData.parse_journey_items(data.get("Items", [])),
+		"item_images": _parse_item_images(data.get("ItemImages", [])),
 	}
 
 
@@ -89,6 +95,8 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 		"Counters": JourneyData.coerce_counter_defs(rendition.get("counters", [])),
 		"Flags": JourneyData.coerce_flag_defs(rendition.get("flags", [])),
 		"Characters": JourneyData.coerce_journey_characters(rendition.get("characters", [])),
+		"Items": JourneyData.coerce_journey_items(rendition.get("items", [])),
+		"ItemImages": _coerce_item_images(rendition.get("item_images", [])),
 	}
 	JourneyData.stamp_journey_identity(out, str(rendition.get("journey_id", "")))
 	return out
@@ -128,6 +136,24 @@ static func resolve_delta_paths(delta: Dictionary, base: String) -> void:
 				(por as Dictionary)["path"] = _resolved_media(
 					str((por as Dictionary).get("path", "")), base
 				)
+	for it: Variant in delta.get("items", []):
+		if not (it is Dictionary):
+			continue
+		var item: Dictionary = it
+		item["image"] = _resolved_media(str(item.get("image", "")), base)
+		if item.get("scripts", null) is Dictionary:
+			var scripts: Dictionary = item["scripts"]
+			scripts["main"] = _resolved_media(str(scripts.get("main", "")), base)
+			for group: String in ["axes", "vibes"]:
+				if scripts.get(group, null) is Dictionary:
+					var channels: Dictionary = scripts[group]
+					for channel: Variant in channels:
+						channels[channel] = _resolved_media(str(channels[channel]), base)
+	for fill: Variant in delta.get("item_images", []):
+		if fill is Dictionary:
+			(fill as Dictionary)["path"] = _resolved_media(
+				str((fill as Dictionary).get("path", "")), base
+			)
 
 
 # A pooled relative path made absolute against the rendition folder; blank stays blank and an
@@ -183,6 +209,47 @@ static func _coerce_anchors(anchors: Array) -> Array:
 			if d.has("slot"):
 				rec["Slot"] = int(d["slot"])
 			out.append(rec)
+	return out
+
+
+# Gives each base item named in `fills` ([{item, path}]) that image — but only an item that has none,
+# and only the first fill for it, the way SlotFills treat a slot. Mutates `items` in place.
+static func apply_item_images(items: Array, fills: Array) -> void:
+	for fill: Variant in fills:
+		if not (fill is Dictionary):
+			continue
+		var item_id: String = str((fill as Dictionary).get("item", ""))
+		var path: String = str((fill as Dictionary).get("path", ""))
+		if item_id == "" or path == "":
+			continue
+		for it: Variant in items:
+			if it is Dictionary and str((it as Dictionary).get("id", "")) == item_id:
+				if str((it as Dictionary).get("image", "")) == "":
+					(it as Dictionary)["image"] = path
+				break
+
+
+static func _parse_item_images(raw: Variant) -> Array:
+	var out: Array = []
+	if not (raw is Array):
+		return out
+	for f: Variant in raw:
+		if f is Dictionary:
+			var item_id: String = str((f as Dictionary).get("Item", ""))
+			var path: String = str((f as Dictionary).get("Path", ""))
+			if item_id != "" and path != "":
+				out.append({"item": item_id, "path": path})
+	return out
+
+
+static func _coerce_item_images(fills: Array) -> Array:
+	var out: Array = []
+	for f: Variant in fills:
+		if f is Dictionary:
+			var item_id: String = str((f as Dictionary).get("item", ""))
+			var path: String = str((f as Dictionary).get("path", ""))
+			if item_id != "" and path != "":
+				out.append({"Item": item_id, "Path": path})
 	return out
 
 

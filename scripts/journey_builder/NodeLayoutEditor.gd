@@ -40,6 +40,13 @@ var _hint: Label = null
 func setup(layout: Dictionary, elements: Array, background: Dictionary) -> void:
 	_layout = JourneyData.normalize_layout_slots(layout)
 	_elements = elements
+	# A shop slot keeps its fit with the placement; the preview reads it off the element.
+	for element: Variant in _elements:
+		if element is Dictionary and bool((element as Dictionary).get("fit_in_layout", false)):
+			var key: String = str((element as Dictionary).get("key", ""))
+			(element as Dictionary)["image_fit"] = str(
+				(_layout.get(key, {}) as Dictionary).get("image_fit", "")
+			)
 	_build_ui(background)
 	_rebuild_boxes()
 	_rebuild_list()
@@ -321,15 +328,20 @@ func _restyle(key: String, lit: bool) -> void:
 	if not is_instance_valid(box):
 		return
 	var slot: Dictionary = _layout.get(key, {})
-	(box as Panel).add_theme_stylebox_override(
-		"panel",
-		UITheme.layout_hotspot_style(
-			JourneyData.slot_color(slot, "plate", DEFAULT_ACCENT),
-			JourneyData.slot_color(slot, "outline", DEFAULT_ACCENT),
-			bool(slot.get("backing", true)),
-			lit
-		)
+	var outlined: bool = bool(slot.get("show_outline", true))
+	var style: StyleBoxFlat = UITheme.layout_hotspot_style(
+		JourneyData.slot_color(slot, "plate", DEFAULT_ACCENT),
+		JourneyData.slot_color(slot, "outline", DEFAULT_ACCENT),
+		bool(slot.get("backing", true)),
+		lit,
+		outlined
 	)
+	if not outlined:
+		# Editor-only guide: play draws no border here, but a box with neither border nor plate would be
+		# invisible on the stage and impossible to find again. Faint, and brighter while selected.
+		style.border_color = Color(1, 1, 1, 0.55 if lit else 0.22)
+		style.set_border_width_all(1)
+	(box as Panel).add_theme_stylebox_override("panel", style)
 	# The text colour lives on the label, so it is rebuilt rather than re-themed — cheaper than
 	# threading a colour through two nested Labels, and the box keeps its position either way.
 	var old: Node = (box as Node).get_node_or_null(BOX_LABEL_NAME)
@@ -449,6 +461,24 @@ func _make_list_row(element: Dictionary) -> Control:
 		)
 		col.add_child(backing)
 
+		var show_outline: CheckBox = CheckBox.new()
+		show_outline.text = "Outline"
+		show_outline.add_theme_font_size_override("font_size", 10)
+		show_outline.button_pressed = bool((_layout[key] as Dictionary).get("show_outline", true))
+		show_outline.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"A border round this element. Turn it off where the art already marks the spot — a painted door, a framed picture. The stage keeps a faint guide so you can still find it; play draws nothing."
+			)
+		)
+		show_outline.toggled.connect(
+			func(on: bool) -> void:
+				(_layout[key] as Dictionary)["show_outline"] = on
+				_restyle(key, key == _selected)
+				_rebuild_list()  # the Outline colour row comes and goes with it
+		)
+		col.add_child(show_outline)
+
 		var show_label: CheckBox = CheckBox.new()
 		show_label.text = "Show label"
 		show_label.add_theme_font_size_override("font_size", 10)
@@ -471,10 +501,14 @@ func _make_list_row(element: Dictionary) -> Control:
 		if key == _selected:
 			if (_element(key).get("items", []) as Array).size() > 0:
 				col.add_child(_make_item_row(key))
-			if str(_element(key).get("image", "")) != "":
+			if (
+				str(_element(key).get("image", "")) != ""
+				or bool(_element(key).get("fit_in_layout", false))
+			):
 				col.add_child(_make_fit_row(key))
 			col.add_child(_make_color_row(key, "plate", "Plate"))
-			col.add_child(_make_color_row(key, "outline", "Outline"))
+			if bool((_layout[key] as Dictionary).get("show_outline", true)):
+				col.add_child(_make_color_row(key, "outline", "Outline"))
 			col.add_child(_make_color_row(key, "text", "Text"))
 
 	return col
@@ -502,6 +536,7 @@ func _make_item_row(key: String) -> Control:
 	var dd: OptionButton = OptionButton.new()
 	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dd.clip_text = true
+	UITheme.cap_popup_height(dd)  # a journey can have dozens of items to pin
 	dd.tooltip_text = (
 		UITheme
 		. wrap_tip(
@@ -523,8 +558,12 @@ func _make_item_row(key: String) -> Control:
 			dd.selected = dd.item_count - 1
 	dd.item_selected.connect(
 		func(i: int) -> void:
-			(_layout[key] as Dictionary)["item"] = str(dd.get_item_metadata(i))
-			_rebuild_list()  # the note below changes with it
+			var chosen: String = str(dd.get_item_metadata(i))
+			(_slot(key) as Dictionary)["item"] = chosen
+			# The slot previews the pinned item's art (none for "(any)"), framed by its fit.
+			_element(key)["image"] = _option_image(key, chosen)
+			_restyle(key, true)
+			_rebuild_list()  # the note below changes with it, and the fit row appears with art
 	)
 	row.add_child(dd)
 	col.add_child(row)
@@ -535,6 +574,16 @@ func _make_item_row(key: String) -> Control:
 	if current != "":
 		_add_pin_note(col, _element(key), current)
 	return col
+
+
+# The image of the stock option `item_id` in element `key`'s item list, or "" when it has none.
+func _option_image(key: String, item_id: String) -> String:
+	if item_id == "":
+		return ""
+	for option: Variant in _element(key).get("items", []) as Array:
+		if option is Dictionary and str((option as Dictionary).get("value", "")) == item_id:
+			return str((option as Dictionary).get("image", ""))
+	return ""
 
 
 # Whether a pin can actually be honoured every visit. Read from the LIVE shop rather than a captured
@@ -605,9 +654,15 @@ func _guarantee_item(element: Dictionary, item_id: String) -> void:
 # Writes to the element's own source dictionary, so it is the SAME property the choice's card uses.
 # There is one image and one way it is framed; a second setting that applied only when arranged would
 # be two answers to one question.
+#
+# A shop slot is the exception (`fit_in_layout`): its art is whichever item lands there, so the fit is
+# kept with the placement, in this layout's own entry.
 func _make_fit_row(key: String) -> Control:
 	var element: Dictionary = _element(key)
 	var target: Variant = element.get("fit_target", null)
+	if bool(element.get("fit_in_layout", false)):
+		target = _slot(key)
+		element["image_fit"] = str((target as Dictionary).get("image_fit", ""))
 	if not (target is Dictionary):
 		return Control.new()  # nothing to write to; the element's art is fixed
 

@@ -2175,6 +2175,9 @@ static func normalize_layout_slots(slots: Variant) -> Dictionary:
 					"w": clampf(float(d.get("w", LAYOUT_SLOT_DEFAULT["w"])), LAYOUT_SLOT_MIN, 2.0),
 					"h": clampf(float(d.get("h", LAYOUT_SLOT_DEFAULT["h"])), LAYOUT_SLOT_MIN, 2.0),
 					"backing": bool(d.get("backing", true)),
+					# Whether the control draws its border. Off leaves the art's own edge to mark it —
+					# a painted door doesn't want a box drawn round it.
+					"show_outline": bool(d.get("show_outline", true)),
 					# Whether this element's words are drawn at all. Off makes it a pure hotspot over
 					# the art — a door painted in the picture is already labelled, and a caption over it
 					# says twice what the art says. The NAME is kept either way, because the builder,
@@ -2190,10 +2193,23 @@ static func normalize_layout_slots(slots: Variant) -> Dictionary:
 					"plate": _hex_or_blank(d.get("plate", "")),
 					"outline": _hex_or_blank(d.get("outline", "")),
 					"text": _hex_or_blank(d.get("text", "")),
+					# How a shop slot frames the item drawn into it (crop / fit / stretch, "" = crop).
+					# Kept with the PLACEMENT, not the item: the same item can be cropped on one shop's
+					# shelf and shown whole on another's, and its card and inventory art stay as they are.
+					# A fork choice frames its own image instead (the edge's image_fit).
+					"image_fit": _layout_fit_or_blank(d.get("image_fit", "")),
 				}
 			)
 		)
 	return out
+
+
+const LAYOUT_FITS: Array = ["crop", "fit", "stretch"]
+
+
+static func _layout_fit_or_blank(value: Variant) -> String:
+	var fit: String = str(value)
+	return fit if LAYOUT_FITS.has(fit) else ""
 
 
 static func _hex_or_blank(value: Variant) -> String:
@@ -2924,27 +2940,86 @@ static func counter_defs_from_disk(data: Dictionary) -> Array:
 # and loop exit conditions — sorted. Feeds the editor's "find counters in this journey" action and the
 # audit's report, both of which need to know what exists before anything has been declared.
 static func counter_names_in_graph(graph: Dictionary) -> Array:
-	var names: Dictionary = {}
+	var out: Array = counter_uses_in_graph(graph).keys()
+	out.sort()
+	return out
+
+
+# Every counter name the graph sets or reads, with the nodes that do: {name: [node_id, …]} in graph
+# order. Covers node and choice effects, fork gates and loop conditions.
+static func counter_uses_in_graph(graph: Dictionary) -> Dictionary:
+	var uses: Dictionary = {}
 	for nid: Variant in graph.get("nodes", {}):
 		var node: Dictionary = (graph["nodes"] as Dictionary)[nid]
 		var data: Dictionary = node.get("data", {})
-		for n: Variant in clean_counter_deltas(data.get("set_counters", {})):
-			names[str(n)] = true
-		if str(data.get("cond_counter", "")) != "":
-			names[str(data["cond_counter"])] = true
+		var names: Array = clean_counter_deltas(data.get("set_counters", {})).keys()
+		names.append(str(data.get("cond_counter", "")))
 		for c: Variant in data.get("loop_conditions", []):
-			if c is Dictionary and str((c as Dictionary).get("counter", "")) != "":
-				names[str((c as Dictionary)["counter"])] = true
+			if c is Dictionary:
+				names.append(str((c as Dictionary).get("counter", "")))
 		for e: Variant in node.get("out", []):
 			if not (e is Dictionary):
 				continue
-			for n: Variant in clean_counter_deltas((e as Dictionary).get("set_counters", {})):
-				names[str(n)] = true
-			if str((e as Dictionary).get("cond_counter", "")) != "":
-				names[str((e as Dictionary)["cond_counter"])] = true
-	var out: Array = names.keys()
-	out.sort()
-	return out
+			names.append_array(
+				clean_counter_deltas((e as Dictionary).get("set_counters", {})).keys()
+			)
+			names.append(str((e as Dictionary).get("cond_counter", "")))
+		for n: Variant in names:
+			var name: String = str(n)
+			if name == "":
+				continue
+			if not uses.has(name):
+				uses[name] = []
+			if not (uses[name] as Array).has(str(nid)):
+				(uses[name] as Array).append(str(nid))
+	return uses
+
+
+# The declared counter an undeclared `name` was most likely meant to be — the same name in other
+# capitals ("stress" → "Stress"), or one a letter or two out ("Hangun Ammo" → "Handgun Ammo") — or ""
+# when nothing is close. Counters match by exact name, so either is a separate counter in play.
+const COUNTER_TYPO_SIMILARITY: float = 0.7
+
+
+static func likely_counter_match(name: String, declared: Array) -> String:
+	var best: String = ""
+	var best_score: float = COUNTER_TYPO_SIMILARITY
+	for d: Variant in declared:
+		var candidate: String = str(d)
+		if candidate == name:
+			return ""  # it IS declared
+		if candidate.to_lower() == name.to_lower():
+			return candidate
+		var score: float = candidate.to_lower().similarity(name.to_lower())
+		if score >= best_score:
+			best_score = score
+			best = candidate
+	return best
+
+
+# Whether a conditional fork's choice `edge` carries a requirement of its own under `metric`: a
+# threshold above 0, a required item or a required flag.
+static func fork_choice_has_requirement(edge: Dictionary, metric: String) -> bool:
+	match metric:
+		"item":
+			return str(edge.get("required_item", "")) != ""
+		"flag":
+			return str(edge.get("required_flag", "")) != ""
+	return int(edge.get("threshold", 0)) > 0
+
+
+# The default choice of a conditional fork is its fallback: always selectable when the player picks,
+# and taken when nothing is met when the game picks. A requirement on it is therefore never applied.
+# True when that's the case, so the builder and the audit can say so.
+static func fork_default_ignores_requirement(data: Dictionary, out: Array) -> bool:
+	if str(data.get("resolution", "")) != "conditional" or out.is_empty():
+		return false
+	var index: int = clampi(int(data.get("default_path", 0)), 0, out.size() - 1)
+	var edge: Variant = out[index]
+	return (
+		edge is Dictionary
+		and fork_choice_has_requirement(edge, str(data.get("cond_metric", "score")))
+	)
 
 
 # The numeric analogue of clean_flag_list: normalizes a {name: delta} map (from disk or the editor)

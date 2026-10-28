@@ -1864,3 +1864,17 @@ func test_a_region_without_a_rule_is_reported() -> void:
 	for issue: Dictionary in RoundTimeline.validate(t, 60000):
 		codes.append(str(issue["code"]))
 	assert_bool(codes.has(RoundTimeline.ISSUE_REGION_NO_RULE)).is_true()
+
+
+# The round length an encounter was saved against survives a save/load, so the builder can warn when
+# the round is cut afterwards.
+func test_the_length_an_encounter_was_built_for_is_kept() -> void:
+	var t: Dictionary = RoundTimeline.normalize({"built_for_ms": 90000.0})
+	assert_int(int(t["built_for_ms"])).is_equal(90000)
+	assert_int(int(RoundTimeline.normalize(t)["built_for_ms"])).is_equal(90000)
+	assert_bool(RoundTimeline.normalize({}).has("built_for_ms")).is_false()
+
+
+# It is a note about the round, so on its own it must not make a cleared encounter look authored.
+func test_a_recorded_length_alone_does_not_make_an_encounter() -> void:
+	assert_bool(RoundTimeline.is_empty({"built_for_ms": 90000})).is_true()

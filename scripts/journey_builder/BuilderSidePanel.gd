@@ -1298,6 +1298,25 @@ func _make_custom_item_row(item_idx: int) -> Control:
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
 
+	# The base's item while authoring a rendition: usable, but a rendition only adds its own — except
+	# that a base item with no image can be given one, which the base then shows in this rendition.
+	var item_id: String = str(item.get("id", ""))
+	if _owner.is_rendition_base_item(item_id):
+		if _owner.rendition_base_item_lacks_image(item_id):
+			var image_btn: Button = Button.new()
+			image_btn.text = "🖼 IMAGE" if str(item.get("image", "")) == "" else "🖼 CHANGE IMAGE"
+			image_btn.tooltip_text = (
+				UITheme
+				. wrap_tip(
+					"The base gave this item no image. One added here is used whenever this rendition plays."
+				)
+			)
+			UITheme.style_button(image_btn, UITheme.CYAN)
+			image_btn.pressed.connect(func() -> void: _open_item_image_modal(item))
+			row.add_child(image_btn)
+		row.add_child(_locked_base_badge())
+		return card
+
 	var edit_btn: Button = Button.new()
 	edit_btn.text = "✎ EDIT"
 	UITheme.style_button(edit_btn, UITheme.PURPLE_MID)
@@ -1312,6 +1331,65 @@ func _make_custom_item_row(item_idx: int) -> Control:
 	)
 	row.add_child(del_btn)
 	return card
+
+
+# Just the image of a base item, while authoring a rendition: the only part of the base's item a
+# rendition can supply, and only when the base left it blank.
+func _open_item_image_modal(item: Dictionary) -> void:
+	var title: String = str(item.get("name", "")).strip_edges()
+	var parts: Dictionary = UITheme.build_centered_modal(
+		"IMAGE FOR %s" % (title.to_upper() if title != "" else "ITEM"),
+		UITheme.CYAN,
+		Vector2i(520, 420)
+	)
+	var modal: Control = parts["modal"]
+	var vbox: VBoxContainer = parts["vbox"]
+	_owner.add_child(modal)
+
+	var note: Label = Label.new()
+	note.text = (
+		"This item belongs to the base journey, which gave it no image. The one you add here is used "
+		+ "whenever this rendition is played."
+	)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", UITheme.TEXT_HINT)
+	note.add_theme_font_size_override("font_size", 11)
+	vbox.add_child(note)
+
+	var img_zone: PanelContainer = DropZoneScript.new()
+	img_zone.accepted_extensions = ["png", "jpg", "jpeg", "webp"]
+	img_zone.picker_title = "Select Item Image"
+	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
+	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	img_zone.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(img_zone)
+	if str(item.get("image", "")) != "":
+		img_zone.call_deferred("set_file", item["image"])
+	img_zone.file_dropped.connect(func(p: String) -> void: item["image"] = p)
+
+	var buttons: HBoxContainer = HBoxContainer.new()
+	buttons.add_theme_constant_override("separation", 8)
+	vbox.add_child(buttons)
+	var remove: Button = Button.new()
+	remove.text = "✕ REMOVE IMAGE"
+	remove.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(remove, UITheme.MAGENTA)
+	remove.pressed.connect(
+		func() -> void:
+			item["image"] = ""
+			img_zone.call_deferred("set_file", "")
+	)
+	buttons.add_child(remove)
+	var done: Button = Button.new()
+	done.text = "DONE"
+	done.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(done, UITheme.CYAN)
+	done.pressed.connect(
+		func() -> void:
+			modal.queue_free()
+			_rebuild_custom_items_list()
+	)
+	buttons.add_child(done)
 
 
 # Full editor for one custom item, in a centered modal. Everything mutates the live item
@@ -1339,11 +1417,16 @@ func _open_item_editor_modal(item_idx: int, is_new: bool = false) -> void:
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vbox.add_child(scroll)
+	# Right-hand gutter so the scrollbar sits clear of the fields, as on the Stash panel.
+	var gutter: MarginContainer = MarginContainer.new()
+	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gutter.add_theme_constant_override("margin_right", 16)
+	scroll.add_child(gutter)
 
 	var body: VBoxContainer = VBoxContainer.new()
 	body.add_theme_constant_override("separation", 4)
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(body)
+	gutter.add_child(body)
 	_fill_item_editor_body(body, item)
 
 	var close_btn: Button = Button.new()
@@ -1499,7 +1582,7 @@ func _shop_layout_elements(shop_data: Dictionary) -> Array:
 	# the journey, since a slot reserved for something the shop never sells is a slot that stays empty.
 	var stock: Array = []
 	for id: String in JourneyData.shop_stock_candidates(shop_data, _all_item_ids()):
-		stock.append({"value": id, "label": _item_display_name(id)})
+		stock.append({"value": id, "label": _item_display_name(id), "image": _item_image_path(id)})
 
 	var slots: int = JourneyData.shop_offer_size(shop_data, _all_item_ids())
 	for i: int in slots:
@@ -1513,6 +1596,9 @@ func _shop_layout_elements(shop_data: Dictionary) -> Array:
 					# because which item lands there is decided when the shop is visited.
 					"label": _item_display_name(pinned) if pinned != "" else "ITEM %d" % (i + 1),
 					"sub": "♦ price",
+					# A pinned slot previews its item's art, framed by the slot's own fit; an open one
+					# has no item to show until the shop is visited.
+					"image": _item_image_path(pinned) if pinned != "" else "",
 					"items": stock,
 					# What a pin actually means here depends on how this shop stocks itself, so the
 					# editor is told rather than left to guess. The shop itself rather than a copy of
@@ -1520,6 +1606,8 @@ func _shop_layout_elements(shop_data: Dictionary) -> Array:
 					# be warning about a pin that had just been made safe.
 					"pool_mode": str(shop_data.get("mode", "pool")) != "fixed",
 					"shop_target": shop_data,
+					# Crop / fit / stretch for whatever item lands here, kept with this placement.
+					"fit_in_layout": true,
 				}
 			)
 		)
@@ -3828,6 +3916,14 @@ func _all_item_ids() -> Array:
 # Display name for an item id — this journey's LIVE custom items first (authoritative while editing),
 # else the built-in registry. Journey items check first so a test-play's stale InventoryService copy
 # never shadows the live name / "(custom)" tag.
+# The art an item shows: a custom item's own image, else a built-in item's, else "".
+func _item_image_path(id: String) -> String:
+	for it: Dictionary in _owner._journey_items:
+		if str(it.get("id", "")) == id:
+			return str(it.get("image", ""))
+	return str(InventoryService.GetItemData(id).get("image", ""))
+
+
 func _item_display_name(id: String) -> String:
 	for it: Dictionary in _owner._journey_items:
 		if str(it.get("id", "")) == id:
@@ -5160,8 +5256,24 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 		def_dd.selected = clampi(int(data.get("default_path", 0)), 0, max(0, out.size() - 1))
 		def_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		UITheme.style_option_button(def_dd)
-		def_dd.item_selected.connect(func(i: int) -> void: data["default_path"] = i)
+		def_dd.item_selected.connect(
+			func(i: int) -> void:
+				data["default_path"] = i
+				reselect.call(0)
+		)
 		col.add_child(def_dd)
+		# The default is the fallback — always selectable, taken when nothing is met — so a
+		# requirement on it never applies, and a "shoot" choice made default can be taken unarmed.
+		if JourneyData.fork_default_ignores_requirement(data, out):
+			var default_note: Label = Label.new()
+			default_note.text = (
+				"⚠ This choice has a requirement, but as the default it's always available, so "
+				+ "the requirement never applies. Make a choice with no requirement the default."
+			)
+			default_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			default_note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
+			default_note.add_theme_font_size_override("font_size", 10)
+			col.add_child(default_note)
 
 	# Silent: resolve on arrival and show nothing. Offered only where the fork can route without the
 	# player — a choice fork has nobody to make it, so the toggle would be a promise it cannot keep.
@@ -8198,7 +8310,38 @@ func _round_timeline(data: Dictionary) -> Dictionary:
 	return raw if raw is Dictionary else {}
 
 
+# What the author should know about the round's length before editing its encounter, or "".
+#
+# A cut made in PREVIEW & CUT is only baked into the round's media when the journey is saved, so until
+# then the encounter is placed against the full, uncut clip. And an encounter saved against one length
+# and then cut lands its events somewhere else — nothing moves them, so the author has to look.
+func _encounter_length_notice(round_data: Dictionary, length_ms: int) -> String:
+	if not JourneyData.normalize_segments(round_data).is_empty():
+		return (
+			"This round has a cut that isn't applied yet. The encounter shows the full video until you "
+			+ "save the journey."
+		)
+	var built_for: int = int(_round_timeline(round_data).get("built_for_ms", 0))
+	if built_for > 0 and absi(built_for - length_ms) > ENCOUNTER_LENGTH_TOLERANCE_MS:
+		return (
+			"This round's length changed after its encounter was built (%s → %s). Check the event timing."
+			% [_clock_text(built_for), _clock_text(length_ms)]
+		)
+	return ""
+
+
+# Re-encoding the same clip can shift its probed length by a frame or two; that is not a cut.
+const ENCOUNTER_LENGTH_TOLERANCE_MS: int = 500
+
+
+func _clock_text(ms: int) -> String:
+	var seconds: int = roundi(ms / 1000.0)
+	return "%d:%02d" % [seconds / 60, seconds % 60]
+
+
 func _make_encounter_button(arr: Array, idx: int) -> Control:
+	var column: VBoxContainer = VBoxContainer.new()
+	column.add_theme_constant_override("separation", 4)
 	var button: Button = Button.new()
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var count: int = (_round_timeline(arr[idx]).get("events", []) as Array).size()
@@ -8214,7 +8357,15 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 				"Add this round's video (or its funscript) first — the encounter is placed against the round's length."
 			)
 		)
-		return button
+		column.add_child(button)
+		return column
+
+	column.add_child(button)
+	var notice: String = _encounter_length_notice(arr[idx], length_ms)
+	if notice != "":
+		var note: Label = _side_hint(notice)
+		note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
+		column.add_child(note)
 
 	button.pressed.connect(
 		func() -> void:
@@ -8228,6 +8379,7 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 					if RoundTimeline.is_empty(edited):
 						arr[idx].erase("timeline")
 					else:
+						edited["built_for_ms"] = length_ms
 						arr[idx]["timeline"] = edited
 					# Relabel BEFORE refreshing: _refresh_graph can rebuild this panel, which frees the
 					# very button being captured here — writing to it afterwards is a use-after-free.
@@ -8255,11 +8407,12 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 					_owner._journey_items,
 					_round_offers_finish(),
 					_owner._journey_flags,
-					_declare_flag_for
+					_declare_flag_for,
+					_encounter_length_notice(arr[idx], length_ms)
 				)
 			)
 	)
-	return button
+	return column
 
 
 # Declares a flag on behalf of an editor that has no access to the journey — the boss encounter
