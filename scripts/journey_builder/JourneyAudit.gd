@@ -91,7 +91,7 @@ static func audit(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 	findings.append_array(_coverage_findings(graph, ctx))
 	findings.append_array(_checkpoint_findings(flow))
 	findings.append_array(_cold_edge_findings(graph, visits))
-	findings.append_array(_counter_findings(graph, visits))
+	findings.append_array(_counter_findings(graph, visits, ctx))
 	findings.append_array(_flag_findings(graph, ctx))
 	findings.append_array(_counter_name_findings(graph, ctx))
 	findings.append_array(_default_choice_findings(graph))
@@ -633,12 +633,22 @@ static func _flow_analysis(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 				"flags": e_flags,
 			}
 
+	# Which items raise which flags when used. A flag only an item sets is not settable "on a route" —
+	# the player has to use the item — so it is kept apart from `flags` and checked separately.
+	var item_flags: Dictionary = {}  # item_id → [flag]
+	for iid: Variant in items:
+		var raised: Array = JourneyData.item_state_effects(items[iid] as Dictionary)["flags"]
+		if not raised.is_empty():
+			item_flags[str(iid)] = raised
+
 	return {
 		"coins": coins,
 		"last_score": last_score,
 		"guaranteed": guaranteed,
 		"possible": possible,
 		"flags": flags,
+		"item_flags": item_flags,
+		"items": items,
 		"exits": exits,
 		"cp": cp,
 	}
@@ -916,19 +926,58 @@ static func _fork_findings(id: String, node: Dictionary, flow: Dictionary) -> Ar
 				"flag":
 					var rf: String = str(e.get("required_flag", ""))
 					if rf != "" and not in_flags.has(rf):
-						findings.append(
-							_finding(
-								SEV_DEAD,
-								"flag_gate",
-								id,
-								ei,
-								(
-									'"%s" requires flag "%s", but no route into this fork sets it.'
-									% [path, rf]
+						# Nothing on the way here sets it — but an item the player may be holding can.
+						var setters: Array = []
+						var item_flags: Dictionary = flow.get("item_flags", {})
+						for iid: String in poss:
+							var raised: Array = item_flags.get(iid, [])
+							if raised.has(rf):
+								setters.append(iid)
+						if setters.is_empty():
+							(
+								findings
+								. append(
+									_finding(
+										SEV_DEAD,
+										"flag_gate",
+										id,
+										ei,
+										(
+											'"%s" requires flag "%s", but no route into this fork sets it.'
+											% [path, rf]
+										)
+									)
 								)
 							)
-						)
+						else:
+							setters.sort()
+							(
+								findings
+								. append(
+									_finding(
+										SEV_INFO,
+										"flag_gate",
+										id,
+										ei,
+										(
+											'"%s" requires flag "%s", which only using %s sets here — the player may never use it.'
+											% [path, rf, _item_names(flow, setters)]
+										)
+									)
+								)
+							)
 	return findings
+
+
+# Item ids as their names for a message: "Keycard" or "Keycard or Lockpick".
+static func _item_names(flow: Dictionary, ids: Array) -> String:
+	var names: Array = []
+	for id: String in ids:
+		var name: String = str(
+			((flow.get("items", {}) as Dictionary).get(id, {}) as Dictionary).get("name", "")
+		)
+		names.append('"%s"' % (name if name != "" else id))
+	return " or ".join(PackedStringArray(names))
 
 
 static func _finding(
@@ -1540,9 +1589,10 @@ const COUNTER_PINNED_PCT: float = 50.0
 const COUNTER_HEADROOM_PCT: float = 20.0
 
 
-static func _counter_findings(graph: Dictionary, visits: Dictionary) -> Array:
+static func _counter_findings(graph: Dictionary, visits: Dictionary, ctx: Dictionary = {}) -> Array:
 	var out: Array = []
 	var used: Array = JourneyData.counter_names_in_graph(graph)
+	used.append_array(_item_state_names(ctx, "counters"))
 	for row: Variant in visits.get("counters", []):
 		if not (row is Dictionary):
 			continue
@@ -1696,6 +1746,7 @@ static func multi_axis_tag_findings(ctx: Dictionary) -> Array:
 static func _flag_findings(graph: Dictionary, ctx: Dictionary) -> Array:
 	var out: Array = []
 	var used: Array = JourneyData.flag_names_in_graph(graph)
+	used.append_array(_item_state_names(ctx, "flags"))
 	for d: Variant in ctx.get("flags", []):
 		if not (d is Dictionary):
 			continue
@@ -1774,7 +1825,78 @@ static func _counter_name_findings(graph: Dictionary, ctx: Dictionary) -> Array:
 				)
 			)
 		)
+	out.append_array(_item_counter_name_findings(ctx, declared, uses))
 	return out
+
+
+# The same check for counters that only items change. A journey-wide finding (no node to jump to), and
+# it names the item, which is where the author has to go to fix it.
+static func _item_counter_name_findings(
+	ctx: Dictionary, declared: Array, uses: Dictionary
+) -> Array:
+	var out: Array = []
+	var items: Dictionary = ctx.get("items", {})
+	var ids: Array = items.keys()
+	ids.sort()
+	var reported: Dictionary = {}
+	for iid: Variant in ids:
+		var item: Dictionary = items[iid]
+		var shown: String = str(item.get("name", "")).strip_edges()
+		if shown == "":
+			shown = str(iid)
+		for name: String in JourneyData.item_state_effects(item)["counters"] as Dictionary:
+			if name in declared or uses.has(name) or reported.has(name):
+				continue  # declared, or already reported where a node uses it
+			reported[name] = true
+			var likely: String = JourneyData.likely_counter_match(name, declared)
+			if likely != "":
+				(
+					out
+					. append(
+						_finding(
+							SEV_WARN,
+							"counter_name_mismatch",
+							"",
+							-1,
+							(
+								'Item "%s" changes counter "%s", which isn\'t declared, but "%s" is. Counter names must match exactly, capitals included. Rename it to "%s".'
+								% [shown, name, likely, likely]
+							)
+						)
+					)
+				)
+			else:
+				(
+					out
+					. append(
+						_finding(
+							SEV_INFO,
+							"counter_undeclared",
+							"",
+							-1,
+							(
+								'Item "%s" changes counter "%s", which isn\'t declared, so it has no limits and starts at 0.'
+								% [shown, name]
+							)
+						)
+					)
+				)
+	return out
+
+
+# Every flag ("flags") or counter ("counters") name some item changes when used.
+static func _item_state_names(ctx: Dictionary, which: String) -> Array:
+	var names: Array = []
+	var items: Dictionary = ctx.get("items", {})
+	for iid: Variant in items:
+		var effects: Dictionary = JourneyData.item_state_effects(items[iid] as Dictionary)
+		var found: Array = (
+			(effects["counters"] as Dictionary).keys() if which == "counters" else effects["flags"]
+		)
+		for name: Variant in found:
+			if not names.has(str(name)):
+				names.append(str(name))
+	return names
 
 
 # A conditional fork's default choice is its fallback, so a requirement on it never applies: the player

@@ -878,3 +878,46 @@ func test_the_tag_without_axis_content_is_flagged() -> void:
 func test_matching_tag_and_content_raise_nothing() -> void:
 	assert_array(_tag_findings(["R1"], [JourneyAudit.MULTI_AXIS_TAG])).is_empty()
 	assert_array(_tag_findings([], [])).is_empty()
+
+
+# A flag only an item sets, when used, is not a dead gate: the player can open it. It is noted instead,
+# because they may never use the item.
+func test_a_flag_only_an_item_sets_is_reachable_with_a_note() -> void:
+	var graph := {
+		"start": "r1",
+		"nodes":
+		{
+			"r1":
+			{"type": "storyboard", "data": {"coins": 0, "item": "it_keycard"}, "out": [_edge("f")]},
+			"f":
+			{
+				"type": "fork",
+				"data": {"resolution": "conditional", "cond_metric": "flag", "default_path": 1},
+				"out":
+				[
+					_edge("a", {"name": "Locked door", "required_flag": "has_key"}),
+					_edge("b", {"name": "Default"}),
+				]
+			},
+			"a": _round(0),
+			"b": _round(0),
+		}
+	}
+	var items: Dictionary = ITEMS.duplicate(true)
+	items["it_keycard"] = {
+		"name": "Keycard", "price": 0, "kind": "", "effects": [{"kind": "flag", "flag": "has_key"}]
+	}
+	var result := _audit(graph, {"items": items})
+	assert_int(_findings_of_kind(result, "flag_gate", "dead").size()).is_equal(0)
+	var notes: Array = _findings_of_kind(result, "flag_gate", "info")
+	assert_int(notes.size()).is_equal(1)
+	assert_str(str((notes[0] as Dictionary)["msg"])).contains('"Keycard"')
+
+
+func test_a_declared_flag_only_an_item_sets_is_not_unused() -> void:
+	var graph := {"start": "r1", "nodes": {"r1": _round(0)}}
+	var items: Dictionary = {
+		"it_keycard": {"name": "Keycard", "effects": [{"kind": "flag", "flag": "has_key"}]}
+	}
+	var result := _audit(graph, {"items": items, "flags": [{"name": "has_key"}]})
+	assert_int(_findings_of_kind(result, "flag_declared_unused").size()).is_equal(0)

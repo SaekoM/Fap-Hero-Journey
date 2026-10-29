@@ -27,7 +27,26 @@
   buttons show how many of each there are and hide or show them. It also notes counters that are used
   but never declared, which work but have no limits and start at 0.
 
+- **± STATE on the builder map.** A new toggle beside 🔥 TRAFFIC shows where counters and flags change
+  and where they're checked, as chips on the graph: `+3 Ammo`, `−1 Stress`, `⚑ met_her` set,
+  `⚐ hidden` cleared, `🔒 Ammo ≥ 5` on a fork choice, `⟲ exit at Ammo ≤ 0` on a loop. A fork choice's
+  chips sit on its line. Pick one counter or flag in the list beside it to dim everything that doesn't
+  touch it. It updates as you edit, and never appears on the player's map or in exported images.
+  Items count too: a node that hands out an item with a flag or counter effect shows what using it
+  does (`🎒 Keycard → ⚑ has_key`). Items are tracked in their own right as well: handed out
+  (`🎒 +Keycard`), taken back (`🎒 −Keycard`), for sale (`🛒 Keycard`, or `(maybe)` when a pool shop might
+  not draw it; a long stock list shows as `🛒 N items`), required (`🔒 🎒 Keycard`, `(spent)` on a
+  sacrifice) and checked by a loop exit. Only items that matter to routing show: ones a fork, sacrifice or
+  loop exit checks, and ones that set a flag or move a counter when used. With one name picked, a list in the map's corner shows every place
+  that changes or checks it; click a row to jump there.
+
 ### 🩹 Fixes
+
+- **The audit understands item flags and counters.** A fork gated on a flag that only an item sets
+  (when used) was reported as DEAD; it's now a note that the player may never use the item. A declared
+  flag or counter that only an item changes is no longer called unused, and misspelt counter names on
+  items are caught too. The audit also now sees the journey's own custom items while you're building,
+  so shops and rewards that hand them out count.
 
 - **Boss encounters say when the round's cut isn't applied.** A cut made in Preview & Cut is only
   applied when the journey is saved, so until then the encounter editor shows the full video. The

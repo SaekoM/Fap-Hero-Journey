@@ -368,6 +368,7 @@ func _setup_graph_view() -> void:
 	_graph.canvas_context_menu_requested.connect(_on_canvas_context_menu_requested)
 	_graph.node_context_menu_requested.connect(_on_node_context_menu_requested)
 	_graph.warning_provider = _compute_node_warnings  # GraphView pulls soft-validation badges each layout
+	_graph.state_provider = _state_overlay  # ± STATE chips, recomputed each layout so edits show live
 	_graph.finish_id_provider = func() -> String: return _journey_finish_node  # badges the default aftercare
 	# Drag-to-reposition a backdrop layer writes its new offset back (mapping the combined-stack index to
 	# this journey's editable list) so the placement persists.
@@ -751,6 +752,41 @@ func _setup_toolbar_buttons() -> void:
 	_top_bar.add_child(_traffic_btn)
 	_top_bar.move_child(_traffic_btn, _save_btn.get_index())
 
+	_state_btn = Button.new()
+	_state_btn.text = "± STATE"
+	_state_btn.toggle_mode = true
+	_state_btn.focus_mode = Control.FOCUS_NONE
+	_state_btn.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				"Show where counters and flags change (+3 Ammo, ⚑ set, ⚐ cleared) and where they're checked"
+				+ " (🔒 on a fork choice, ⟲ on a loop exit). 🎒 marks what an item handed out there"
+				+ " does when used. Pick one in the list beside it to dim everything that doesn't touch"
+				+ " it and list where it's used."
+			)
+		)
+	)
+	UITheme.style_button(_state_btn, UITheme.PURPLE_MID)
+	_state_btn.toggled.connect(_on_state_toggled)
+	_top_bar.add_child(_state_btn)
+	_top_bar.move_child(_state_btn, _save_btn.get_index())
+
+	_state_pick = OptionButton.new()
+	_state_pick.focus_mode = Control.FOCUS_NONE
+	_state_pick.visible = false
+	_state_pick.tooltip_text = UITheme.wrap_tip("Which counter or flag to show — or all of them")
+	UITheme.style_option_button(_state_pick)
+	# Refilled every time it opens: counters and flags come and go as the journey is edited.
+	_state_pick.get_popup().about_to_popup.connect(_fill_state_pick)
+	_state_pick.item_selected.connect(
+		func(i: int) -> void:
+			_state_focus = str(_state_pick.get_item_metadata(i))
+			_refresh_graph()
+	)
+	_top_bar.add_child(_state_pick)
+	_top_bar.move_child(_state_pick, _save_btn.get_index())
+
 	# 🗒 NOTE, ▭ GROUP and ⌨ SHORTCUTS moved off the toolbar into the canvas right-click context menu
 	# (_show_canvas_context_menu) to cut top-bar clutter — they drop at the cursor instead of the view
 	# centre. ⊡ FIT, ⊞ ARRANGE and 📷 IMAGE stay here as the frequent / global actions.
@@ -765,6 +801,10 @@ func _on_traffic_toggled(on: bool) -> void:
 	if not on:
 		_graph.set_traffic({})
 		return
+	# Both recolour the canvas; together neither can be read.
+	if _state_btn and _state_btn.button_pressed:
+		_state_btn.set_pressed_no_signal(false)
+		_state_pick.visible = false
 	if (_graph_model.get("nodes", {}) as Dictionary).is_empty():
 		_traffic_btn.set_pressed_no_signal(false)
 		_show_status("Nothing to map — the journey is empty.", true)
@@ -783,6 +823,206 @@ func _on_traffic_toggled(on: bool) -> void:
 			int((visits["edges"] as Dictionary)[key]) * 100.0 / runs
 		)
 	_graph.set_traffic(traffic)
+
+
+# Toggles the ± STATE overlay. Nothing to compute up front: the graph asks _state_overlay for the marks
+# on every layout, so they follow each edit without an audit run.
+func _on_state_toggled(on: bool) -> void:
+	if not _graph:
+		return
+	_state_pick.visible = on
+	if on:
+		if _traffic_btn and _traffic_btn.button_pressed:
+			_traffic_btn.set_pressed_no_signal(false)
+			_graph.set_traffic({})
+		_fill_state_pick()
+	_refresh_graph()
+
+
+# What the graph draws for ± STATE: {} while it is off.
+func _state_overlay() -> Dictionary:
+	if not (_state_btn and _state_btn.button_pressed):
+		_show_state_list({})
+		return {}
+	var marks: Dictionary = JourneyData.state_marks_in_graph(_graph_model, _audit_item_table())
+	# Deferred: this runs in the middle of the graph's layout, and the list is a separate panel.
+	_show_state_list.call_deferred(marks)
+	return {"marks": marks, "focus": _state_focus}
+
+
+# ± STATE's where-used list: with one counter or flag picked, every node and fork choice that changes
+# or checks it, in a panel over the map's corner. Clicking a row centres the map there — dimming says
+# which nodes matter, but on a big journey they can still be screens apart.
+func _show_state_list(marks: Dictionary) -> void:
+	if is_instance_valid(_state_list):
+		_state_list.queue_free()
+	_state_list = null
+	if marks.is_empty() or _state_focus == "" or not is_instance_valid(_graph_host):
+		return
+	var rows: Array = []  # [node_id, where, text]
+	var node_marks: Dictionary = marks.get("nodes", {})
+	for nid: String in node_marks:
+		for mark: Dictionary in node_marks[nid]:
+			if JourneyData.state_focus_key(str(mark["kind"]), str(mark["name"])) == _state_focus:
+				rows.append([nid, _audit_node_label(nid), str(mark["text"])])
+	var edge_marks: Dictionary = marks.get("edges", {})
+	for key: String in edge_marks:
+		var nid: String = key.get_slice(":", 0)
+		var ei: int = int(key.get_slice(":", 1))
+		for mark: Dictionary in edge_marks[key]:
+			if JourneyData.state_focus_key(str(mark["kind"]), str(mark["name"])) == _state_focus:
+				rows.append([nid, _state_choice_label(nid, ei), str(mark["text"])])
+	rows.sort_custom(func(a: Array, b: Array) -> bool: return str(a[1]) < str(b[1]))
+
+	var panel: PanelContainer = PanelContainer.new()
+	panel.anchor_left = 1.0
+	panel.anchor_right = 1.0
+	panel.offset_left = -STATE_LIST_WIDTH - 12
+	panel.offset_right = -12
+	panel.offset_top = 12
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = Color(UITheme.PANEL_BG, 0.94)
+	style.border_color = UITheme.BORDER
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	style.set_content_margin_all(10)
+	panel.add_theme_stylebox_override("panel", style)
+	var column: VBoxContainer = VBoxContainer.new()
+	column.add_theme_constant_override("separation", 6)
+	panel.add_child(column)
+
+	var heading: Label = Label.new()
+	var focus_name: String = _state_focus.get_slice(":", 1)
+	if _state_focus.get_slice(":", 0) == "item":
+		focus_name = _state_item_name(focus_name, _audit_item_table())  # ids mean nothing to an author
+	heading.text = "%s — %d PLACE%s" % [focus_name, rows.size(), "" if rows.size() == 1 else "S"]
+	UITheme.style_label(heading, UITheme.CYAN, 11, true)
+	column.add_child(heading)
+	if rows.is_empty():
+		var none: Label = Label.new()
+		none.text = "Nothing in this journey changes or checks it."
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		UITheme.style_label(none, UITheme.TEXT_HINT, 11)
+		column.add_child(none)
+
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	# Grows with the list up to a cap, then scrolls; the map stays usable beneath it.
+	scroll.custom_minimum_size = Vector2(
+		0, mini(rows.size() * STATE_LIST_ROW_HEIGHT, STATE_LIST_MAX_HEIGHT)
+	)
+	column.add_child(scroll)
+	var list: VBoxContainer = VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 2)
+	scroll.add_child(list)
+	for row: Array in rows:
+		var button: Button = Button.new()
+		button.text = "%s   %s" % [str(row[2]), str(row[1])]
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.clip_text = true
+		button.focus_mode = Control.FOCUS_NONE
+		button.tooltip_text = UITheme.wrap_tip("Show %s on the map" % str(row[1]))
+		UITheme.style_button_subtle(button, UITheme.PURPLE_BRIGHT, 8, 3, 11)
+		var node_id: String = str(row[0])
+		button.pressed.connect(
+			func() -> void:
+				if _graph:
+					_graph.select_graph_node(node_id)
+					_graph.center_on(node_id)
+		)
+		list.add_child(button)
+	_graph_host.add_child(panel)
+	_state_list = panel
+
+
+# An item's name for the ± STATE picker and list, or its id when the journey no longer has it.
+func _state_item_name(id: String, items: Dictionary) -> String:
+	var name: String = str((items.get(id, {}) as Dictionary).get("name", "")).strip_edges()
+	return name if name != "" else id
+
+
+# A fork choice as the where-used list names it: its fork, then the choice's own name or number.
+func _state_choice_label(node_id: String, edge_index: int) -> String:
+	var node: Dictionary = (_graph_model.get("nodes", {}) as Dictionary).get(node_id, {})
+	var out: Array = node.get("out", [])
+	var choice: String = ""
+	if edge_index < out.size() and out[edge_index] is Dictionary:
+		choice = str((out[edge_index] as Dictionary).get("name", "")).strip_edges()
+	if choice == "":
+		choice = "choice %d" % (edge_index + 1)
+	return "%s → %s" % [_audit_node_label(node_id), choice]
+
+
+# The picker's list: ALL, then every counter, then every flag — declared ones and any name the journey
+# uses without declaring, which is marked so a misspelling stands out beside the real one.
+func _fill_state_pick() -> void:
+	_state_pick.clear()
+	_state_pick.add_item("ALL")
+	_state_pick.set_item_metadata(0, "")
+	var entries: Array = []  # [label, focus key]
+	var declared_counters: Array = []
+	for def: Variant in _journey_counters:
+		if def is Dictionary and str((def as Dictionary).get("name", "")) != "":
+			declared_counters.append(str((def as Dictionary)["name"]))
+	var counters: Array = declared_counters.duplicate()
+	var item_effects: Array = []  # what each item does when used, for names only items change
+	var items: Dictionary = _audit_item_table()
+	for iid: String in items:
+		item_effects.append(JourneyData.item_state_effects(items[iid]))
+	var counter_names: Array = JourneyData.counter_uses_in_graph(_graph_model).keys()
+	for effects: Dictionary in item_effects:
+		counter_names.append_array((effects["counters"] as Dictionary).keys())
+	for name: Variant in counter_names:
+		if not counters.has(str(name)):
+			counters.append(str(name))
+	counters.sort()
+	for name: String in counters:
+		var undeclared: String = "" if declared_counters.has(name) else "  (undeclared)"
+		entries.append(
+			["# %s%s" % [name, undeclared], JourneyData.state_focus_key("counter", name)]
+		)
+	var declared_flags: Array = []
+	for def: Variant in _journey_flags:
+		if def is Dictionary and str((def as Dictionary).get("name", "")) != "":
+			declared_flags.append(str((def as Dictionary)["name"]))
+	var flags: Array = declared_flags.duplicate()
+	var flag_names: Array = JourneyData.flag_names_in_graph(_graph_model)
+	for effects: Dictionary in item_effects:
+		flag_names.append_array(effects["flags"])
+	for name: Variant in flag_names:
+		if not flags.has(str(name)):
+			flags.append(str(name))
+	flags.sort()
+	for name: String in flags:
+		var undeclared: String = "" if declared_flags.has(name) else "  (undeclared)"
+		entries.append(["⚑ %s%s" % [name, undeclared], JourneyData.state_focus_key("flag", name)])
+	# Items: every one the journey gives, takes, sells or checks — not the whole registry.
+	var touched: Dictionary = {}  # item id → true
+	var marks: Dictionary = JourneyData.state_marks_in_graph(_graph_model, items)
+	for group: String in ["nodes", "edges"]:
+		for key: String in marks[group]:
+			for mark: Dictionary in marks[group][key]:
+				if str(mark["kind"]) == "item":
+					touched[str(mark["name"])] = true
+	var item_rows: Array = []
+	for id: String in touched:
+		item_rows.append([_state_item_name(id, items), id])
+	item_rows.sort_custom(func(a: Array, b: Array) -> bool: return str(a[0]) < str(b[0]))
+	for row: Array in item_rows:
+		entries.append(["🎒 %s" % str(row[0]), JourneyData.state_focus_key("item", str(row[1]))])
+	for entry: Array in entries:
+		_state_pick.add_item(str(entry[0]))
+		_state_pick.set_item_metadata(_state_pick.item_count - 1, str(entry[1]))
+	# Keep the current pick selected; one that no longer exists falls back to ALL.
+	var selected: int = 0
+	for i: int in _state_pick.item_count:
+		if str(_state_pick.get_item_metadata(i)) == _state_focus:
+			selected = i
+	_state_pick.select(selected)
+	if selected == 0 and _state_focus != "":
+		_state_focus = ""
+		_refresh_graph()
 
 
 # Auto-arranges the whole graph into tidy Sugiyama layers (rows by depth, crossings reduced, x
@@ -838,6 +1078,13 @@ func _on_arrange_pressed() -> void:
 # Cleared on every structural mutation (_push_undo) — {} means "stale/none".
 var _audit_result: Dictionary = {}
 var _traffic_btn: Button = null  # 🔥 heatmap toggle; forced off when the cache invalidates
+var _state_btn: Button = null  # ± STATE overlay toggle; never on together with traffic
+var _state_pick: OptionButton = null  # which counter or flag the overlay shows ("" = all)
+var _state_focus: String = ""  # JourneyData.state_focus_key of the pick, or "" for ALL
+var _state_list: Control = null  # the where-used panel over the map, while one name is picked
+const STATE_LIST_WIDTH: float = 320.0
+const STATE_LIST_ROW_HEIGHT: int = 26
+const STATE_LIST_MAX_HEIGHT: int = 360
 
 
 func _on_audit_pressed() -> void:
@@ -847,17 +1094,37 @@ func _on_audit_pressed() -> void:
 	_show_audit_modal(_run_audit())
 
 
+# Every item a run of this journey can hold, as the audit and the ± STATE overlay read them:
+# {item_id: {name, price, kind, effects}}. Built-ins from the registry, plus this journey's custom items
+# from the live edit model — the registry only holds those after a test play, and then a stale copy.
+# `kind` is "key" for a key item, which is what the audit's key checks look for.
+func _audit_item_table() -> Dictionary:
+	var items: Dictionary = {}
+	for item_id: String in InventoryService.GetBuiltinItemIds():
+		var data: Dictionary = InventoryService.GetItemData(item_id)
+		items[item_id] = _audit_item_entry(data)
+	for item: Dictionary in _journey_items:
+		var id: String = str(item.get("id", ""))
+		if id != "":
+			items[id] = _audit_item_entry(item)
+	return items
+
+
+func _audit_item_entry(data: Dictionary) -> Dictionary:
+	var is_key: bool = str(data.get("category", "")) == "key"
+	return {
+		"name": str(data.get("name", "")),
+		"price": int(data.get("price", 0)),
+		"kind": "key" if is_key else str(data.get("kind", "")),
+		"effects": data.get("effects", []),
+	}
+
+
 # Runs JourneyAudit over the live graph model and caches the result. Baseline
 # round scores/lengths are computed here (file I/O stays out of the pure core):
 # each round's funscript is parsed once.
 func _run_audit() -> Dictionary:
-	var items: Dictionary = {}
-	for item_id: String in InventoryService.GetAllItemIds():
-		var item_data: Dictionary = InventoryService.GetItemData(item_id)
-		items[item_id] = {
-			"price": int(item_data.get("price", 0)),
-			"kind": str(item_data.get("kind", "")),
-		}
+	var items: Dictionary = _audit_item_table()
 
 	var round_scores: Dictionary = {}
 	var round_lengths: Dictionary = {}

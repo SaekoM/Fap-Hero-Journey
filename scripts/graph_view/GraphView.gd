@@ -92,6 +92,12 @@ var finish_id_provider: Callable = Callable()  # builder hook → the FINISH aft
 # Non-empty → editor edges are tinted/thickened by traffic share and nodes get a % chip.
 # Never rendered in map_mode (player map / image export). Set via set_traffic({}) to clear.
 var _traffic: Dictionary = {}
+# ± STATE overlay: where counters and flags change and are checked (JourneyData.state_marks_in_graph).
+# The builder hands back {marks, focus} each layout, so it follows every edit live; `focus` is "" for
+# ALL, or one "kind:name" whose untouched nodes and edges are dimmed. Never rendered in map_mode.
+var state_provider: Callable = Callable()
+var _state_marks: Dictionary = {}
+var _state_focus: String = ""
 # Route recap overlay (end-of-run ceremony): the run's taken path renders
 # bright + thick, everything off it ghosted. Unlike the traffic heatmap this
 # DOES render in map_mode — the end screen is a map-mode consumer.
@@ -324,6 +330,11 @@ func _layout_graph() -> void:
 	var finish_node_id: String = (
 		str(finish_id_provider.call()) if (not map_mode and finish_id_provider.is_valid()) else ""
 	)
+	var state: Dictionary = (
+		state_provider.call() if (not map_mode and state_provider.is_valid()) else {}
+	)
+	_state_marks = state.get("marks", {})
+	_state_focus = str(state.get("focus", ""))
 	# Which side of the journey/aftercare divide each node is on — drives where the aftercare handles go
 	# and which drop targets a connect-drag refuses. The map draws no aftercare, so it skips this.
 	_journey_ids = {}
@@ -407,6 +418,14 @@ func _layout_graph() -> void:
 			_attach_traffic_chip(
 				ctrl, float((_traffic.get("nodes", {}) as Dictionary).get(id, 0.0))
 			)
+		if not _state_marks.is_empty():
+			var marks: Array = _focused_marks(
+				(_state_marks.get("nodes", {}) as Dictionary).get(id, [])
+			)
+			if not marks.is_empty():
+				_attach_state_chips(ctrl, marks)
+			elif _state_focus != "" and not _node_touches_focus(id, n):
+				ctrl.modulate = Color(1, 1, 1, 0.3)
 		# Route recap: everything the run didn't visit is ghosted.
 		if not _route_nodes.is_empty() and not _route_nodes.has(id):
 			ctrl.modulate = Color(1, 1, 1, 0.35)
@@ -419,6 +438,9 @@ func _layout_graph() -> void:
 				_add_out_handles(id, nodes[id], (_node_ctrls[id] as Control).position)
 				_add_aftercare_handle(id, nodes[id], (_node_ctrls[id] as Control).position)
 	var drawn: Dictionary = {}  # dedup edges that resolve to the same control pair (collapsed bars)
+	# ± STATE chips per drawn line. Gathered by control pair rather than per edge, because two choices
+	# into the same node share one line and both their chips belong on it.
+	var line_marks: Dictionary = {}  # control-pair key → {src, tgt, marks}
 	for id: String in nodes:
 		# In fog mode, hidden nodes have no control so _edge_endpoint_ctrl returns null and their edges
 		# drop out below; edges among shown nodes (visited + ghosts) draw, so the revealed structure
@@ -438,6 +460,15 @@ func _layout_graph() -> void:
 			if tgt_ctrl == null or tgt_ctrl == src_ctrl:
 				continue  # missing target, or both ends collapse into the same bar (an internal edge)
 			var key: String = "%d>%d" % [src_ctrl.get_instance_id(), tgt_ctrl.get_instance_id()]
+			var edge_marks: Array = []
+			if not _state_marks.is_empty():
+				edge_marks = _focused_marks(
+					(_state_marks.get("edges", {}) as Dictionary).get("%s:%d" % [id, ei], [])
+				)
+				if not edge_marks.is_empty():
+					if not line_marks.has(key):
+						line_marks[key] = {"src": src_ctrl, "tgt": tgt_ctrl, "marks": []}
+					(line_marks[key]["marks"] as Array).append_array(edge_marks)
 			if drawn.has(key):
 				continue
 			drawn[key] = true
@@ -460,7 +491,12 @@ func _layout_graph() -> void:
 					width = 4.0
 				else:
 					color = Color(color, color.a * 0.22)
+			if _state_focus != "" and edge_marks.is_empty():
+				color = Color(color, color.a * 0.25)  # the picked counter/flag isn't touched here
 			_add_edge_between(src_ctrl, tgt_ctrl, color, width)
+	for key: String in line_marks:
+		var line: Dictionary = line_marks[key]
+		_attach_line_state_chips(line["src"], line["tgt"], line["marks"])
 	# Loop pairs: the End's loop_to is a special back-jump (not an out-edge), drawn dashed in the loop
 	# colour so the replayed stretch reads as distinct from forward flow — and a faint band is laid behind
 	# the whole Start→body→End region so the looped stretch is legible at a glance.
@@ -1773,6 +1809,115 @@ func _attach_traffic_chip(ctrl: Control, pct: float) -> void:
 	chip.add_theme_font_size_override("font_size", 10)
 	chip.add_theme_color_override("font_color", _traffic_color(pct))
 	ctrl.add_child(chip)
+
+
+# ── ± STATE overlay ──────────────────────────────────────────────────────────
+
+# Above this many items, a shop's stock shows as one "🛒 N items" chip in the ALL view. A pool shop can
+# stock nearly every item, and a chip per item would bury the node. Picking one item still shows it.
+const STATE_SHOP_CHIP_LIMIT: int = 3
+
+
+# The marks to show: all of them (shop stock folded when long), or only the picked name's.
+func _focused_marks(marks: Array) -> Array:
+	if _state_focus == "":
+		var stock: int = 0
+		for mark: Dictionary in marks:
+			if str(mark.get("group", "")) == "shop":
+				stock += 1
+		if stock <= STATE_SHOP_CHIP_LIMIT:
+			return marks
+		var folded: Array = marks.filter(
+			func(mark: Dictionary) -> bool: return str(mark.get("group", "")) != "shop"
+		)
+		folded.push_front({"tone": "set", "text": "🛒 %d items" % stock})
+		return folded
+	var out: Array = []
+	for mark: Dictionary in marks:
+		if JourneyData.state_focus_key(str(mark["kind"]), str(mark["name"])) == _state_focus:
+			out.append(mark)
+	return out
+
+
+# Whether a node changes or checks the picked name through one of its choices, which keeps it lit even
+# though the chips sit on the line rather than under the node.
+func _node_touches_focus(id: String, node: Dictionary) -> bool:
+	var edges: Dictionary = _state_marks.get("edges", {})
+	for ei: int in (node.get("out", []) as Array).size():
+		if not _focused_marks(edges.get("%s:%d" % [id, ei], [])).is_empty():
+			return true
+	return false
+
+
+# One chip: the mark's text on a dark pill, so it stays readable over lines and the grid. The + / − / ⚑ /
+# ⚐ / 🔒 in the text carry the meaning, so the colour is a second cue rather than the only one.
+func _make_state_chip(mark: Dictionary) -> Control:
+	var tint: Color = UITheme.CYAN
+	match str(mark.get("tone", "")):
+		"up":
+			tint = UITheme.OK
+		"down":
+			tint = UITheme.ERROR_SOFT
+		"set":
+			tint = UITheme.AMBER
+		"clear":
+			tint = UITheme.TEXT_HINT
+	var chip: PanelContainer = PanelContainer.new()
+	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0.03, 0.0, 0.05, 0.88)
+	sb.border_color = Color(tint, 0.7)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(4)
+	sb.content_margin_left = 5
+	sb.content_margin_right = 5
+	sb.content_margin_top = 1
+	sb.content_margin_bottom = 1
+	chip.add_theme_stylebox_override("panel", sb)
+	var label: Label = Label.new()
+	label.text = str(mark.get("text", ""))
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.add_theme_font_size_override("font_size", 10)
+	label.add_theme_color_override("font_color", tint)
+	chip.add_child(label)
+	return chip
+
+
+# A node's chips, wrapped in rows under its card. Children of the card, so they move with a drag and
+# fade with it.
+func _attach_state_chips(ctrl: Control, marks: Array) -> void:
+	var flow: HFlowContainer = HFlowContainer.new()
+	flow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	flow.add_theme_constant_override("h_separation", 3)
+	flow.add_theme_constant_override("v_separation", 3)
+	flow.position = Vector2(0, NODE_HEIGHT + 4)
+	flow.size = Vector2(NODE_WIDTH, 0)
+	for mark: Dictionary in marks:
+		flow.add_child(_make_state_chip(mark))
+	ctrl.add_child(flow)
+
+
+# A fork choice's chips, stacked on the middle of its line.
+func _attach_line_state_chips(src: Control, tgt: Control, marks: Array) -> void:
+	var points: PackedVector2Array = _edge_route(src, tgt)["points"]
+	if points.is_empty():
+		return
+	var middle: Vector2 = (
+		(points[1] + points[2]) * 0.5
+		if points.size() >= 4
+		else (points[0] + points[points.size() - 1]) * 0.5
+	)
+	var stack: VBoxContainer = VBoxContainer.new()
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.alignment = BoxContainer.ALIGNMENT_CENTER
+	stack.add_theme_constant_override("separation", 2)
+	for mark: Dictionary in marks:
+		var chip: Control = _make_state_chip(mark)
+		chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		stack.add_child(chip)
+	_canvas.add_child(stack)  # in the tree first, so the labels can measure their text
+	stack.reset_size()
+	stack.position = middle - stack.get_combined_minimum_size() * 0.5
 
 
 # Builds an orthogonal 3-segment route between two node rects. The exit/entry faces are chosen by

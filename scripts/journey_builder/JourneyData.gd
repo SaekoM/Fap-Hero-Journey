@@ -2713,6 +2713,321 @@ static func flag_names_in_graph(graph: Dictionary) -> Array:
 	return out
 
 
+# ── ± STATE overlay ──────────────────────────────────────────────────────────
+# Where each counter and flag CHANGES and where it is CHECKED, laid out for the builder's canvas:
+#   {nodes: {node_id: [mark]}, edges: {"node_id:edge_index": [mark]}}
+# A mark is {kind: "counter"|"flag"|"item", name, role: "change"|"check", tone, text}; an item's name
+# is its id. Shop stock also carries group "shop". `tone` picks the chip's
+# colour — up / down for a counter, set / clear for a flag, check for a gate — and `text` is the chip.
+# Changes made by a fork CHOICE are keyed to that choice's edge, so the map shows which branch does it.
+#
+# Reads the same places flag_names_in_graph and counter_uses_in_graph do, so a name the overlay shows is
+# a name the pickers and the audit know about too.
+#
+# `items` ({item_id: item}) adds what USING an item does: a node that can hand out an item with a flag
+# or counter effect shows that effect too ("🎒 Keycard → ⚑ has_key"), since the run state can change
+# there if the player uses it. Items show only when they matter to routing — see _routing_item_ids.
+static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> Dictionary:
+	var node_marks: Dictionary = {}
+	var edge_marks: Dictionary = {}
+	var item_ids: Array = items.keys()
+	item_ids.sort()
+	for nid: Variant in graph.get("nodes", {}):
+		var node: Dictionary = (graph["nodes"] as Dictionary)[nid]
+		var data: Dictionary = node.get("data", {})
+		var marks: Array = _state_change_marks(data, items)
+		marks.append_array(_item_given_marks(node, items, item_ids))
+		for iid: String in items_given_by_node(node, item_ids):
+			marks.append_array(_item_effect_marks(items[iid] as Dictionary, iid))
+		for timeline: Dictionary in boss_timelines(data):
+			for key: String in RoundTimeline.OUTCOME_FLAG_KEYS:
+				var flag: String = str(timeline.get(key, "")).strip_edges()
+				if flag != "":
+					var outcome: String = "won" if key == "won_flag" else "lost"
+					var boss_mark: Dictionary = _state_mark(
+						"flag", flag, "change", "set", "⚑ %s (%s)" % [flag, outcome]
+					)
+					# A pool round's entries often share an outcome flag; one chip says it.
+					if not marks.has(boss_mark):
+						marks.append(boss_mark)
+		for c: Variant in data.get("loop_conditions", []):
+			if c is Dictionary:
+				var loop_mark: Dictionary = _loop_check_mark(c as Dictionary, items)
+				if not loop_mark.is_empty():
+					marks.append(loop_mark)
+		if not marks.is_empty():
+			node_marks[str(nid)] = marks
+
+		var out: Array = node.get("out", [])
+		for ei: int in out.size():
+			if not (out[ei] is Dictionary):
+				continue
+			var edge: Dictionary = out[ei]
+			var on_edge: Array = _state_change_marks(edge, items)
+			var check: Dictionary = _fork_check_mark(data, edge, ei, out.size(), items)
+			if not check.is_empty():
+				on_edge.push_front(check)  # what it takes to go this way reads before what it does
+			if not on_edge.is_empty():
+				edge_marks["%s:%d" % [str(nid), ei]] = on_edge
+	var tracked: Dictionary = _routing_item_ids(items, [node_marks, edge_marks])
+	return {
+		"nodes": _keep_tracked_items(node_marks, tracked),
+		"edges": _keep_tracked_items(edge_marks, tracked),
+	}
+
+
+# The items worth following on the map: those a fork, sacrifice or loop exit checks, and those whose
+# use sets a flag or moves a counter. Any other item can't change where the player goes, so handing
+# it out, selling it or taking it back is left off.
+static func _routing_item_ids(items: Dictionary, mark_groups: Array) -> Dictionary:
+	var tracked: Dictionary = {}  # item id → true
+	for group: Dictionary in mark_groups:
+		for key: String in group:
+			for mark: Dictionary in group[key]:
+				if str(mark["kind"]) == "item" and str(mark["role"]) == "check":
+					tracked[str(mark["name"])] = true
+	for id: String in items:
+		var effects: Dictionary = item_state_effects(items[id] as Dictionary)
+		if (
+			not (effects["flags"] as Array).is_empty()
+			or not (effects["counters"] as Dictionary).is_empty()
+		):
+			tracked[id] = true
+	return tracked
+
+
+# `marks_by_key` without the item marks of untracked items; a key left with no marks is dropped.
+static func _keep_tracked_items(marks_by_key: Dictionary, tracked: Dictionary) -> Dictionary:
+	var kept: Dictionary = {}
+	for key: String in marks_by_key:
+		var marks: Array = (marks_by_key[key] as Array).filter(
+			func(mark: Dictionary) -> bool:
+				return str(mark["kind"]) != "item" or tracked.has(str(mark["name"]))
+		)
+		if not marks.is_empty():
+			kept[key] = marks
+	return kept
+
+
+# The counter, flag and item changes a node or a fork choice makes when it is passed through.
+static func _state_change_marks(holder: Dictionary, items: Dictionary = {}) -> Array:
+	var marks: Array = []
+	var deltas: Dictionary = clean_counter_deltas(holder.get("set_counters", {}))
+	var names: Array = deltas.keys()
+	names.sort()
+	for name: String in names:
+		var delta: int = int(deltas[name])
+		marks.append(
+			_state_mark(
+				"counter",
+				name,
+				"change",
+				"up" if delta > 0 else "down",
+				"%s%d %s" % ["+" if delta > 0 else "−", absi(delta), name]
+			)
+		)
+	for flag: Variant in clean_flag_list(holder.get("set_flags", [])):
+		marks.append(_state_mark("flag", str(flag), "change", "set", "⚑ %s" % str(flag)))
+	for flag: Variant in clean_flag_list(holder.get("clear_flags", [])):
+		marks.append(_state_mark("flag", str(flag), "change", "clear", "⚐ %s" % str(flag)))
+	for taken: Variant in holder.get("remove_items", []):
+		var id: String = str(taken)
+		if id != "":
+			marks.append(
+				_state_mark("item", id, "change", "down", "🎒 −%s" % _item_label(items, id))
+			)
+	return marks
+
+
+# What a node hands the player: a round's award or an effect round's gift, a storyboard's reward, or a
+# shop's stock. Stock is "maybe" when a pool shop may not draw it; those marks carry group "shop" so the
+# map can fold a long list into one chip.
+static func _item_given_marks(node: Dictionary, items: Dictionary, item_ids: Array) -> Array:
+	var data: Dictionary = node.get("data", {})
+	var marks: Array = []
+	match str(node.get("type", "")):
+		"round", "storyboard":
+			var given: Array = []
+			if str(node.get("type", "")) == "storyboard":
+				given.append(str(data.get("item", "")))
+			else:
+				given.append(str(data.get("award_item", "")))
+				if str(data.get("round_type", "")) == "effect":
+					given.append(str(data.get("gift_item", "")))  # only an effect round gives a gift
+			for id: String in given:
+				if id != "":
+					marks.append(
+						_state_mark("item", id, "change", "up", "🎒 +%s" % _item_label(items, id))
+					)
+		"shop":
+			var sure: Array = (
+				shop_fixed_ids(data, item_ids)
+				if str(data.get("mode", "pool")) == "fixed"
+				else shop_guaranteed_ids(data, item_ids)
+			)
+			for id: String in shop_possible_ids(data, item_ids):
+				var text: String = (
+					"🛒 %s%s" % [_item_label(items, id), "" if sure.has(id) else " (maybe)"]
+				)
+				var mark: Dictionary = _state_mark("item", id, "change", "set", text)
+				mark["group"] = "shop"
+				marks.append(mark)
+	return marks
+
+
+# An item's name for a chip, or its id when the journey no longer has it.
+static func _item_label(items: Dictionary, id: String) -> String:
+	var name: String = str((items.get(id, {}) as Dictionary).get("name", "")).strip_edges()
+	return name if name != "" else id
+
+
+# What a conditional fork's choice requires of a counter or flag, or {} when it requires neither.
+# A choice that names no counter of its own is gated on the fork's, as the runtime does. The default
+# choice is marked as ignored, because its requirement never applies.
+static func _fork_check_mark(
+	data: Dictionary, edge: Dictionary, index: int, count: int, items: Dictionary = {}
+) -> Dictionary:
+	var resolution: String = str(data.get("resolution", ""))
+	# A sacrifice choice that names an item needs it AND spends it: the game consumes it on the way.
+	if resolution == "sacrifice":
+		var spent: String = str(edge.get("required_item", ""))
+		if spent == "":
+			return {}
+		return _state_mark(
+			"item", spent, "check", "check", "🔒 🎒 %s (spent)" % _item_label(items, spent)
+		)
+	if resolution != "conditional":
+		return {}
+	var metric: String = str(data.get("cond_metric", "score"))
+	if not (metric in ["counter", "flag", "item"]) or not fork_choice_has_requirement(edge, metric):
+		return {}
+	var is_default: bool = index == clampi(int(data.get("default_path", 0)), 0, count - 1)
+	var suffix: String = "  (default — ignored)" if is_default else ""
+	if metric == "flag":
+		var flag: String = str(edge.get("required_flag", ""))
+		return _state_mark("flag", flag, "check", "check", "🔒 ⚑ %s%s" % [flag, suffix])
+	if metric == "item":
+		var needed: String = str(edge.get("required_item", ""))
+		return _state_mark(
+			"item", needed, "check", "check", "🔒 🎒 %s%s" % [_item_label(items, needed), suffix]
+		)
+	var counter: String = str(edge.get("cond_counter", ""))
+	if counter == "":
+		counter = str(data.get("cond_counter", ""))
+	if counter == "":
+		return {}
+	var threshold: int = int(edge.get("threshold", 0))
+	return _state_mark(
+		"counter", counter, "check", "check", "🔒 %s ≥ %d%s" % [counter, threshold, suffix]
+	)
+
+
+# A Loop End's exit condition on a counter, flag or item, or {} for one on repeats.
+static func _loop_check_mark(c: Dictionary, items: Dictionary = {}) -> Dictionary:
+	match str(c.get("kind", "")):
+		"item":
+			var held: String = str(c.get("item", ""))
+			if held != "":
+				return _state_mark(
+					"item", held, "check", "check", "⟲ exit holding 🎒 %s" % _item_label(items, held)
+				)
+		"flag":
+			var flag: String = str(c.get("flag", ""))
+			if flag != "":
+				return _state_mark("flag", flag, "check", "check", "⟲ exit on ⚑ %s" % flag)
+		"counter":
+			var counter: String = str(c.get("counter", ""))
+			if counter != "":
+				var cmp: String = "≤" if str(c.get("cmp", "gte")) == "lte" else "≥"
+				return _state_mark(
+					"counter",
+					counter,
+					"check",
+					"check",
+					"⟲ exit at %s %s %d" % [counter, cmp, int(c.get("threshold", 0))]
+				)
+	return {}
+
+
+static func _state_mark(
+	kind: String, name: String, role: String, tone: String, text: String
+) -> Dictionary:
+	return {"kind": kind, "name": name, "role": role, "tone": tone, "text": text}
+
+
+# The marks for what using `item` does to the run state, each naming the item.
+static func _item_effect_marks(item: Dictionary, item_id: String) -> Array:
+	var marks: Array = []
+	var effects: Dictionary = item_state_effects(item)
+	var shown: String = str(item.get("name", "")).strip_edges()
+	if shown == "":
+		shown = item_id
+	for flag: String in effects["flags"]:
+		marks.append(_state_mark("flag", flag, "change", "set", "🎒 %s → ⚑ %s" % [shown, flag]))
+	var counters: Dictionary = effects["counters"]
+	var names: Array = counters.keys()
+	names.sort()
+	for name: String in names:
+		var delta: int = int(counters[name])
+		marks.append(
+			_state_mark(
+				"counter",
+				name,
+				"change",
+				"up" if delta > 0 else "down",
+				"🎒 %s → %s%d %s" % [shown, "+" if delta > 0 else "−", absi(delta), name]
+			)
+		)
+	return marks
+
+
+# What using an item does to the run state: {flags: [names], counters: {name: delta}}, read from its
+# "flag" and "counter" effects. Both empty for an item that only changes the stroke, coins or the like.
+static func item_state_effects(item: Dictionary) -> Dictionary:
+	var flags: Array = []
+	var counters: Dictionary = {}
+	for fx: Variant in item.get("effects", []):
+		if not (fx is Dictionary):
+			continue
+		match str((fx as Dictionary).get("kind", "")):
+			"flag":
+				var flag: String = str((fx as Dictionary).get("flag", "")).strip_edges()
+				if flag != "" and not flags.has(flag):
+					flags.append(flag)
+			"counter":
+				var counter: String = str((fx as Dictionary).get("counter", "")).strip_edges()
+				var delta: int = int((fx as Dictionary).get("delta", 1))
+				if counter != "" and delta != 0:
+					counters[counter] = int(counters.get(counter, 0)) + delta
+	return {"flags": flags, "counters": counters}
+
+
+# The items (of `item_ids`) a node can hand the player: a round's award, an effect round's gift, a
+# storyboard's reward, or anything a shop may stock.
+static func items_given_by_node(node: Dictionary, item_ids: Array) -> Array:
+	var data: Dictionary = node.get("data", {})
+	var given: Array = []
+	match str(node.get("type", "")):
+		"round":
+			given.append(str(data.get("award_item", "")))
+			if str(data.get("round_type", "")) == "effect":
+				given.append(str(data.get("gift_item", "")))
+		"storyboard":
+			given.append(str(data.get("item", "")))
+		"shop":
+			given.append_array(shop_possible_ids(data, item_ids))
+	var out: Array = []
+	for id: String in given:
+		if id != "" and item_ids.has(id) and not out.has(id):
+			out.append(id)
+	return out
+
+
+# The key the overlay's picker uses for one counter or flag: "counter:Ammo", "flag:beat_boss".
+static func state_focus_key(kind: String, name: String) -> String:
+	return "%s:%s" % [kind, name]
+
+
 # The builder's flag-change rows ([{name, mode}]) split into the two lists a node stores. `mode` is
 # "clear" for a row that clears; anything else sets. A row whose flag has not been chosen yet
 # contributes nothing, and a flag named twice keeps its LAST row — the lists are sets, so the same
