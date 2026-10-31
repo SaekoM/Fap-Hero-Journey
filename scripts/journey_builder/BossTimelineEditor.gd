@@ -2779,7 +2779,7 @@ func _add_alts_list(event: Dictionary) -> void:
 	if not alts.is_empty():
 		var base: Button = Button.new()
 		var on_base: bool = _stage.variant_of(str(event["id"])) == 0
-		base.text = ("◉ " if on_base else "◎ ") + "SHOW THE ORIGINAL"
+		base.text = ("◉ " if on_base else "◎ ") + tr("SHOW THE ORIGINAL")
 		UITheme.style_button_subtle(
 			base, UITheme.TOXIC_GREEN if on_base else UITheme.DARK_TEXT, 9, 4, 10
 		)

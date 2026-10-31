@@ -171,7 +171,7 @@ func _build_ui(round_name: String) -> void:
 	var header: HBoxContainer = HBoxContainer.new()
 	var title: Label = Label.new()
 	title.text = (
-		"▶  FUNSCRIPT PREVIEW" + ("  —  " + round_name.to_upper() if round_name != "" else "")
+		tr("▶  FUNSCRIPT PREVIEW") + ("  —  " + round_name.to_upper() if round_name != "" else "")
 	)
 	title.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 	title.add_theme_font_size_override("font_size", 18)
@@ -1224,7 +1224,7 @@ func _rebuild_rows() -> void:
 			% [
 				i + 1,
 				JourneyData.ms_to_mmss(start_ms),
-				JourneyData.ms_to_mmss(end_ms) if end_ms > 0 else "END",
+				JourneyData.ms_to_mmss(end_ms) if end_ms > 0 else tr("END"),
 				JourneyData.ms_to_mmss(maxi(0, (end_ms if end_ms > 0 else src_len) - start_ms)),
 			]
 		)

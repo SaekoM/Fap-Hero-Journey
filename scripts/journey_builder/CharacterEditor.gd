@@ -282,8 +282,8 @@ func _make_portrait_row(index: int) -> Control:
 		pick.text = (
 			"%s%s"
 			% [
-				current if current != "" else "Expression %d" % (index + 1),
-				"  ·  DEFAULT" if index == 0 else "",
+				current if current != "" else tr("Expression %d") % (index + 1),
+				tr("  ·  DEFAULT") if index == 0 else "",
 			]
 		)
 	relabel.call()

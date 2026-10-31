@@ -8,8 +8,15 @@ func _lines(s: String) -> Array:
 
 
 # A short string is returned untouched — short tooltips must not gain stray newlines.
+# wrap_tip translates first (the CSV carries the unwrapped source), so the zh_CN
+# translation comes back translated; pin the locale per assertion and restore it.
 func test_wrap_tip_leaves_short_text() -> void:
+	var previous: String = TranslationServer.get_locale()
+	TranslationServer.set_locale("en")
 	assert_str(UITheme.wrap_tip("Delete this choice")).is_equal("Delete this choice")
+	TranslationServer.set_locale("zh_CN")
+	assert_str(UITheme.wrap_tip("Delete this choice")).is_equal("删除此选项")
+	TranslationServer.set_locale(previous)
 
 
 # A long line is broken on word boundaries, and no line exceeds the limit.

@@ -56,7 +56,10 @@ def main():
             if not isinstance(v, str) or not v.strip():
                 problems.append("empty/invalid value")
             elif k not in todo_keys:
-                problems.append("key not in uncovered_todo (already covered or unknown)")
+                # already-covered keys are legitimate in override fragments; only fail
+                # when the key is unknown to both the extractor and the current CSV
+                if k not in csv_keys:
+                    problems.append("key not in uncovered_todo and not in CSV")
             elif specs(k) != specs(v):
                 problems.append(f"placeholders {dict(specs(k))} != {dict(specs(v))}")
             elif re.search(r"[％｛｜]", v) and not re.search(r"[％｛｜]", k):

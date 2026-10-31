@@ -30,9 +30,22 @@ translation). Run everything from the project root.
    (strings that pass through `.to_upper()` before a text sink — e.g. CatalogPicker
    headings — are looked up in their uppercased form).
 
-5. **Probe** — `Godot --headless --path . --script i18n_tools/probe_i18n.gd`
-   loads the compiled translation and spot-checks lookups (plain keys,
-   placeholders, uppercase variants, multi-line keys).
+5. **Probe** — `Godot --headless --path . --script i18n_tools/probe_i18n.gd` (spot-checks lookups)
+   and `probe2.gd` (end-to-end: concat full keys, tr()-wrapped pieces, format templates,
+   uppercase variants).
+
+## The concatenation rule (why find_concat_chains.py exists)
+
+Godot 4 auto-translation looks up the **stored** string at display time; there is no
+per-literal injection at assignment. So `hint.text = ("a" + "b")` stores `"ab"` and only a
+CSV row for the FULL `"ab"` can ever match — per-piece keys silently miss.
+`find_concat_chains.py` finds every multi-literal chain reaching a text sink without `tr()`;
+pure chains are fixed by adding the full string as a key (`make_concat_fragments.py` joins
+the piece translations, `apply_concat_translations.py` writes hand-polished ones), while
+chains that mix identifiers get the literals wrapped in `tr()` by hand.
+`audit_crosscheck.py` cross-checks code ↔ CSV both ways: `tr()` literals without a row,
+`.to_upper()` results without an uppercase row (uppercase forms are what get looked up),
+and lone-`%` keys that a `%` operator would corrupt at runtime.
 
 ## Runtime notes
 

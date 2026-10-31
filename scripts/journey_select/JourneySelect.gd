@@ -435,9 +435,9 @@ func _set_active_sort() -> void:
 	_style_button(
 		_sort_actions, UITheme.PURPLE_BRIGHT if _sort_field == "actions" else UITheme.PURPLE_MID
 	)
-	_sort_name.text = ("NAME" + arrow) if _sort_field == "name" else "NAME"
-	_sort_duration.text = ("DURATION" + arrow) if _sort_field == "duration" else "DURATION"
-	_sort_actions.text = ("ACTIONS" + arrow) if _sort_field == "actions" else "ACTIONS"
+	_sort_name.text = (tr("NAME") + arrow) if _sort_field == "name" else tr("NAME")
+	_sort_duration.text = (tr("DURATION") + arrow) if _sort_field == "duration" else tr("DURATION")
+	_sort_actions.text = (tr("ACTIONS") + arrow) if _sort_field == "actions" else tr("ACTIONS")
 
 
 # ---------------------------------------------------------------------------

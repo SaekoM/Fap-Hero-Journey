@@ -1959,11 +1959,11 @@ func _make_settings_section() -> Control:
 	box.add_child(header)
 	var hint: Label = Label.new()
 	hint.text = (
-		"Reusable places: a background and the music that belongs to it, defined once and "
-		+ "picked per node or per storyboard line. Consecutive scenes sharing a setting keep "
-		+ "the same track playing instead of restarting it."
+		tr("Reusable places: a background and the music that belongs to it, defined once and ")
+		+ tr("picked per node or per storyboard line. Consecutive scenes sharing a setting keep ")
+		+ tr("the same track playing instead of restarting it.")
 		+ (
-			" In a rendition the base's settings are locked — add your own alongside them."
+			tr(" In a rendition the base's settings are locked — add your own alongside them.")
 			if _owner._rendition_mode
 			else ""
 		)
@@ -2894,10 +2894,10 @@ func _make_characters_section() -> Control:
 	box.add_child(header)
 	var hint: Label = Label.new()
 	hint.text = (
-		"Characters for storyboards: define a portrait once, then pick it per line. "
-		+ "Portraits show ~half-screen over the background; two can share the stage (left + right)."
+		tr("Characters for storyboards: define a portrait once, then pick it per line. ")
+		+ tr("Portraits show ~half-screen over the background; two can share the stage (left + right).")
 		+ (
-			" In a rendition the base's cast is locked — add your own alongside them."
+			tr(" In a rendition the base's cast is locked — add your own alongside them.")
 			if _owner._rendition_mode
 			else ""
 		)
@@ -4889,8 +4889,8 @@ func _make_base_choice_summary(out: Array, ei: int) -> Control:
 	var lbl: Label = Label.new()
 	var nm: String = str(edge.get("name", "")).strip_edges()
 	var to: String = str(edge.get("to", "")).strip_edges()
-	var dest: String = _graph_node_label(to) if to != "" else "(open)"
-	lbl.text = "%d. %s → %s" % [ei + 1, nm if nm != "" else "Choice", dest]
+	var dest: String = _graph_node_label(to) if to != "" else tr("(open)")
+	lbl.text = "%d. %s → %s" % [ei + 1, nm if nm != "" else tr("Choice"), dest]
 	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	lbl.add_theme_font_size_override("font_size", 11)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL

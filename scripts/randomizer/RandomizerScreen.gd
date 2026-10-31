@@ -1587,12 +1587,10 @@ func _offer_remove_flagged(count: int) -> void:
 	var dialog := ConfirmationDialog.new()
 	dialog.title = "Clips Missing From Stash"
 	dialog.dialog_text = (
-		(
-			"%d clip%s from Stash %s no longer found: deleted from Stash, or without the tags you "
-			% [count, "" if count == 1 else "s", "was" if count == 1 else "were"]
+		tr(
+			"Clips from Stash no longer found: %d. Deleted from Stash, or without the tags you import. Generate skips them until a SYNC finds them again.\n\nRemove them from the library? Your video files are NOT touched."
 		)
-		+ "import. Generate skips them until a SYNC finds them again.\n\nRemove them from the "
-		+ "library? Your video files are NOT touched."
+		% count
 	)
 	dialog.ok_button_text = "REMOVE FLAGGED"
 	dialog.cancel_button_text = "KEEP"

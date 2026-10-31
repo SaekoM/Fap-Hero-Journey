@@ -1120,8 +1120,8 @@ func _show_audit_modal(result: Dictionary) -> void:
 
 	var foot: Label = Label.new()
 	foot.text = (
-		"Baseline model: completes every round, endures curses, buys only what locked paths ahead require."
-		+ (" Traffic from %d simulated runs." % runs if runs > 0 else "")
+		tr("Baseline model: completes every round, endures curses, buys only what locked paths ahead require.")
+		+ (tr(" Traffic from %d simulated runs.") % runs if runs > 0 else "")
 	)
 	UITheme.style_label(foot, UITheme.DARK_TEXT, 10, false)
 	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
