@@ -1246,11 +1246,11 @@ func _channel_row(id: String, kind: String, channel: String, current_path: Strin
 func _channel_tag(kind: String, channel: String) -> String:
 	match kind:
 		"axis":
-			return "AXIS %s" % channel
+			return tr("AXIS %s") % channel
 		"vib":
-			return "VIB %s" % channel
+			return tr("VIB %s") % channel
 		_:
-			return "STROKE"
+			return tr("STROKE")
 
 
 # Routes a dropped/multi-selected batch of funscripts to a clip's channels by filename suffix (main /

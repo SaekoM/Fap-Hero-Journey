@@ -47,6 +47,21 @@ chains that mix identifiers get the literals wrapped in `tr()` by hand.
 `.to_upper()` results without an uppercase row (uppercase forms are what get looked up),
 and lone-`%` keys that a `%` operator would corrupt at runtime.
 
+## The runtime audit (decisive)
+
+`audit_runtime.gd` settles any doubt: instantiate a real screen headless, walk every
+control, and flag each displayed string whose runtime lookup misses the table —
+
+    Godot --headless --path . --script i18n_tools/audit_runtime.gd -- res://scenes/options/Options.tscn
+
+It sees exactly what the player sees (const-array labels, helper-routed strings and
+formatted results included — all the shapes static extraction struggles with). Strings
+kept in English by design (device names, COM ports, language names, HUD, 2D/3D/HMV/PMV,
+dynamic numeric readouts) are expected output. `locate_misses.py` maps a saved audit
+back to source lines. Two systematic extractor blind spots this audit exposed, both
+fixed: `=` inside a display string truncating the RHS parse, and the coverage gate's
+identifier heuristic skipping two-word ASCII labels ("COVER IMAGE", "Clip tags", …).
+
 ## Runtime notes
 
 - Godot 4 auto-translates any string assigned to a text property by looking

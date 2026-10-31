@@ -1677,9 +1677,9 @@ func _populate_grid(journeys: Array) -> void:
 		var total: int = _journeys.size()
 		var shown: int = journeys.size()
 		_count_label.text = (
-			("%d JOURNEY%s" % [total, "" if total == 1 else "S"])
+			(tr("%d JOURNEY") % total if total == 1 else tr("%d JOURNEYS") % total)
 			if shown == total
-			else "%d OF %d" % [shown, total]
+			else tr("%d OF %d") % [shown, total]
 		)
 
 	var idx: int = 0

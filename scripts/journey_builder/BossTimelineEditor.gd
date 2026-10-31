@@ -3528,9 +3528,9 @@ func _add_script_field(event: Dictionary) -> void:
 	# What the bundle currently holds, with a way to drop any one channel.
 	_add_channel_row(scripts, "main", "MAIN", "")
 	for axis: Variant in (scripts["axes"] as Dictionary).keys():
-		_add_channel_row(scripts, "axes", "AXIS " + str(axis), str(axis))
+		_add_channel_row(scripts, "axes", tr("AXIS ") + str(axis), str(axis))
 	for channel: Variant in (scripts["vibes"] as Dictionary).keys():
-		_add_channel_row(scripts, "vibes", "VIB " + str(channel), str(channel))
+		_add_channel_row(scripts, "vibes", tr("VIB ") + str(channel), str(channel))
 
 	_add_test_row(event)
 

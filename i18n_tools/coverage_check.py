@@ -27,6 +27,13 @@ def looks_display(key: str) -> bool:
 # text sink. Pure-signal names, dict keys harvested only as 'dynamic', and
 # known non-display kinds are excluded from the 'must be translated' set.
 NONDISPLAY_KINDS = {"dynamic"}
+# Signal names the statement-merging extractor mis-attributes to a display
+# ternary (they appear in connect() calls near the item toast builder); they
+# never reach a text sink.
+NONDISPLAY_KEYS = {
+    "DeviceAdded", "DeviceRemoved", "ItemActivated", "ItemRefused",
+    "ItemUsed", "SaveRequested", "SkipRoundRequested", "Master", "Drop",
+}
 
 
 def main():
@@ -45,15 +52,17 @@ def main():
     for e in extracted:
         k = e["key"]
         kinds = {s["kind"] for s in e["sites"]}
-        if kinds <= NONDISPLAY_KINDS:
+        if kinds <= NONDISPLAY_KINDS or k in NONDISPLAY_KEYS:
             continue
         if not looks_display(k):
             continue
         if covered(k):
             continue
-        # skip obvious identifiers / brands / units even if display-shaped
-        if re.fullmatch(r"[A-Za-z0-9_\-\./: ]+", k) and not re.search(r"\s\S+\s\S+", k):
-            # single token, likely an id/brand/unit unless it has 2+ real words
+        # skip only TRUE identifier-shaped single tokens: no space at all, and
+        # lowercase-id / number / path shaped. Anything with a space is treated as
+        # display text — "COVER IMAGE" and "Clip tags" are real UI labels, and the
+        # old two-word heuristic silently skipped every one of them.
+        if re.fullmatch(r"[a-z0-9_\-\./:]+|[A-Z0-9_\-\./:]+|[A-Za-z0-9_\-\./:]*[0-9][A-Za-z0-9_\-\./:]*", k):
             continue
         missing.setdefault(k, sorted(kinds))
 
