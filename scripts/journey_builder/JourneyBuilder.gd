@@ -3419,7 +3419,7 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 # toolbar): retints the title. Channel overlays are now added inline — click a ghosted base round to open
 # its channel-overlay editor and drop axis/vibe scripts — so there's no separate toolbar button.
 func _show_rendition_banner(base_title: String) -> void:
-	_title_lbl.text = "◆ RENDITION — overlaying %s   (dim = locked base)" % base_title
+	_title_lbl.text = tr("◆ RENDITION — overlaying %s   (dim = locked base)") % base_title
 	_title_lbl.add_theme_color_override("font_color", UITheme.CYAN)
 
 

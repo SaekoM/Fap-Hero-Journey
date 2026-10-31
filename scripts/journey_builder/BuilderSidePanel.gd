@@ -2274,7 +2274,7 @@ func _make_counter_row(counter_idx: int) -> Control:
 		]
 	)
 	if bool(def.get("shown", false)):
-		badge.text += "  ·  👁 shown"
+		badge.text += tr("  ·  👁 shown")
 	badge.add_theme_color_override("font_color", UITheme.CYAN if uses > 0 else UITheme.TEXT_HINT)
 	badge.add_theme_font_size_override("font_size", 10)
 	info.add_child(badge)
@@ -9490,7 +9490,7 @@ func _make_sensory_row(
 		rate_slider.step = 1.0
 		rate_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		rate_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		rate_slider.tooltip_text = UITheme.wrap_tip("Rate — " + str(entry.get("rdesc", "")))
+		rate_slider.tooltip_text = UITheme.wrap_tip(tr("Rate — ") + str(entry.get("rdesc", "")))
 		rate_row.add_child(rate_slider)
 
 		rate_spin = SpinBox.new()

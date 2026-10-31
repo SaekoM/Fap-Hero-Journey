@@ -196,6 +196,26 @@ def split_top(expr: str, seps: str):
     return parts
 
 
+def _rhs_eq(expr: str) -> int:
+    """Index of the '=' that starts the right-hand side — the first one outside
+    any string literal, skipping escaped quotes. -1 when there is none."""
+    quote = None
+    i = 0
+    while i < len(expr):
+        c = expr[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c == "=":
+            return i
+        i += 1
+    return -1
+
+
 def looks_display(key: str) -> bool:
     """Heuristic: does this literal read like user-facing text?"""
     if not key or not key.strip():
@@ -291,9 +311,11 @@ def main():
                             r"add_separator|set_item_text|add_tab|set_tab_title)", head)
             var = vm[-1] if vm else None
             expr = stmt[m.end():]
-            # expression begins after '=' for property sinks
+            # expression begins after '=' for property sinks. The '=' must be found
+            # OUTSIDE string literals — a display string like "Off = unlimited."
+            # otherwise truncates the expression mid-literal and drops it entirely.
             if stmt[m.start():].split("(")[0].strip().endswith("=") or ".text" in stmt[m.start():m.start()+6]:
-                eq = expr.find("=")
+                eq = _rhs_eq(expr)
                 if eq != -1 and ".add" not in m.group(0) and ".set_" not in m.group(0):
                     expr = expr[eq + 1:]
             kind, lits = classify(expr)
