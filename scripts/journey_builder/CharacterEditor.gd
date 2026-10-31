@@ -346,7 +346,7 @@ func _make_placement_row(index: int) -> Control:
 	row.add_theme_constant_override("separation", 4)
 	var pick: Button = Button.new()
 	var relabel: Callable = func() -> void:
-		pick.text = str(placement.get("name", "Position %d" % (index + 1)))
+		pick.text = str(placement.get("name", tr("Position %d") % (index + 1)))
 	relabel.call()
 	pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pick.clip_text = true

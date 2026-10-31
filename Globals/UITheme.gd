@@ -51,6 +51,7 @@ func apply_tooltip_scale() -> void:
 # (see the README there). Missing files no-op — nothing breaks, you just keep depending on the OS.
 const GLYPH_FALLBACK_FONTS: Array[String] = [
 	"res://assets/fonts/NotoSansSymbols2-Regular.ttf",  # monochrome symbols: ⑂ ✎ ✕ ⚔ ✂ ★ ⬆ ⬇ ⚙ …
+	"res://assets/fonts/NotoSansCJKsc-Regular.otf",  # Simplified Chinese: the zh_CN translation's glyphs
 	"res://assets/fonts/NotoColorEmoji-Regular.ttf",  # colour emoji: 📂 🔥 🎲 🎭 🏁 …
 ]
 
@@ -81,27 +82,100 @@ func _install_glyph_fallbacks() -> void:
 
 
 # Word-wraps tooltip text by inserting newlines — Godot's default tooltip does NOT autowrap, so
-# a long one runs off screen. Existing newlines are preserved (each line wrapped independently),
-# and a string already under the limit is returned unchanged, so short tooltips are untouched.
-# Char-based rather than pixel-based on purpose: a tooltip has no parent to measure against.
+# a long one runs off screen. The text is translated first (Godot's auto-translation keys on the
+# exact string assigned to tooltip_text, and wrapping would change it — translating here lets the
+# CSV carry the unwrapped source). Existing newlines are preserved (each line wrapped
+# independently), and a string already under the limit is returned unchanged, so short tooltips
+# are untouched.
+# Width is display-width-aware so CJK translations wrap too: CJK/fullwidth characters count as
+# two columns and may break between any two of them (they carry no spaces), while Latin words
+# still move as whole words. Char-based rather than pixel-based on purpose: a tooltip has no
+# parent to measure against.
 func wrap_tip(text: String, max_chars: int = 54) -> String:
+	text = tr(text)
 	var out: PackedStringArray = []
 	for para: String in text.split("\n"):
-		if para.length() <= max_chars:
+		if _tip_width(para) <= max_chars:
 			out.append(para)
 			continue
 		var line: String = ""
+		var line_width: int = 0
 		for word: String in para.split(" "):
-			if line == "":
-				line = word
-			elif line.length() + 1 + word.length() <= max_chars:
+			var word_width: int = _tip_width(word)
+			if word_width <= max_chars and line != "" and line_width + 1 + word_width <= max_chars:
 				line += " " + word
-			else:
+				line_width += 1 + word_width
+				continue
+			if line != "":
 				out.append(line)
+				line = ""
+				line_width = 0
+			if word_width <= max_chars:
 				line = word
+				line_width = word_width
+				continue
+			if _tip_has_wide(word):
+				# Overlong CJK run (a Chinese phrase carries no spaces): flow it
+				# character by character, breaking between any two characters.
+				for i: int in word.length():
+					var ch: String = word[i]
+					var ch_width: int = _tip_char_width(ch)
+					if line != "" and line_width + ch_width > max_chars:
+						out.append(line)
+						line = ""
+						line_width = 0
+					line += ch
+					line_width += ch_width
+			else:
+				# Overlong Latin run (a URL): keep it whole on its own line —
+				# splitting one mid-token helps no one.
+				if line != "":
+					out.append(line)
+				out.append(word)
+				line = ""
+				line_width = 0
 		if line != "":
 			out.append(line)
 	return "\n".join(out)
+
+
+# East-Asian width: fullwidth and wide characters (CJK ideographs, kana, hangul,
+# fullwidth forms) occupy two columns in a monospace-ish sense; everything else one.
+static func _tip_char_width(ch: String) -> int:
+	var cp: int = ch.unicode_at(0)
+	if (
+		(cp >= 0x1100 and cp <= 0x115F)  # Hangul Jamo
+		or (cp >= 0x2E80 and cp <= 0x303E)  # CJK radicals, Kangxi, CJK symbols
+		or (cp >= 0x3041 and cp <= 0x33FF)  # Hiragana, Katakana, CJK compatibility
+		or (cp >= 0x3400 and cp <= 0x4DBF)  # CJK ext A
+		or (cp >= 0x4E00 and cp <= 0x9FFF)  # CJK unified ideographs
+		or (cp >= 0xA000 and cp <= 0xA4CF)  # Yi
+		or (cp >= 0xAC00 and cp <= 0xD7A3)  # Hangul syllables
+		or (cp >= 0xF900 and cp <= 0xFAFF)  # CJK compatibility ideographs
+		or (cp >= 0xFE30 and cp <= 0xFE4F)  # CJK compatibility forms
+		or (cp >= 0xFF00 and cp <= 0xFF60)  # fullwidth forms
+		or (cp >= 0xFFE0 and cp <= 0xFFE6)
+		or (cp >= 0x20000 and cp <= 0x3FFFD)
+	):  # CJK extensions B+
+		return 2
+	return 1
+
+
+static func _tip_width(text: String) -> int:
+	var width: int = 0
+	for i: int in text.length():
+		width += _tip_char_width(text[i])
+	return width
+
+
+# True when the string carries any fullwidth (wide) character — used to decide
+# whether an overlong run is a CJK phrase (breakable anywhere) or a Latin token
+# (kept whole).
+static func _tip_has_wide(text: String) -> bool:
+	for i: int in text.length():
+		if _tip_char_width(text[i]) == 2:
+			return true
+	return false
 
 
 # ── Palette ────────────────────────────────────────────────────────────────

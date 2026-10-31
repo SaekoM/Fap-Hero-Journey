@@ -708,9 +708,9 @@ func _refresh_library() -> void:
 	for e: Dictionary in shown:
 		_shown_ids.append(str(e["id"]))
 	_lib_count.text = (
-		"CLIP LIBRARY  (%d)" % entries.size()
+		tr("CLIP LIBRARY  (%d)") % entries.size()
 		if shown.size() == entries.size()
-		else "CLIP LIBRARY  (%d of %d shown)" % [shown.size(), entries.size()]
+		else tr("CLIP LIBRARY  (%d of %d shown)") % [shown.size(), entries.size()]
 	)
 	if shown.is_empty():
 		var empty := Label.new()
@@ -807,7 +807,7 @@ func _filtered_tags(state: int) -> Array:
 func _update_tag_match() -> void:
 	var entries: Array = RandomizerLibrary.get_all()
 	if _tag_filter.is_empty():
-		_tag_match_lbl.text = "Runs draw from all %d clips." % entries.size()
+		_tag_match_lbl.text = tr("Runs draw from all %d clips.") % entries.size()
 		UITheme.style_label(_tag_match_lbl, UITheme.DARK_TEXT, 12)
 		return
 	var include: Array = _filtered_tags(TAG_ONLY)
@@ -816,7 +816,7 @@ func _update_tag_match() -> void:
 	for e: Dictionary in entries:
 		if RandomizerGenerator.matches_tags(e.get("tags", []), include, exclude):
 			matching += 1
-	_tag_match_lbl.text = "%d of %d clips match." % [matching, entries.size()]
+	_tag_match_lbl.text = tr("%d of %d clips match.") % [matching, entries.size()]
 	UITheme.style_label(
 		_tag_match_lbl, UITheme.STATUS_WARNING if matching == 0 else UITheme.STATUS_INFO, 12
 	)
@@ -942,9 +942,9 @@ func _refresh_selection_bar() -> void:
 		if not _shown_ids.has(id):
 			hidden += 1
 	_selection_lbl.text = (
-		"%d SELECTED" % ids.size()
+		tr("%d SELECTED") % ids.size()
 		if hidden == 0
-		else "%d SELECTED  (%d NOT SHOWN)" % [ids.size(), hidden]
+		else tr("%d SELECTED  (%d NOT SHOWN)") % [ids.size(), hidden]
 	)
 
 	for c: Node in _selection_chips.get_children():
@@ -967,10 +967,10 @@ func _make_selection_chip(tag: String, count: int, total: int) -> Button:
 	var everywhere: bool = count == total
 	if everywhere:
 		chip.text = "✓ %s" % tag
-		chip.tooltip_text = UITheme.wrap_tip('Remove "%s" from all %d selected.' % [tag, total])
+		chip.tooltip_text = UITheme.wrap_tip(tr('Remove "%s" from all %d selected.') % [tag, total])
 	else:
 		chip.text = tag if count == 0 else "%s  %d/%d" % [tag, count, total]
-		chip.tooltip_text = UITheme.wrap_tip('Add "%s" to all %d selected.' % [tag, total])
+		chip.tooltip_text = UITheme.wrap_tip(tr('Add "%s" to all %d selected.') % [tag, total])
 	var accent: Color = UITheme.PURPLE_MID
 	if everywhere:
 		accent = UITheme.CYAN
@@ -1126,7 +1126,7 @@ func _make_row(entry: Dictionary) -> Control:
 		for b: Dictionary in beats:
 			total_ms += int(b.get("out_ms", 0)) - int(b.get("in_ms", 0))
 		var avg_s: int = roundi(float(total_ms) / float(beats.size()) / 1000.0)
-		parts_lbl.text = "%d parts · ø %d s" % [beats.size(), avg_s]
+		parts_lbl.text = tr("%d parts · ø %d s") % [beats.size(), avg_s]
 	elif has_fs:
 		parts_lbl.text = "whole clip (no parts found)"
 	else:
@@ -1319,11 +1319,10 @@ func _on_clear_all_pressed() -> void:
 	var dialog := ConfirmationDialog.new()
 	dialog.title = "Clear Library"
 	dialog.dialog_text = (
-		(
-			"Remove all %d clips from the randomizer library?\n\nThis also deletes their pooled / "
-			% RandomizerLibrary.size()
+		tr(
+			"Remove all %d clips from the randomizer library?\n\nThis also deletes their pooled / transcoded files. Your original video files are NOT touched."
 		)
-		+ "transcoded files. Your original video files are NOT touched."
+		% RandomizerLibrary.size()
 	)
 	dialog.ok_button_text = "CLEAR ALL"
 	dialog.get_ok_button().add_theme_color_override("font_color", UITheme.DANGER)
@@ -1417,7 +1416,7 @@ func _on_stash_pressed() -> void:
 func _import_from_stash(tag_ids: Array) -> void:
 	var run: Dictionary = await _run_stash_scenes("IMPORTING FROM STASH", tag_ids)
 	if not run.is_empty():
-		_status.text = _stash_summary(run, "from Stash") + "."
+		_status.text = _stash_summary(run, tr("from Stash")) + "."
 
 
 # SYNC: the same pass over the saved tag filter, then a flag on every Stash clip whose scene it no
@@ -1565,15 +1564,12 @@ func _apply_stash_scene(scene: Dictionary, mappings: Array, listings: Dictionary
 func _stash_summary(run: Dictionary, source: String) -> String:
 	var added: int = int(run["added"])
 	var parts: PackedStringArray = [
-		(
-			"Added %d clip%s%s"
-			% [added, "" if added == 1 else "s", " " + source if source != "" else ""]
-		)
+		tr("Added %d clips%s") % [added, (" " + tr(source)) if source != "" else ""]
 	]
 	if int(run["updated"]) > 0:
-		parts.append("updated %d" % int(run["updated"]))
+		parts.append(tr("updated %d") % int(run["updated"]))
 	if int(run["failed"]) > 0:
-		parts.append("%d failed" % int(run["failed"]))
+		parts.append(tr("%d failed") % int(run["failed"]))
 	var text: String = ", ".join(parts)
 	if int(run["unreachable"]) > 0:
 		text += (
@@ -1836,9 +1832,9 @@ func _keep_pending() -> void:
 	_close_prep_modal()
 	_set_busy(false)
 	if bool(kept["ok"]):
-		_status.text = 'Saved to your library as "%s".' % run_name
+		_status.text = tr('Saved to your library as "%s".') % run_name
 	else:
-		_status.text = "Could not save the run (%s)." % str(kept["reason"])
+		_status.text = tr("Could not save the run (%s).") % str(kept["reason"])
 
 
 # Transcodes the run's used clips (deferred; cached) and materializes the temp
@@ -1879,7 +1875,7 @@ func _prepare_and_materialize(res: Dictionary, partial: bool = false) -> Diction
 	if not bool(mat["ok"]):
 		_close_prep_modal()
 		_set_busy(false)
-		_status.text = "Could not prepare the run (%s)." % str(mat["reason"])
+		_status.text = tr("Could not prepare the run (%s).") % str(mat["reason"])
 		return {}
 	# ALWAYS the full list: freshness applies to the whole run, not just its start buffer.
 	RandomizerLibrary.mark_used(all_ids)
@@ -2073,7 +2069,7 @@ func _prepare_used_media(used_ids: Array, title_text: String, hint_text: String)
 			if bar == null or count == null:
 				return
 			bar.value = idx + clampf(frac, 0.0, 1.0)
-			count.text = "Clip %d of %d  ·  %d%%" % [idx + 1, total, int(frac * 100.0)]
+			count.text = tr("Clip %d of %d  ·  %d%%") % [idx + 1, total, int(frac * 100.0)]
 		var should_cancel: Callable = func() -> bool: return bool(cancel_flag["requested"])
 		# The name is set here, once per clip, rather than from the callback (it doesn't change).
 		var name_lbl: Label = name_ref.get_ref() as Label
@@ -2090,7 +2086,7 @@ func _prepare_used_media(used_ids: Array, title_text: String, hint_text: String)
 		_close_prep_modal()
 		_set_busy(false)
 		_status.text = (
-			"Couldn't prepare: %s. Remove or re-import those clips." % ", ".join(failures)
+			tr("Couldn't prepare: %s. Remove or re-import those clips.") % ", ".join(failures)
 		)
 		return false
 	return true
@@ -2101,7 +2097,7 @@ func _show_prep_step(idx: int, total: int, nm: String, frac: float) -> void:
 	if _prep_modal.is_empty():
 		return
 	(_prep_modal["bar"] as ProgressBar).value = idx + frac
-	(_prep_modal["count"] as Label).text = "Clip %d of %d" % [idx + 1, total]
+	(_prep_modal["count"] as Label).text = tr("Clip %d of %d") % [idx + 1, total]
 	(_prep_modal["name"] as Label).text = nm
 
 

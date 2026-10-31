@@ -656,7 +656,7 @@ func _make_locked_backdrop_row(b: Dictionary, i: int) -> Control:
 	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	titles.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var t1: Label = Label.new()
-	t1.text = "🔒 BASE LAYER %d" % (i + 1)
+	t1.text = tr("🔒 BASE LAYER %d") % (i + 1)
 	t1.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 	t1.add_theme_font_size_override("font_size", 11)
 	t1.uppercase = true
@@ -684,7 +684,7 @@ func _make_backdrop_row(i: int) -> Control:
 	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	titles.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var t1: Label = Label.new()
-	t1.text = "LAYER %d" % (i + 1)
+	t1.text = tr("LAYER %d") % (i + 1)
 	t1.add_theme_color_override("font_color", UITheme.CYAN)
 	t1.add_theme_font_size_override("font_size", 12)
 	t1.uppercase = true
@@ -1074,7 +1074,7 @@ func _open_items_manager_modal() -> void:
 
 func _update_manage_items_label() -> void:
 	if is_instance_valid(_manage_items_btn):
-		_manage_items_btn.text = "⚙ MANAGE ITEMS (%d)" % _owner._journey_items.size()
+		_manage_items_btn.text = tr("⚙ MANAGE ITEMS (%d)") % _owner._journey_items.size()
 
 
 # Re-renders the custom-items rows into the tracked list container (the open modal's). No-op if no modal
@@ -1182,7 +1182,7 @@ func _add_item_sound_fields(body: VBoxContainer, item: Dictionary) -> void:
 	volume.value_changed.connect(
 		func(v: float) -> void:
 			item["sound_volume"] = v
-			readout.text = "VOLUME  %d%%" % roundi(v * 100.0)
+			readout.text = tr("VOLUME  %d%%") % roundi(v * 100.0)
 	)
 	row.add_child(volume)
 	row.add_child(
@@ -1290,7 +1290,7 @@ func _make_custom_item_row(item_idx: int) -> Control:
 			badge.text = "KEY"
 			badge_color = UITheme.CYAN
 		"override":
-			badge.text = "OVERRIDE" + fx_suffix
+			badge.text = tr("OVERRIDE") + fx_suffix
 			badge_color = UITheme.TOXIC_GREEN
 		_:
 			badge.text = "MODIFIER · %d effect%s" % [fx_count, "" if fx_count == 1 else "s"]
@@ -1784,7 +1784,7 @@ func _make_setting_picker(holder: Dictionary, on_change: Callable = Callable()) 
 	# A setting the journey no longer has still has to round-trip: dropping it from the list would
 	# quietly rewrite the author's reference to whatever sat at index 0.
 	if current != "" and selected == 0:
-		place.add_item("%s  (missing)" % current)
+		place.add_item(tr("%s  (missing)") % current)
 		place.set_item_metadata(place.item_count - 1, current)
 		selected = place.item_count - 1
 	place.selected = selected
@@ -2194,7 +2194,7 @@ func _build_counters_section(side_vbox: VBoxContainer) -> void:
 		% [undeclared.size(), "" if undeclared.size() == 1 else "S"]
 	)
 	find_btn.tooltip_text = UITheme.wrap_tip(
-		"Found in nodes, fork choices and loop conditions: %s" % ", ".join(undeclared)
+		tr("Found in nodes, fork choices and loop conditions: %s") % ", ".join(undeclared)
 	)
 	find_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_button(find_btn, UITheme.CYAN)
@@ -2593,7 +2593,7 @@ func _build_flags_section(side_vbox: VBoxContainer) -> void:
 	)
 	find_btn.tooltip_text = UITheme.wrap_tip(
 		(
-			"Found in nodes, fork choices, boss outcomes and loop conditions: %s"
+			tr("Found in nodes, fork choices, boss outcomes and loop conditions: %s")
 			% ", ".join(undeclared)
 		)
 	)
@@ -4221,7 +4221,7 @@ func show_graph_multi_select_panel(ids: Array) -> void:
 		c.queue_free()
 
 	var hdr: Label = Label.new()
-	hdr.text = "// %d NODES SELECTED //" % ids.size()
+	hdr.text = tr("// %d NODES SELECTED //") % ids.size()
 	hdr.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
 	hdr.add_theme_font_size_override("font_size", 14)
 	hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -4930,7 +4930,7 @@ func _make_overlay_choice_block(
 	top.add_theme_constant_override("separation", ROW_SEP)
 	sub.add_child(top)
 	var choice_lbl: Label = Label.new()
-	choice_lbl.text = "OVERLAY CHOICE %d" % (ei + 1)
+	choice_lbl.text = tr("OVERLAY CHOICE %d") % (ei + 1)
 	choice_lbl.add_theme_color_override("font_color", UITheme.CYAN)
 	choice_lbl.add_theme_font_size_override("font_size", 11)
 	choice_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5364,7 +5364,7 @@ func _make_graph_choice_block(
 	hdr.add_theme_constant_override("separation", ROW_SEP)
 	sub.add_child(hdr)
 	var choice_lbl: Label = Label.new()
-	choice_lbl.text = "CHOICE %d" % (ei + 1)
+	choice_lbl.text = tr("CHOICE %d") % (ei + 1)
 	choice_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 	choice_lbl.add_theme_font_size_override("font_size", 11)
 	choice_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5505,7 +5505,7 @@ func _make_aftercare_link_block(node_id: String, with_title: bool = true) -> Con
 	if own != "":
 		target_lbl.text = _graph_node_label(own)
 	elif _owner._journey_finish_node != "":
-		target_lbl.text = "(default — %s)" % _graph_node_label(_owner._journey_finish_node)
+		target_lbl.text = tr("(default — %s)") % _graph_node_label(_owner._journey_finish_node)
 	else:
 		# No link and no journey default: there's no aftercare to play, so no button in this round.
 		target_lbl.text = '(none — "I came" is not offered in this round)'
@@ -6208,14 +6208,14 @@ func _update_funscript_readout(lbl: Label, round_data: Dictionary) -> void:
 	var raw_ms: int = int(stats.get("length_ms", 0))
 	var segments: Array = JourneyData.normalize_segments(round_data)
 	if segments.is_empty():
-		lbl.text = "%s  ·  %d actions" % [_format_duration(raw_ms), int(stats.get("count", 0))]
+		lbl.text = tr("%s  ·  %d actions") % [_format_duration(raw_ms), int(stats.get("count", 0))]
 		return
 	var played: Array = JourneyData.build_edl_action_points(
 		JourneyData.read_funscript_actions(path), segments
 	)
 	var played_ms: int = int((played[-1] as Vector2).x) if not played.is_empty() else 0
 	lbl.text = (
-		"%s  ·  %d actions  (from %s raw)"
+		tr("%s  ·  %d actions  (from %s raw)")
 		% [_format_duration(played_ms), played.size(), _format_duration(raw_ms)]
 	)
 
@@ -6969,7 +6969,7 @@ func _build_round_awards(body: VBoxContainer, arr: Array, idx: int) -> void:
 	# Journey-scoped custom items — the live edit model is authoritative.
 	for it: Dictionary in _owner._journey_items:
 		item_values.append(str(it.get("id", "")))
-		item_dd.add_item("%s  (custom)" % str(it.get("name", "")))
+		item_dd.add_item(tr("%s  (custom)") % str(it.get("name", "")))
 	item_dd.selected = max(0, item_values.find(str(round_data.get("award_item", ""))))
 	item_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_option_button(item_dd)
@@ -7380,7 +7380,7 @@ func _make_side_storyboard_line_block(
 	panel.add_child(col)
 
 	var hdr_lbl: Label = Label.new()
-	hdr_lbl.text = "LINE %d" % (line_idx + 1)
+	hdr_lbl.text = tr("LINE %d") % (line_idx + 1)
 	hdr_lbl.add_theme_color_override("font_color", UITheme.STORYBOARD)
 	hdr_lbl.add_theme_font_size_override("font_size", 11)
 	hdr_lbl.uppercase = true
@@ -7968,7 +7968,7 @@ func _make_axis_expander(arr: Array, idx: int) -> Control:
 		var current_path: String = (arr[idx]["axis_scripts"] as Dictionary).get(axis, "")
 		# Zone + inline ✕ remove (disabled until this axis is set).
 		var rm: Button = UITheme.make_icon_btn("✕", current_path == "", UITheme.MAGENTA)
-		rm.tooltip_text = UITheme.wrap_tip("Remove %s funscript" % axis)
+		rm.tooltip_text = UITheme.wrap_tip(tr("Remove %s funscript") % axis)
 		rm.pressed.connect(func() -> void: zone.set_file(""))
 		var row: HBoxContainer = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
@@ -8050,7 +8050,7 @@ func _make_vib_expander(arr: Array, idx: int) -> Control:
 		var current_path: String = (arr[idx]["vib_scripts"] as Dictionary).get(ch_key, "")
 		# Zone + inline ✕ remove (disabled until this channel is set).
 		var rm: Button = UITheme.make_icon_btn("✕", current_path == "", UITheme.MAGENTA)
-		rm.tooltip_text = UITheme.wrap_tip("Remove %s funscript" % ch_key.to_upper())
+		rm.tooltip_text = UITheme.wrap_tip(tr("Remove %s funscript") % ch_key.to_upper())
 		rm.pressed.connect(func() -> void: zone.set_file(""))
 		var row: HBoxContainer = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
@@ -8235,7 +8235,8 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 					# encounter modal is open.
 					if is_instance_valid(button):
 						button.text = (
-							"◆ EDIT ENCOUNTER  (%d)" % (edited.get("events", []) as Array).size()
+							tr("◆ EDIT ENCOUNTER  (%d)")
+							% (edited.get("events", []) as Array).size()
 						)
 					_owner._refresh_graph()
 			)
@@ -8711,7 +8712,7 @@ func _make_pool_entry_row(
 	# Header: label + reorder + remove.
 	var header: HBoxContainer = HBoxContainer.new()
 	var title: Label = Label.new()
-	title.text = "ENCOUNTER %d" % (e_idx + 1)
+	title.text = tr("ENCOUNTER %d") % (e_idx + 1)
 	title.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
 	title.add_theme_font_size_override("font_size", 11)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -9727,7 +9728,8 @@ func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String)
 	var scripted: Array = ImportScanner.scripted_axes(round_data)
 	if kind == "pose":
 		note.text = (
-			"Needs a device with roll or pitch — players without them get %s instead." % substitute
+			tr("Needs a device with roll or pitch — players without them get %s instead.")
+			% tr(substitute)
 		)
 	elif kind == "vortex":
 		var free_turns: bool = JourneyData.VORTEX_AXES.any(
@@ -9735,24 +9737,29 @@ func _axis_effect_note(round_data: Dictionary, kind: String, substitute: String)
 		)
 		if free_turns:
 			note.text = (
-				"Needs a device with twist, roll or pitch this round leaves unscripted — players "
-				+ "without one get %s instead." % substitute
+				tr(
+					"Needs a device with twist, roll or pitch this round leaves unscripted — players "
+				)
+				+ tr("without one get %s instead.") % tr(substitute)
 			)
 		else:
 			note.text = (
-				"⚠ This round scripts twist, roll and pitch, so Vortex has nothing to move. "
-				+ "Everyone gets %s." % substitute
+				tr("⚠ This round scripts twist, roll and pitch, so Vortex has nothing to move. ")
+				+ tr("Everyone gets %s.") % tr(substitute)
 			)
 			note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 	elif scripted.is_empty():
 		note.text = (
-			"⚠ This round has no axis scripts, so only players running Auto Twist feel this, on "
-			+ "twist. Everyone else gets %s." % substitute
+			tr(
+				"⚠ This round has no axis scripts, so only players running Auto Twist feel this, on "
+			)
+			+ tr("twist. Everyone else gets %s.") % tr(substitute)
 		)
 		note.add_theme_color_override("font_color", UITheme.STATUS_WARNING)
 	else:
 		note.text = (
-			"Needs a device with these axes — players without them get %s instead." % substitute
+			tr("Needs a device with these axes — players without them get %s instead.")
+			% tr(substitute)
 		)
 	return note
 

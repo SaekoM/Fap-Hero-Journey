@@ -195,7 +195,7 @@ func _on_update_available(latest_version: String, _release: Dictionary) -> void:
 # panel and outside the intro tweens.
 func _show_update_banner(latest_version: String) -> void:
 	var banner: Button = Button.new()
-	banner.text = "▲  UPDATE AVAILABLE  —  v%s" % latest_version
+	banner.text = tr("▲  UPDATE AVAILABLE  —  v%s") % latest_version
 	banner.tooltip_text = "Opens the release page in your browser"
 	banner.focus_mode = Control.FOCUS_NONE
 	banner.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
@@ -286,7 +286,7 @@ func _open_update_modal() -> void:
 		bar.visible = true
 		if total > 0:
 			bar.value = clampf(float(got) / float(total) * 100.0, 0.0, 100.0)
-			status.text = "Downloading…  %d%%  (%.1f MB)" % [int(bar.value), got / 1048576.0]
+			status.text = tr("Downloading…  %d%%  (%.1f MB)") % [int(bar.value), got / 1048576.0]
 		else:
 			status.text = "Downloading…  %.1f MB" % (got / 1048576.0)
 
@@ -298,7 +298,9 @@ func _open_update_modal() -> void:
 		drop_progress.call()
 		bar.value = 100
 		status.text = (
-			"Update ready — its folder has been opened:\n%s\n\nClose this app and run the new version there, then delete the old folder."
+			tr(
+				"Update ready — its folder has been opened:\n%s\n\nClose this app and run the new version there, then delete the old folder."
+			)
 			% folder
 		)
 		dl_btn.visible = false
@@ -309,7 +311,7 @@ func _open_update_modal() -> void:
 	var on_failed: Callable = func(reason: String) -> void:
 		drop_progress.call()
 		bar.visible = false
-		status.text = "Update failed: %s" % reason
+		status.text = tr("Update failed: %s") % reason
 		dl_btn.disabled = false
 		notes_btn.disabled = false
 

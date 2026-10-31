@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### ◆ Simplified Chinese localisation
+
+The whole interface can now be played in **简体中文**. Pick it once in **Options → GENERAL → UI LANGUAGE**
+(**Auto (System)** follows your system language) and every screen switches at once — menus, the journey
+builder, tooltips, in-game text and the update dialogs. Names, tags and writing inside your journeys
+always show as their author wrote them; only the interface is translated.
+
+- Full coverage of every UI string, maintained by an extraction / coverage toolchain shipped in
+  `i18n_tools/` (see its README): a coverage gate proves no display string is left untranslated before
+  a release.
+- Simplified Chinese glyphs ship with the game via Noto Sans CJK SC, installed as a glyph fallback, so
+  no font pack or OS font is required.
+- Tooltips wrap by display width, so Chinese text (which carries no spaces) breaks cleanly instead of
+  overflowing.
+- The language choice is saved with the rest of the settings and re-applied before the first screen
+  opens — no flash of the wrong language at boot.
+
 ## v0.9.1
 
 ### ◆ Colour modes and accessibility

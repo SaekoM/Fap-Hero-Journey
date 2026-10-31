@@ -315,7 +315,7 @@ func _refresh_samples() -> void:
 			result_lbl.text = "    ✗ no folder above covers this"
 			UITheme.style_label(result_lbl, UITheme.STATUS_WARNING, 11)
 		else:
-			result_lbl.text = "    ✗ %s — not found from this PC" % mapped
+			result_lbl.text = tr("    ✗ %s — not found from this PC") % mapped
 			UITheme.style_label(result_lbl, UITheme.STATUS_WARNING, 11)
 		_samples_box.add_child(result_lbl)
 
@@ -423,8 +423,8 @@ func _refresh_tag_summary() -> void:
 	# Ids saved from an earlier session whose tag is gone (or not loaded yet) still narrow the import.
 	var unnamed: int = _picked.size() - names.size()
 	if unnamed > 0:
-		names.append("%d more" % unnamed)
-	_tag_summary.text = "Only scenes tagged: " + ", ".join(names)
+		names.append(tr("%d more") % unnamed)
+	_tag_summary.text = tr("Only scenes tagged: ") + ", ".join(names)
 
 
 # ── Footer ───────────────────────────────────────────────────────────────────

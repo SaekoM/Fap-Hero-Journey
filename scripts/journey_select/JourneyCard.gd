@@ -112,10 +112,10 @@ func setup(journey: Dictionary) -> void:
 	var round_count: int = journey.get("total_rounds", (journey.get("rounds", []) as Array).size())
 	var total_secs: int = (journey.get("total_length_ms", 0) as int) / 1000
 	_footer.text = (
-		"%d %s  ·  %s"
+		tr("%d %s  ·  %s")
 		% [
 			round_count,
-			"ROUND" if round_count == 1 else "ROUNDS",
+			tr("ROUND") if round_count == 1 else tr("ROUNDS"),
 			"~" + _format_duration(total_secs),  # expected runtime — an estimate (audit / content sum)
 		]
 	)

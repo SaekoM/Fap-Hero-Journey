@@ -1152,7 +1152,7 @@ func _load_current_round() -> void:
 	# A pool round mid-mystery keeps a neutral "???" label until its card slides away, so the HUD
 	# never flashes "BOSS" and spoils a rolled encounter; _start_round_after_gates reveals it.
 	if _pending_encounter_card:
-		_round_lbl.text = "ROUND  %d / %d  —  ???" % [num, total]
+		_round_lbl.text = tr("ROUND  %d / %d  —  ???") % [num, total]
 	else:
 		_apply_round_label(round)
 
@@ -1190,15 +1190,17 @@ func _apply_round_label(round: Dictionary) -> void:
 	var num: int = GameState.RoundNumber
 	if _is_boss_round:
 		_round_lbl.text = (
-			"⚔  BOSS  %d / %d  —  %s" % [num, total, (round.get("name", "") as String).to_upper()]
+			tr("⚔  BOSS  %d / %d  —  %s")
+			% [num, total, (round.get("name", "") as String).to_upper()]
 		)
 	else:
-		var prefix: String = "ROUND"
+		var prefix: String = tr("ROUND")
 		if _is_effect_round:
 			var v: Dictionary = _effect_visuals(round)
-			prefix = "%s  %s" % [v["icon"], v["header"]]
+			prefix = v["icon"] + "  " + tr(v["header"])
 		_round_lbl.text = (
-			"%s %d / %d  —  %s" % [prefix, num, total, (round.get("name", "") as String).to_upper()]
+			tr("%s %d / %d  —  %s")
+			% [prefix, num, total, (round.get("name", "") as String).to_upper()]
 		)
 
 
@@ -1779,7 +1781,7 @@ func _show_boss_intro(round: Dictionary) -> void:
 	for fx: Dictionary in boss_fx:
 		var fx_lbl: Label = Label.new()
 		var benefit: bool = JourneyData.effect_is_benefit(str(fx.get("_ref", fx.get("name", ""))))
-		fx_lbl.text = _effect_sign(benefit) + (fx.get("name", "") as String).to_upper()
+		fx_lbl.text = _effect_sign(benefit) + tr((fx.get("name", "") as String).to_upper())
 		fx_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		fx_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		fx_lbl.add_theme_color_override(
@@ -2034,7 +2036,7 @@ func _show_reveal_card(round: Dictionary) -> Control:
 	panel.add_child(col)
 
 	var header: Label = Label.new()
-	header.text = "%s  %s" % [v["icon"], v["header"]]
+	header.text = v["icon"] + "  " + tr(v["header"])
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	header.add_theme_color_override("font_color", accent)
@@ -2228,10 +2230,12 @@ func _show_cleanse_button() -> void:
 	var btn: Button = Button.new()
 	var has_item: bool = InventoryService.OwnsItem("cleanse")
 	btn.text = (
-		"✦ CLEANSE  (use Cleanse item)" if has_item else "✦ CLEANSE  (♦ %d)" % _effect_cleanse_cost
+		"✦ CLEANSE  (use Cleanse item)"
+		if has_item
+		else tr("✦ CLEANSE  (♦ %d)") % _effect_cleanse_cost
 	)
 	btn.tooltip_text = (
-		"Lift the curse with a Cleanse item or %d coins — or endure it for the reward."
+		tr("Lift the curse with a Cleanse item or %d coins — or endure it for the reward.")
 		% _effect_cleanse_cost
 	)
 	UITheme.style_button(btn, Color(0.45, 0.95, 0.30))

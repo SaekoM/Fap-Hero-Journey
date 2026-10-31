@@ -320,7 +320,7 @@ func _build_playback_bar() -> Control:
 
 	if not _modifiers.is_empty():
 		var toggle: CheckButton = CheckButton.new()
-		toggle.text = "SHOW %s" % _mod_label.to_upper()
+		toggle.text = tr("SHOW %s") % _mod_label.to_upper()
 		toggle.button_pressed = true
 		toggle.add_theme_font_size_override("font_size", 12)
 		toggle.toggled.connect(
@@ -608,12 +608,12 @@ func _sensory_slider_row(roll: Dictionary) -> Control:
 func _refresh_modified() -> void:
 	if _modifiers.is_empty():
 		_graph.set_modified([], false)
-		_caption.text = "No %s on this round — showing the raw script." % _mod_label.to_lower()
+		_caption.text = tr("No %s on this round — showing the raw script.") % _mod_label.to_lower()
 		_caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		return
 	if not _show_modifiers:
 		_graph.set_modified([], false)
-		_caption.text = "Modifiers hidden. " + _modifier_summary()
+		_caption.text = tr("Modifiers hidden. ") + _modifier_summary()
 		_caption.add_theme_color_override("font_color", UITheme.TEXT_HINT)
 		return
 

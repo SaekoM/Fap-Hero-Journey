@@ -51,3 +51,6 @@ export_presets.cfg
 bin/*.exe
 bin/ffmpeg.exe
 bin/ffprobe.exe
+
+# i18n scratch (translation fragments / extracted keys) — regenerable via i18n_tools
+/i18n_work/

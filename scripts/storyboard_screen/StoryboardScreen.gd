@@ -469,7 +469,7 @@ func _update_countdown_label() -> void:
 	if _countdown_lbl == null:
 		return
 	var secs: int = int(ceil(_time_left))
-	_countdown_lbl.text = "AUTO-ADVANCE IN %d" % secs
+	_countdown_lbl.text = tr("AUTO-ADVANCE IN %d") % secs
 	_countdown_lbl.add_theme_color_override(
 		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
 	)
