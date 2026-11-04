@@ -11,5 +11,6 @@
 	{ "id": "pmv",       "label": "PMV",       "color": "#e86ab0" },
 	{ "id": "hmv",        "label": "HMV",        "color": "#c46ae8" },
 	{ "id": "multi_axis", "label": "Multi-Axis", "color": "#6ab8e8" },
+	{ "id": "minigames",  "label": "Mini-Games", "color": "#e8a86a" },
 	{ "id": "vibe",       "label": "Vibe",       "color": "#e8e86a" }
 ]

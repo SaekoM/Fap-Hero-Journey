@@ -320,17 +320,6 @@ func test_a_chance_outcome_is_its_own_tier() -> void:
 	assert_str(MiniGameResolver.tier_for_outcome(tiers, "cashed_9")).is_equal("")
 
 
-# Only the tier reached is set; every other tier's flag is cleared, so a replay in a loop can't leave a
-# stale Perfect behind.
-func test_resolving_sets_one_tier_flag_and_clears_the_rest() -> void:
-	var definition: Dictionary = MiniGameLibrary.normalize_definition(
-		{"id": "mg_lock", "kind": SafeCrackerGame.KIND}
-	)
-	var changes: Dictionary = MiniGameResolver.flag_changes(definition, "pass")
-	assert_array(changes["set"]).is_equal(["mg_lock_pass"])
-	assert_array(changes["clear"]).is_equal(["mg_lock_fail", "mg_lock_perfect"])
-
-
 func test_each_attempt_gets_its_own_seed() -> void:
 	var first: int = MiniGameResolver.attempt_seed(1234, "node_a", 1)
 	assert_int(first).is_equal(MiniGameResolver.attempt_seed(1234, "node_a", 1))
@@ -353,3 +342,235 @@ func test_a_missing_or_unknown_lock_is_a_safe() -> void:
 	]:
 		var definition: Dictionary = MiniGameLibrary.normalize_definition(raw)
 		assert_str(str(definition["lock"])).is_equal(LockArt.STYLE_SAFE)
+
+
+# ── Flags on tiers ───────────────────────────────────────────────────────────
+
+
+# Routing on a result is a flag the creator sets on a tier. A fork reading one must not be told nothing sets it.
+func test_the_flags_a_creator_set_on_a_skill_games_tiers_are_found() -> void:
+	var definition: Dictionary = (
+		MiniGameLibrary
+		. normalize_definition(
+			{
+				"id": "g",
+				"kind": SafeCrackerGame.KIND,
+				"tiers":
+				[
+					{"name": "Fail", "min_score": 0, "rewards": {"clear_flags": ["opened"]}},
+					{"name": "Pass", "min_score": 40, "rewards": {"set_flags": ["opened"]}},
+				],
+				"retry_cost": {"set_flags": ["cheated"]},
+			}
+		)
+	)
+	var names: Array = MiniGameLibrary.flag_names([definition])
+	assert_int(names.count("opened")).is_equal(2)
+	assert_int(names.count("cheated")).is_equal(1)
+
+
+# Once each: a ladder's tiers repeat its rungs, so reading those would count every flag twice or more.
+func test_the_flags_on_a_ladder_are_counted_once_each() -> void:
+	var definition: Dictionary = (
+		MiniGameLibrary
+		. normalize_definition(
+			{
+				"id": "g",
+				"kind": DoubleOrNothingGame.KIND,
+				"rungs":
+				[
+					{"rewards": {"set_flags": ["climbed"]}},
+					{"rewards": {}},
+				],
+				"bust_rewards": {"set_flags": ["busted"]},
+			}
+		)
+	)
+	var names: Array = MiniGameLibrary.flag_names([definition])
+	assert_int(names.count("climbed")).is_equal(1)
+	assert_int(names.count("busted")).is_equal(1)
+
+
+# Nothing a creator didn't ask for: the flag pickers list only what they made.
+func test_an_untouched_game_adds_no_flags() -> void:
+	var definition: Dictionary = MiniGameLibrary.new_definition(SafeCrackerGame.KIND)
+	assert_array(MiniGameLibrary.flag_names([definition])).is_empty()
+
+
+# ── Tiers nobody can reach ───────────────────────────────────────────────────
+
+
+func test_a_tier_between_a_safe_crackers_score_steps_cannot_be_reached() -> void:
+	var definition: Dictionary = (
+		MiniGameLibrary
+		. normalize_definition(
+			{
+				"kind": SafeCrackerGame.KIND,
+				"knobs": {"numbers": 1, "time_limit_s": 30},
+				"tiers":
+				[
+					{"id": "low", "name": "Low", "min_score": 0},
+					{"id": "gap", "name": "Gap", "min_score": 90},
+					{"id": "top", "name": "Top", "min_score": 100},
+				],
+			}
+		)
+	)
+	var names: Array = MiniGameLibrary.unreachable_tiers(definition).map(
+		func(tier: Dictionary) -> String: return str(tier["id"])
+	)
+	assert_array(names).is_equal(["gap"])
+
+
+# A game with no way to fail can't end below its lowest share.
+func test_a_fail_tier_cannot_be_reached_with_no_limits() -> void:
+	var definition: Dictionary = MiniGameLibrary.normalize_definition(
+		{"kind": SafeCrackerGame.KIND, "knobs": {"time_limit_s": 0, "max_wrong": 0}}
+	)
+	var names: Array = MiniGameLibrary.unreachable_tiers(definition).map(
+		func(tier: Dictionary) -> String: return str(tier["id"])
+	)
+	assert_array(names).is_equal(["fail"])
+
+
+func test_a_new_safe_cracker_can_reach_every_tier() -> void:
+	var definition: Dictionary = MiniGameLibrary.new_definition(SafeCrackerGame.KIND)
+	assert_array(MiniGameLibrary.unreachable_tiers(definition)).is_empty()
+
+
+func test_only_a_safe_cracker_has_score_gaps() -> void:
+	var definition: Dictionary = MiniGameLibrary.new_definition(QuickTimeEventGame.KIND)
+	assert_array(MiniGameLibrary.unreachable_tiers(definition)).is_empty()
+
+
+func test_the_counters_a_tier_changes_are_found() -> void:
+	var definition: Dictionary = (
+		MiniGameLibrary
+		. normalize_definition(
+			{
+				"id": "g",
+				"kind": SafeCrackerGame.KIND,
+				"tiers":
+				[{"name": "All", "min_score": 0, "rewards": {"set_counters": {"grit": 2}}}],
+			}
+		)
+	)
+	assert_array(MiniGameLibrary.counter_names([definition])).is_equal(["grit"])
+
+
+func test_a_tier_is_named_for_the_player() -> void:
+	var definition: Dictionary = MiniGameLibrary.new_definition(SafeCrackerGame.KIND)
+	assert_str(MiniGameResolver.tier_name(definition, "perfect")).is_equal("Perfect")
+	assert_str(MiniGameResolver.tier_name(definition, "nothing")).is_equal("")
+
+
+# The end screen prints this log, so a game has to land in it, in order with the rounds.
+func test_a_played_game_lands_in_the_play_log() -> void:
+	GameState.LogMiniGame("The Vault", "Perfect")
+	var entry: Dictionary = GameState.GetPlayLog()[-1]
+	assert_str(str(entry["type"])).is_equal("minigame")
+	assert_str(str(entry["name"])).is_equal("The Vault")
+	assert_str(str(entry["tier"])).is_equal("Perfect")
+
+
+# ── A game's framing ─────────────────────────────────────────────────────────
+
+
+# These go through normalize_definition, so each has to be listed there or a save would drop it.
+func test_the_framing_survives_normalizing() -> void:
+	var definition: Dictionary = (
+		MiniGameLibrary
+		. normalize_definition(
+			{
+				"kind": SafeCrackerGame.KIND,
+				"intro_text": "  The vault hums.  ",
+				"accent_color": "12ab34",
+				"tiers": [{"id": "all", "name": "All", "min_score": 0, "result_text": "It opens."}],
+			}
+		)
+	)
+	assert_str(str(definition["intro_text"])).is_equal("The vault hums.")
+	assert_str(str(definition["accent_color"])).is_equal("12ab34")
+	assert_str(MiniGameResolver.tier_result_text(definition, "all")).is_equal("It opens.")
+
+
+func test_a_ladders_result_text_reaches_its_tiers() -> void:
+	var definition: Dictionary = (
+		MiniGameLibrary
+		. normalize_definition(
+			{
+				"kind": DoubleOrNothingGame.KIND,
+				"rungs": [{"result_text": "Safe."}, {"result_text": "Bold."}],
+				"bust_result_text": "Gone.",
+			}
+		)
+	)
+	var by_id: Dictionary = {}
+	for tier: Dictionary in definition["tiers"]:
+		by_id[tier["id"]] = tier["result_text"]
+	assert_str(str(by_id[DoubleOrNothingGame.OUTCOME_BUSTED])).is_equal("Gone.")
+	assert_str(str(by_id[DoubleOrNothingGame.CASHED_PREFIX + "1"])).is_equal("Safe.")
+	assert_str(str(by_id[DoubleOrNothingGame.OUTCOME_MAXED])).is_equal("Bold.")
+
+
+func test_a_new_game_uses_the_apps_accent() -> void:
+	var definition: Dictionary = MiniGameLibrary.new_definition(SafeCrackerGame.KIND)
+	assert_str(str(definition["accent_color"])).is_empty()
+	assert_bool(MiniGameLibrary.accent_color(definition) == UITheme.MINIGAME).is_true()
+
+
+func test_a_bad_accent_falls_back_to_the_apps() -> void:
+	var definition: Dictionary = MiniGameLibrary.normalize_definition(
+		{"kind": SafeCrackerGame.KIND, "accent_color": "not a colour"}
+	)
+	assert_str(str(definition["accent_color"])).is_empty()
+
+
+func test_a_chosen_accent_is_used() -> void:
+	var definition: Dictionary = MiniGameLibrary.normalize_definition(
+		{"kind": SafeCrackerGame.KIND, "accent_color": "ff0000"}
+	)
+	assert_bool(MiniGameLibrary.accent_color(definition) == Color.html("ff0000")).is_true()
+
+
+# It has no screen of its own for an intro or an accent to appear on.
+func test_a_quick_time_event_has_no_intro_or_accent() -> void:
+	var definition: Dictionary = MiniGameLibrary.new_definition(QuickTimeEventGame.KIND)
+	assert_bool(definition.has("intro_text")).is_false()
+	assert_bool(definition.has("accent_color")).is_false()
+
+
+# ── The player's assist ──────────────────────────────────────────────────────
+
+
+# Loads a one-node run with the assisted mark as given. A save only restores onto a node that exists.
+func _load_run(assisted: bool) -> void:
+	GameState.LoadFromSave(
+		{"nodes": {"here": {"type": "round"}}, "start": "here"},
+		{"current_node": "here", "minigame_assisted": assisted}
+	)
+
+
+# A resume has to keep the mark: otherwise quitting and reloading would wash an assisted run clean.
+func test_the_assisted_mark_rides_the_save() -> void:
+	_load_run(true)
+	assert_bool(bool(GameState.CaptureSaveData()["minigame_assisted"])).is_true()
+	assert_bool(GameState.MiniGameAssisted).is_true()
+	_load_run(false)
+	assert_bool(bool(GameState.CaptureSaveData()["minigame_assisted"])).is_false()
+	assert_bool(GameState.MiniGameAssisted).is_false()
+
+
+func test_only_a_game_started_with_the_switch_on_marks_the_run() -> void:
+	var was_on: bool = SettingsService.get_minigame_assist()
+	_load_run(false)
+	SettingsService.set_minigame_assist(false)
+	MiniGameAssist.note_game_started()
+	assert_bool(GameState.MiniGameAssisted).is_false()
+	assert_float(MiniGameAssist.time_scale()).is_equal(1.0)
+	SettingsService.set_minigame_assist(true)
+	MiniGameAssist.note_game_started()
+	assert_bool(GameState.MiniGameAssisted).is_true()
+	assert_float(MiniGameAssist.time_scale()).is_equal(MiniGameAssist.ASSISTED_TIME_SCALE)
+	SettingsService.set_minigame_assist(was_on)
+	_load_run(false)

@@ -1443,6 +1443,22 @@ public partial class FunscriptPlayer : Node
         _SendFillerCommand(); // fire immediately so there's no leading silence
     }
 
+    // Moves one secondary axis for a mini-game, over `durationMs`. Serial only, like all synthesised motion: restim
+    // maps these axes to its carrier and pulse settings. The player's window for the axis applies. Only while a game's
+    // stroke runs, so a late call can't strand an axis after StopFiller has sent it home, or fight a round's script.
+    public void MoveGameAxis(string axis, double scriptPos, int durationMs)
+    {
+        if (!_fillerActive || _playing)
+            return;
+        var serial = _serial;
+        if (serial == null || !serial.SerialConnected)
+            return;
+        (int axisMin, int axisMax) = GetAxisRange(axis);
+        double pos = SecondaryAxisOutput(scriptPos, axisMin, axisMax, 1.0);
+        serial.SendAxis(axis, (uint)Math.Max(1, durationMs), pos / 100.0);
+        _synthesisedDriving.Add(axis);  // so EaseToNeutral brings it home
+    }
+
     // Stop the filler and ease the device back to neutral.
     public void StopFiller()
     {

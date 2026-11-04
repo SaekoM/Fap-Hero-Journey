@@ -19,6 +19,8 @@ enum Phase { INTRO, PLAY, FINALE, RESULT }
 # Safe-Cracker's device: a steady pace whose stroke grows with warmth (owner decision, 2026-10-30).
 const DIAL_HALF_CYCLE_MS: int = 650
 const DIAL_MIN_DEPTH: float = 15.0
+# How long a multi-axis device's twist takes to follow one turn of the dial.
+const DIAL_TWIST_MOVE_MS: int = 120
 # The dial's click rises from this pitch (cold) to this one (on the number) — the hint a player without a
 # device, or with the warmth meter off, plays by.
 const TICK_PITCH_COLD: float = 0.75
@@ -33,6 +35,7 @@ const FINAL_STRETCH_SECS: int = 10
 const TIMER_FONT_SIZE: int = 14
 const TIMER_FINAL_FONT_SIZE: int = 28
 const FINAL_TICK_PITCH: float = 0.7
+const INTRO_FONT_SIZE: int = 18
 # The result card's prize reveal.
 # How long a passing reaction (a wrong try, a number opened) holds before the character returns to rest.
 const REACTION_HOLD_SECS: float = 1.6
@@ -44,6 +47,7 @@ const REWARD_STAGGER_SECS: float = 0.15
 var auto_advance_secs: int = 0
 
 var _definition: Dictionary = {}
+var _accent: Color = Color.WHITE  # the creator's accent colour, or the app's
 var _begin_attempt: Callable  # () -> {seed, attempt}; counts the attempt and returns its seed
 var _can_pay: Callable  # (cost: Dictionary) -> bool
 var _pay: Callable  # (cost: Dictionary) -> void
@@ -56,9 +60,8 @@ var _elapsed_ms: float = 0.0
 var _resolved: bool = false
 var _result_tier: String = ""
 var _countdown_left: float = 0.0
-var _device_lo: int = -1
-var _device_hi: int = -1
-var _device_half: int = -1
+var _device: MiniGameDevice = MiniGameDevice.new()
+var _time_scale: float = MiniGameAssist.time_scale()
 
 var _backdrop: ColorRect
 var _center: CenterContainer
@@ -87,6 +90,7 @@ func setup(
 	pay: Callable
 ) -> void:
 	_definition = definition
+	_accent = MiniGameLibrary.accent_color(definition)
 	_begin_attempt = begin_attempt
 	_can_pay = can_pay
 	_pay = pay
@@ -116,7 +120,7 @@ func _build_frame() -> void:
 	var panel: PanelContainer = PanelContainer.new()
 	var style: StyleBoxFlat = StyleBoxFlat.new()
 	style.bg_color = UITheme.PANEL_BG_FORK
-	style.border_color = Color(UITheme.MINIGAME, 0.6)
+	style.border_color = Color(_accent, 0.6)
 	style.set_border_width_all(2)
 	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
 	style.set_content_margin_all(28)
@@ -130,7 +134,7 @@ func _build_frame() -> void:
 	_title = Label.new()
 	_title.text = str(_definition.get("name", "")).to_upper()
 	_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	UITheme.style_label(_title, UITheme.MINIGAME, UITheme.story_font_size(26))
+	UITheme.style_label(_title, _accent, UITheme.story_font_size(26))
 	column.add_child(_title)
 	_status = Label.new()
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -172,8 +176,15 @@ func _show_intro() -> void:
 	_phase = Phase.INTRO
 	_clear_body()
 	_status.text = _attempts_text()
+	# The creator's words sit above the rules rather than replacing them: the rules are written from the game's
+	# settings, so they can't go stale or leave the controls unexplained.
+	var intro: String = str(_definition.get("intro_text", ""))
+	if intro != "":
+		var intro_label: Label = _paragraph(intro)
+		UITheme.style_label(intro_label, _accent, UITheme.story_font_size(INTRO_FONT_SIZE))
+		_body.add_child(intro_label)
 	_body.add_child(_paragraph(_instructions()))
-	var start: Button = _button("▶  START", UITheme.MINIGAME)
+	var start: Button = _button("▶  START", _accent)
 	start.pressed.connect(_start_attempt)
 	_body.add_child(start)
 	start.grab_focus.call_deferred()
@@ -184,7 +195,7 @@ func _instructions() -> String:
 	match str(_definition.get("kind", "")):
 		SafeCrackerGame.KIND:
 			var knobs: Dictionary = _definition["knobs"]
-			var limit: int = int(knobs["time_limit_s"])
+			var limit: int = ceili(_time_limit_s())
 			return (
 				(
 					"Find %d hidden number%s, in order. Turn the dial with the mouse wheel or ← →, and try "
@@ -224,7 +235,7 @@ func _start_attempt() -> void:
 		_character.show_moment(GameCharacterView.REST_MOMENT)
 	match str(_definition.get("kind", "")):
 		SafeCrackerGame.KIND:
-			_safe = SafeCrackerGame.new(_definition["knobs"], seed_value)
+			_safe = SafeCrackerGame.new(_definition["knobs"], seed_value, _time_scale)
 			_build_safe_view()
 			# Its own clock decides the end when it has one; otherwise auto-advance guards the wait.
 			if int(_definition["knobs"]["time_limit_s"]) > 0:
@@ -241,19 +252,22 @@ func _start_attempt() -> void:
 			_ladder_view.finished.connect(_on_ladder_finished)
 			_ladder_view.waiting_changed.connect(_on_ladder_waiting)
 			_body.add_child(_ladder_view)
-			_ladder_view.setup(_definition, _ladder, _drive_device, _character)
+			_ladder_view.setup(_definition, _ladder, _device, _character)
 
 
 func _finish_play(tier_id: String, headline: String) -> void:
 	_result_tier = tier_id
 	_phase = Phase.RESULT
-	_drive_device(-1, -1, -1)
+	_device.stop()
 	var finished_lock: LockView = _lock  # stays on the card, showing how the game ended
 	_clear_body(finished_lock)
 	var tier: Dictionary = _tier(tier_id)
 	if headline != "":
 		_body.add_child(_heading(headline, UITheme.TEXT_HINT, 15))
-	_body.add_child(_heading(str(tier.get("name", "")).to_upper(), UITheme.MINIGAME, 30))
+	_body.add_child(_heading(str(tier.get("name", "")).to_upper(), _accent, 30))
+	var result_text: String = str(tier.get("result_text", ""))
+	if result_text != "":
+		_body.add_child(_paragraph(result_text))
 	var gained: Label
 	if finished_lock != null and _safe.end_reason == SafeCrackerGame.END_OPENED:
 		gained = finished_lock.reward_label()  # the prize appears inside the opened lock
@@ -281,7 +295,7 @@ func _finish_play(tier_id: String, headline: String) -> void:
 				if affordable
 				else "↻ RETRY — NOT ENOUGH COINS"
 			),
-			UITheme.MINIGAME
+			_accent
 		)
 		retry.disabled = not affordable
 		retry.pressed.connect(
@@ -302,7 +316,7 @@ func _resolve(tier_id: String) -> void:
 		return
 	_resolved = true
 	_stop_countdown()
-	_drive_device(-1, -1, -1)
+	_device.stop()
 	resolved.emit(tier_id)
 
 
@@ -359,7 +373,7 @@ func _build_safe_view() -> void:
 	UISound.mute_button(left)
 	left.pressed.connect(func() -> void: _turn(-1))
 	controls.add_child(left)
-	var try_btn: Button = _button("TRY  (E)", UITheme.MINIGAME)
+	var try_btn: Button = _button("TRY  (E)", _accent)
 	UISound.mute_button(try_btn)
 	try_btn.pressed.connect(_try_number)
 	controls.add_child(try_btn)
@@ -374,6 +388,10 @@ func _build_safe_view() -> void:
 func _turn(steps: int) -> void:
 	if _phase == Phase.PLAY and _safe != null and not _safe.is_finished():
 		_safe.turn(steps)
+		_device.move_axes(
+			MiniGameAxes.dial_twist(_safe.position, int(_definition["knobs"]["dial_size"])),
+			DIAL_TWIST_MOVE_MS
+		)
 		UISound.dial_tick(lerpf(TICK_PITCH_COLD, TICK_PITCH_HOT, _safe.warmth()))
 		_refresh_safe()
 
@@ -388,6 +406,10 @@ func _try_number() -> void:
 	else:
 		UISound.dial_wrong()
 		_lock.wrong_try()
+		if not _safe.is_finished():
+			_device.play_axis_moves(
+				MiniGameAxes.wrong_try_jolt(_device.has_axis(MiniGameAxes.SWAY))
+			)
 	_feedback.text = "CLICK — IT GIVES." if opened else "NOTHING."
 	# A try that ends the game gets its ending's reaction instead (_check_safe_finished).
 	if _character != null and not _safe.is_finished():
@@ -412,7 +434,7 @@ func _check_safe_finished() -> void:
 	var tier_id: String = MiniGameResolver.tier_for_score(_definition["tiers"], _safe.score())
 	_phase = Phase.FINALE
 	_stop_countdown()
-	_drive_device(-1, -1, -1)
+	_device.stop()
 	for control: Node in _safe_controls.get_children():
 		(control as Button).disabled = true
 	match _safe.end_reason:
@@ -450,7 +472,7 @@ func _refresh_safe() -> void:
 	)
 	# Depth follows warmth: a short stroke when cold, the full stroke on the number.
 	var depth: float = lerpf(DIAL_MIN_DEPTH, 100.0, warmth)
-	_drive_device(roundi(50.0 - depth / 2.0), roundi(50.0 + depth / 2.0), DIAL_HALF_CYCLE_MS)
+	_device.hold(roundi(50.0 - depth / 2.0), roundi(50.0 + depth / 2.0), DIAL_HALF_CYCLE_MS)
 
 
 # The dial trembles only when the meter is on and reads HOT, so it never tells a player more than the
@@ -461,11 +483,15 @@ func _tremble_for(warmth: float) -> float:
 	return lerpf(TREMBLE_AT_HOT, 1.0, inverse_lerp(HOT_WARMTH, 1.0, warmth))
 
 
+# The time this player has, assist included.
+func _time_limit_s() -> float:
+	return int(_definition["knobs"]["time_limit_s"]) * _time_scale
+
+
 func _refresh_timer() -> void:
 	if _timer_label == null:
 		return
-	var limit_s: int = int(_definition["knobs"]["time_limit_s"])
-	var seconds_left: int = maxi(0, ceili(limit_s - _elapsed_ms / 1000.0))
+	var seconds_left: int = maxi(0, ceili(_time_limit_s() - _elapsed_ms / 1000.0))
 	_timer_label.text = "%ds LEFT" % seconds_left
 	if seconds_left > FINAL_STRETCH_SECS or seconds_left == _final_tick_second:
 		return
@@ -600,25 +626,6 @@ func _time_out() -> void:
 				_resolve(DoubleOrNothingGame.CASHED_PREFIX + "1")  # never started: keeps rung 1
 			else:
 				_resolve(MiniGameResolver.timeout_tier(_definition))
-
-
-# ── Device ───────────────────────────────────────────────────────────────────
-
-
-# Starts, re-aims or (lo < 0) stops the device stroke, sending only real changes.
-func _drive_device(lo: int, hi: int, half_cycle_ms: int) -> void:
-	if lo == _device_lo and hi == _device_hi and half_cycle_ms == _device_half:
-		return
-	var was_running: bool = _device_lo >= 0
-	_device_lo = lo
-	_device_hi = hi
-	_device_half = half_cycle_ms
-	if lo < 0:
-		DeviceFiller.stop()
-	elif was_running:
-		DeviceFiller.set_params(lo, hi, half_cycle_ms)
-	else:
-		DeviceFiller.start(lo, hi, half_cycle_ms)
 
 
 # ── Text ─────────────────────────────────────────────────────────────────────

@@ -921,3 +921,225 @@ func test_a_declared_flag_only_an_item_sets_is_not_unused() -> void:
 	}
 	var result := _audit(graph, {"items": items, "flags": [{"name": "has_key"}]})
 	assert_int(_findings_of_kind(result, "flag_declared_unused").size()).is_equal(0)
+
+
+# ── Mini-games ───────────────────────────────────────────────────────────────
+
+
+# A library of one game: its only tier sets a flag, gives a key and pays coins.
+func _minigame_library() -> Array:
+	return [
+		(
+			MiniGameLibrary
+			. normalize_definition(
+				{
+					"id": "g",
+					"name": "The Vault",
+					"kind": SafeCrackerGame.KIND,
+					"tiers":
+					[
+						{
+							"name": "All",
+							"min_score": 0,
+							"rewards": {"set_flags": ["opened"], "item": "key", "coins": 40},
+						}
+					],
+				}
+			)
+		)
+	]
+
+
+func _kinds(found: Array) -> Array:
+	return found.map(func(finding: Dictionary) -> String: return str(finding["kind"]))
+
+
+# A mini-game node, then a fork gated on the flag its tier sets.
+func _graph_with_fork_on_tier_flag() -> Dictionary:
+	return {
+		"start": "game",
+		"nodes":
+		{
+			"game":
+			{
+				"type": "minigame",
+				"data": {"game": "g"},
+				"out": [_edge("fork")],
+			},
+			"fork":
+			{
+				"type": "fork",
+				"data": {"resolution": "conditional", "cond_metric": "flag"},
+				"out": [_edge("end"), _edge("end", {"required_flag": "opened"})],
+			},
+			"end": _round(0),
+		},
+	}
+
+
+# The control for the test below: with no library to read, the same fork really is a dead branch.
+func test_a_fork_on_a_flag_nothing_sets_is_dead() -> void:
+	var result: Dictionary = _audit(_graph_with_fork_on_tier_flag())
+	var messages: String = " ".join(
+		PackedStringArray(
+			(result["findings"] as Array).map(
+				func(finding: Dictionary) -> String: return str(finding["msg"])
+			)
+		)
+	)
+	assert_str(messages).contains('flag "opened"')
+
+
+# The bug this guards: a fork on a flag set by a tier read as a branch nothing could ever satisfy.
+func test_a_fork_on_a_flag_set_by_a_tier_is_not_dead() -> void:
+	var result: Dictionary = _audit(
+		_graph_with_fork_on_tier_flag(), {"minigames": _minigame_library()}
+	)
+	for finding: Dictionary in result["findings"]:
+		assert_str(str(finding["msg"])).not_contains('flag "opened"')
+
+
+func test_a_flag_on_a_tier_that_nothing_reads_is_reported() -> void:
+	var graph: Dictionary = _graph_with_fork_on_tier_flag()
+	graph["nodes"]["fork"]["out"] = [_edge("end")]
+	var result: Dictionary = _audit(graph, {"minigames": _minigame_library()})
+	assert_array(_kinds(result["findings"])).contains(["flag_unused"])
+
+
+func test_a_tiers_coins_reach_the_routes_bounds() -> void:
+	var result: Dictionary = _audit(
+		_graph_with_fork_on_tier_flag(), {"minigames": _minigame_library()}
+	)
+	assert_int(int(result["coins"]["fork"]["hi"])).is_equal(40)
+
+
+func test_a_declared_flag_used_only_on_a_tier_counts_as_used() -> void:
+	var graph: Dictionary = _graph_with_fork_on_tier_flag()
+	graph["nodes"]["fork"]["out"] = [_edge("end")]
+	var result: Dictionary = _audit(
+		graph, {"minigames": _minigame_library(), "flags": [{"name": "opened"}]}
+	)
+	assert_array(_findings_of_kind(result, "flag_declared_unused")).is_empty()
+
+
+func test_an_unreachable_tier_is_a_warning_on_its_node() -> void:
+	var library: Array = [
+		(
+			MiniGameLibrary
+			. normalize_definition(
+				{
+					"id": "g",
+					"name": "The Vault",
+					"kind": SafeCrackerGame.KIND,
+					"knobs": {"numbers": 1, "time_limit_s": 30},
+					"tiers":
+					[
+						{"id": "low", "name": "Low", "min_score": 0},
+						{"id": "gap", "name": "Near Miss", "min_score": 90},
+						{"id": "top", "name": "Top", "min_score": 100},
+					],
+				}
+			)
+		)
+	]
+	var found: Array = JourneyAudit._minigame_tier_findings(
+		_graph_with_fork_on_tier_flag(), {"minigames": library}
+	)
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["severity"])).is_equal(JourneyAudit.SEV_WARN)
+	assert_str(str(found[0]["node_id"])).is_equal("game")
+	assert_str(str(found[0]["msg"])).contains("Near Miss")
+
+
+func test_a_tier_only_auto_advance_can_give_says_so() -> void:
+	var library: Array = [
+		(
+			MiniGameLibrary
+			. normalize_definition(
+				{
+					"id": "g",
+					"name": "The Vault",
+					"kind": SafeCrackerGame.KIND,
+					"knobs": {"time_limit_s": 0, "max_wrong": 0},
+				}
+			)
+		)
+	]
+	var found: Array = JourneyAudit._minigame_tier_findings(
+		_graph_with_fork_on_tier_flag(), {"minigames": library}
+	)
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["msg"])).contains("auto-advance")
+
+
+func test_mini_games_without_the_tag_are_nudged() -> void:
+	var found: Array = JourneyAudit.minigame_tag_findings(
+		_graph_with_fork_on_tier_flag(), {"tags": []}
+	)
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["severity"])).is_equal(JourneyAudit.SEV_INFO)
+	assert_str(str(found[0]["msg"])).contains("tagged Mini-Games")
+
+
+func test_the_tag_without_mini_games_is_nudged() -> void:
+	var found: Array = JourneyAudit.minigame_tag_findings(
+		{"nodes": {}}, {"tags": [JourneyAudit.MINIGAMES_TAG]}
+	)
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["msg"])).contains("nothing in it plays one")
+
+
+func test_a_matching_tag_raises_nothing() -> void:
+	var graph: Dictionary = _graph_with_fork_on_tier_flag()
+	var tagged: Dictionary = {"tags": [JourneyAudit.MINIGAMES_TAG]}
+	assert_array(JourneyAudit.minigame_tag_findings(graph, tagged)).is_empty()
+	assert_array(JourneyAudit.minigame_tag_findings({"nodes": {}}, {"tags": []})).is_empty()
+
+
+func _library_with_character() -> Array:
+	return [
+		(
+			MiniGameLibrary
+			. normalize_definition(
+				{
+					"id": "g",
+					"name": "The Vault",
+					"kind": SafeCrackerGame.KIND,
+					"game_character":
+					{
+						"character": "warden",
+						"moments": {"idle": {"portrait": "smirk"}},
+					},
+				}
+			)
+		)
+	]
+
+
+func _character_findings(cast: Array) -> Array:
+	return JourneyAudit._minigame_character_findings(
+		_graph_with_fork_on_tier_flag(),
+		{"minigames": _library_with_character(), "characters": cast}
+	)
+
+
+func test_a_game_character_no_longer_in_cast_is_reported() -> void:
+	var found: Array = _character_findings([])
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["node_id"])).is_equal("game")
+	assert_str(str(found[0]["msg"])).contains("no longer in CAST")
+
+
+func test_a_portrait_that_has_gone_is_reported() -> void:
+	var found: Array = _character_findings(
+		[{"id": "warden", "name": "The Warden", "portraits": [{"id": "plain", "path": "/a.png"}]}]
+	)
+	assert_int(found.size()).is_equal(1)
+	assert_str(str(found[0]["msg"])).contains("idle")
+
+
+func test_a_game_character_that_is_all_there_raises_nothing() -> void:
+	var found: Array = _character_findings(
+		[{"id": "warden", "name": "The Warden", "portraits": [{"id": "smirk", "path": "/a.png"}]}]
+	)
+	assert_array(found).is_empty()

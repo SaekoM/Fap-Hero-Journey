@@ -2700,7 +2700,7 @@ func _build_flags_section(side_vbox: VBoxContainer) -> void:
 # Flag names the graph uses that no row covers yet — what ⌕ ADD THE N offers to declare.
 func _undeclared_flag_names() -> Array:
 	var out: Array = []
-	for name: String in JourneyData.flag_names_in_graph(_owner._graph_model):
+	for name: String in _flag_names_in_use():
 		if JourneyData.flag_def(_owner._journey_flags, name).is_empty():
 			out.append(name)
 	return out
@@ -2798,7 +2798,7 @@ func _flag_uses(name: String) -> int:
 					total += 1
 			if str((e as Dictionary).get("required_flag", "")) == name:
 				total += 1
-	return total
+	return total + MiniGameLibrary.flag_names(_owner._journey_minigames).count(name)
 
 
 # Deleting a flag row deletes its NAME and note, never the flag: the nodes keep setting it and the
@@ -4374,10 +4374,19 @@ func _known_flag_names() -> Array:
 	for d: Variant in _owner._journey_flags:
 		if d is Dictionary and str((d as Dictionary).get("name", "")) != "":
 			out.append(str((d as Dictionary)["name"]))
-	for name: String in JourneyData.flag_names_in_graph(_owner._graph_model):
+	for name: String in _flag_names_in_use():
 		if not (name in out):
 			out.append(name)
 	return out
+
+
+# The flags the journey uses, whether on its nodes or on its mini-games' tiers.
+func _flag_names_in_use() -> Array:
+	var names: Array = JourneyData.flag_names_in_graph(_owner._graph_model)
+	for name: Variant in MiniGameLibrary.flag_names(_owner._journey_minigames):
+		if not (str(name) in names):
+			names.append(str(name))
+	return names
 
 
 # 'found_key  "Found the key"' for a declared flag, 'found_key  (undeclared)' for one that exists only

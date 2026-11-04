@@ -28,6 +28,7 @@ signal duck_changed(factor: float)
 
 var _bgm: AudioStreamPlayer = null
 var _voices: Array[AudioStreamPlayer] = []
+var _paused: bool = false
 
 # Deepest duck currently requested, and how many cues are asking for one. Depth is tracked separately
 # from the count so releasing a shallow duck cannot undo a deeper one still in effect.
@@ -64,6 +65,7 @@ func play_cue(cue: Dictionary) -> void:
 		# fires on stop() too. ONE_SHOT so a recycled player never carries a stale handler.
 		player.finished.connect(func() -> void: _pop_duck(duck), CONNECT_ONE_SHOT)
 	player.play(from_sec)
+	player.stream_paused = _paused  # after play(): it only holds audio already playing
 	_apply_fades(player, cue)
 
 
@@ -79,6 +81,7 @@ func play_bgm(bgm: Dictionary) -> void:
 	_bgm.volume_db = linear_to_db(maxf(0.0001, float(bgm.get("volume", 1.0))))
 	add_child(_bgm)
 	_bgm.play()
+	_bgm.stream_paused = _paused
 
 
 # Eases a cue's volume in and out rather than letting it snap. The target level is the cue's own volume,
@@ -112,20 +115,33 @@ static func _cue_length_ms(cue: Dictionary, player: AudioStreamPlayer) -> int:
 	return int(player.stream.get_length() * 1000.0) - in_ms
 
 
-# Stops `player` after `seconds` of playing — how a trimmed cue honours its out-point. A timer rather
-# than polling: cues are short and there are at most MAX_VOICES of them, so a per-frame check would cost
-# more than it saved. The timer is a child of this node, so it dies with the editor or the round.
+# Stops `player` after `seconds` of playing — how a trimmed cue honours its out-point. A tween rather than
+# polling: cues are short and there are at most MAX_VOICES of them, so a per-frame check would cost more than
+# it saved. It belongs to this node, so it dies with the editor or the round, and waits out a pause (set_paused).
 func _stop_at(player: AudioStreamPlayer, seconds: float) -> void:
 	if seconds <= 0.0:
 		return
-	var timer: SceneTreeTimer = get_tree().create_timer(seconds)
-	timer.timeout.connect(
+	var wait: Tween = create_tween()
+	wait.tween_interval(seconds)
+	wait.tween_callback(
 		func() -> void:
 			# Guarded: the voice may have been recycled onto a different cue by now, and stopping THAT
 			# one would cut a clip that is legitimately playing.
 			if is_instance_valid(player) and player.playing:
 				player.stop()
 	)
+
+
+## Holds or releases everything, where it is. Disabling this node also holds its tweens, so a cue's fades and
+## out-point wait with it instead of cutting it off while it's silent.
+func set_paused(on: bool) -> void:
+	_paused = on
+	process_mode = Node.PROCESS_MODE_DISABLED if on else Node.PROCESS_MODE_INHERIT
+	if is_instance_valid(_bgm):
+		_bgm.stream_paused = on
+	for voice: AudioStreamPlayer in _voices:
+		if is_instance_valid(voice):
+			voice.stream_paused = on
 
 
 func stop_bgm() -> void:

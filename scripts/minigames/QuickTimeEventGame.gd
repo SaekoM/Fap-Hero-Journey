@@ -115,9 +115,9 @@ static func min_duration_ms(raw_knobs: Dictionary) -> int:
 
 # The time given to an event that pauses the video, which has no block on the timeline to fit into. The extra
 # is shared out as random gaps, so its rhythm can't be learned.
-static func held_duration_ms(raw_knobs: Dictionary) -> int:
+static func held_duration_ms(raw_knobs: Dictionary, time_scale: float = 1.0) -> int:
 	var knobs: Dictionary = normalize_knobs(raw_knobs)
-	return int(knobs["prompts"]) * (_prompt_span_ms(knobs) + HELD_GAP_MS)
+	return int(knobs["prompts"]) * (ceili(_prompt_span_ms(knobs) * time_scale) + HELD_GAP_MS)
 
 
 # The shortest event that fits one prompt: anything shorter can't be played at all.
@@ -130,16 +130,20 @@ static func _prompt_span_ms(knobs: Dictionary) -> int:
 
 
 # `duration_ms` is the time the event has. A window too short for every prompt gets as many as fit (at least
-# one); the builder warns about that before it ever plays.
-func _init(raw_knobs: Dictionary, duration_ms: int, rng_seed: int) -> void:
+# one); the builder warns about that before it ever plays. `time_scale` stretches the rings and windows for the
+# player's assist, but never past what lets one prompt fit, since a prompt can't outlast its event.
+func _init(raw_knobs: Dictionary, duration_ms: int, rng_seed: int, time_scale: float = 1.0) -> void:
 	var knobs: Dictionary = normalize_knobs(raw_knobs)
-	_half_window_ms = floori(int(knobs["window_ms"]) / 2.0)
+	var scale_that_fits: float = maxf(1.0, float(duration_ms) / _prompt_span_ms(knobs))
+	var applied_scale: float = minf(time_scale, scale_that_fits)
+	var lead_ms: int = roundi(int(knobs["lead_ms"]) * applied_scale)
+	_half_window_ms = floori(int(knobs["window_ms"]) * applied_scale / 2.0)
 	keys = PackedStringArray(knobs["keys"])
-	var span: int = _prompt_span_ms(knobs)
+	var span: int = lead_ms + _half_window_ms
 	var count: int = clampi(floori(float(duration_ms) / span), 1, int(knobs["prompts"]))
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = rng_seed
-	_schedule(count, span, maxi(0, duration_ms - count * span), int(knobs["lead_ms"]), rng)
+	_schedule(count, span, maxi(0, duration_ms - count * span), lead_ms, rng)
 	_place_and_key_prompts(rng)
 
 

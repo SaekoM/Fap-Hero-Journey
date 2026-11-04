@@ -1518,7 +1518,7 @@ const JOURNEY_MIN_APP_VERSION_WIDE_CODECS: String = "0.8.4"
 
 # The floor a journey needs once it places a mini-game. An older build walks onto a node type it has never
 # heard of, so the journey has to be refused at load, where JourneySelect explains why.
-const JOURNEY_MIN_APP_VERSION_MINIGAMES: String = "0.9.3"
+const JOURNEY_MIN_APP_VERSION_MINIGAMES: String = "0.9.2"
 
 
 # The MinVersion a save should stamp: the highest floor any of the journey's content needs, or "" for

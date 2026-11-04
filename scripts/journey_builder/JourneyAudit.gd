@@ -53,6 +53,8 @@ const SEV_INFO: String = "info"  # worth knowing; not necessarily a problem
 
 # The tag (data/tags.json) that marks a journey as written for multi-axis devices.
 const MULTI_AXIS_TAG: String = "multi_axis"
+# The tag that marks a journey as having mini-games in it.
+const MINIGAMES_TAG: String = "minigames"
 
 
 # Runs the full audit. ctx:
@@ -69,6 +71,8 @@ const MULTI_AXIS_TAG: String = "multi_axis"
 #   journey_axes:  Array (optional) — secondary axes any of the journey's content carries a script
 #                  for (engine glue scans the files, sibling scripts included)
 #   tags:          Array (optional) — the journey's tag ids
+#   minigames:     Array (optional) — the journey's mini-game library
+#   characters:    Array (optional) — the journey's cast, for the characters its games use
 #   mc_runs:       int (optional, DEFAULT_MC_RUNS)
 #   rng_seed:      int (optional — fixed seed makes the MC pass reproducible)
 # Returns {findings, coins, last_score, visits, stats}: findings is an Array of
@@ -97,6 +101,9 @@ static func audit(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 	findings.append_array(_default_choice_findings(graph))
 	findings.append_array(_axis_effect_findings(graph))
 	findings.append_array(multi_axis_tag_findings(ctx))
+	findings.append_array(minigame_tag_findings(graph, ctx))
+	findings.append_array(_minigame_tier_findings(graph, ctx))
+	findings.append_array(_minigame_character_findings(graph, ctx))
 
 	return {
 		"findings": findings,
@@ -523,6 +530,10 @@ static func _flow_analysis(graph: Dictionary, ctx: Dictionary) -> Dictionary:
 		# branch nothing in the journey could ever satisfy.
 		for f: String in JourneyData.boss_outcome_flags(data):
 			exit_flags[f] = true
+		for outcomes: Array in _minigame_plays(node, ctx):
+			_note_minigame_bounds(
+				outcomes, exit_coins, exit_total, exit_guar, exit_poss, exit_flags
+			)
 
 		match type:
 			"round":
@@ -1018,6 +1029,78 @@ static func _roll_boss_outcome(
 		run_flags[flag] = true
 
 
+# The mini-games a node plays, each as the rewards of the ways it can end. A boss round's QTEs count only while
+# the round is a boss round, which is the only time it plays its encounter.
+static func _minigame_plays(node: Dictionary, ctx: Dictionary) -> Array:
+	var data: Dictionary = node.get("data", {})
+	var game_ids: Array = []
+	match str(node.get("type", "")):
+		"minigame":
+			game_ids = [str(data.get("game", ""))]
+		"round":
+			if str(data.get("round_type", "")) == "boss":
+				game_ids = RoundTimeline.qte_games_on_node(data)
+	var plays: Array = []
+	for game_id: Variant in game_ids:
+		var definition: Dictionary = MiniGameLibrary.find(ctx.get("minigames", []), str(game_id))
+		if not definition.is_empty():
+			plays.append(
+				(definition["tiers"] as Array).map(
+					func(tier: Dictionary) -> Dictionary: return tier.get("rewards", {})
+				)
+			)
+	return plays
+
+
+# What one mini-game can do to the route's bounds: the worst and best of its outcomes for coins and score, flags and
+# items on any outcome as possible, and an item on every outcome as guaranteed.
+static func _note_minigame_bounds(
+	outcomes: Array,
+	coins: Dictionary,
+	total: Dictionary,
+	guaranteed: Dictionary,
+	possible: Dictionary,
+	flags: Dictionary
+) -> void:
+	var fewest_coins: int = int((outcomes[0] as Dictionary).get("coins", 0))
+	var most_coins: int = fewest_coins
+	var least_score: int = int((outcomes[0] as Dictionary).get("score", 0))
+	var most_score: int = least_score
+	var item_counts: Dictionary = {}
+	for rewards: Dictionary in outcomes:
+		fewest_coins = mini(fewest_coins, int(rewards.get("coins", 0)))
+		most_coins = maxi(most_coins, int(rewards.get("coins", 0)))
+		least_score = mini(least_score, int(rewards.get("score", 0)))
+		most_score = maxi(most_score, int(rewards.get("score", 0)))
+		for f: String in JourneyData.clean_flag_list(rewards.get("set_flags", [])):
+			flags[f] = true
+		var item: String = str(rewards.get("item", ""))
+		if item != "":
+			possible[item] = true
+			item_counts[item] = int(item_counts.get(item, 0)) + 1
+	coins["lo"] = maxi(0, int(coins["lo"]) + fewest_coins)
+	coins["hi"] = maxi(0, int(coins["hi"]) + most_coins)
+	total["lo"] = int(total["lo"]) + least_score
+	total["hi"] = int(total["hi"]) + most_score
+	for item: String in item_counts:
+		if int(item_counts[item]) == outcomes.size():
+			guaranteed[item] = true
+
+
+static func _apply_minigame_state(
+	rewards: Dictionary, run_flags: Dictionary, owned: Dictionary
+) -> void:
+	for f: String in JourneyData.clean_flag_list(rewards.get("set_flags", [])):
+		run_flags[f] = true
+	for f: String in JourneyData.clean_flag_list(rewards.get("clear_flags", [])):
+		run_flags.erase(f)
+	var item: String = str(rewards.get("item", ""))
+	if item != "":
+		owned[item] = int(owned.get(item, 0)) + 1
+	for taken: Variant in rewards.get("remove_items", []):
+		owned[str(taken)] = maxi(0, int(owned.get(str(taken), 0)) - 1)
+
+
 # Orphan flags (set but never required by any fork choice) and unused gate
 # items (key-kind items granted/stocked but never required — items with their
 # own effects, like Cleanse, are exempt: not being gated isn't waste for them).
@@ -1040,6 +1123,12 @@ static func _coverage_findings(graph: Dictionary, ctx: Dictionary) -> Array:
 		for f: String in JourneyData.boss_outcome_flags(data):
 			if not flag_set_at.has(f):
 				flag_set_at[f] = id
+		for outcomes: Array in _minigame_plays(node, ctx):
+			for rewards: Dictionary in outcomes:
+				_note_key_source(key_source_at, items, str(rewards.get("item", "")), id)
+				for f: String in JourneyData.clean_flag_list(rewards.get("set_flags", [])):
+					if not flag_set_at.has(f):
+						flag_set_at[f] = id
 		match str(node.get("type", "")):
 			"storyboard":
 				_note_key_source(key_source_at, items, str(data.get("item", "")), id)
@@ -1244,6 +1333,12 @@ static func simulate(
 				seen[id] = int(seen.get(id, 0)) + int(counters.get(cname, 0))
 			_roll_boss_outcome(data, run_flags, rng)
 			_apply_counters(counters, data, counter_defs, absorbed)
+			for outcomes: Array in _minigame_plays(node, ctx):
+				var rewards: Dictionary = outcomes[rng.randi() % outcomes.size()]
+				coins = maxi(0, coins + int(rewards.get("coins", 0)))
+				total_score += int(rewards.get("score", 0))
+				_apply_minigame_state(rewards, run_flags, owned)
+				_apply_counters(counters, rewards, counter_defs, absorbed)
 			_sample_counter_extremes(counter_finals, counters, tracked_counters)
 
 			match type:
@@ -1886,7 +1981,12 @@ static func _item_counter_name_findings(
 
 # Every flag ("flags") or counter ("counters") name some item changes when used.
 static func _item_state_names(ctx: Dictionary, which: String) -> Array:
-	var names: Array = []
+	var library: Array = ctx.get("minigames", [])
+	var names: Array = (
+		MiniGameLibrary.counter_names(library)
+		if which == "counters"
+		else MiniGameLibrary.flag_names(library)
+	)
 	var items: Dictionary = ctx.get("items", {})
 	for iid: Variant in items:
 		var effects: Dictionary = JourneyData.item_state_effects(items[iid] as Dictionary)
@@ -1897,6 +1997,121 @@ static func _item_state_names(ctx: Dictionary, which: String) -> Array:
 			if not names.has(str(name)):
 				names.append(str(name))
 	return names
+
+
+# The Mini-Games tag is how players find journeys with games in them. Nudged either way, like Multi-Axis.
+static func minigame_tag_findings(graph: Dictionary, ctx: Dictionary) -> Array:
+	var has_games: bool = JourneyData.graph_has_minigames(graph)
+	var tagged: bool = (ctx.get("tags", []) as Array).has(MINIGAMES_TAG)
+	if has_games == tagged:
+		return []
+	var msg: String = (
+		"Has mini-games, but isn't tagged Mini-Games. Add the tag so players looking for them can find it."
+		if has_games
+		else "Tagged Mini-Games, but nothing in it plays one."
+	)
+	return [_finding(SEV_INFO, "minigames_tag", "", -1, msg)]
+
+
+# A game whose character has left CAST plays on without them, and one whose portrait has gone shows the character's
+# first instead. Neither looks wrong in the game's editor, and neither stops the game, so they're only reported here.
+static func _minigame_character_findings(graph: Dictionary, ctx: Dictionary) -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	var nodes: Dictionary = graph.get("nodes", {})
+	for id: String in nodes:
+		var node: Dictionary = nodes[id]
+		if str(node.get("type", "")) != "minigame":
+			continue
+		var game_id: String = str((node.get("data", {}) as Dictionary).get("game", ""))
+		var definition: Dictionary = MiniGameLibrary.find(ctx.get("minigames", []), game_id)
+		var block: Dictionary = definition.get("game_character", {})
+		if block.is_empty() or seen.has(game_id):
+			continue
+		seen[game_id] = true
+		var problem: String = _game_character_problem(block, ctx.get("characters", []))
+		if problem != "":
+			out.append(
+				_finding(
+					SEV_WARN,
+					"minigame_character",
+					id,
+					-1,
+					'"%s": %s' % [definition["name"], problem]
+				)
+			)
+	return out
+
+
+# What's wrong with a game's character, in the author's words, or "".
+static func _game_character_problem(block: Dictionary, cast: Array) -> String:
+	var character: Dictionary = {}
+	for candidate: Variant in cast:
+		if candidate is Dictionary:
+			if str((candidate as Dictionary).get("id", "")) == str(block.get("character", "")):
+				character = candidate
+	var portraits: Array = character.get("portraits", [])
+	if portraits.is_empty():
+		return "its game character is no longer in CAST, or has no portraits, so it plays without one."
+	var portrait_ids: Array = portraits.map(
+		func(portrait: Dictionary) -> String: return str(portrait.get("id", ""))
+	)
+	var moments: Dictionary = block.get("moments", {})
+	for moment: String in moments:
+		var wanted: String = str((moments[moment] as Dictionary).get("portrait", ""))
+		if wanted != "" and not portrait_ids.has(wanted):
+			return (
+				"%s uses a portrait that's gone, so %s shows their first one there."
+				% [
+					'its "%s" moment' % moment,
+					str(character.get("name", "the character")),
+				]
+			)
+	return ""
+
+
+# A tier nobody can reach pays nothing and routes nowhere, and nothing about it looks wrong in the editor. Reported on
+# the first node playing the game. The tier auto-advance gives is still reached that way, so it says so instead.
+static func _minigame_tier_findings(graph: Dictionary, ctx: Dictionary) -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	var nodes: Dictionary = graph.get("nodes", {})
+	for id: String in nodes:
+		var node: Dictionary = nodes[id]
+		if str(node.get("type", "")) != "minigame":
+			continue
+		var game_id: String = str((node.get("data", {}) as Dictionary).get("game", ""))
+		var definition: Dictionary = MiniGameLibrary.find(ctx.get("minigames", []), game_id)
+		if definition.is_empty() or seen.has(game_id):
+			continue
+		seen[game_id] = true
+		var timeout_tier: String = MiniGameResolver.timeout_tier(definition)
+		for tier: Dictionary in MiniGameLibrary.unreachable_tiers(definition):
+			var by_timeout: bool = str(tier["id"]) == timeout_tier
+			(
+				out
+				. append(
+					_finding(
+						SEV_WARN,
+						"minigame_tier_unreachable",
+						id,
+						-1,
+						(
+							'"%s": no score can land in the "%s" tier with these settings%s.'
+							% [
+								definition["name"],
+								tier["name"],
+								(
+									", so only auto-advance running out can give it"
+									if by_timeout
+									else ""
+								),
+							]
+						)
+					)
+				)
+			)
+	return out
 
 
 # A conditional fork's default choice is its fallback, so a requirement on it never applies: the player

@@ -75,6 +75,10 @@ static func normalize_definition(raw: Dictionary) -> Dictionary:
 		),
 		"timeout_tier": str(raw.get("timeout_tier", "")),
 	}
+	# The creator's own framing. Only a game with a screen of its own has an intro and a panel to colour.
+	if HOST_NODE in KIND_HOSTS[kind]:
+		definition["intro_text"] = str(raw.get("intro_text", "")).strip_edges()
+		definition["accent_color"] = _normalize_accent(raw.get("accent_color", ""))
 	var raw_knobs: Dictionary = raw.get("knobs", {}) if raw.get("knobs") is Dictionary else {}
 	match kind:
 		SafeCrackerGame.KIND:
@@ -92,6 +96,7 @@ static func normalize_definition(raw: Dictionary) -> Dictionary:
 			}
 			definition["rungs"] = _normalize_rungs(raw.get("rungs", []))
 			definition["bust_rewards"] = normalize_rewards(raw.get("bust_rewards", {}), false)
+			definition["bust_result_text"] = str(raw.get("bust_result_text", "")).strip_edges()
 	if GAME_CHARACTER_MOMENTS.has(kind):
 		definition["game_character"] = _normalize_game_character(
 			raw.get("game_character", {}), kind
@@ -172,6 +177,7 @@ static func _ladder_tiers(definition: Dictionary) -> Array:
 			"id": DoubleOrNothingGame.OUTCOME_BUSTED,
 			"name": default_outcome_name(DoubleOrNothingGame.OUTCOME_BUSTED),
 			"rewards": definition["bust_rewards"],
+			"result_text": definition["bust_result_text"],
 		}
 	]
 	for outcome: String in outcome_names(DoubleOrNothingGame.KIND, definition):
@@ -187,6 +193,7 @@ static func _ladder_tiers(definition: Dictionary) -> Array:
 					"id": outcome,
 					"name": label if label != "" else default_outcome_name(outcome),
 					"rewards": rung["rewards"],
+					"result_text": rung["result_text"],
 				}
 			)
 		)
@@ -213,7 +220,12 @@ static func _tier_base(raw: Dictionary) -> Dictionary:
 	if id == "":
 		id = tier_name.to_snake_case() if tier_name != "" else "tier"
 	var rewards: Dictionary = raw.get("rewards", {}) if raw.get("rewards") is Dictionary else {}
-	return {"id": id, "name": tier_name, "rewards": rewards}
+	return {
+		"id": id,
+		"name": tier_name,
+		"rewards": rewards,
+		"result_text": str(raw.get("result_text", "")).strip_edges(),
+	}
 
 
 static func _dedupe_ids(tiers: Array) -> void:
@@ -247,6 +259,7 @@ static func _normalize_rungs(raw_rungs: Variant) -> Array:
 				. append(
 					{
 						"label": str(src.get("label", "")).strip_edges(),
+						"result_text": str(src.get("result_text", "")).strip_edges(),
 						"rewards": normalize_rewards(src.get("rewards", {}), false),
 					}
 				)
@@ -254,8 +267,20 @@ static func _normalize_rungs(raw_rungs: Variant) -> Array:
 	if rungs.size() < DoubleOrNothingGame.MIN_RUNGS:
 		rungs.clear()
 		for _i in DEFAULT_RUNGS:
-			rungs.append({"label": "", "rewards": {}})
+			rungs.append({"label": "", "result_text": "", "rewards": {}})
 	return rungs.slice(0, DoubleOrNothingGame.MAX_RUNGS)
+
+
+# A creator's accent colour, or "" for the app's own, which follows the colour mode.
+static func _normalize_accent(raw: Variant) -> String:
+	var text: String = str(raw).strip_edges()
+	return text if text != "" and Color.html_is_valid(text) else ""
+
+
+# The colour a game's screen is drawn in.
+static func accent_color(definition: Dictionary) -> Color:
+	var accent: String = str(definition.get("accent_color", ""))
+	return Color.html(accent) if accent != "" else UITheme.MINIGAME
 
 
 # A game's optional character: {character, placement, moments: {moment: {portrait, transition}}}. Character
@@ -349,6 +374,58 @@ static func parse_library(raw: Variant) -> Array:
 		seen[definition["id"]] = true
 		library.append(definition)
 	return library
+
+
+# Every flag the library's games set or clear, once per use: on a tier or rung's rewards, or a retry's cost.
+static func flag_names(library: Array) -> Array:
+	var names: Array = []
+	for change: Dictionary in _all_changes(library):
+		for key: String in ["set_flags", "clear_flags"]:
+			names.append_array(change.get(key, []))
+	return names
+
+
+# Every counter the library's games change, once per use.
+static func counter_names(library: Array) -> Array:
+	var names: Array = []
+	for change: Dictionary in _all_changes(library):
+		names.append_array((change.get("set_counters", {}) as Dictionary).keys())
+	return names
+
+
+static func _all_changes(library: Array) -> Array:
+	var changes: Array = []
+	for raw: Variant in library:
+		var definition: Dictionary = raw if raw is Dictionary else {}
+		changes.append(definition.get("retry_cost", {}))
+		if is_chance(str(definition.get("kind", ""))):
+			# Not its tiers: those are built from the rungs and repeat them.
+			changes.append(definition.get("bust_rewards", {}))
+			for rung: Dictionary in definition.get("rungs", []):
+				changes.append(rung.get("rewards", {}))
+		else:
+			for tier: Dictionary in definition.get("tiers", []):
+				changes.append(tier.get("rewards", {}))
+	return changes
+
+
+# The tiers of a skill game that no score can land in, given its knobs. A Quick-Time Event's score moves in fine
+# steps, so only a Safe-Cracker's can have gaps; and a chance game's tiers are the ways it can end.
+static func unreachable_tiers(definition: Dictionary) -> Array:
+	if str(definition.get("kind", "")) != SafeCrackerGame.KIND:
+		return []
+	var scores: Dictionary = SafeCrackerGame.reachable_scores(definition["knobs"])
+	var tiers: Array = definition["tiers"]
+	var out: Array = []
+	for i in tiers.size():
+		var lowest: int = int(tiers[i]["min_score"])
+		var highest: int = int(tiers[i + 1]["min_score"]) - 1 if i + 1 < tiers.size() else 100
+		var reached: bool = false
+		for score in range(lowest, highest + 1):
+			reached = reached or scores.has(score)
+		if not reached:
+			out.append(tiers[i])
+	return out
 
 
 # {definition id: {name, kind}} — what a graph view needs to label mini-game nodes (GraphView.minigame_lookup).

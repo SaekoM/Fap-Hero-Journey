@@ -112,6 +112,10 @@ func show_moment(moment: String, return_after: float = 0.0) -> void:
 func _play_transition(transition: String, path: String) -> void:
 	_settle()
 	pivot_offset = size / 2.0
+	# A cut has nothing to animate, and Godot reports a tween left with nothing to do as an error.
+	if transition == TRANSITION_CUT or not transition in TRANSITIONS:
+		_swap_to(path)
+		return
 	_tween = create_tween()
 	match transition:
 		TRANSITION_FADE:
@@ -158,8 +162,6 @@ func _play_transition(transition: String, path: String) -> void:
 			var home_x: float = position.x
 			for offset: float in SHAKE_OFFSETS:
 				_tween.tween_property(self, "position:x", home_x + offset, SHAKE_STEP_SECS)
-		_:
-			_swap_to(path)
 
 
 # Stops a transition still running and puts the view back at rest, so the next one starts clean.

@@ -18,6 +18,7 @@ const KIND_NAMES: Dictionary = {
 # The games a node can host, in the order the builder offers them. Quick-Time Event runs on a boss
 # timeline instead (phase 3).
 const NODE_KINDS: Array[String] = [SafeCrackerGame.KIND, DoubleOrNothingGame.KIND]
+const INTRO_FIELD_HEIGHT: float = 72.0
 const QTE_KEY_COLUMNS: int = 11
 const QTE_KEY_BUTTON_SIZE: float = 34.0
 const LIBRARY_KINDS: Array[String] = [
@@ -348,6 +349,8 @@ func _fill_definition(body: VBoxContainer, definition: Dictionary, rebuild: Call
 	UITheme.style_line_edit(name_edit)
 	name_edit.text_changed.connect(func(v: String) -> void: definition["name"] = v)
 	body.add_child(name_edit)
+	if MiniGameLibrary.HOST_NODE in MiniGameLibrary.KIND_HOSTS[definition["kind"]]:
+		_add_framing(body, definition)
 
 	body.add_child(_panel._side_divider_line())
 	match str(definition["kind"]):
@@ -371,6 +374,74 @@ func _fill_definition(body: VBoxContainer, definition: Dictionary, rebuild: Call
 		_add_ladder(body, definition, rebuild)
 	else:
 		_add_score_tiers(body, definition, rebuild)
+
+
+# ── Framing ──────────────────────────────────────────────────────────────────
+
+
+# The creator's own words and colour on the game's screen.
+func _add_framing(body: VBoxContainer, definition: Dictionary) -> void:
+	(
+		body
+		. add_child(
+			(
+				_panel
+				. _side_field_label(
+					"INTRO TEXT  (OPTIONAL)",
+					"Shown above the game's rules when it opens. The rules are written for you from its settings."
+				)
+			)
+		)
+	)
+	var intro: TextEdit = TextEdit.new()
+	intro.text = str(definition.get("intro_text", ""))
+	intro.placeholder_text = "e.g. The vault hums as you approach…"
+	intro.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	intro.custom_minimum_size = Vector2(0.0, INTRO_FIELD_HEIGHT)
+	intro.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_text_edit(intro)
+	intro.text_changed.connect(func() -> void: definition["intro_text"] = intro.text)
+	body.add_child(intro)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var custom: CheckButton = CheckButton.new()
+	custom.text = "CUSTOM ACCENT COLOUR"
+	custom.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	custom.button_pressed = str(definition.get("accent_color", "")) != ""
+	custom.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"The title, border and main buttons of this game's screen. Off, it uses the app's own, which follows the player's colour mode."
+		)
+	)
+	row.add_child(custom)
+	var swatch: ColorPickerButton = ColorPickerButton.new()
+	swatch.custom_minimum_size = Vector2(QTE_KEY_BUTTON_SIZE, QTE_KEY_BUTTON_SIZE)
+	swatch.edit_alpha = false
+	swatch.color = MiniGameLibrary.accent_color(definition)
+	swatch.visible = custom.button_pressed
+	swatch.color_changed.connect(
+		func(value: Color) -> void: definition["accent_color"] = value.to_html(false)
+	)
+	row.add_child(swatch)
+	custom.toggled.connect(
+		func(on: bool) -> void:
+			swatch.visible = on
+			definition["accent_color"] = swatch.color.to_html(false) if on else ""
+	)
+	body.add_child(row)
+
+
+# A one-line field for what the player reads when a game ends a given way, written straight into `target`.
+func _make_result_text_field(target: Dictionary, key: String) -> LineEdit:
+	var field: LineEdit = LineEdit.new()
+	field.text = str(target.get(key, ""))
+	field.placeholder_text = "Result text (optional), e.g. The door swings wide."
+	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_line_edit(field)
+	field.text_changed.connect(func(v: String) -> void: target[key] = v)
+	return field
 
 
 # ── Knobs ────────────────────────────────────────────────────────────────────
@@ -845,6 +916,7 @@ func _make_score_tier_card(definition: Dictionary, index: int, rebuild: Callable
 		)
 		head.add_child(remove)
 	card.add_child(head)
+	card.add_child(_make_result_text_field(tier, "result_text"))
 	card.add_child(_rewards_toggle(tier["rewards"], true))
 	return card.get_parent() as Control
 
@@ -889,6 +961,7 @@ func _add_ladder(body: VBoxContainer, definition: Dictionary, rebuild: Callable)
 			)
 			head.add_child(remove)
 		card.add_child(head)
+		card.add_child(_make_result_text_field(rung, "result_text"))
 		card.add_child(_rewards_toggle(rung["rewards"], false))
 		body.add_child(card.get_parent())
 	if rungs.size() < DoubleOrNothingGame.MAX_RUNGS:
@@ -908,6 +981,7 @@ func _add_ladder(body: VBoxContainer, definition: Dictionary, rebuild: Callable)
 	bust_head.text = "IF THEY BUST"
 	UITheme.style_label(bust_head, UITheme.DANGER, 11)
 	bust.add_child(bust_head)
+	bust.add_child(_make_result_text_field(definition, "bust_result_text"))
 	bust.add_child(_rewards_toggle(definition["bust_rewards"], false))
 	body.add_child(bust.get_parent())
 

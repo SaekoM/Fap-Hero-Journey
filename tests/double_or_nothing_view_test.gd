@@ -6,6 +6,33 @@ extends GdUnitTestSuite
 const RUNGS: int = 6
 
 
+# Records what the view asks of the device, without any hardware.
+class RecordingDevice:
+	extends MiniGameDevice
+
+	var calls: Array[String] = []
+	var streamed_axes: Array[Dictionary] = []
+	var axis_moves: Array = []
+
+	func stream_axes(positions: Dictionary) -> void:
+		streamed_axes.append(positions)
+
+	func play_axis_moves(steps: Array) -> void:
+		axis_moves.append(steps)
+
+	func hold(_lo: int, _hi: int, _half_cycle_ms: int) -> void:
+		calls.append("hold")
+
+	func walk(_fastest_ms: int, _slowest_ms: int, _secs: float) -> void:
+		calls.append("walk")
+
+	func ease_out() -> void:
+		calls.append("ease_out")
+
+	func stop() -> void:
+		calls.append("stop")
+
+
 func _press_e(view: DoubleOrNothingView) -> void:
 	var key: InputEventKey = InputEventKey.new()
 	key.keycode = KEY_E
@@ -28,8 +55,9 @@ func _view_after_a_win() -> Dictionary:
 	)
 	var view: DoubleOrNothingView = auto_free(DoubleOrNothingView.new())
 	add_child(view)
-	view.setup(definition, game, func(_lo: int, _hi: int, _half: int) -> void: pass, null)
-	return {"view": view, "game": game}
+	var device: RecordingDevice = RecordingDevice.new()
+	view.setup(definition, game, device, null)
+	return {"view": view, "game": game, "device": device}
 
 
 func test_e_is_ignored_while_the_wheel_spins() -> void:
@@ -42,7 +70,7 @@ func test_e_is_ignored_while_the_wheel_spins() -> void:
 	view.setup(
 		MiniGameLibrary.normalize_definition({"kind": DoubleOrNothingGame.KIND, "rungs": rungs}),
 		game,
-		func(_lo: int, _hi: int, _half: int) -> void: pass,
+		RecordingDevice.new(),
 		null
 	)
 	_press_e(view)  # the one real spin: its risk is drawn now
@@ -66,3 +94,47 @@ func test_e_is_ignored_after_the_wheel_lands_until_the_result_is_clear() -> void
 	assert_int(game.rung).is_equal(2)
 	assert_str(game.outcome).is_equal("")
 	assert_bool(view._locked).is_true()
+
+
+# ── The device ───────────────────────────────────────────────────────────────
+
+
+func test_a_spin_asks_for_one_walk_rather_than_a_change_every_frame() -> void:
+	var setup: Dictionary = _view_after_a_win()
+	var device: RecordingDevice = setup["device"]
+	device.calls.clear()
+	setup["view"]._spin()
+	await await_millis(200)
+	assert_array(device.calls).contains_exactly(["walk"])
+
+
+func test_cashing_out_eases_the_device_home() -> void:
+	var setup: Dictionary = _view_after_a_win()
+	var device: RecordingDevice = setup["device"]
+	device.calls.clear()
+	setup["view"]._cash_out()
+	assert_array(device.calls).contains_exactly(["ease_out"])
+
+
+func test_a_bust_stops_the_device_dead() -> void:
+	var setup: Dictionary = _view_after_a_win()
+	var device: RecordingDevice = setup["device"]
+	device.calls.clear()
+	setup["view"]._landed(false)
+	assert_array(device.calls).contains_exactly(["stop"])
+
+
+func test_the_spinning_wheel_drives_the_extra_axes() -> void:
+	var setup: Dictionary = _view_after_a_win()
+	setup["view"]._spin()
+	await await_millis(200)
+	assert_bool((setup["device"] as RecordingDevice).streamed_axes.is_empty()).is_false()
+
+
+func test_a_win_nods_and_a_bust_does_not() -> void:
+	var setup: Dictionary = _view_after_a_win()
+	var device: RecordingDevice = setup["device"]
+	setup["view"]._landed(false)
+	assert_array(device.axis_moves).is_empty()
+	setup["view"]._landed(true)
+	assert_array(device.axis_moves).is_equal([MiniGameAxes.WIN_NOD])

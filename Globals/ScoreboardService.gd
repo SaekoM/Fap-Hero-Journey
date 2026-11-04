@@ -19,7 +19,7 @@ extends Node
 #     "journey_folder": String,
 #     "runs": [
 #       { "score": int, "completed": bool, "rounds_done": int,
-#         "rounds_total": int, "date": String (ISO) },
+#         "rounds_total": int, "date": String (ISO), "assisted": bool (absent on older runs) },
 #       ...
 #     ]   # ranked by score desc, capped to MAX_RUNS
 #   }

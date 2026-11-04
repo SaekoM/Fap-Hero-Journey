@@ -919,6 +919,7 @@ func _show_minigame_screen(node_data: Dictionary) -> void:
 # sits + the attempt number: every attempt gets its own layout, and since the attempt is also counted in
 # the stored save, quitting and resuming can't replay a layout already seen.
 func _begin_minigame_attempt() -> Dictionary:
+	MiniGameAssist.note_game_started()
 	var place: String = GameState.CurrentNodeId()
 	var attempt: int = GameState.BeginMiniGameAttempt(place)
 	if not _test_mode:
@@ -944,11 +945,14 @@ func _pay_retry(cost: Dictionary) -> void:
 	GameState.ApplyRewardChanges(cost)
 
 
-# The player kept a result (or left the screen to time out): pay the tier, set its routing flag and clear
-# the other tiers', then move on exactly as a shop does when it closes.
+# The player kept a result (or left the screen to time out): pay the tier, then move on exactly as a shop
+# does when it closes.
 func _on_minigame_resolved(tier_id: String, definition: Dictionary) -> void:
 	DeviceFiller.stop()
 	_pay_minigame_tier(definition, tier_id)
+	GameState.LogMiniGame(
+		str(definition.get("name", "")), MiniGameResolver.tier_name(definition, tier_id)
+	)
 	_hud_suppressed = false
 	if not _curse_hud_hidden:
 		_hud.visible = true
@@ -965,15 +969,13 @@ func _on_minigame_resolved(tier_id: String, definition: Dictionary) -> void:
 	)
 
 
-# What reaching a tier changes in the journey: its rewards, and the flags that record which one it was.
+# What reaching a tier changes in the journey: its rewards, including any flags its creator set on it.
 func _pay_minigame_tier(definition: Dictionary, tier_id: String) -> void:
 	var rewards: Dictionary = {}
 	for tier: Dictionary in definition.get("tiers", []):
 		if str(tier["id"]) == tier_id:
 			rewards = tier.get("rewards", {})
 	_apply_minigame_rewards(rewards)
-	var flags: Dictionary = MiniGameResolver.flag_changes(definition, tier_id)
-	GameState.ApplyRewardChanges({"set_flags": flags["set"], "clear_flags": flags["clear"]})
 
 
 # A tier's rewards: coins either way, an item, score outside any round (so it never becomes the "last
@@ -3851,6 +3853,7 @@ func _record_run(completed: bool, rounds_done: int = -1, rounds_total: int = -1)
 				"completed": completed,
 				"rounds_done": reached,
 				"rounds_total": total,
+				"assisted": GameState.MiniGameAssisted,
 			}
 		)
 	)
@@ -5426,13 +5429,15 @@ func _qte_definition(game_id: String) -> Dictionary:
 # Counted but not written to the stored save, unlike a node's game: a resume replays the round from the start, and
 # a disk write here could hitch the video the player is timing against.
 func _new_qte_game(event: Dictionary, knobs: Dictionary, duration_ms: int) -> QuickTimeEventGame:
+	MiniGameAssist.note_game_started()
 	var place: String = "%s/%s" % [GameState.CurrentNodeId(), event["id"]]
 	return QuickTimeEventGame.new(
 		knobs,
 		duration_ms,
 		MiniGameResolver.attempt_seed(
 			GameState.RunSeed, place, GameState.BeginMiniGameAttempt(place)
-		)
+		),
+		MiniGameAssist.time_scale()
 	)
 
 
@@ -5477,11 +5482,13 @@ func _end_qte(event: Dictionary) -> void:
 	var dodged: bool = view.score() >= int(event.get("pass_score", 0))
 	if dodged:
 		_dodged_attacks[attack_id] = true
-	_show_dodge_result(view, dodged)
+	_show_dodge_result(view, dodged, MiniGameResolver.tier_result_text(definition, tier_id))
 
 
-func _show_dodge_result(view: QuickTimeEventView, dodged: bool) -> void:
-	view.show_result("DODGED" if dodged else "HIT", UITheme.AMBER if dodged else UITheme.DANGER)
+func _show_dodge_result(view: QuickTimeEventView, dodged: bool, detail: String) -> void:
+	view.show_result(
+		"DODGED" if dodged else "HIT", UITheme.AMBER if dodged else UITheme.DANGER, detail
+	)
 
 
 # A QTE on its own has no attack to speak of, so it announces the tier it reached.
@@ -5490,7 +5497,9 @@ func _show_qte_tier(view: QuickTimeEventView, definition: Dictionary, tier_id: S
 	for tier: Dictionary in definition.get("tiers", []):
 		if str(tier["id"]) == tier_id and str(tier.get("name", "")) != "":
 			tier_name = str(tier["name"]).to_upper()
-	view.show_result(tier_name, UITheme.AMBER)
+	view.show_result(
+		tier_name, UITheme.AMBER, MiniGameResolver.tier_result_text(definition, tier_id)
+	)
 
 
 # Holding the round for `event`: a QTE of its own, or an attack that has come due with a dodge.
@@ -5503,7 +5512,10 @@ func _begin_held_qte(event: Dictionary, definition: Dictionary) -> void:
 	_held_qte = QuickTimeEventView.new()
 	add_child(_held_qte)
 	_held_qte.setup_held(
-		_new_qte_game(event, knobs, QuickTimeEventGame.held_duration_ms(knobs)), knobs
+		_new_qte_game(
+			event, knobs, QuickTimeEventGame.held_duration_ms(knobs, MiniGameAssist.time_scale())
+		),
+		knobs
 	)
 	_held_qte.game_over.connect(_on_held_qte_over.bind(event, definition))
 
@@ -5517,7 +5529,9 @@ func _on_held_qte_over(event: Dictionary, definition: Dictionary) -> void:
 	if is_attack:
 		var dodge: Dictionary = event["dodge"]
 		lands = score < int(dodge.get("pass_score", RoundTimeline.DEFAULT_DODGE_PASS_SCORE))
-		_show_dodge_result(_held_qte, not lands)
+		_show_dodge_result(
+			_held_qte, not lands, MiniGameResolver.tier_result_text(definition, tier_id)
+		)
 	else:
 		_show_qte_tier(_held_qte, definition, tier_id)
 	_held_qte.released.connect(_on_held_qte_released.bind(event if lands else {}))
@@ -5542,6 +5556,8 @@ func _hold_round(on: bool) -> void:
 	_end_timer.paused = on
 	InventoryService.SetPaused(on or _effect_lingering)
 	_hud_suppressed = on
+	if is_instance_valid(_audio_cues):
+		_audio_cues.set_paused(on)
 	if on:
 		_hud.visible = false
 		FunscriptPlayer.Pause()

@@ -884,6 +884,15 @@ func set_reduce_flashing(on: bool) -> void:
 	_config.set_value("display", "reduce_flashing", on)
 
 
+# Mini-game assist (MiniGameAssist): more time on timed mini-games, and the run is marked ASSISTED. Off by default.
+func get_minigame_assist() -> bool:
+	return bool(_config.get_value("gameplay", "minigame_assist", false))
+
+
+func set_minigame_assist(on: bool) -> void:
+	_config.set_value("gameplay", "minigame_assist", on)
+
+
 func set_colour_mode(mode: String) -> void:
 	var known: bool = UITheme.COLOUR_MODES.has(mode)
 	_config.set_value("display", "colour_mode", mode if known else UITheme.COLOUR_MODE_OFF)

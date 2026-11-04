@@ -431,12 +431,26 @@ func stop() -> void:
 # never reached one at all, in a storyboard or in the builder's test. The same stroke is expressed
 # here as the smallest script that can say it: two points, played on loop by the device itself. No
 # feeding, so nothing has to keep ticking it, and it survives the app being busy.
+#
+# Changing the stroke means a new script: two round trips. A caller can ask for changes far faster than that,
+# so uploads run one at a time, no closer than FILLER_MIN_UPLOAD_GAP_MS, and only the newest request is sent.
 
+const FILLER_MIN_UPLOAD_GAP_MS: int = 500
+const FILLER_EASE_HOME_MS: int = 700
+const FILLER_HOME_POSITION: int = 50
+
+# A stroke is wanted. Stays true through a failed upload, so the next change still gets sent.
 var _filler_active: bool = false
-# Bumped by every start and every stop. A start is two round trips long, so a stop can land while one
-# is still in flight: the start checks this on the way back and, if it has been superseded, stops the
-# device instead of claiming it. Without it a stop could be swallowed and leave the device looping.
+# Bumped only by a stop. A stop can land while an upload is in flight, and the upload then has to stop the
+# device again. A newer stroke must never do this: that stop could land after the newer script.
 var _filler_gen: int = 0
+# Builds the script to send next, read at the moment of sending so it reflects where the device is by then.
+var _filler_next_script: Callable = Callable()
+var _filler_uploading: bool = false
+var _filler_last_upload_ms: int = -FILLER_MIN_UPLOAD_GAP_MS
+# The script the device is playing, as {points, loop, start_time}, and when its clock read zero.
+var _filler_live: Dictionary = {}
+var _filler_live_since_ms: int = 0
 
 
 func is_filler_active() -> bool:
@@ -444,48 +458,36 @@ func is_filler_active() -> bool:
 
 
 ## Starts (or re-aims) the looping filler stroke. `lo`/`hi` are 0-100 positions, `half_cycle_ms` one
-## stroke in one direction. Returns false when there's no Handy to drive, or a round owns it.
-func start_filler(lo: int, hi: int, half_cycle_ms: int) -> bool:
-	if not _connected or _playing or _override_active:
-		return false
+## stroke in one direction. Does nothing when there's no Handy to drive, or a round owns it.
+func start_filler(lo: int, hi: int, half_cycle_ms: int) -> void:
+	if not _can_fill():
+		return
 	var half: int = maxi(50, half_cycle_ms)
 	var bottom: int = clampi(mini(lo, hi), 0, 100)
 	var top: int = clampi(maxi(lo, hi), 0, 100)
-	# Claimed BEFORE the round trips below, not after: a stop pressed while this is still setting up
-	# has to find something to cancel, or it returns having done nothing and the play lands behind it.
-	_filler_gen += 1
-	var gen: int = _filler_gen
 	_filler_active = true
-	var setup: Dictionary = await _api_put("/hsp/setup", {})
-	if gen != _filler_gen:
-		return false  # superseded by a stop (or a re-aim) while we waited
-	if setup.is_empty():
-		_filler_active = false
-		return false
-	# One full cycle: at the bottom, at the top a half-stroke later, back at the bottom a half-stroke
-	# after that. Looping this is an endless alternating stroke.
-	var pts: Array = [
-		{"t": 0, "x": bottom},
-		{"t": half, "x": top},
-		{"t": half * 2, "x": bottom},
-	]
-	var res: Dictionary = await _api_put(
-		"/hsp/play",
-		{
-			"start_time": 0,
-			"playback_rate": 1.0,
-			"pause_on_starving": true,
-			"loop": true,
-			"add": {"points": pts, "flush": true, "tail_point_stream_index": pts.size()},
-		}
-	)
-	if gen != _filler_gen:
-		# A stop landed while the play was in flight. Its /hsp/stop went out BEFORE this play, so the
-		# device would be left looping — send another rather than trust the ordering.
-		await _api_put("/hsp/stop", {})
-		return false
-	_filler_active = not res.is_empty()
-	return _filler_active
+	_queue_filler_script(_looping_script.bind(bottom, top, half))
+
+
+## Small strokes walking up and down the range, slowing from `fastest_ms` to `slowest_ms` across `slowdown_ms`.
+func start_filler_walk(fastest_ms: int, slowest_ms: int, slowdown_ms: int) -> void:
+	if not _can_fill():
+		return
+	_filler_active = true
+	_queue_filler_script(_walk_script.bind(fastest_ms, slowest_ms, slowdown_ms))
+
+
+## Ends the stroke by gliding from wherever it is to the middle. With no stroke playing yet there's nothing to
+## glide from, so it stops instead.
+func ease_filler_home() -> void:
+	if not _filler_active:
+		return
+	if _filler_live.is_empty():
+		stop_filler()
+		return
+	_filler_active = false
+	_session_ready = false  # that session is spent; the next round prewarms a fresh one
+	_queue_filler_script(_ease_home_script)
 
 
 ## Stops the filler loop. Sends the stop UNCONDITIONALLY — it is one cheap idempotent call, and the
@@ -493,10 +495,123 @@ func start_filler(lo: int, hi: int, half_cycle_ms: int) -> bool:
 ## worse than the cost of one too many. A round's own playback is never at risk: start_filler refuses
 ## while one owns the device, so there is never a round to interrupt when this runs.
 func stop_filler() -> void:
-	_filler_gen += 1  # cancels any start still in flight
+	_filler_gen += 1  # any upload in flight sends a stop of its own when it lands
 	_filler_active = false
+	_filler_next_script = Callable()
+	_filler_live = {}
 	_session_ready = false  # that session is spent; the next round prewarms a fresh one
 	await _api_put("/hsp/stop", {})
+
+
+func _can_fill() -> bool:
+	return _connected and not _playing and not _override_active
+
+
+func _queue_filler_script(build_script: Callable) -> void:
+	_filler_next_script = build_script
+	_upload_filler_scripts()
+
+
+# Sends queued scripts until none are left. Only one of these runs at a time; requests arriving meanwhile
+# replace the queued one, so the loop always moves on to the newest.
+func _upload_filler_scripts() -> void:
+	if _filler_uploading:
+		return
+	_filler_uploading = true
+	while _filler_next_script.is_valid():
+		var wait_ms: int = _filler_last_upload_ms + FILLER_MIN_UPLOAD_GAP_MS - Time.get_ticks_msec()
+		if wait_ms > 0:
+			await get_tree().create_timer(wait_ms / 1000.0).timeout
+			continue
+		_filler_last_upload_ms = Time.get_ticks_msec()
+		await _upload_next_filler_script()
+	_filler_uploading = false
+
+
+func _upload_next_filler_script() -> void:
+	var gen: int = _filler_gen
+	var setup: Dictionary = await _api_put("/hsp/setup", {})
+	if gen != _filler_gen:
+		return  # stopped on the way; anything queued since is newer than that stop
+	if setup.is_empty():
+		_filler_next_script = Callable()  # dropped, not retried: the next change tries again
+		return
+	var script: Dictionary = _filler_next_script.call()
+	_filler_next_script = Callable()
+	var sent_ms: int = Time.get_ticks_msec()
+	var res: Dictionary = await _send_filler_play(script)
+	if gen != _filler_gen:
+		# The stop went out before this play, so the device would be left looping.
+		await _api_put("/hsp/stop", {})
+		return
+	if not res.is_empty():
+		_filler_live = script
+		_filler_live_since_ms = sent_ms - int(script["start_time"])
+
+
+func _send_filler_play(script: Dictionary) -> Dictionary:
+	var points: Array = script["points"]
+	var play: Dictionary = {
+		"start_time": script["start_time"],
+		"playback_rate": 1.0,
+		"pause_on_starving": true,
+		"loop": script["loop"],
+		"add": {"points": points, "flush": true, "tail_point_stream_index": points.size()},
+	}
+	if _server_synced:
+		play["server_time"] = _server_now()
+	return await _api_put("/hsp/play", play)
+
+
+func _looping_script(bottom: int, top: int, half: int) -> Dictionary:
+	var start_time: int = 0
+	if not _filler_live.is_empty():
+		var points: Array = _filler_live["points"]
+		var clock_ms: int = _filler_clock_ms()
+		start_time = HandyPoints.cycle_time_at(
+			HandyPoints.sample_pos(points, clock_ms),
+			HandyPoints.is_rising_at(points, clock_ms),
+			bottom,
+			top,
+			half
+		)
+	return {
+		"points": HandyPoints.stroke_cycle(bottom, top, half),
+		"loop": true,
+		"start_time": start_time,
+	}
+
+
+func _walk_script(fastest_ms: int, slowest_ms: int, slowdown_ms: int) -> Dictionary:
+	var from_position: int = 0
+	if not _filler_live.is_empty():
+		from_position = HandyPoints.sample_pos(_filler_live["points"], _filler_clock_ms())
+	return {
+		"points": HandyPoints.walking_strokes(from_position, fastest_ms, slowest_ms, slowdown_ms),
+		"loop": false,
+		"start_time": 0,
+	}
+
+
+func _ease_home_script() -> Dictionary:
+	var from_position: int = FILLER_HOME_POSITION
+	if not _filler_live.is_empty():
+		from_position = HandyPoints.sample_pos(_filler_live["points"], _filler_clock_ms())
+	return {
+		"points":
+		[{"t": 0, "x": from_position}, {"t": FILLER_EASE_HOME_MS, "x": FILLER_HOME_POSITION}],
+		"loop": false,
+		"start_time": 0,
+	}
+
+
+# Where the live script's clock should be by now. An estimate: the device has no way to report it.
+func _filler_clock_ms() -> int:
+	return HandyPoints.script_time(
+		_filler_live["points"],
+		Time.get_ticks_msec() - _filler_live_since_ms,
+		bool(_filler_live["loop"])
+	)
 
 
 # ── Override takeover ──────────────────────────────────────────────────────────

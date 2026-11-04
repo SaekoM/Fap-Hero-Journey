@@ -517,6 +517,9 @@ func _all_set_flags() -> Dictionary:
 				flags[str(f2)] = true
 			for f2: Variant in e.get("clear_flags", []):
 				flags[str(f2)] = true
+	# A mini-game's tiers set flags too, and those live in the library rather than on any node.
+	for flag: Variant in MiniGameLibrary.flag_names(_journey_minigames):
+		flags[str(flag)] = true
 	return flags
 
 
@@ -1182,6 +1185,8 @@ func _run_audit() -> Dictionary:
 				"round_length_bounds": round_length_bounds,
 				"journey_axes": _journey_axes(),
 				"tags": _journey_tags,
+				"minigames": _journey_minigames,
+				"characters": _journey_characters,
 			}
 		)
 	)

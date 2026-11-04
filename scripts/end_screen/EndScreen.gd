@@ -80,6 +80,8 @@ func _populate() -> void:
 			]
 		)
 	_journey_lbl.text = (journey.get("title", "Journey") as String).to_upper()
+	if GameState.MiniGameAssisted:
+		_journey_lbl.text += "  ·  ASSISTED"
 
 	# Use the actual played rounds from the log (fork paths may differ from
 	# the catalogue's top-level round list).
@@ -300,6 +302,33 @@ func _populate_score() -> void:
 				row.add_child(detail_lbl)
 				row.add_child(pts_lbl)
 				_round_breakdown.add_child(_indent_row(row, depth))
+
+			# ── Mini-game row ─────────────────────────────────────────────────
+			"minigame":
+				_round_breakdown.add_child(
+					_indent_row(_make_minigame_row(entry), entry.get("depth", 0) as int)
+				)
+
+
+# A mini-game in the route: its name, and the tier it ended on.
+func _make_minigame_row(entry: Dictionary) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var icon_lbl: Label = Label.new()
+	icon_lbl.text = "◆"
+	icon_lbl.add_theme_color_override("font_color", UITheme.MINIGAME)
+	icon_lbl.add_theme_font_size_override("font_size", 16)
+	row.add_child(icon_lbl)
+	var result_lbl: Label = Label.new()
+	var tier: String = str(entry.get("tier", ""))
+	result_lbl.text = str(entry.get("name", "")).to_upper()
+	if tier != "":
+		result_lbl.text += "  →  " + tier.to_upper()
+	result_lbl.add_theme_color_override("font_color", UITheme.MINIGAME)
+	result_lbl.add_theme_font_size_override("font_size", 15)
+	row.add_child(result_lbl)
+	return row
 
 
 # ---------------------------------------------------------------------------

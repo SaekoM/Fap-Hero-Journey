@@ -238,3 +238,73 @@ func test_bridge_from_noop_guards() -> void:
 	var pts: Array = [{"t": 0, "x": 50}]
 	assert_int((HandyPoints.bridge_from(pts, -1, 200) as Array).size()).is_equal(1)  # unknown pos
 	assert_int((HandyPoints.bridge_from(pts, 50, 0) as Array).size()).is_equal(1)  # no window
+
+
+# ── Filler strokes ───────────────────────────────────────────────────────────
+
+
+func test_a_looping_script_clock_wraps_and_another_stays_on_its_end() -> void:
+	var cycle: Array = HandyPoints.stroke_cycle(0, 100, 500)
+	assert_int(HandyPoints.script_time(cycle, 1200, true)).is_equal(200)
+	assert_int(HandyPoints.script_time(cycle, 1200, false)).is_equal(1000)
+
+
+func test_the_direction_of_a_stroke_is_read_from_its_segment() -> void:
+	var cycle: Array = HandyPoints.stroke_cycle(0, 100, 500)
+	assert_bool(HandyPoints.is_rising_at(cycle, 0)).is_true()
+	assert_bool(HandyPoints.is_rising_at(cycle, 499)).is_true()
+	assert_bool(HandyPoints.is_rising_at(cycle, 500)).is_false()
+	assert_bool(HandyPoints.is_rising_at(cycle, 1000)).is_false()
+
+
+func test_a_new_stroke_carries_on_from_the_position_and_direction() -> void:
+	assert_int(HandyPoints.cycle_time_at(25, true, 0, 100, 400)).is_equal(100)
+	assert_int(HandyPoints.cycle_time_at(25, false, 0, 100, 400)).is_equal(700)
+	assert_int(HandyPoints.cycle_time_at(0, false, 0, 100, 400)).is_equal(0)  # wraps, never past the end
+
+
+func test_a_position_outside_a_shorter_stroke_lands_on_its_nearest_end() -> void:
+	assert_int(HandyPoints.cycle_time_at(90, true, 40, 60, 400)).is_equal(400)
+
+
+func _walk() -> Array:
+	return HandyPoints.walking_strokes(0, 100, 260, 3400)
+
+
+func test_a_walk_starts_where_the_device_is() -> void:
+	var points: Array = HandyPoints.walking_strokes(30, 100, 260, 3400)
+	assert_int(int(points[0]["t"])).is_equal(0)
+	assert_int(int(points[0]["x"])).is_equal(30)
+
+
+func test_a_walk_slows_from_fastest_to_slowest() -> void:
+	var points: Array = _walk()
+	assert_int(int(points[1]["t"])).is_equal(100)
+	assert_int(int(points[-1]["t"]) - int(points[-2]["t"])).is_equal(260)
+	assert_int(int(points[-1]["t"])).is_greater_equal(3400 + HandyPoints.WALK_TAIL_MS)
+	for i: int in range(2, points.size()):
+		var stroke_ms: int = int(points[i]["t"]) - int(points[i - 1]["t"])
+		var previous_ms: int = int(points[i - 1]["t"]) - int(points[i - 2]["t"])
+		assert_int(stroke_ms).is_greater_equal(previous_ms)
+
+
+# Each stroke is the band's length, give or take how far the band moved during it.
+func test_a_walks_strokes_are_small_and_stay_in_range() -> void:
+	var points: Array = _walk()
+	var longest: int = HandyPoints.WALK_STROKE_LENGTH + HandyPoints.WALK_STEP_PER_STROKE
+	for i: int in range(1, points.size()):
+		var x: int = int(points[i]["x"])
+		assert_int(x).is_between(0, 100)
+		if i > 1:
+			assert_int(absi(x - int(points[i - 1]["x"]))).is_less_equal(longest)
+
+
+func test_a_walk_reaches_the_top_then_comes_back_down() -> void:
+	var positions: Array = _walk().map(func(point: Dictionary) -> int: return int(point["x"]))
+	var top_at: int = positions.find(positions.max())
+	assert_int(positions[top_at]).is_greater_equal(90)
+	assert_int(positions.slice(top_at).min()).is_less_equal(10)
+
+
+func test_a_walk_fits_in_one_upload() -> void:
+	assert_int(_walk().size()).is_less_equal(HandyPoints.MAX_POINTS_PER_ADD)

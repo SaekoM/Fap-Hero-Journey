@@ -63,11 +63,14 @@ public partial class GameState : Node
     // an attempt too, so it rides the save record: quitting after seeing a layout can't replay it.
     private System.Collections.Generic.Dictionary<string, int> _miniGameAttempts = new();
 
+    // A mini-game was played with the player's assist on this run. Rides the save record, so a resume keeps it.
+    private bool _miniGameAssisted = false;
+
     // Round nodes entered so far this run = the 1-based "current round number". A DAG is
     // acyclic, so each node is entered at most once — no double counting.
     private int _roundsEntered = 0;
 
-    // Chronological play log (shape unchanged): fork_choice / round entries. "depth" is the
+    // Chronological play log (shape unchanged): fork_choice / round / minigame entries. "depth" is the
     // node's tree-nesting depth (stamped by build_graph), reproducing the old fork_depth so
     // the end screen indents nested forks. Author-rewired convergence (Phase 3) could make
     // depth ambiguous, but migrated tree journeys are exact.
@@ -89,6 +92,7 @@ public partial class GameState : Node
         _discovered.Clear();
         _playedPoolClips.Clear();
         _miniGameAttempts.Clear();
+        _miniGameAssisted = false;
         _runSeed = NewRunSeed();
         RebuildCounterBounds();
         SeedCounterStarts();
@@ -115,6 +119,7 @@ public partial class GameState : Node
         _discovered.Clear();
         _playedPoolClips.Clear();
         _miniGameAttempts.Clear();
+        _miniGameAssisted = false;
         _runSeed = NewRunSeed();
         SeedCounterFloors();
         EnterCurrent();
@@ -404,6 +409,10 @@ public partial class GameState : Node
     // ---------------------------------------------------------------------------
 
     public int RunSeed => _runSeed;
+
+    public bool MiniGameAssisted => _miniGameAssisted;
+
+    public void MarkMiniGameAssisted() => _miniGameAssisted = true;
 
     private static int NewRunSeed() => (int)(GD.Randi() & 0x7FFFFFFF);
 
@@ -795,6 +804,7 @@ public partial class GameState : Node
         ["played_pool_clips"] = PlayedPoolClipsArray(),
         ["run_seed"] = _runSeed,
         ["minigame_attempts"] = MiniGameAttemptsDict(),
+        ["minigame_assisted"] = _miniGameAssisted,
     };
 
     // Per-loop iteration counts {loop_node_id: int} for the save record, so a resume mid-loop keeps count.
@@ -860,6 +870,7 @@ public partial class GameState : Node
         _discovered.Clear();
         _playedPoolClips.Clear();
         _miniGameAttempts.Clear();
+        _miniGameAssisted = false;
         _runSeed = NewRunSeed();
         RebuildCounterBounds();
         // Starts first, so a counter DECLARED since this save was written begins where the author says
@@ -917,6 +928,8 @@ public partial class GameState : Node
             // neither, and keeps the fresh seed drawn above.
             if (saveData.ContainsKey("run_seed"))
                 _runSeed = saveData["run_seed"].AsInt32();
+            if (saveData.ContainsKey("minigame_assisted"))
+                _miniGameAssisted = saveData["minigame_assisted"].AsBool();
             if (saveData.ContainsKey("minigame_attempts"))
             {
                 var savedAttempts = saveData["minigame_attempts"].AsGodotDictionary();
@@ -954,7 +967,20 @@ public partial class GameState : Node
         });
     }
 
-    // Full chronological log of fork choices and rounds played (for the end screen).
+    // Called by GameLoop when a mini-game node has been played out: the game and the tier it ended on.
+    public void LogMiniGame(string gameName, string tierName)
+    {
+        var node = NodeOf(_currentId);
+        _playLog.Add(new Dictionary
+        {
+            ["type"] = "minigame",
+            ["name"] = gameName,
+            ["tier"] = tierName,
+            ["depth"] = node.ContainsKey("depth") ? node["depth"].AsInt32() : 0,
+        });
+    }
+
+    // Full chronological log of fork choices, rounds and mini-games played (for the end screen).
     public Array GetPlayLog()
     {
         var result = new Array();

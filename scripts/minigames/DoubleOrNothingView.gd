@@ -16,11 +16,13 @@ signal waiting_changed(is_waiting: bool)
 const SPIN_SECS: float = 3.4
 const SPIN_TURNS: float = 4.0  # whole turns before it starts to settle
 const LANDED_HOLD_SECS: float = 0.9  # how long the landed wheel stays before the climb or the result
-# Device: a steady stroke that speeds up with each rung held (owner decision, 2026-10-30), building to
-# SPIN_PEAK_MS while the wheel spins and peaking as it lands.
-const LADDER_SLOWEST_MS: int = 1400
-const LADDER_FASTEST_MS: int = 350
-const SPIN_PEAK_MS: int = 260
+# Device (owner, 2026-11-04): a slow full stroke while the player chooses, whichever rung they hold. While the
+# wheel spins, small strokes walk up and down the range and slow as the wheel does, carrying on through a win's
+# celebration. A bust stops it; cashing out or a jackpot eases it back to the middle. On a serial multi-axis
+# device, tilt and twist circle with the wheel and a win nods (MiniGameAxes).
+const CHOOSING_HALF_CYCLE_MS: int = 1400
+const SPIN_FASTEST_STROKE_MS: int = 100
+const SPIN_SLOWEST_STROKE_MS: int = 260
 # The tick slows with the wheel; it also drops in pitch slightly as it slows, so the end sounds heavy.
 const TICK_PITCH_FAST: float = 1.25
 const TICK_PITCH_SLOW: float = 0.85
@@ -34,8 +36,9 @@ const BANKED_HOLD_SECS: float = 0.8
 const JACKPOT_HOLD_SECS: float = 2.4
 
 var _definition: Dictionary
+var _accent: Color = Color.WHITE  # the creator's accent colour, or the app's
 var _game: DoubleOrNothingGame
-var _drive: Callable  # (lo, hi, half_cycle_ms) — MiniGameScreen._drive_device
+var _device: MiniGameDevice
 var _slices: Array[Dictionary] = []
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()  # staging only: where the wheel rests
 # True from SPIN until the player can choose again: through the spin, the landing, the celebration and the
@@ -56,12 +59,16 @@ var _character: GameCharacterView = null  # stands outside the panel; owned by M
 
 
 func setup(
-	definition: Dictionary, game: DoubleOrNothingGame, drive: Callable, character: GameCharacterView
+	definition: Dictionary,
+	game: DoubleOrNothingGame,
+	device: MiniGameDevice,
+	character: GameCharacterView
 ) -> void:
 	_definition = definition
+	_accent = MiniGameLibrary.accent_color(definition)
 	_character = character
 	_game = game
-	_drive = drive
+	_device = device
 	_slices = LuckWheel.slices(int(definition["knobs"]["odds"]))
 	_rng.randomize()
 	add_theme_constant_override("separation", 24)
@@ -69,7 +76,7 @@ func setup(
 	_build_table()
 	_refresh_tower(false)
 	_react("idle")
-	_drive_rung_pace()
+	_drive_choosing_stroke()
 	waiting_changed.emit(true)
 
 
@@ -84,6 +91,7 @@ func _build_table() -> void:
 	var odds: int = int(_definition["knobs"]["odds"])
 	_wheel = LuckWheelView.new()
 	_wheel.slices = _slices
+	_wheel.accent = _accent
 	_wheel.custom_minimum_size = Vector2(260, 260)
 	_wheel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	column.add_child(_wheel)
@@ -104,7 +112,7 @@ func _build_table() -> void:
 	_cash_btn = _button("CASH OUT", UITheme.PURPLE_BRIGHT)
 	_cash_btn.pressed.connect(_cash_out)
 	buttons.add_child(_cash_btn)
-	_spin_btn = _button("SPIN  (E)", UITheme.MINIGAME)
+	_spin_btn = _button("SPIN  (E)", _accent)
 	_spin_btn.pressed.connect(_spin)
 	buttons.add_child(_spin_btn)
 	column.add_child(buttons)
@@ -148,10 +156,8 @@ func _refresh_tower(just_climbed: bool) -> void:
 func _rung_row(text: String, held: bool, next: bool) -> PanelContainer:
 	var row: PanelContainer = PanelContainer.new()
 	var style: StyleBoxFlat = StyleBoxFlat.new()
-	style.bg_color = UITheme.PANEL_BG_DEEP if not held else Color(UITheme.MINIGAME, 0.22)
-	style.border_color = (
-		UITheme.MINIGAME if held else Color(UITheme.MINIGAME, 0.35 if next else 0.15)
-	)
+	style.bg_color = UITheme.PANEL_BG_DEEP if not held else Color(_accent, 0.22)
+	style.border_color = (_accent if held else Color(_accent, 0.35 if next else 0.15))
 	style.set_border_width_all(2 if held else 1)
 	style.set_corner_radius_all(UITheme.CORNER_RADIUS)
 	style.set_content_margin_all(8)
@@ -169,6 +175,7 @@ func _cash_out() -> void:
 		return
 	_done = true
 	_game.cash_out()
+	_device.ease_out()
 	_cash_btn.disabled = true
 	_spin_btn.disabled = true
 	waiting_changed.emit(false)
@@ -198,6 +205,7 @@ func _spin() -> void:
 	_spin_from = _wheel.rotation_turn
 	_spin_to = -resting + ceilf(_spin_from + SPIN_TURNS + resting)
 	_last_slice = LuckWheel.slice_index_at(_slices, -_spin_from)
+	_device.walk(SPIN_FASTEST_STROKE_MS, SPIN_SLOWEST_STROKE_MS, SPIN_SECS)
 	var spin: Tween = create_tween()
 	(
 		spin
@@ -211,7 +219,7 @@ func _spin() -> void:
 	_landed(won)
 
 
-# One frame of the spin: turn the wheel, tick when a new slice passes the pointer, and build the device.
+# One frame of the spin: turn the wheel, and tick when a new slice passes the pointer.
 func _set_spin(rotation_turn: float) -> void:
 	_wheel.rotation_turn = rotation_turn
 	_wheel.queue_redraw()
@@ -220,13 +228,16 @@ func _set_spin(rotation_turn: float) -> void:
 	if slice != _last_slice:
 		_last_slice = slice
 		UISound.wheel_tick(lerpf(TICK_PITCH_FAST, TICK_PITCH_SLOW, progress))
-	_drive.call(0, 100, roundi(lerpf(_rung_pace_ms(), SPIN_PEAK_MS, progress)))
+	_device.stream_axes(MiniGameAxes.spinning_wheel(rotation_turn - _spin_from, progress))
 
 
 func _landed(won: bool) -> void:
+	if won:
+		_device.play_axis_moves(MiniGameAxes.WIN_NOD)
 	if won and _game.outcome == DoubleOrNothingGame.OUTCOME_MAXED:
 		await _jackpot()
 		if is_inside_tree():
+			_device.ease_out()
 			_done = true
 			finished.emit(_game.outcome, "JACKPOT — YOU WON IT ALL")
 		return
@@ -244,7 +255,7 @@ func _landed(won: bool) -> void:
 		_react("bust")
 		_feedback.text = "BUST"
 		_crack_tower()
-		_drive.call(-1, -1, -1)
+		_device.stop()
 	await get_tree().create_timer(LANDED_HOLD_SECS).timeout
 	if not is_inside_tree():
 		return
@@ -256,7 +267,7 @@ func _landed(won: bool) -> void:
 	_locked = false
 	_cash_btn.disabled = false
 	_spin_btn.disabled = false
-	_drive_rung_pace()
+	_drive_choosing_stroke()
 	waiting_changed.emit(true)
 
 
@@ -397,14 +408,8 @@ func handle_input(event: InputEvent) -> bool:
 # ── Device and character ────────────────────────────────────────────────────────
 
 
-func _rung_pace_ms() -> int:
-	var top: int = (_definition["rungs"] as Array).size()
-	var climb: float = float(_game.rung - 1) / maxf(1.0, float(top - 1))
-	return roundi(lerpf(LADDER_SLOWEST_MS, LADDER_FASTEST_MS, climb))
-
-
-func _drive_rung_pace() -> void:
-	_drive.call(0, 100, _rung_pace_ms())
+func _drive_choosing_stroke() -> void:
+	_device.hold(0, 100, CHOOSING_HALF_CYCLE_MS)
 
 
 # The game's character reacts, when it has one.
@@ -434,6 +439,7 @@ class LuckWheelView:
 	extends Control
 
 	var slices: Array[Dictionary] = []
+	var accent: Color = Color.WHITE  # the colour of the WIN slices
 	var rotation_turn: float = 0.0  # whole turns; the point -rotation_turn sits under the pointer
 	# 0–1: how far the WIN slices have turned gold (the jackpot). Faded in, never snapped.
 	var gold: float = 0.0:
@@ -455,7 +461,7 @@ class LuckWheelView:
 				points.append(
 					center + Vector2.from_angle(lerpf(from, to, float(s) / steps)) * radius
 				)
-			var win_colour: Color = Color(UITheme.MINIGAME).lerp(UITheme.AMBER, gold)
+			var win_colour: Color = accent.lerp(UITheme.AMBER, gold)
 			draw_colored_polygon(points, win_colour if won else Color(UITheme.DANGER, 0.75))
 			draw_polyline(points + PackedVector2Array([center]), UITheme.PANEL_BG_DEEP, 2.0, true)
 			var glyph: String = "●" if won else "✕"

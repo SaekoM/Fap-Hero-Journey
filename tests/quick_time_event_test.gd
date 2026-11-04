@@ -216,3 +216,47 @@ func test_a_held_event_has_time_for_every_prompt() -> void:
 	var duration: int = QuickTimeEventGame.held_duration_ms(knobs)
 	assert_int(duration).is_greater(QuickTimeEventGame.min_duration_ms(knobs))
 	assert_int(_game(knobs, duration).prompts.size()).is_equal(5)
+
+
+# ── The player's assist ──────────────────────────────────────────────────────
+
+
+func test_assist_slows_the_rings_and_widens_the_window() -> void:
+	var game: QuickTimeEventGame = QuickTimeEventGame.new(
+		{"prompts": 1, "lead_ms": 1000, "window_ms": 600}, 10000, 3, 1.5
+	)
+	var prompt: Dictionary = game.prompts[0]
+	assert_int(int(prompt["target_ms"]) - int(prompt["show_ms"])).is_equal(1500)
+	assert_int(int(prompt["close_ms"]) - int(prompt["target_ms"])).is_equal(450)
+
+
+# The authored limits cap the knobs, not the assist: a game already at the slowest still gets the help.
+func test_assist_goes_past_the_authored_limits() -> void:
+	var game: QuickTimeEventGame = QuickTimeEventGame.new(
+		{"prompts": 1, "lead_ms": 3000, "window_ms": 1500}, 20000, 3, 1.5
+	)
+	var prompt: Dictionary = game.prompts[0]
+	assert_int(int(prompt["target_ms"]) - int(prompt["show_ms"])).is_equal(4500)
+
+
+func test_an_assisted_game_that_pauses_the_video_keeps_every_prompt() -> void:
+	var knobs: Dictionary = {"prompts": 5, "lead_ms": 3000, "window_ms": 1500}
+	var game: QuickTimeEventGame = QuickTimeEventGame.new(
+		knobs, QuickTimeEventGame.held_duration_ms(knobs, 1.5), 3, 1.5
+	)
+	assert_int(game.prompts.size()).is_equal(5)
+
+
+# Over the video the event's length is fixed, so slower rings can mean fewer of them, but one must still fit.
+func test_a_lone_assisted_prompt_stays_inside_a_short_event() -> void:
+	var knobs: Dictionary = {"prompts": 1, "lead_ms": 1000, "window_ms": 600}
+	var game: QuickTimeEventGame = QuickTimeEventGame.new(knobs, 1300, 3, 1.5)
+	assert_int(int(game.prompts[0]["close_ms"])).is_less_equal(1300)
+
+
+func test_assist_does_not_change_how_a_hit_scores() -> void:
+	var game: QuickTimeEventGame = QuickTimeEventGame.new(
+		{"prompts": 1, "lead_ms": 1000, "window_ms": 600}, 10000, 3, 1.5
+	)
+	var prompt: Dictionary = game.prompts[0]
+	assert_float(game.press(int(prompt["target_ms"]), str(prompt["key"]))).is_equal(1.0)

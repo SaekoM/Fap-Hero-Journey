@@ -25,6 +25,7 @@ extends Node
 #     "discovered":       Array      — fog-of-war discovered node ids
 #     "coins":            int        — CoinService balance
 #     "score":            int        — ScoreService cumulative score
+#     "minigame_assisted": bool      — a mini-game was played with the player's assist on
 #     "total_actions":    int        — for end-screen stat
 #     "inventory":        Array      — owned items (active effects NOT saved)
 #     "round_names":      Array      — round-name log for the end screen

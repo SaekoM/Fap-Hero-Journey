@@ -1972,6 +1972,13 @@ func _make_score_row(rank: int, run: Dictionary) -> Control:
 	outcome_lbl.add_theme_font_size_override("font_size", 11)
 	row.add_child(outcome_lbl)
 
+	if bool(run.get("assisted", false)):
+		var assisted_lbl: Label = Label.new()
+		assisted_lbl.text = "ASSISTED"
+		assisted_lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
+		assisted_lbl.add_theme_font_size_override("font_size", 11)
+		row.add_child(assisted_lbl)
+
 	var date_lbl: Label = Label.new()
 	date_lbl.text = _format_short_date(str(run.get("date", "")))
 	date_lbl.custom_minimum_size = Vector2(56, 0)

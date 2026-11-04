@@ -35,6 +35,8 @@ const CALLOUT_RISE: float = 34.0
 const CALLOUT_SECS: float = 0.6
 const RESULT_FONT_SIZE: int = 64
 const RESULT_HOLD_SECS: float = 0.8
+const RESULT_DETAIL_HOLD_SECS: float = 2.2
+const RESULT_DETAIL_OFFSET: float = 70.0
 const RESULT_FADE_SECS: float = 0.35
 
 # How dark the screen is behind the rings, 0–1.
@@ -130,14 +132,24 @@ func score() -> int:
 	return _game.score()
 
 
-# The game is over: says how it went, lets the round go, and removes itself.
-func show_result(text: String, colour: Color) -> void:
+# The game is over: says how it went, with any words the creator wrote for this result, lets the round go, and
+# removes itself. Words stay up longer, so they can be read.
+func show_result(text: String, colour: Color, detail: String = "") -> void:
 	_clock_ms = float(_game.prompts[-1]["close_ms"]) + 1.0
 	queue_redraw()
 	var label: Label = _callout(text, colour, RESULT_FONT_SIZE, size / 2.0)
 	var leave: Tween = create_tween()
-	leave.tween_interval(RESULT_HOLD_SECS)
+	leave.tween_interval(RESULT_HOLD_SECS if detail == "" else RESULT_DETAIL_HOLD_SECS)
 	leave.tween_property(label, "modulate:a", 0.0, RESULT_FADE_SECS)
+	if detail != "":
+		var words: Label = _callout(
+			detail,
+			UITheme.WHITE_SOFT,
+			UITheme.story_font_size(CALLOUT_FONT_SIZE),
+			size / 2.0 + Vector2(0.0, RESULT_DETAIL_OFFSET)
+		)
+		words.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		leave.parallel().tween_property(words, "modulate:a", 0.0, RESULT_FADE_SECS)
 	leave.parallel().tween_property(self, "dim", 0.0, RESULT_FADE_SECS)
 	leave.tween_callback(released.emit)
 	leave.tween_callback(queue_free)

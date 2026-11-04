@@ -31,6 +31,9 @@ const WARMTH_MODES: Array[String] = [WARMTH_PRECISE, WARMTH_COARSE, WARMTH_OFF]
 const WRONG_PENALTY: float = 0.15
 const MIN_CREDIT: float = 0.4
 
+# 0 to 4 wrong tries on a number; past 4, its share is already at MIN_CREDIT.
+const _WRONG_TRIES_THAT_CHANGE_CREDIT: Array[int] = [0, 1, 2, 3, 4]
+
 # Why a finished game ended.
 const END_OPENED: String = "opened"
 const END_TIME: String = "time"
@@ -59,12 +62,39 @@ static func normalize_knobs(raw: Dictionary) -> Dictionary:
 	return knobs
 
 
-func _init(raw_knobs: Dictionary, rng_seed: int) -> void:
+# Every score a game with these knobs can end on, as a set. The audit reads this to find tiers nobody can reach:
+# scores come in steps, so a 90–99% tier on a one-number lock can never happen. Shares are counted in twentieths
+# of a number (a wrong try costs 3 of 20, down to 8), so the sums stay exact.
+static func reachable_scores(raw_knobs: Dictionary) -> Dictionary:
+	var knobs: Dictionary = normalize_knobs(raw_knobs)
+	var numbers: int = int(knobs["numbers"])
+	var max_wrong: int = int(knobs["max_wrong"])
+	# Without a time limit or a wrong-try limit, a game can only end with every number open.
+	var can_stop_early: bool = int(knobs["time_limit_s"]) > 0 or max_wrong > 0
+	var scores: Dictionary = {}
+	var states: Dictionary = {Vector2i.ZERO: true}  # (credit so far, wrong tries so far)
+	for opened in numbers + 1:
+		var next_states: Dictionary = {}
+		for state: Vector2i in states:
+			if opened == numbers or can_stop_early:
+				scores[roundi(100.0 * state.x / (20.0 * numbers))] = true
+			for wrong in _WRONG_TRIES_THAT_CHANGE_CREDIT:
+				var wrong_total: int = state.y + wrong
+				# Reaching the limit jams the dial before this number could open.
+				if max_wrong == 0 or wrong_total < max_wrong:
+					var credit: int = 20 - 3 * wrong
+					next_states[Vector2i(state.x + credit, wrong_total)] = true
+		states = next_states
+	return scores
+
+
+# `time_scale` stretches the time limit, for the player's assist. Everything else stays as the author set it.
+func _init(raw_knobs: Dictionary, rng_seed: int, time_scale: float = 1.0) -> void:
 	var knobs: Dictionary = normalize_knobs(raw_knobs)
 	_dial_size = int(knobs["dial_size"])
 	_tolerance = int(knobs["tolerance"])
 	_warmth_mode = str(knobs["warmth"])
-	_time_limit_ms = int(knobs["time_limit_s"]) * 1000
+	_time_limit_ms = roundi(int(knobs["time_limit_s"]) * 1000 * time_scale)
 	_max_wrong = int(knobs["max_wrong"])
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = rng_seed

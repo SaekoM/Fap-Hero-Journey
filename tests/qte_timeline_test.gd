@@ -303,3 +303,23 @@ func test_a_qte_that_pauses_the_video_has_no_timing_issues() -> void:
 		{"events": [_standalone(0, 0), _attack(1)]}, _library(5, true), VIDEO_MS
 	)
 	assert_array(issues).is_empty()
+
+
+# ── Encounter audio during a pause ───────────────────────────────────────────
+
+
+# Disabling the node is what holds a cue's fades and out-point, so they can't cut it off while it's silent.
+func test_encounter_audio_holds_and_releases() -> void:
+	var cues: BossAudioCues = auto_free(BossAudioCues.new())
+	add_child(cues)
+	var voice: AudioStreamPlayer = AudioStreamPlayer.new()
+	voice.stream = AudioStreamGenerator.new()  # stream_paused only applies to a voice that's playing
+	cues.add_child(voice)
+	cues._voices.append(voice)
+	voice.play()
+	cues.set_paused(true)
+	assert_bool(voice.stream_paused).is_true()
+	assert_bool(cues.can_process()).is_false()
+	cues.set_paused(false)
+	assert_bool(voice.stream_paused).is_false()
+	assert_bool(cues.can_process()).is_true()

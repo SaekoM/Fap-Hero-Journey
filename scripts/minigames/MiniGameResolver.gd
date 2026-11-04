@@ -1,8 +1,8 @@
 class_name MiniGameResolver
 extends RefCounted
 
-# Turns a finished game into a tier, and a tier into the flags that route on it. Knows nothing about
-# which game produced the result. MINIGAMES_DESIGN.md → "Outcomes" and "Routing — settled".
+# Turns a finished game into a tier. Knows nothing about which game produced the result.
+# MINIGAMES_DESIGN.md → "Outcomes" and "Routing — settled".
 #
 # Pure: the caller supplies the definition, the result and the run seed.
 
@@ -34,27 +34,20 @@ static func timeout_tier(definition: Dictionary) -> String:
 	return str((tiers[0] as Dictionary)["id"]) if not tiers.is_empty() else ""
 
 
-# ── Routing flags ────────────────────────────────────────────────────────────
-
-
-# Each tier of each game has its own flag, namespaced by the game so two games' "pass" never collide.
-static func tier_flag(game_id: String, tier_id: String) -> String:
-	return "%s_%s" % [game_id, tier_id]
-
-
-# Resolving sets ONLY the tier reached and clears every other tier's flag, so a game played a second time
-# in a run (a loop) can never route on a stale result from the first time.
-static func flag_changes(definition: Dictionary, reached_tier: String) -> Dictionary:
-	var game_id: String = str(definition.get("id", ""))
-	var to_set: Array[String] = []
-	var to_clear: Array[String] = []
+# What a tier is called, for showing the player. "" when the game has no such tier.
+static func tier_name(definition: Dictionary, tier_id: String) -> String:
 	for tier: Dictionary in definition.get("tiers", []):
-		var flag: String = tier_flag(game_id, str(tier["id"]))
-		if str(tier["id"]) == reached_tier:
-			to_set.append(flag)
-		else:
-			to_clear.append(flag)
-	return {"set": to_set, "clear": to_clear}
+		if str(tier["id"]) == tier_id:
+			return str(tier.get("name", ""))
+	return ""
+
+
+# What the creator wrote for reaching a tier, or "".
+static func tier_result_text(definition: Dictionary, tier_id: String) -> String:
+	for tier: Dictionary in definition.get("tiers", []):
+		if str(tier["id"]) == tier_id:
+			return str(tier.get("result_text", ""))
+	return ""
 
 
 # ── Seeding ──────────────────────────────────────────────────────────────────

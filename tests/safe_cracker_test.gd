@@ -136,3 +136,61 @@ func test_coarse_warmth_has_three_bands() -> void:
 	assert_float(game.warmth()).is_equal(0.5)  # warm: within a sixth of the dial
 	game.set_position(target + 15)
 	assert_float(game.warmth()).is_equal(0.0)  # cold
+
+
+# ── Which scores can happen ──────────────────────────────────────────────────
+
+
+func test_one_number_with_no_limits_can_only_land_on_its_credit_steps() -> void:
+	var scores: Dictionary = SafeCrackerGame.reachable_scores(
+		{"numbers": 1, "time_limit_s": 0, "max_wrong": 0}
+	)
+	var sorted: Array = scores.keys()
+	sorted.sort()
+	assert_array(sorted).is_equal([40, 55, 70, 85, 100])
+
+
+# Time running out can end a game with nothing open.
+func test_a_time_limit_makes_zero_possible() -> void:
+	var scores: Dictionary = SafeCrackerGame.reachable_scores({"numbers": 1, "time_limit_s": 30})
+	assert_bool(scores.has(0)).is_true()
+
+
+# One wrong try allowed means none can be spent: the next one jams the dial.
+func test_a_wrong_try_limit_caps_what_can_be_spent() -> void:
+	var scores: Dictionary = SafeCrackerGame.reachable_scores(
+		{"numbers": 1, "time_limit_s": 0, "max_wrong": 1}
+	)
+	var sorted: Array = scores.keys()
+	sorted.sort()
+	assert_array(sorted).is_equal([0, 100])
+
+
+# The prediction has to match the game itself, or the audit warns about the wrong tiers.
+func test_every_score_a_played_game_ends_on_was_predicted() -> void:
+	var knobs: Dictionary = {"numbers": 3, "time_limit_s": 0, "max_wrong": 0}
+	var scores: Dictionary = SafeCrackerGame.reachable_scores(knobs)
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = 5
+	for rng_seed in 40:
+		var game: SafeCrackerGame = SafeCrackerGame.new(knobs, rng_seed)
+		for number: int in game.combination:
+			for _try in rng.randi_range(0, 5):
+				game.set_position(number + 20)
+				game.try_open()
+			game.set_position(number)
+			game.try_open()
+		assert_bool(scores.has(game.score())).is_true()
+
+
+func test_assist_gives_half_as_much_time_again() -> void:
+	var knobs: Dictionary = {"time_limit_s": 40}
+	var plain: SafeCrackerGame = SafeCrackerGame.new(knobs, 7)
+	var assisted: SafeCrackerGame = SafeCrackerGame.new(knobs, 7, 1.5)
+	assert_int(plain._time_limit_ms).is_equal(40000)
+	assert_int(assisted._time_limit_ms).is_equal(60000)
+	assert_array(assisted.combination).is_equal(plain.combination)
+
+
+func test_assist_leaves_a_game_with_no_time_limit_alone() -> void:
+	assert_int(SafeCrackerGame.new({"time_limit_s": 0}, 7, 1.5)._time_limit_ms).is_equal(0)

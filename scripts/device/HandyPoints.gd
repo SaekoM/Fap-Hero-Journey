@@ -8,6 +8,12 @@ extends RefCounted
 # the same split the project uses for DeviceRouting / ForkResolver / JourneyAudit.
 
 const MAX_POINTS_PER_ADD: int = 100  # HSP hard cap per /hsp/add
+# Walking strokes (walking_strokes): how long each small stroke is, and how far the band it sits in moves along
+# the 0-100 range per stroke.
+const WALK_STROKE_LENGTH: int = 26
+const WALK_STEP_PER_STROKE: int = 6
+# How long the slowest strokes run on after the slowdown, until a new stroke replaces them.
+const WALK_TAIL_MS: int = 6000
 
 
 # Vector2(at_ms, pos) → [{t:int ms, x:int 0-100}], clamped and int-coerced.
@@ -69,6 +75,69 @@ static func sample_pos(points: Array, t: int) -> int:
 		return int(b["x"])
 	var f: float = float(t - ta) / float(tb - ta)
 	return clampi(roundi(lerpf(float(a["x"]), float(b["x"]), f)), 0, 100)
+
+
+# Where a script's clock stands `elapsed_ms` after it began. A looping script wraps; another stays on its end.
+static func script_time(points: Array, elapsed_ms: int, looping: bool) -> int:
+	if points.is_empty():
+		return 0
+	var length: int = int((points[points.size() - 1] as Dictionary)["t"])
+	if length <= 0:
+		return 0
+	return posmod(elapsed_ms, length) if looping else mini(elapsed_ms, length)
+
+
+# Whether the stroke is on its way up at time `t`. False past the script's last point.
+static func is_rising_at(points: Array, t: int) -> bool:
+	var i: int = index_at_or_after(points, t + 1)
+	if i <= 0 or i >= points.size():
+		return false
+	return int((points[i] as Dictionary)["x"]) > int((points[i - 1] as Dictionary)["x"])
+
+
+# One full cycle of a stroke, bottom to top and back. Looping it is an endless alternating stroke.
+static func stroke_cycle(bottom: int, top: int, half_cycle_ms: int) -> Array:
+	return [
+		{"t": 0, "x": bottom},
+		{"t": half_cycle_ms, "x": top},
+		{"t": half_cycle_ms * 2, "x": bottom},
+	]
+
+
+# The time in a stroke_cycle at which the device is at `pos` and heading the same way, so a new stroke can
+# carry on from an old one instead of going back to the bottom.
+static func cycle_time_at(pos: int, rising: bool, bottom: int, top: int, half_cycle_ms: int) -> int:
+	if top <= bottom:
+		return 0
+	var along_stroke: float = clampf(float(pos - bottom) / float(top - bottom), 0.0, 1.0)
+	var time_up: int = roundi(along_stroke * half_cycle_ms)
+	return time_up if rising else (half_cycle_ms * 2 - time_up) % (half_cycle_ms * 2)
+
+
+# Small quick strokes whose band walks up the 0-100 range and back down, from `from_pos`. Each stroke takes
+# from `fastest_ms` to `slowest_ms` as the slowdown runs across `slowdown_ms`, then WALK_TAIL_MS more at the
+# slowest. It's all one script, because a WiFi Handy can't take a new one as often as the stroke changes.
+static func walking_strokes(
+	from_pos: int, fastest_ms: int, slowest_ms: int, slowdown_ms: int
+) -> Array:
+	var half_stroke: int = WALK_STROKE_LENGTH / 2
+	var lowest_centre: int = half_stroke
+	var highest_centre: int = 100 - half_stroke
+	var centre: int = clampi(from_pos, lowest_centre, highest_centre)
+	var climbing: bool = from_pos < 50
+	var stroke_goes_up: bool = true
+	var points: Array = [{"t": 0, "x": from_pos}]
+	var t: int = 0
+	while t < slowdown_ms + WALK_TAIL_MS:
+		var progress: float = clampf(float(t) / float(maxi(1, slowdown_ms)), 0.0, 1.0)
+		t += maxi(1, roundi(lerpf(fastest_ms, slowest_ms, progress)))
+		centre += WALK_STEP_PER_STROKE if climbing else -WALK_STEP_PER_STROKE
+		if centre >= highest_centre or centre <= lowest_centre:
+			centre = clampi(centre, lowest_centre, highest_centre)
+			climbing = not climbing
+		points.append({"t": t, "x": centre + (half_stroke if stroke_goes_up else -half_stroke)})
+		stroke_goes_up = not stroke_goes_up
+	return points
 
 
 # Prepends a bridge point at `from_pos` (where the device currently is) and shifts the stream back by

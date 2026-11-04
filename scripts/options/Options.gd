@@ -1501,34 +1501,28 @@ func _build_accessibility_section(display_section: VBoxContainer) -> VBoxContain
 
 	section.add_child(ColourModePreview.new())
 
-	var flash_row: HBoxContainer = HBoxContainer.new()
-	flash_row.add_theme_constant_override("separation", 16)
-	section.add_child(flash_row)
-	var flash_lbl: Label = Label.new()
-	flash_lbl.text = "REDUCE FLASHING"
-	flash_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
-	_style_label(flash_lbl, UITheme.WHITE_SOFT, 14, false)
-	flash_row.add_child(flash_lbl)
-	var flash_toggle: Button = Button.new()
-	flash_toggle.toggle_mode = true
-	flash_toggle.button_pressed = SettingsService.get_reduce_flashing()
-	_style_toggle(flash_toggle, flash_toggle.button_pressed)
-	flash_toggle.toggled.connect(
-		func(pressed: bool) -> void:
-			_style_toggle(flash_toggle, pressed)
-			SettingsService.set_reduce_flashing(pressed)
-			SettingsService.save()
+	_add_accessibility_toggle(
+		section,
+		"REDUCE FLASHING",
+		SettingsService.get_reduce_flashing(),
+		SettingsService.set_reduce_flashing,
+		(
+			"Slows the Flicker effect to under three dark flashes a second and makes them lighter, and "
+			+ "fades in boss cues that would otherwise snap onto the screen. For players sensitive to "
+			+ "flashing light. Applies from the next effect or cue."
+		)
 	)
-	flash_row.add_child(flash_toggle)
-	var flash_hint: Label = Label.new()
-	flash_hint.text = (
-		"Slows the Flicker effect to under three dark flashes a second and makes them lighter, and "
-		+ "fades in boss cues that would otherwise snap onto the screen. For players sensitive to "
-		+ "flashing light. Applies from the next effect or cue."
+	_add_accessibility_toggle(
+		section,
+		"MINI-GAME ASSIST",
+		SettingsService.get_minigame_assist(),
+		SettingsService.set_minigame_assist,
+		(
+			"Quick-Time Events get slower rings and a wider hit window, and timed Safe-Crackers get more "
+			+ "time: half as much again. A run that plays a mini-game with this on is marked ASSISTED on "
+			+ "its end screen and in its high scores. Applies from the next game."
+		)
 	)
-	flash_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_style_label(flash_hint, UITheme.TEXT_HINT, 11, false)
-	section.add_child(flash_hint)
 	return section
 
 
@@ -4028,3 +4022,33 @@ func _sync_serial_state() -> void:
 		_set_serial_status("✕ DISCONNECTED", UITheme.ERROR)
 		_style_button(_serial_connect_btn, UITheme.PURPLE_BRIGHT)
 		_serial_connect_btn.text = "> CONNECT"
+
+
+# One on/off setting with its explanation underneath. Each change saves at once.
+func _add_accessibility_toggle(
+	section: Control, title: String, is_on: bool, set_value: Callable, explanation: String
+) -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	section.add_child(row)
+	var label: Label = Label.new()
+	label.text = title
+	label.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(label, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(label)
+	var toggle: Button = Button.new()
+	toggle.toggle_mode = true
+	toggle.button_pressed = is_on
+	_style_toggle(toggle, is_on)
+	toggle.toggled.connect(
+		func(pressed: bool) -> void:
+			_style_toggle(toggle, pressed)
+			set_value.call(pressed)
+			SettingsService.save()
+	)
+	row.add_child(toggle)
+	var hint: Label = Label.new()
+	hint.text = explanation
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
+	section.add_child(hint)
