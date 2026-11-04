@@ -2,6 +2,60 @@
 
 ## v0.9.2
 
+### ◆ Mini-games
+
+Journeys can now have short games, played between rounds or in the middle of a boss fight. How well you
+do lands you in a tier, such as Fail, Pass or Perfect, and each tier pays out like a round: coins, items,
+flags, counters and, on skill games, journey score. A journey that uses mini-games needs this version or
+newer. Everything plays fully without a device.
+
+- **Safe-Cracker.** Turn a dial to find hidden numbers in order, with a warmth meter and a click that
+  rises in pitch as you get close. Authors pick how many numbers (1–6), the dial size, the time limit,
+  how many wrong tries are allowed, and whether the meter is precise, coarse or off. It can look like a
+  **Safe**, a **Door**, **Handcuffs** or a **Padlock**, each with its own ending as the lock gives way.
+- **Double or Nothing.** Hold a prize, then **CASH OUT** or **SPIN** the wheel to risk it for the next rung
+  of a ladder of up to 6 prizes. A bust loses it all, and reaching the top is a jackpot. It's pure luck,
+  so it can never award journey score.
+- **Quick-Time Events.** Rings close on targets at random places during a boss round, and you press the
+  key each one shows as the ring meets its target. Put one on an attack to let the player dodge it, or on
+  the new **QTE** lane by itself. Authors choose the keys, colours, size and timing, and whether it
+  **pauses and dims the video** so nothing is missed. A pause like that never costs score.
+
+**For authors:**
+
+- **Build a game once, play it anywhere.** Games live in a library under **JOURNEY INFO → MINI-GAMES**,
+  and any number of **＋ MINI-GAME** nodes can play one, each with a fresh layout. Quick-Time Events can
+  be made and edited right from the boss encounter editor.
+- **Make it yours.** Add intro text, result text on each tier, an accent colour, and a character from
+  **CAST** who reacts as the game plays.
+- **Retries.** Allow up to 5 attempts, after any result or only after the lowest tier, at whatever cost
+  you like. Quitting and resuming uses up an attempt, so a player can't reload to see a new layout.
+- **Routing on the result.** Set a flag on the tiers that matter, then read it with a conditional fork.
+- **The audit knows about them.** Their rewards count towards its coin estimates, and it flags tiers no
+  score can reach and game characters that have gone from **CAST**. It also suggests the new **Mini-Games**
+  tag, which players can filter by.
+- **New guides:** a Learning Track chapter builds all three games step by step, and there's a full
+  reference page.
+
+**For players:**
+
+- **MINI-GAME ASSIST**, in **OPTIONS → GENERAL → ACCESSIBILITY**, gives Quick-Time Events slower rings and
+  a wider hit window, and timed Safe-Crackers more time: half as much again in each case. A run that plays
+  a mini-game with it on is marked **ASSISTED** on its end screen and in its high scores.
+- **The end screen** lists the tier you reached in each mini-game node, along with the route you took.
+- **Game sounds** have their own switch and volume in **OPTIONS → GENERAL**, separate from menu sounds.
+
+**On your device:**
+
+- **Safe-Cracker:** the stroke gets longer as the dial warms.
+- **Double or Nothing:** a slow full stroke while you choose. While the wheel spins, small quick strokes
+  walk up and down the range and slow with the wheel. A bust stops it, and cashing out or a jackpot eases
+  it back to the middle.
+- **Quick-Time Events:** one that pauses the video pauses the device too, then picks back up in sync.
+- **Serial multi-axis:** the twist turns with Safe-Cracker's dial and a wrong try gives a short sideways
+  jolt. Tilt and twist circle with Double or Nothing's wheel, and a win gives a quick nod. All of it stays
+  within your device profile and axis limits.
+
 ### ◆ Builder
 
 - **Renditions can add items.** A rendition brings its own custom items, the way it already brings its
@@ -41,6 +95,13 @@
   that changes or checks it; click a row to jump there.
 
 ### 🩹 Fixes
+
+- **A WiFi Handy keeps up when the filler stroke changes.** Each change to the stroke meant a fresh upload
+  to the device, and changes made in quick succession could flood it, leaving it stopped. Uploads now go
+  one at a time with only the newest sent, and a new stroke carries on from where the last one was instead
+  of going back to the bottom. This also helps storyboards and the builder's filler test.
+- **Esc works when testing forks.** A test play sitting on a fork or mini-game screen had no way out, even
+  though the test banner said **ESC TO EXIT**. Holding Esc now leaves it.
 
 - **The audit understands item flags and counters.** A fork gated on a flag that only an item sets
   (when used) was reported as DEAD; it's now a note that the player may never use the item. A declared

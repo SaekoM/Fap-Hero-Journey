@@ -30,6 +30,11 @@ func test_prompts_never_overlap_and_stay_inside_the_moment() -> void:
 		assert_int(last_close).is_less_equal(9000)
 
 
+func test_an_event_can_ask_for_up_to_ten_prompts() -> void:
+	assert_int(QuickTimeEventGame.normalize_knobs({"prompts": 11})["prompts"]).is_equal(10)
+	assert_int(_game({"prompts": 10}, 20000).prompts.size()).is_equal(10)
+
+
 func test_a_short_moment_holds_as_many_prompts_as_fit() -> void:
 	# each prompt needs 1200 + 300 = 1500 ms
 	assert_int(_game({"prompts": 5}, 3200).prompts.size()).is_equal(2)

@@ -13,7 +13,7 @@ const KIND: String = "quick_time_event"
 
 # {knob: [min, max, default]}
 const KNOB_RANGES: Dictionary = {
-	"prompts": [1, 5, 1],
+	"prompts": [1, 10, 1],
 	"lead_ms": [400, 3000, 1200],
 	"window_ms": [200, 1500, 600],
 	"size_pct": [50, 200, 100],
