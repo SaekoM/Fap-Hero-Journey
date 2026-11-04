@@ -69,6 +69,10 @@ folder_colors={
 
 settings/test/test_discovery=true
 
+[internationalization]
+
+locale/translations=PackedStringArray("res://locale/zh_CN.zh_CN.translation")
+
 [physics]
 
 3d/physics_engine="Jolt Physics"

@@ -286,7 +286,7 @@ func _show_purchase_toast(item_name: String) -> void:
 	s.set_content_margin_all(12)
 	toast.add_theme_stylebox_override("panel", s)
 	var lbl: Label = Label.new()
-	lbl.text = "✓  %s  ADDED TO INVENTORY" % item_name.to_upper()
+	lbl.text = tr("✓  %s  ADDED TO INVENTORY") % item_name.to_upper()
 	lbl.add_theme_color_override("font_color", UITheme.SUCCESS)
 	lbl.add_theme_font_size_override("font_size", 16)
 	toast.add_child(lbl)
@@ -404,7 +404,7 @@ func _make_card(id: String, data: Dictionary) -> Control:
 	# Stats row: duration
 	var dur_ms: int = JourneyData.item_play_ms(data)
 	var dur_lbl: Label = Label.new()
-	dur_lbl.text = "DURATION: %ds" % int(dur_ms / 1000.0)
+	dur_lbl.text = tr("DURATION: %ds") % int(dur_ms / 1000.0)
 	dur_lbl.add_theme_color_override("font_color", UITheme.TOXIC_GREEN)
 	dur_lbl.add_theme_font_size_override("font_size", 11)
 	col.add_child(dur_lbl)
@@ -488,10 +488,10 @@ func _update_buy_button(id: String, buy: Button, card: PanelContainer) -> void:
 		return
 
 	if CoinService.CanAfford(price):
-		buy.text = "> BUY  ♦ %d" % price
+		buy.text = tr("> BUY  ♦ %d") % price
 		buy.disabled = false
 	else:
-		buy.text = "✕ INSUFFICIENT  ♦ %d" % price
+		buy.text = tr("✕ INSUFFICIENT  ♦ %d") % price
 		buy.disabled = true
 		buy.add_theme_color_override("font_disabled_color", UITheme.DANGER)
 
@@ -558,7 +558,7 @@ func _update_countdown_label() -> void:
 	if _countdown_lbl == null:
 		return
 	var secs: int = int(ceil(_time_left))
-	_countdown_lbl.text = "AUTO-CONTINUE IN %d" % secs
+	_countdown_lbl.text = tr("AUTO-CONTINUE IN %d") % secs
 	_countdown_lbl.add_theme_color_override(
 		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
 	)

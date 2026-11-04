@@ -2776,7 +2776,7 @@ func _add_alts_list(event: Dictionary) -> void:
 	var header: HBoxContainer = HBoxContainer.new()
 	header.add_theme_constant_override("separation", 8)
 	var title: Label = Label.new()
-	title.text = "ALTERNATIVES (%d)" % alts.size()
+	title.text = tr("ALTERNATIVES (%d)") % alts.size()
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	UITheme.style_label(title, UITheme.CYAN, 10, true)
 	header.add_child(title)
@@ -2807,7 +2807,7 @@ func _add_alts_list(event: Dictionary) -> void:
 	if not alts.is_empty():
 		var base: Button = Button.new()
 		var on_base: bool = _stage.variant_of(str(event["id"])) == 0
-		base.text = ("◉ " if on_base else "◎ ") + "SHOW THE ORIGINAL"
+		base.text = ("◉ " if on_base else "◎ ") + tr("SHOW THE ORIGINAL")
 		UITheme.style_button_subtle(
 			base, UITheme.TOXIC_GREEN if on_base else UITheme.DARK_TEXT, 9, 4, 10
 		)
@@ -2937,7 +2937,7 @@ func _make_alt_expression_picker(alt: Dictionary, alt_of: Dictionary) -> Control
 	var selected: int = 0
 	for i: int in portraits.size():
 		var portrait: Dictionary = portraits[i]
-		picker.add_item(str(portrait.get("name", "Expression %d" % (i + 1))))
+		picker.add_item(str(portrait.get("name", tr("Expression %d") % (i + 1))))
 		if alt.has("portrait") and str(portrait.get("id", "")) == str(alt["portrait"]):
 			selected = i + 1
 	picker.selected = selected
@@ -3176,7 +3176,7 @@ func _add_target_recommendation() -> void:
 	row.add_theme_constant_override("separation", 8)
 
 	var note: Label = Label.new()
-	note.text = "A full pass deals %d." % suggested
+	note.text = tr("A full pass deals %d.") % suggested
 	note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	UITheme.style_label(note, UITheme.TOXIC_GREEN, 9)
@@ -3655,7 +3655,7 @@ func _add_character_fields(event: Dictionary) -> void:
 	var expression_index: int = 0
 	for i: int in portraits.size():
 		var portrait: Dictionary = portraits[i]
-		expression.add_item(str(portrait.get("name", "Expression %d" % (i + 1))))
+		expression.add_item(str(portrait.get("name", tr("Expression %d") % (i + 1))))
 		if str(portrait.get("id", "")) == str(event.get("portrait", "")):
 			expression_index = i
 	expression.selected = expression_index
@@ -3704,9 +3704,9 @@ func _add_script_field(event: Dictionary) -> void:
 	# What the bundle currently holds, with a way to drop any one channel.
 	_add_channel_row(scripts, "main", "MAIN", "")
 	for axis: Variant in (scripts["axes"] as Dictionary).keys():
-		_add_channel_row(scripts, "axes", "AXIS " + str(axis), str(axis))
+		_add_channel_row(scripts, "axes", tr("AXIS ") + str(axis), str(axis))
 	for channel: Variant in (scripts["vibes"] as Dictionary).keys():
-		_add_channel_row(scripts, "vibes", "VIB " + str(channel), str(channel))
+		_add_channel_row(scripts, "vibes", tr("VIB ") + str(channel), str(channel))
 
 	_add_test_row(event)
 

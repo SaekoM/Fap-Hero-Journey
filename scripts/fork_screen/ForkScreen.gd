@@ -49,10 +49,13 @@ func setup(fork_data: Dictionary) -> void:
 	var backdrop: JourneyImage = SettingBackdrop.attach(self, _backdrop, fork_data)
 	var title: String = fork_data.get("title", "")
 	if title != "":
+		_fork_title.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 		_fork_title.text = title.to_upper()
 
 	var desc: String = fork_data.get("description", "")
-	_fork_sub.text = desc if desc != "" else "Choose your path"
+	# Shows the author's words as well as the screen's own, so the screen's are translated by hand.
+	_fork_sub.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	_fork_sub.text = desc if desc != "" else tr("Choose your path")
 	_fork_sub.visible = true
 
 	_resolution = fork_data.get("resolution", "choice")
@@ -223,6 +226,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 
 	var path_name: String = path_data.get("name", "PATH %d" % (index + 1))
 	var name_lbl: Label = Label.new()
+	name_lbl.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 	name_lbl.text = path_name.to_upper()
 	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -233,6 +237,7 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 	var desc: String = path_data.get("description", "")
 	if desc != "":
 		var desc_lbl: Label = Label.new()
+		desc_lbl.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 		desc_lbl.text = desc
 		desc_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -448,7 +453,7 @@ func _update_countdown_label() -> void:
 	if _countdown_lbl == null:
 		return
 	var secs: int = int(ceil(_time_left))
-	_countdown_lbl.text = "AUTO-ADVANCE IN %d" % secs
+	_countdown_lbl.text = tr("AUTO-ADVANCE IN %d") % secs
 	# Calm until the final few seconds, then flag it red.
 	_countdown_lbl.add_theme_color_override(
 		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
@@ -546,7 +551,7 @@ func reveal(index: int, caption: String = "FATE DECIDES…") -> void:
 	for b: Button in _choose_buttons:
 		b.disabled = true
 		b.visible = false
-	_fork_sub.text = caption
+	_fork_sub.text = tr(caption)
 
 	var n: int = _cards.size()
 	if n == 0 or index < 0 or index >= n:

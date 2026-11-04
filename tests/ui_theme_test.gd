@@ -8,8 +8,15 @@ func _lines(s: String) -> Array:
 
 
 # A short string is returned untouched — short tooltips must not gain stray newlines.
+# wrap_tip translates first (the CSV carries the unwrapped source), so the zh_CN
+# translation comes back translated; pin the locale per assertion and restore it.
 func test_wrap_tip_leaves_short_text() -> void:
+	var previous: String = TranslationServer.get_locale()
+	TranslationServer.set_locale("en")
 	assert_str(UITheme.wrap_tip("Delete this choice")).is_equal("Delete this choice")
+	TranslationServer.set_locale("zh_CN")
+	assert_str(UITheme.wrap_tip("Delete this choice")).is_equal("删除此选项")
+	TranslationServer.set_locale(previous)
 
 
 # A long line is broken on word boundaries, and no line exceeds the limit.
@@ -37,3 +44,18 @@ func test_wrap_tip_keeps_oversized_word() -> void:
 	assert_str(UITheme.wrap_tip("supercalifragilisticexpialidocious", 10)).is_equal(
 		"supercalifragilisticexpialidocious"
 	)
+
+
+# 16 MB, so only a Chinese interface pays to load it, whichever way the locale is written.
+func test_only_a_chinese_interface_loads_the_chinese_font() -> void:
+	for chinese_locale: String in ["zh", "zh_CN", "zh_TW"]:
+		assert_array(UITheme.glyph_font_paths(chinese_locale)).contains([UITheme.CHINESE_FONT])
+	for other_locale: String in ["en", "en_US", "ja_JP"]:
+		assert_array(UITheme.glyph_font_paths(other_locale)).not_contains([UITheme.CHINESE_FONT])
+
+
+func test_symbols_and_emoji_load_in_every_language() -> void:
+	for locale: String in ["en", "zh_CN"]:
+		assert_array(UITheme.glyph_font_paths(locale)).contains(
+			[UITheme.SYMBOLS_FONT, UITheme.EMOJI_FONT]
+		)

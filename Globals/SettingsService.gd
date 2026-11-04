@@ -123,6 +123,19 @@ const DEFAULT_UI_SOUND_VOLUME: float = 0.6  # linear, 0–1
 const DEFAULT_GAME_SOUND_ENABLED: bool = true
 const DEFAULT_GAME_SOUND_VOLUME: float = 0.8  # linear, 0–1
 
+# ── Language ────────────────────────────────────────────────────────────
+# UI language. "auto" follows the OS locale (Godot's own boot behaviour); any
+# other value pins a translation. LANGUAGES and LANGUAGE_NAMES travel together
+# so Options' dropdown can't drift from the ids this file persists.
+const LANGUAGE_AUTO: String = "auto"
+const LANGUAGES: Array = [LANGUAGE_AUTO, "en", "zh_CN"]
+const LANGUAGE_NAMES: Dictionary = {
+	LANGUAGE_AUTO: "Auto (System)",
+	"en": "English",
+	"zh_CN": "简体中文",
+}
+const DEFAULT_LANGUAGE: String = LANGUAGE_AUTO
+
 var _config: ConfigFile = ConfigFile.new()
 
 
@@ -141,6 +154,14 @@ func _ready() -> void:
 
 	apply_ui_scale()
 	UITheme.set_colour_mode(get_colour_mode())  # UITheme loads first, so the saved mode is applied here
+
+	# UI language. "auto" keeps Godot's own OS-locale pick (the boot default); anything
+	# else pins the locale here, before any scene builds its UI, so every screen starts
+	# in the saved language without a first-frame flash of the wrong one.
+	var language: String = get_language()
+	if language != LANGUAGE_AUTO:
+		TranslationServer.set_locale(language)
+		UITheme.install_glyph_fallbacks()
 
 
 # F11 toggles fullscreen everywhere. Handled here on the autoload so it works in every scene (menus,
@@ -865,7 +886,20 @@ func set_game_sound_volume(value: float) -> void:
 	_config.set_value("audio", "game_sound_volume", value)
 
 
-# ── Colour mode (COLOUR_MODES_DESIGN.md) ─────────────────────────────────────
+# ── Language ───────────────────────────────────────────────────────────────
+
+
+# The saved UI language id (a LANGUAGES entry). Unknown ids read as "auto".
+func get_language() -> String:
+	var language: String = str(_config.get_value("locale", "language", DEFAULT_LANGUAGE))
+	return language if LANGUAGES.has(language) else DEFAULT_LANGUAGE
+
+
+func set_language(value: String) -> void:
+	_config.set_value("locale", "language", value if LANGUAGES.has(value) else DEFAULT_LANGUAGE)
+
+
+# ── Colour mode (COLOUR_MODES_DESIGN.md) ───────────────────────────────────────
 
 
 # The player's colour mode (a UITheme.COLOUR_MODES id). Unknown ids read as Off.

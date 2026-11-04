@@ -221,6 +221,8 @@ function New-Stage {
     if (Test-Path -LiteralPath $StageDir) { Remove-Item -LiteralPath $StageDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
     Copy-Item -Path (Join-Path $ExportDir '*') -Destination $StageDir -Recurse -Force
+    # The Open Font License has to travel with the fonts, and a .txt isn't exported into the pack.
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'assets/fonts/OFL.txt') -Destination $StageDir -Force
 }
 
 # The zip must be FLAT (no top-level folder): UpdateService._extract_beside() creates a target

@@ -1389,8 +1389,10 @@ func _show_audit_modal(result: Dictionary) -> void:
 
 	var foot: Label = Label.new()
 	foot.text = (
-		"Baseline model: completes every round, endures curses, buys only what locked paths ahead require."
-		+ (" Traffic from %d simulated runs." % runs if runs > 0 else "")
+		tr(
+			"Baseline model: completes every round, endures curses, buys only what locked paths ahead require."
+		)
+		+ (tr(" Traffic from %d simulated runs.") % runs if runs > 0 else "")
 	)
 	UITheme.style_label(foot, UITheme.DARK_TEXT, 10, false)
 	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1584,7 +1586,7 @@ func _audit_counters_block(counters: Array) -> Control:
 			"%d" % int(c.get("lo", 0))
 			if int(c.get("lo", 0)) == int(c.get("hi", 0))
 			else (
-				"%d – %d  (avg %.1f)"
+				tr("%d – %d  (avg %.1f)")
 				% [int(c.get("lo", 0)), int(c.get("hi", 0)), float(c.get("avg", 0.0))]
 			)
 		)
@@ -1593,7 +1595,7 @@ func _audit_counters_block(counters: Array) -> Control:
 
 		var pinned: Label = Label.new()
 		var pct: float = float(c.get("absorbed_pct", 0.0))
-		pinned.text = "—" if pct <= 0.0 else "%d%% of runs" % roundi(pct)
+		pinned.text = "—" if pct <= 0.0 else tr("%d%% of runs") % roundi(pct)
 		UITheme.style_label(
 			pinned,
 			UITheme.STATUS_WARNING if pct >= JourneyAudit.COUNTER_PINNED_PCT else UITheme.DARK_TEXT,
@@ -1860,7 +1862,7 @@ func _audit_checkpoint_bar(cp_bar: Dictionary) -> Control:
 		block.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		block.size_flags_stretch_ratio = maxf(0.02, float(ms))
 		block.tooltip_text = UITheme.wrap_tip(
-			"%d rounds · %s" % [int(seg["rounds"]), _audit_mmss(ms)]
+			tr("%d rounds · %s") % [int(seg["rounds"]), _audit_mmss(ms)]
 		)
 		bar.add_child(block)
 	box.add_child(bar)
@@ -3036,7 +3038,7 @@ func _build_version_switcher() -> void:
 	)
 	_version_select.custom_minimum_size = Vector2(220, 0)
 	UITheme.style_option_button(_version_select)
-	_version_select.add_item("◆ Base — %s" % str(family.get("title", "journey")))
+	_version_select.add_item(tr("◆ Base — %s") % str(family.get("title", "journey")))
 	_version_targets.append({})
 	var current: int = 0 if not _rendition_mode else -1
 	for r: Dictionary in rends:
@@ -3150,7 +3152,7 @@ func _offer_open_child(child_id: String, child_name: String) -> void:
 	if is_instance_valid(_open_child_btn):
 		_open_child_btn.queue_free()
 	_open_child_btn = Button.new()
-	_open_child_btn.text = "⤴ SAVE & OPEN “%s”" % child_name
+	_open_child_btn.text = tr("⤴ SAVE & OPEN “%s”") % child_name
 	_open_child_btn.focus_mode = Control.FOCUS_NONE
 	_open_child_btn.tooltip_text = UITheme.wrap_tip(
 		"Save this journey (finalizing the extraction), then open the new rendition"
@@ -3187,8 +3189,8 @@ func _show_unsaved_prompt(verb: String = "leaving", on_leave: Callable = Callabl
 
 	var lbl: Label = Label.new()
 	lbl.text = (
-		"This journey has changes that aren't on disk yet. %s now discards them."
-		% verb.capitalize()
+		tr("This journey has changes that aren't on disk yet. %s now discards them.")
+		% tr(verb.capitalize())
 	)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -3209,7 +3211,7 @@ func _show_unsaved_prompt(verb: String = "leaving", on_leave: Callable = Callabl
 
 	var action: String = "SWITCH" if verb == "switching" else "LEAVE"
 	var discard_btn: Button = Button.new()
-	discard_btn.text = "DISCARD & " + action
+	discard_btn.text = tr("DISCARD & ") + tr(action)
 	discard_btn.custom_minimum_size = Vector2(190, 0)
 	UITheme.style_button(discard_btn, UITheme.DANGER)
 	discard_btn.pressed.connect(
@@ -3220,7 +3222,7 @@ func _show_unsaved_prompt(verb: String = "leaving", on_leave: Callable = Callabl
 	row.add_child(discard_btn)
 
 	var save_btn: Button = Button.new()
-	save_btn.text = "SAVE & " + action
+	save_btn.text = tr("SAVE & ") + tr(action)
 	save_btn.custom_minimum_size = Vector2(190, 0)
 	UITheme.style_button(save_btn, UITheme.CYAN)
 	# A save that succeeds goes where the author was headed (the catalogue, or the chosen version);
@@ -3822,7 +3824,7 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 # toolbar): retints the title. Channel overlays are now added inline — click a ghosted base round to open
 # its channel-overlay editor and drop axis/vibe scripts — so there's no separate toolbar button.
 func _show_rendition_banner(base_title: String) -> void:
-	_title_lbl.text = "◆ RENDITION — overlaying %s   (dim = locked base)" % base_title
+	_title_lbl.text = tr("◆ RENDITION — overlaying %s   (dim = locked base)") % base_title
 	_title_lbl.add_theme_color_override("font_color", UITheme.CYAN)
 
 
@@ -6311,7 +6313,7 @@ func _pick_slot_fill_script(round_id: String, field: String, channel: String) ->
 	var dialog: FileDialog = FileDialog.new()
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.title = "Attach %s Script" % channel
+	dialog.title = tr("Attach %s Script") % channel
 	dialog.add_filter("*.funscript", "Funscript")
 	SettingsService.remember_browse_dir(dialog)
 	dialog.file_selected.connect(
@@ -7634,7 +7636,7 @@ func _update_modal_round(
 		lbl = modal.find_child("RoundLabel", true, false) as Label
 	if lbl:
 		lbl.text = (
-			"Round %d / %d — %s  (%s → %s)"
+			tr("Round %d / %d — %s  (%s → %s)")
 			% [round_num, total, round_name, codec.to_upper(), target]
 		)
 
@@ -7683,7 +7685,7 @@ func _update_modal_copy(modal: Control, copied: int, total: int) -> void:
 	var status: Label = modal.find_child("Status", true, false) as Label
 	if status:
 		status.text = (
-			"Copying… %d%%  (%s / %s)"
+			tr("Copying… %d%%  (%s / %s)")
 			% [int(round(frac * 100.0)), _format_size(copied), _format_size(total)]
 		)
 

@@ -56,6 +56,25 @@ newer. Everything plays fully without a device.
   jolt. Tilt and twist circle with Double or Nothing's wheel, and a win gives a quick nod. All of it stays
   within your device profile and axis limits.
 
+### ◆ Simplified Chinese localisation
+
+Contributed by a1175815821.
+
+The interface can now be played in **简体中文**. Pick it once in **Options → GENERAL → UI LANGUAGE**
+(**Auto (System)** follows your system language): menus, the journey builder, tooltips, in-game text and
+the update dialogs. If you switch during a run, some text updates as each screen next opens. Journey titles,
+fork choices and storyboard dialogue show as their author wrote them.
+
+**Mini-games aren't translated yet**, so their screens and editors stay in English for now.
+
+- The translation is maintained by an extraction and coverage toolchain in `i18n_tools/` (see its README).
+- Simplified Chinese glyphs ship with the game via Noto Sans CJK SC, so no font pack or OS font is required.
+  The font only loads when the interface is in Chinese.
+- Tooltips wrap by display width, so Chinese text (which carries no spaces) breaks cleanly instead of
+  overflowing.
+- The language choice is saved with the rest of the settings and re-applied before the first screen
+  opens — no flash of the wrong language at boot.
+
 ### ◆ Builder
 
 - **Renditions can add items.** A rendition brings its own custom items, the way it already brings its

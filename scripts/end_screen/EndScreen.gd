@@ -72,7 +72,7 @@ func _populate() -> void:
 		_title_lbl.text = "JOURNEY COMPLETE"
 	else:
 		_title_lbl.text = (
-			"%s — ROUND %d OF %d"
+			tr("%s — ROUND %d OF %d")
 			% [
 				str(_gave_in.get("title", "")).to_upper(),
 				int(_gave_in.get("round", 0)),
@@ -114,7 +114,7 @@ func _populate() -> void:
 	if _run_rank == 1:
 		_hs_label.text = "★  NEW HIGH SCORE  ★"
 	elif _run_rank > 1:
-		_hs_label.text = "★  HIGH SCORE #%d" % _run_rank
+		_hs_label.text = tr("★  HIGH SCORE #%d") % _run_rank
 
 	_populate_route()
 	_populate_score()
@@ -191,7 +191,7 @@ func _populate_score() -> void:
 	var round_names: PackedStringArray = (
 		GameState.get_meta("_round_names", PackedStringArray()) as PackedStringArray
 	)
-	_total_score_val.text = str(ScoreService.TotalScore) + " PTS"
+	_total_score_val.text = str(ScoreService.TotalScore) + tr(" PTS")
 
 	var round_num: int = 0  # 1-based counter across all played rounds
 	var bd_idx: int = 0  # index into breakdowns (one per round in log order)
@@ -226,7 +226,7 @@ func _populate_score() -> void:
 				if fork_title != "":
 					hdr_lbl.text = "%s  →  %s" % [fork_title.to_upper(), path_name.to_upper()]
 				else:
-					hdr_lbl.text = "FORK  →  %s" % path_name.to_upper()
+					hdr_lbl.text = tr("FORK  →  %s") % path_name.to_upper()
 				hdr_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 				hdr_lbl.add_theme_font_size_override("font_size", 13)
 				hdr_lbl.uppercase = true
@@ -275,13 +275,13 @@ func _populate_score() -> void:
 				time_lbl.add_theme_font_size_override("font_size", 15)
 
 				var act_lbl: Label = Label.new()
-				act_lbl.text = "%d ACTIONS" % breakdown.get("actions", 0)
+				act_lbl.text = tr("%d ACTIONS") % breakdown.get("actions", 0)
 				act_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
 				act_lbl.add_theme_font_size_override("font_size", 15)
 
 				var detail_lbl: Label = Label.new()
 				detail_lbl.text = (
-					"%dS %dM %dL"
+					tr("%dS %dM %dL")
 					% [
 						breakdown.get("small", 0),
 						breakdown.get("medium", 0),
@@ -292,7 +292,7 @@ func _populate_score() -> void:
 				detail_lbl.add_theme_font_size_override("font_size", 15)
 
 				var pts_lbl: Label = Label.new()
-				pts_lbl.text = str(breakdown.get("score", 0)) + " PTS"
+				pts_lbl.text = str(breakdown.get("score", 0)) + tr(" PTS")
 				pts_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 				pts_lbl.add_theme_font_size_override("font_size", 17)
 
@@ -381,7 +381,7 @@ func _play_reveal() -> void:
 	(
 		t3
 		. tween_method(
-			func(v: float) -> void: _hero_score.text = "%d PTS" % int(v),
+			func(v: float) -> void: _hero_score.text = tr("%d PTS") % int(v),
 			0.0,
 			float(_score_target),
 			1.1
@@ -390,7 +390,7 @@ func _play_reveal() -> void:
 		. set_trans(Tween.TRANS_CUBIC)
 	)
 	await t3.finished
-	_hero_score.text = "%d PTS" % _score_target
+	_hero_score.text = tr("%d PTS") % _score_target
 
 	# Confetti + a punchy pop on the final number. A run ended with "I came" gets the pop, not the party.
 	if _gave_in.is_empty():
@@ -430,13 +430,13 @@ func _play_reveal() -> void:
 	await t4.finished
 	var t5: Tween = create_tween().set_parallel()
 	t5.tween_method(
-		func(v: float) -> void: _stat_rounds.text = "%d ROUNDS" % int(v),
+		func(v: float) -> void: _stat_rounds.text = tr("%d ROUNDS") % int(v),
 		0.0,
 		float(_rounds_target),
 		0.5
 	)
 	t5.tween_method(
-		func(v: float) -> void: _stat_actions.text = "%d ACTIONS" % int(v),
+		func(v: float) -> void: _stat_actions.text = tr("%d ACTIONS") % int(v),
 		0.0,
 		float(_actions_target),
 		0.6

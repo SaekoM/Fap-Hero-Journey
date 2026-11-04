@@ -200,6 +200,7 @@ var _intiface_delay_lbl: Label = null
 var _transcode_section: VBoxContainer = null
 # ACCESSIBILITY, right after DISPLAY: colour mode with its preview, text sizes, sensory strength.
 var _accessibility_section: VBoxContainer = null
+var _language_section: VBoxContainer = null
 var _credits_section: VBoxContainer = null
 
 # restim (e-stim), split across two tabs: the connection block (server/path/
@@ -577,6 +578,8 @@ func _apply_layout() -> void:
 	)
 
 	var access_section: VBoxContainer = _build_accessibility_section(display_section)
+
+	_build_language_section(display_section)
 
 	# ── Sensory Strength row (ACCESSIBILITY) ─────────────────────────────────
 	# Scales every visual/audio round effect. Softens rather than disables — which effects a
@@ -1404,6 +1407,7 @@ func _tab_pages() -> Array:
 			get_node(vbox + "AudioSection"),
 			get_node(vbox + "DisplaySection"),
 			_hud_section,
+			_language_section,
 			_accessibility_section,
 			_transcode_section,
 		],
@@ -1531,6 +1535,76 @@ func _on_colour_mode_selected(index: int) -> void:
 	SettingsService.set_colour_mode(mode)
 	SettingsService.save()
 	UITheme.set_colour_mode(mode)
+
+
+# UI LANGUAGE — dropdown over the translations bundled with the app. Lives on the GENERAL tab,
+# directly under Display. Godot re-translates plain text at once, but tooltips and formatted text were translated
+# when their screen was built, so _on_language_selected rebuilds this screen. Other screens build afresh when opened.
+func _build_language_section(display_section: VBoxContainer) -> VBoxContainer:
+	var section: VBoxContainer = VBoxContainer.new()
+	section.add_theme_constant_override("separation", 10)
+	var parent: Node = display_section.get_parent()
+	parent.add_child(section)
+	parent.move_child(section, display_section.get_index() + 1)
+	_language_section = section
+
+	var header: Label = Label.new()
+	header.text = "LANGUAGE"
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	section.add_child(header)
+
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	section.add_child(divider)
+
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	section.add_child(row)
+
+	var label: Label = Label.new()
+	label.text = "UI LANGUAGE"
+	label.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(label, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(label)
+
+	var dropdown: OptionButton = OptionButton.new()
+	for language: String in SettingsService.LANGUAGES:
+		dropdown.add_item(str(SettingsService.LANGUAGE_NAMES[language]))
+	dropdown.selected = maxi(0, SettingsService.LANGUAGES.find(SettingsService.get_language()))
+	dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_option_button(dropdown)
+	dropdown.item_selected.connect(_on_language_selected)
+	row.add_child(dropdown)
+
+	var hint: Label = Label.new()
+	hint.text = (
+		"Switches the whole interface at once — menus, the builder, tooltips and in-game text. "
+		+ "Names, tags and writing inside your journeys always show as you authored them."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
+	section.add_child(hint)
+	return section
+
+
+func _on_language_selected(index: int) -> void:
+	var language: String = SettingsService.LANGUAGES[index]
+	SettingsService.set_language(language)
+	SettingsService.save()
+	# "auto" returns to Godot's boot behaviour — the OS locale, standardized the same way —
+	# while a specific id pins that translation.
+	TranslationServer.set_locale(
+		(
+			TranslationServer.standardize_locale(OS.get_locale())
+			if language == SettingsService.LANGUAGE_AUTO
+			else language
+		)
+	)
+	UITheme.install_glyph_fallbacks()
+	# Opened from a round, this is an overlay on the run, which a rebuild would throw away. There, the text
+	# already built catches up as each screen next opens.
+	if get_tree().current_scene == self:
+		Transition.change_scene("res://scenes/options/Options.tscn")
 
 
 # ---------------------------------------------------------------------------
@@ -2357,7 +2431,7 @@ func _run_ffmpeg_test() -> void:
 		if not out.is_empty():
 			ver = (out[0] as String).strip_edges().split("\n")[0]
 		_ffmpeg_status_label.add_theme_color_override("font_color", UITheme.SUCCESS)
-		_ffmpeg_status_label.text = "✓ ffmpeg works.  %s" % ver
+		_ffmpeg_status_label.text = tr("✓ ffmpeg works.  %s") % ver
 	else:
 		_ffmpeg_status_label.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
 		_ffmpeg_status_label.text = "✗ Could not run ffprobe from this location. Pick the folder that contains ffmpeg and ffprobe (or install ffmpeg on your PATH)."
@@ -2372,7 +2446,7 @@ func _refresh_ffmpeg_available_label() -> void:
 	if MediaPoolService.is_available():
 		_ffmpeg_available_label.add_theme_color_override("font_color", UITheme.SUCCESS)
 		_ffmpeg_available_label.text = (
-			"✓ Installed  ·  %s" % SettingsService.resolve_ffmpeg_binary("ffmpeg")
+			tr("✓ Installed  ·  %s") % SettingsService.resolve_ffmpeg_binary("ffmpeg")
 		)
 	else:
 		_ffmpeg_available_label.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
@@ -2820,9 +2894,13 @@ func _build_routing_section() -> void:
 		timing,
 		"Intiface delay",
 		(
-			"Timing offset for Buttplug / Intiface devices, in milliseconds. Positive = the device "
-			+ "fires later, negative = earlier. Adjust until the device lines up with the video. "
-			+ "Can also be nudged live during play."
+			tr(
+				"Timing offset for Buttplug / Intiface devices, in milliseconds. Positive = the device "
+			)
+			+ tr(
+				"fires later, negative = earlier. Adjust until the device lines up with the video. "
+			)
+			+ tr("Can also be nudged live during play.")
 		)
 	)
 	_intiface_delay_slider = d_intiface["slider"]
@@ -2831,9 +2909,13 @@ func _build_routing_section() -> void:
 		timing,
 		"Serial delay",
 		(
-			"Timing offset for the serial (T-code) stroker, in milliseconds. Positive = the device "
-			+ "fires later, negative = earlier. Adjust until the stroker lines up with the video. "
-			+ "Can also be nudged live during play."
+			tr(
+				"Timing offset for the serial (T-code) stroker, in milliseconds. Positive = the device "
+			)
+			+ tr(
+				"fires later, negative = earlier. Adjust until the stroker lines up with the video. "
+			)
+			+ tr("Can also be nudged live during play.")
 		)
 	)
 	_serial_delay_slider = d_serial["slider"]
@@ -2845,8 +2927,10 @@ func _build_routing_section() -> void:
 		timing,
 		"Handy delay",
 		(
-			"Timing offset for the Handy over WiFi, in milliseconds. Positive = the device fires "
-			+ "later, negative = earlier."
+			tr(
+				"Timing offset for the Handy over WiFi, in milliseconds. Positive = the device fires "
+			)
+			+ tr("later, negative = earlier.")
 		)
 	)
 	_handy_delay_slider = d_handy["slider"]
@@ -2866,10 +2950,16 @@ func _build_routing_section() -> void:
 		timing,
 		"Serial smoothing",
 		(
-			"How smoothly motion is streamed to a T-code stroker (OSR2 / SR6). Higher = smoother, "
-			+ "more fluid strokes; lower = snappier but can look steppy on fast sections. The best "
-			+ "value depends on your device — raise it if the motion looks choppy, lower it if it "
-			+ "feels laggy or soft."
+			tr(
+				"How smoothly motion is streamed to a T-code stroker (OSR2 / SR6). Higher = smoother, "
+			)
+			+ tr(
+				"more fluid strokes; lower = snappier but can look steppy on fast sections. The best "
+			)
+			+ tr(
+				"value depends on your device — raise it if the motion looks choppy, lower it if it "
+			)
+			+ tr("feels laggy or soft.")
 		)
 	)
 	_serial_interp_slider = d_interp["slider"]
@@ -3163,7 +3253,9 @@ func _build_restim_axes_section() -> void:
 func _set_restim_axes_open(open: bool) -> void:
 	_restim_axes_body.visible = open
 	_restim_axes_toggle.text = (
-		"▾  HIDE E-STIM LEVELS" if open else "▸  SHOW E-STIM LEVELS (%d)" % _restim_axis_count
+		tr("▾  HIDE E-STIM LEVELS")
+		if open
+		else tr("▸  SHOW E-STIM LEVELS (%d)") % _restim_axis_count
 	)
 	UITheme.style_button(_restim_axes_toggle, UITheme.PURPLE_BRIGHT if open else UITheme.PURPLE_MID)
 
@@ -3701,10 +3793,16 @@ func _build_oscillate_section() -> void:
 	_oscillate_section.add_child(row)
 
 	var tip: String = (
-		"How fast the script has to stroke, in strokes per second, for an oscillating device to reach "
-		+ "its max speed limit. Slower strokes run it slower, down to its min limit, and shallow strokes "
-		+ "count for less than full ones. Lower it if the machine rarely gets going; raise it if it's "
-		+ "always flat out."
+		tr(
+			"How fast the script has to stroke, in strokes per second, for an oscillating device to reach "
+		)
+		+ tr(
+			"its max speed limit. Slower strokes run it slower, down to its min limit, and shallow strokes "
+		)
+		+ tr(
+			"count for less than full ones. Lower it if the machine rarely gets going; raise it if it's "
+		)
+		+ tr("always flat out.")
 	)
 	var lbl: Label = Label.new()
 	lbl.text = "Full speed at"
@@ -3760,13 +3858,18 @@ func _commit_full_rate(rate: float) -> void:
 # Under each oscillate channel's speed limits: when it reaches the max one.
 func _oscillate_rate_note_text(rate: float) -> String:
 	return (
-		"Runs at the slowest limit while the script moves and stops when it holds; reaches the max "
-		+ "limit at %s (FULL SPEED AT, under OSCILLATING DEVICES)." % _strokes_per_second_text(rate)
+		tr(
+			"Runs at the slowest limit while the script moves and stops when it holds; reaches the max "
+		)
+		+ (
+			tr("limit at %s (FULL SPEED AT, under OSCILLATING DEVICES).")
+			% _strokes_per_second_text(rate)
+		)
 	)
 
 
 func _strokes_per_second_text(rate: float) -> String:
-	return "%s strokes/s" % String.num(rate, 2)
+	return tr("%s strokes/s") % String.num(rate, 2)
 
 
 # The device's TEST button. A stroker sweeps and a vibrator pulses on a press; an oscillating device

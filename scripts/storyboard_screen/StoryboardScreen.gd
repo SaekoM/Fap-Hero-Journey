@@ -469,7 +469,7 @@ func _update_countdown_label() -> void:
 	if _countdown_lbl == null:
 		return
 	var secs: int = int(ceil(_time_left))
-	_countdown_lbl.text = "AUTO-ADVANCE IN %d" % secs
+	_countdown_lbl.text = tr("AUTO-ADVANCE IN %d") % secs
 	_countdown_lbl.add_theme_color_override(
 		"font_color", UITheme.ERROR_SOFT if secs <= 5 else UITheme.DARK_TEXT
 	)
@@ -604,6 +604,9 @@ func _apply_theme() -> void:
 	bar_style.content_margin_bottom = 0
 	_vn_bar.add_theme_stylebox_override("panel", bar_style)
 
+	# The author's words, shown as written even when they happen to match a translation key.
+	_speaker.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	_dialogue.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 	_speaker.add_theme_color_override("font_color", UITheme.CYAN)
 	_speaker.add_theme_font_size_override("font_size", UITheme.story_font_size(14))
 	_speaker.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

@@ -179,7 +179,7 @@ func _make_item_row(slot_idx: int, data: Dictionary) -> Control:
 
 	# Effect class tag — buff / debuff / modifier, colour-coded.
 	var class_lbl: Label = Label.new()
-	class_lbl.text = "%s %s" % [cls["glyph"], cls["label"]]
+	class_lbl.text = cls["glyph"] + " " + tr(cls["label"])
 	class_lbl.add_theme_color_override("font_color", cls["color"])
 	class_lbl.add_theme_font_size_override("font_size", 10)
 	top_row.add_child(class_lbl)

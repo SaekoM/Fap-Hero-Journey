@@ -2029,7 +2029,7 @@ func _make_comment(_idx: int, comment: Dictionary) -> Control:
 	var text: String = str(comment.get("text", ""))
 	var has_text: bool = text.strip_edges() != ""
 	var pinned: bool = str(comment.get("node_id", "")) != ""  # 📌 marks a note that follows a node
-	lbl.text = ("📌 " if pinned else "") + (text if has_text else "(empty note)")
+	lbl.text = ("📌 " if pinned else "") + (text if has_text else tr("(empty note)"))
 	lbl.add_theme_color_override("font_color", color if has_text else UITheme.DARK_TEXT)
 	lbl.add_theme_font_size_override("font_size", 12)
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

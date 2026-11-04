@@ -435,9 +435,9 @@ func _set_active_sort() -> void:
 	_style_button(
 		_sort_actions, UITheme.PURPLE_BRIGHT if _sort_field == "actions" else UITheme.PURPLE_MID
 	)
-	_sort_name.text = ("NAME" + arrow) if _sort_field == "name" else "NAME"
-	_sort_duration.text = ("DURATION" + arrow) if _sort_field == "duration" else "DURATION"
-	_sort_actions.text = ("ACTIONS" + arrow) if _sort_field == "actions" else "ACTIONS"
+	_sort_name.text = (tr("NAME") + arrow) if _sort_field == "name" else tr("NAME")
+	_sort_duration.text = (tr("DURATION") + arrow) if _sort_field == "duration" else tr("DURATION")
+	_sort_actions.text = (tr("ACTIONS") + arrow) if _sort_field == "actions" else tr("ACTIONS")
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +517,9 @@ func _warn_version_then(retry: Callable) -> void:
 	var dialog: ConfirmationDialog = ConfirmationDialog.new()
 	dialog.title = "Newer Version Needed"
 	dialog.dialog_text = (
-		"This journey was made for FHJ v%s or newer. You're on v%s, so it may not open or play correctly.\n\nUpdate from the main menu to be safe."
+		tr(
+			"This journey was made for FHJ v%s or newer. You're on v%s, so it may not open or play correctly.\n\nUpdate from the main menu to be safe."
+		)
 		% [need, UpdateService.current_version()]
 	)
 	dialog.ok_button_text = "OPEN ANYWAY"
@@ -554,7 +556,9 @@ func _on_play_pressed() -> void:
 		var dialog: ConfirmationDialog = ConfirmationDialog.new()
 		dialog.title = "Start a New Run?"
 		dialog.dialog_text = (
-			'You have a saved run for "%s". Starting a new run will permanently delete that save.\n\nUse the Resume button instead to continue where you left off.'
+			tr(
+				'You have a saved run for "%s". Starting a new run will permanently delete that save.\n\nUse the Resume button instead to continue where you left off.'
+			)
 			% title
 		)
 		dialog.ok_button_text = "DELETE SAVE & PLAY"
@@ -1673,9 +1677,9 @@ func _populate_grid(journeys: Array) -> void:
 		var total: int = _journeys.size()
 		var shown: int = journeys.size()
 		_count_label.text = (
-			("%d JOURNEY%s" % [total, "" if total == 1 else "S"])
+			(tr("%d JOURNEY") % total if total == 1 else tr("%d JOURNEYS") % total)
 			if shown == total
-			else "%d OF %d" % [shown, total]
+			else tr("%d OF %d") % [shown, total]
 		)
 
 	var idx: int = 0
@@ -1796,7 +1800,7 @@ func _apply_modal_size() -> void:
 
 func _populate_modal(journey: Dictionary) -> void:
 	_modal_title.text = journey.get("title", "Unknown")
-	_modal_author.text = "by " + (journey.get("author", "Unknown") as String)
+	_modal_author.text = tr("by ") + (journey.get("author", tr("Unknown")) as String)
 
 	var diff: String = journey.get("difficulty", "Unknown")
 	_modal_diff.text = "◆  " + diff.to_upper()
@@ -1966,7 +1970,7 @@ func _make_score_row(rank: int, run: Dictionary) -> Control:
 		outcome_lbl.add_theme_color_override("font_color", UITheme.SUCCESS)
 	else:
 		outcome_lbl.text = (
-			"✗ ROUND %d/%d" % [int(run.get("rounds_done", 0)), int(run.get("rounds_total", 0))]
+			tr("✗ ROUND %d/%d") % [int(run.get("rounds_done", 0)), int(run.get("rounds_total", 0))]
 		)
 		outcome_lbl.add_theme_color_override("font_color", UITheme.ERROR_SOFT)
 	outcome_lbl.add_theme_font_size_override("font_size", 11)
@@ -2022,7 +2026,7 @@ func _on_clear_scores_pressed() -> void:
 	var title: String = _current_journey.get("title", "this journey")
 	var dialog: ConfirmationDialog = ConfirmationDialog.new()
 	dialog.title = "Clear Run History"
-	dialog.dialog_text = 'Clear all recorded runs for "%s"?\n\nThis cannot be undone.' % title
+	dialog.dialog_text = tr('Clear all recorded runs for "%s"?\n\nThis cannot be undone.') % title
 	dialog.ok_button_text = "CLEAR"
 	dialog.get_ok_button().add_theme_color_override("font_color", UITheme.DANGER)
 	dialog.confirmed.connect(
@@ -2043,14 +2047,14 @@ func _on_clear_scores_pressed() -> void:
 func _update_node_view(journey: Dictionary) -> void:
 	var rounds: Array = journey.get("rounds", [])
 	var total_rounds: int = journey.get("total_rounds", rounds.size())
-	_stat_rounds.text = str(total_rounds) + " ROUNDS"
-	_stat_actions.text = str(journey.get("total_actions", 0)) + " ACTIONS"
+	_stat_rounds.text = str(total_rounds) + tr(" ROUNDS")
+	_stat_actions.text = str(journey.get("total_actions", 0)) + tr(" ACTIONS")
 	var total_secs: int = (journey.get("total_length_ms", 0) as int) / 1000
 	_stat_length.text = "~" + _format_duration(total_secs)  # expected runtime — an estimate
 	var finish_label: String = str(journey.get("finish_label", "")).strip_edges()
 	if finish_label == "":
 		finish_label = JourneyData.DEFAULT_FINISH_LABEL
-	_stat_finish.text = "💧  %s available — you can end the run early" % finish_label
+	_stat_finish.text = tr("💧  %s available — you can end the run early") % finish_label
 	_stat_finish.visible = bool(journey.get("offers_finish", false))
 
 	# Mystery preview: load the persistent discovered set and blur the totals until every round is seen.
@@ -2680,7 +2684,7 @@ func _add_seq_to_list(
 				var shop_lbl: Label = Label.new()
 				var shop_title: String = shop.get("title", "")
 				if shop_title != "":
-					shop_lbl.text = "  ◆  SHOP: %s" % shop_title.to_upper()
+					shop_lbl.text = tr("  ◆  SHOP: %s") % shop_title.to_upper()
 				else:
 					shop_lbl.text = "  ◆  SHOP"
 				shop_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2746,7 +2750,7 @@ func _add_seq_to_list(
 				dur_lbl.add_theme_font_size_override("font_size", 12)
 				row.add_child(dur_lbl)
 				var acts_lbl: Label = Label.new()
-				acts_lbl.text = str(round_data.get("action_count", 0)) + " actions"
+				acts_lbl.text = str(round_data.get("action_count", 0)) + tr(" actions")
 				acts_lbl.custom_minimum_size = Vector2(72, 0)
 				acts_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 				acts_lbl.add_theme_color_override("font_color", UITheme.PURPLE_TEXT)
@@ -2792,9 +2796,9 @@ func _add_fork_to_list(list: VBoxContainer, fork: Dictionary, indent: int) -> vo
 	var paths: Array = fork.get("paths", [])
 	var fork_title: String = fork.get("title", "")
 	if fork_title != "":
-		fork_lbl.text = "⑂  FORK: %s  (%d PATHS)" % [fork_title.to_upper(), paths.size()]
+		fork_lbl.text = tr("⑂  FORK: %s  (%d PATHS)") % [fork_title.to_upper(), paths.size()]
 	else:
-		fork_lbl.text = "⑂  FORK  (%d PATHS)" % paths.size()
+		fork_lbl.text = tr("⑂  FORK  (%d PATHS)") % paths.size()
 	fork_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	fork_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 	fork_lbl.add_theme_font_size_override("font_size", 11)
@@ -2811,7 +2815,7 @@ func _add_fork_to_list(list: VBoxContainer, fork: Dictionary, indent: int) -> vo
 		var path_row: HBoxContainer = HBoxContainer.new()
 		path_row.add_theme_constant_override("separation", 8)
 		var path_lbl: Label = Label.new()
-		path_lbl.text = "▸  PATH %d: %s" % [pi + 1, path_name.to_upper()]
+		path_lbl.text = tr("▸  PATH %d: %s") % [pi + 1, path_name.to_upper()]
 		path_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		path_lbl.add_theme_color_override("font_color", UITheme.PURPLE_BRIGHT)
 		path_lbl.add_theme_font_size_override("font_size", 11)
