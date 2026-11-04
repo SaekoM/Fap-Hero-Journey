@@ -142,6 +142,9 @@ func _populate_route() -> void:
 		if not (map_graph["nodes"][nid] as Dictionary).has("pos"):
 			GraphLayout.seed_positions(map_graph)
 			break
+	_route_view.minigame_lookup = MiniGameLibrary.name_lookup(
+		GameState.Journey.get("minigames", [])
+	)
 	_route_view.set_graph(map_graph)
 	if bool(GameState.Journey.get("map_fog", false)):
 		_route_view.set_fog(

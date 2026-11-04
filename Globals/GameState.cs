@@ -54,6 +54,15 @@ public partial class GameState : Node
     // Rides the save record (per-run, but persists across resume). Cleared on a fresh start.
     private HashSet<string> _playedPoolClips = new();
 
+    // The run's seed for mini-games (MINIGAMES_DESIGN.md → "Randomness"): drawn fresh for every new run
+    // and carried in the save record, so a resumed run lays out its games from the same seed. Each placed
+    // game mixes it with its own id and the attempt number (MiniGameResolver.attempt_seed).
+    private int _runSeed = 0;
+
+    // Attempts started at each placed mini-game this run (node or moment id → count). A reload counts as
+    // an attempt too, so it rides the save record: quitting after seeing a layout can't replay it.
+    private System.Collections.Generic.Dictionary<string, int> _miniGameAttempts = new();
+
     // Round nodes entered so far this run = the 1-based "current round number". A DAG is
     // acyclic, so each node is entered at most once — no double counting.
     private int _roundsEntered = 0;
@@ -79,6 +88,8 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
+        _miniGameAttempts.Clear();
+        _runSeed = NewRunSeed();
         RebuildCounterBounds();
         SeedCounterStarts();
         EnterCurrent();
@@ -103,6 +114,8 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
+        _miniGameAttempts.Clear();
+        _runSeed = NewRunSeed();
         SeedCounterFloors();
         EnterCurrent();
         return true;
@@ -285,6 +298,16 @@ public partial class GameState : Node
     // data, so a used item can flip a run flag or bump a counter (routing story branches off the
     // player's item choice). Reuses the node appliers, so a counter change still fires CounterChanged
     // for the HUD pop. GameLoop calls this when a one-shot flag/counter item effect is activated.
+    // Applies a mini-game tier's (or a retry cost's) flag, counter and item-removal changes — the same keys
+    // a node's data uses, through the same appliers, so a counter change still pops on the HUD. Coins, a
+    // given item and score are the caller's (GameLoop), which announces them.
+    public void ApplyRewardChanges(Dictionary src)
+    {
+        ApplyFlags(src);
+        ApplyCounters(src);
+        ApplyItemRemovals(src);
+    }
+
     public void ApplyItemFlagsCounters(Dictionary src)
     {
         ApplyFlags(src);
@@ -374,6 +397,35 @@ public partial class GameState : Node
     public Dictionary CurrentRound() => DataIfType("round");
     public Dictionary CurrentShop() => DataIfType("shop");
     public Dictionary CurrentStoryboard() => DataIfType("storyboard");
+    public Dictionary CurrentMiniGame() => DataIfType("minigame");
+
+    // ---------------------------------------------------------------------------
+    // Mini-games
+    // ---------------------------------------------------------------------------
+
+    public int RunSeed => _runSeed;
+
+    private static int NewRunSeed() => (int)(GD.Randi() & 0x7FFFFFFF);
+
+    // Starts a new attempt at the mini-game placed at `placeId` and returns its number (1 for the first).
+    public int BeginMiniGameAttempt(string placeId)
+    {
+        var next = MiniGameAttempts(placeId) + 1;
+        _miniGameAttempts[placeId] = next;
+        return next;
+    }
+
+    // Attempts started so far at `placeId` this run (0 = never played).
+    public int MiniGameAttempts(string placeId) =>
+        _miniGameAttempts.TryGetValue(placeId, out var n) ? n : 0;
+
+    private Dictionary MiniGameAttemptsDict()
+    {
+        var d = new Dictionary();
+        foreach (var kv in _miniGameAttempts)
+            d[kv.Key] = kv.Value;
+        return d;
+    }
 
     private Dictionary DataIfType(string type)
     {
@@ -741,6 +793,8 @@ public partial class GameState : Node
         ["loop_iters"] = LoopCountsDict(),
         ["discovered"] = DiscoveredNodes(),
         ["played_pool_clips"] = PlayedPoolClipsArray(),
+        ["run_seed"] = _runSeed,
+        ["minigame_attempts"] = MiniGameAttemptsDict(),
     };
 
     // Per-loop iteration counts {loop_node_id: int} for the save record, so a resume mid-loop keeps count.
@@ -805,6 +859,8 @@ public partial class GameState : Node
         _loopCounts.Clear();
         _discovered.Clear();
         _playedPoolClips.Clear();
+        _miniGameAttempts.Clear();
+        _runSeed = NewRunSeed();
         RebuildCounterBounds();
         // Starts first, so a counter DECLARED since this save was written begins where the author says
         // rather than at 0; the saved values then overlay whatever the run had actually reached.
@@ -857,6 +913,19 @@ public partial class GameState : Node
                     var vp = p.AsString();
                     if (vp != "") _playedPoolClips.Add(vp);
                 }
+            // The run keeps its mini-game seed and attempt counts. A save from before mini-games has
+            // neither, and keeps the fresh seed drawn above.
+            if (saveData.ContainsKey("run_seed"))
+                _runSeed = saveData["run_seed"].AsInt32();
+            if (saveData.ContainsKey("minigame_attempts"))
+            {
+                var savedAttempts = saveData["minigame_attempts"].AsGodotDictionary();
+                foreach (var key in savedAttempts.Keys)
+                {
+                    var place = key.AsString();
+                    if (place != "") _miniGameAttempts[place] = savedAttempts[key].AsInt32();
+                }
+            }
         }
         else
         {

@@ -195,7 +195,7 @@ static func enumerate_assets(journey_data: Dictionary, cover_rel: String = "") -
 					if edge is Dictionary:
 						_note(roles, str((edge as Dictionary).get("image_path", "")), ROLE_IMAGE)
 				_note_scene_override(roles, data)
-			"shop", "checkpoint":
+			"shop", "checkpoint", "minigame":
 				# Neither carried media until per-node backdrops existed, which is why neither had a
 				# case here at all — an export would have shipped the journey without them.
 				_note_scene_override(roles, data)

@@ -675,7 +675,7 @@ static func resolve_paths(graph: Dictionary, base: String) -> void:
 				if fd.has("audio"):
 					fd["audio"] = _abs(str(fd.get("audio", "")), base)
 				_resolve_scene_override(fd, base)
-			"shop", "checkpoint":
+			"shop", "checkpoint", "minigame":
 				_resolve_scene_override(n.get("data", {}), base)
 
 

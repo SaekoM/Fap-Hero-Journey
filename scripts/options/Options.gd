@@ -162,6 +162,9 @@ var _update_check_toggle: Button = null
 var _ui_sound_toggle: Button = null
 var _ui_sound_slider: HSlider = null
 var _ui_sound_value_lbl: Label = null
+var _game_sound_toggle: Button = null
+var _game_sound_slider: HSlider = null
+var _game_sound_value_lbl: Label = null
 
 var _filler_toggle: Button = null
 var _allow_journey_filler_toggle: Button = null
@@ -472,6 +475,71 @@ func _apply_layout() -> void:
 	)
 	# Audible preview when the drag finishes (not on every tick).
 	_ui_sound_slider.drag_ended.connect(func(_changed: bool) -> void: UISound.click())
+
+	# ── Game Sounds: in-play events and mini-game feedback, apart from the menu blips ──
+	var game_sound_row: HBoxContainer = HBoxContainer.new()
+	game_sound_row.add_theme_constant_override("separation", 16)
+	audio_section.add_child(game_sound_row)
+
+	var game_sound_lbl: Label = Label.new()
+	game_sound_lbl.text = "GAME SOUNDS"
+	game_sound_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(game_sound_lbl, UITheme.WHITE_SOFT, 14, false)
+	game_sound_row.add_child(game_sound_lbl)
+
+	_game_sound_toggle = Button.new()
+	_game_sound_toggle.toggle_mode = true
+	_style_toggle(_game_sound_toggle, false)
+	game_sound_row.add_child(_game_sound_toggle)
+	_game_sound_toggle.toggled.connect(
+		func(pressed: bool) -> void:
+			_style_toggle(_game_sound_toggle, pressed)
+			_save_settings()
+			if pressed:
+				UISound.dial_open()  # audible cue when enabling
+	)
+
+	var game_sound_hint: Label = Label.new()
+	game_sound_hint.text = (
+		"Sounds during play: using an item, finishing a journey, and mini-games. The safe dial's "
+		+ "click is a hint in itself."
+	)
+	game_sound_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(game_sound_hint, UITheme.TEXT_HINT, 11, false)
+	audio_section.add_child(game_sound_hint)
+
+	var game_vol_row: HBoxContainer = HBoxContainer.new()
+	game_vol_row.add_theme_constant_override("separation", 16)
+	audio_section.add_child(game_vol_row)
+
+	var game_vol_lbl: Label = Label.new()
+	game_vol_lbl.text = "GAME SOUND VOLUME"
+	game_vol_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(game_vol_lbl, UITheme.WHITE_SOFT, 14, false)
+	game_vol_row.add_child(game_vol_lbl)
+
+	_game_sound_slider = HSlider.new()
+	_game_sound_slider.min_value = 0.0
+	_game_sound_slider.max_value = 1.0
+	_game_sound_slider.step = 0.01
+	_game_sound_slider.value = SettingsService.DEFAULT_GAME_SOUND_VOLUME
+	_game_sound_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_game_sound_slider.custom_minimum_size = Vector2(SLIDER_MIN_W, 0)
+	_style_slider(_game_sound_slider)
+	game_vol_row.add_child(_game_sound_slider)
+
+	_game_sound_value_lbl = Label.new()
+	_game_sound_value_lbl.custom_minimum_size = Vector2(VALUE_LABEL_W, 0)
+	_style_label(_game_sound_value_lbl, UITheme.PURPLE_BRIGHT, 14, false)
+	game_vol_row.add_child(_game_sound_value_lbl)
+
+	_game_sound_slider.value_changed.connect(
+		func(v: float) -> void:
+			_game_sound_value_lbl.text = "%d%%" % roundi(v * 100.0)
+			_save_settings()
+	)
+	# Preview with the dial's click — the game sound a player most needs to judge the level of.
+	_game_sound_slider.drag_ended.connect(func(_changed: bool) -> void: UISound.dial_tick(1.0))
 
 	# ── HUD section: what shows over the video while playing ─────────────────
 	var display_section: VBoxContainer = $ContentPanel/ContentScroll/MarginWrapper/ContentVBox/DisplaySection
@@ -1904,6 +1972,14 @@ func _load_settings() -> void:
 		var ui_snd_vol: float = SettingsService.get_ui_sound_volume()
 		_ui_sound_slider.set_value_no_signal(ui_snd_vol)
 		_ui_sound_value_lbl.text = "%d%%" % roundi(ui_snd_vol * 100.0)
+	if _game_sound_toggle != null:
+		var game_snd_on: bool = SettingsService.get_game_sound_enabled()
+		_game_sound_toggle.set_pressed_no_signal(game_snd_on)
+		_style_toggle(_game_sound_toggle, game_snd_on)
+	if _game_sound_slider != null:
+		var game_snd_vol: float = SettingsService.get_game_sound_volume()
+		_game_sound_slider.set_value_no_signal(game_snd_vol)
+		_game_sound_value_lbl.text = "%d%%" % roundi(game_snd_vol * 100.0)
 
 	# Load the filler range slider FIRST so that if the toggle or speed-input
 	# signals fire _save_settings() below, the slider already holds the correct
@@ -2022,6 +2098,10 @@ func _save_settings() -> void:
 		SettingsService.set_ui_sound_enabled(_ui_sound_toggle.button_pressed)
 	if _ui_sound_slider != null:
 		SettingsService.set_ui_sound_volume(_ui_sound_slider.value)
+	if _game_sound_toggle != null:
+		SettingsService.set_game_sound_enabled(_game_sound_toggle.button_pressed)
+	if _game_sound_slider != null:
+		SettingsService.set_game_sound_volume(_game_sound_slider.value)
 	# Push the new enabled/volume straight to the live service.
 	UISound.reload_settings()
 

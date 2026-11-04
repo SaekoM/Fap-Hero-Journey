@@ -96,6 +96,18 @@ var _traffic: Dictionary = {}
 # The builder hands back {marks, focus} each layout, so it follows every edit live; `focus` is "" for
 # ALL, or one "kind:name" whose untouched nodes and edges are dimmed. Never rendered in map_mode.
 var state_provider: Callable = Callable()
+
+# The journey's mini-game library as {definition id: {name, kind}}, so a mini-game node (which stores
+# only the id of the game it plays) can show that game's name. Refreshed from minigame_provider on every
+# layout when one is set (the builder, where the library changes under the canvas); otherwise set once
+# by whoever shows the graph (the player map).
+var minigame_lookup: Dictionary = {}
+var minigame_provider: Callable = Callable()
+const MINIGAME_KIND_LABELS: Dictionary = {
+	SafeCrackerGame.KIND: "SAFE-CRACKER",
+	DoubleOrNothingGame.KIND: "DOUBLE OR NOTHING",
+	QuickTimeEventGame.KIND: "QUICK-TIME EVENT",
+}
 var _state_marks: Dictionary = {}
 var _state_focus: String = ""
 # Route recap overlay (end-of-run ceremony): the run's taken path renders
@@ -327,6 +339,8 @@ func _layout_graph() -> void:
 	_node_warnings = (
 		warning_provider.call() if (not map_mode and warning_provider.is_valid()) else {}
 	)
+	if minigame_provider.is_valid():
+		minigame_lookup = minigame_provider.call()
 	var finish_node_id: String = (
 		str(finish_id_provider.call()) if (not map_mode and finish_id_provider.is_valid()) else ""
 	)
@@ -1425,6 +1439,8 @@ func _type_color(item_type: String) -> Color:
 			return UITheme.MAGENTA
 		"checkpoint":
 			return UITheme.SUCCESS
+		"minigame":
+			return UITheme.MINIGAME
 		"loop_start", "loop_end":
 			return UITheme.TOXIC_GREEN
 	return UITheme.PURPLE_MID
@@ -1442,6 +1458,8 @@ func _type_icon(item_type: String) -> String:
 			return "⑂"
 		"checkpoint":
 			return "⚑"
+		"minigame":
+			return "◎"
 		"loop_start":
 			return "▸"
 		"loop_end":
@@ -1501,11 +1519,20 @@ func _type_label(item: Dictionary) -> String:
 		"checkpoint":
 			var cn: String = item.get("name", "")
 			return cn if cn != "" else "Checkpoint"
+		"minigame":
+			var game_name: String = str(_minigame_info(item).get("name", ""))
+			return game_name if game_name != "" else "Mini-game"
 		"loop_start":
 			return "Loop Start"
 		"loop_end":
 			return "Loop End"
 	return "?"
+
+
+# {name, kind} of the game a mini-game node plays, or {} when it plays none (or one no longer in the
+# library).
+func _minigame_info(item: Dictionary) -> Dictionary:
+	return minigame_lookup.get(str(item.get("game", "")), {})
 
 
 func _type_sublabel(item: Dictionary) -> String:
@@ -1545,6 +1572,9 @@ func _type_sublabel(item: Dictionary) -> String:
 			)
 		"checkpoint":
 			return "SAVE POINT"
+		"minigame":
+			var kind: String = str(_minigame_info(item).get("kind", ""))
+			return MINIGAME_KIND_LABELS.get(kind, "MINI-GAME — NO GAME PICKED")
 		"loop_start":
 			return "TOP OF THE LOOP"
 		"loop_end":

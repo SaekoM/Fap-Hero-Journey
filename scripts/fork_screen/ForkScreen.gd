@@ -1,3 +1,4 @@
+class_name ForkScreen
 extends Control
 
 signal path_chosen(index: int)

@@ -72,7 +72,20 @@ public partial class ScoreService : Node
     public int CurrentRoundStrokes =>
         _current.SmallStrokes + _current.MediumStrokes + _current.LargeStrokes;
 
-    public int TotalScore => _rounds.Sum(r => r.Score) + _current.Score;
+    public int TotalScore => _rounds.Sum(r => r.Score) + _current.Score + _bonusScore;
+
+    // Score earned OUTSIDE a round — a mini-game tier that awards journey score. Kept apart from the
+    // rounds so it counts toward the total without becoming anyone's "last round score", which is what a
+    // score-gated fork reads. Folded into the saved total like everything else.
+    private int _bonusScore = 0;
+
+    public void AddBonusScore(int points)
+    {
+        if (points <= 0)
+            return;
+        _bonusScore += points;
+        EmitSignal(SignalName.ScoreChanged, TotalScore);
+    }
     // Score of the most recently completed round (0 before any round ends). Used
     // by score-based Conditional forks.
     public int LastRoundScore => _rounds.Count > 0 ? _rounds[^1].Score : 0;
@@ -83,6 +96,7 @@ public partial class ScoreService : Node
     {
         _rounds.Clear();
         _current = default;
+        _bonusScore = 0;
         _multiplier = 1.0;
         EmitSignal(SignalName.ScoreChanged, 0);
     }
@@ -139,6 +153,7 @@ public partial class ScoreService : Node
     {
         _rounds.Clear();
         _current = default;
+        _bonusScore = 0;  // the saved total already includes it
         var restored = new RoundData
         {
             Score = saveData.ContainsKey("score") ? saveData["score"].AsInt32() : 0,

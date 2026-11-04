@@ -146,7 +146,7 @@ func _branch_allows(event: Dictionary, state: Dictionary) -> bool:
 
 
 func _gate_allows(event: Dictionary, state: Dictionary) -> bool:
-	var id: String = str(event.get("id", ""))
+	var id: String = str(event.get("gate_id", event.get("id", "")))
 	if not _gated.has(id):
 		_gated[id] = RoundTimeline.evaluate_condition(event.get("condition", []), state)
 	return bool(_gated[id])
@@ -292,6 +292,10 @@ static func _is_windowed(event: Dictionary) -> bool:
 	match str(event.get("track", "")):
 		RoundTimeline.TRACK_EFFECT, RoundTimeline.TRACK_STANCE, RoundTimeline.TRACK_REGION:
 			return true
+		RoundTimeline.TRACK_QTE:
+			# Over the video, it closes as its attack comes due, and stop runs before fire, so the verdict is
+			# in. With no length, it is an instant: one that pauses the video needs no more.
+			return int(event.get("duration_ms", 0)) > 0
 		RoundTimeline.TRACK_CAST:
 			return int(event.get("duration_ms", 0)) > 0
 	return false  # attacks and audio always fire

@@ -137,6 +137,25 @@ func write_save(journey_folder_name: String, payload: Dictionary) -> bool:
 	return true
 
 
+# Counts a mini-game attempt in the journey's stored save, if it has one. Saves are written at checkpoints
+# and used once, so a player who reaches a mini-game after saving could otherwise see its layout, quit,
+# resume, and get that same layout again (MINIGAMES_DESIGN.md → "Saving and quitting": a reload is a used
+# attempt). Rewrites the file in place, keeping when it was saved — nothing else about the save changed.
+func record_minigame_attempt(journey_folder_name: String, place_id: String, attempt: int) -> void:
+	var record: Dictionary = read_save(journey_folder_name)
+	if record.is_empty():
+		return
+	var attempts: Dictionary = record.get("minigame_attempts", {})
+	attempts[place_id] = attempt
+	record["minigame_attempts"] = attempts
+	var f: FileAccess = FileAccess.open(_save_path_for(journey_folder_name), FileAccess.WRITE)
+	if f == null:
+		printerr("JourneySaveService: cannot update %s" % _save_path_for(journey_folder_name))
+		return
+	f.store_string(JSON.stringify(record, "	"))
+	f.close()
+
+
 # Removes the save for the given journey. Idempotent — silently does nothing
 # if no save existed. Called from "New Run" flow when the player chooses to
 # overwrite an existing save, and from end-of-journey to clean up the save

@@ -329,6 +329,7 @@ func show_journey_info_panel() -> void:
 	# wide media rather than after the settings, where it read as a property of the last one.
 	side_vbox.add_child(_side_section_separator())
 	side_vbox.add_child(_make_custom_items_section())
+	side_vbox.add_child(_minigame_editor().make_library_section())
 	side_vbox.add_child(_make_journey_bgm_section())
 
 	side_vbox.add_child(_side_section_separator())
@@ -5848,6 +5849,9 @@ func _build_side_panel_editor(
 		"checkpoint":
 			hdr.text = "// CHECKPOINT //"
 			accent = UITheme.AMBER
+		"minigame":
+			hdr.text = "// MINI-GAME //"
+			accent = UITheme.MINIGAME
 		"loop_start":
 			hdr.text = "// LOOP START //"
 			accent = UITheme.TOXIC_GREEN
@@ -5875,10 +5879,23 @@ func _build_side_panel_editor(
 			container.add_child(_make_side_storyboard_editor(arr, idx, reselect))
 		"checkpoint":
 			container.add_child(_make_side_checkpoint_editor(arr, idx))
+		"minigame":
+			container.add_child(_minigame_editor().make_node_editor(arr[idx], reselect))
 		"loop_start":
 			container.add_child(_make_side_loop_start_editor())
 		"loop_end":
 			container.add_child(_make_side_loop_editor(arr, idx, reselect))
+
+
+# The mini-game library and node editor (MiniGameEditor), made on first use and kept, so it can refresh
+# its own JOURNEY INFO button.
+var _minigames: MiniGameEditor = null
+
+
+func _minigame_editor() -> MiniGameEditor:
+	if _minigames == null:
+		_minigames = MiniGameEditor.new(_owner, self)
+	return _minigames
 
 
 # A checkpoint node's editor: just an optional banner label. The save point itself needs no
@@ -8408,7 +8425,9 @@ func _make_encounter_button(arr: Array, idx: int) -> Control:
 					_round_offers_finish(),
 					_owner._journey_flags,
 					_declare_flag_for,
-					_encounter_length_notice(arr[idx], length_ms)
+					_encounter_length_notice(arr[idx], length_ms),
+					_owner._journey_minigames,
+					_minigame_editor()
 				)
 			)
 	)

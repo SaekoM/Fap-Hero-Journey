@@ -20,6 +20,7 @@ extends RefCounted
 # ── Vocabulary ───────────────────────────────────────────────────────────────
 
 const TRACK_ATTACK: String = "attack"  # an override takeover (the boss seizes the device)
+const TRACK_QTE: String = "qte"  # a Quick-Time Event on its own, paying out through its tiers
 const TRACK_EFFECT: String = "effect"  # an effect bundle applied over a window
 const TRACK_CAST: String = "cast"  # a timed image / portrait / subtitle pop-up
 const TRACK_AUDIO: String = "audio"  # a one-shot sfx or narration cue
@@ -30,7 +31,7 @@ const TRACK_STANCE: String = "stance"  # how the boss takes damage over a window
 # attempt.
 const TRACK_REGION: String = "region"
 const TRACKS: Array[String] = [
-	TRACK_ATTACK, TRACK_EFFECT, TRACK_STANCE, TRACK_REGION, TRACK_CAST, TRACK_AUDIO
+	TRACK_ATTACK, TRACK_QTE, TRACK_EFFECT, TRACK_STANCE, TRACK_REGION, TRACK_CAST, TRACK_AUDIO
 ]
 
 # ── Stances ──────────────────────────────────────────────────────────────────
@@ -220,6 +221,11 @@ const DEFAULT_DAMAGE_TARGET: int = 1000
 
 const ISSUE_ATTACK_OVERLAP: String = "attack_overlap"
 const ISSUE_ATTACK_NO_SCRIPT: String = "attack_no_script"
+const ISSUE_QTE_NO_GAME: String = "qte_no_game"
+const ISSUE_QTE_TOO_SHORT: String = "qte_too_short"
+const ISSUE_QTE_OVERLAP: String = "qte_overlap"
+# The score a dodge on an attack needs to cancel it, unless the author says otherwise.
+const DEFAULT_DODGE_PASS_SCORE: int = 50
 const ISSUE_CAST_EMPTY: String = "cast_empty"
 const ISSUE_AUDIO_NO_CLIP: String = "audio_no_clip"
 const ISSUE_EFFECT_EMPTY: String = "effect_empty"
@@ -552,6 +558,8 @@ static func normalize_event(raw: Dictionary) -> Dictionary:
 	match track:
 		TRACK_ATTACK:
 			_fill_attack(out, raw)
+		TRACK_QTE:
+			out["game"] = str(raw.get("game", ""))
 		TRACK_EFFECT:
 			out["effects"] = _copy_dict_array(raw.get("effects", []))
 			_carry_fades(out, raw)
@@ -590,6 +598,21 @@ static func _fill_attack(out: Dictionary, raw: Dictionary) -> void:
 	out["scripts"] = _normalize_scripts(raw.get("scripts", {}))
 	out["effects"] = _copy_dict_array(raw.get("effects", []))
 	_carry_trim(out, raw)
+	var dodge: Dictionary = _normalize_attack_dodge(raw.get("dodge", {}))
+	if not dodge.is_empty():
+		out["dodge"] = dodge
+
+
+# The Quick-Time Event that can cancel an attack: {game, pass_score}. {} when it has none.
+static func _normalize_attack_dodge(raw: Variant) -> Dictionary:
+	var src: Dictionary = raw if raw is Dictionary else {}
+	var game: String = str(src.get("game", ""))
+	if game == "":
+		return {}
+	return {
+		"game": game,
+		"pass_score": clampi(int(src.get("pass_score", DEFAULT_DODGE_PASS_SCORE)), 0, 100),
+	}
 
 
 static func _fill_cast(out: Dictionary, raw: Dictionary) -> void:
@@ -765,6 +788,95 @@ static func resolve_at_ms(event: Dictionary, video_duration_ms: int) -> int:
 	return resolved if resolved >= 0 else NO_TIME
 
 
+## The timeline as the round plays it: its events plus a QTE event for each attack with a dodge.
+static func with_attack_dodges(
+	timeline: Dictionary, library: Array, video_duration_ms: int
+) -> Dictionary:
+	var out: Dictionary = timeline.duplicate()
+	var events: Array = (timeline.get("events", []) as Array).duplicate()
+	events.append_array(attack_dodge_events(timeline, library, video_duration_ms))
+	out["events"] = events
+	return out
+
+
+## A QTE event for each attack with a dodge that plays over the video. Its prompts run right before the attack,
+## and it ends exactly when the attack is due, so moving the attack moves it. A dodge that pauses the video has
+## none: it takes no time on the clock, and the round starts it as the attack comes due. An attack too close to the start of
+## the round gets a shorter event with fewer prompts, or none if not even one fits.
+##
+## `gate_id` makes the dodge and its attack share one verdict on the attack's condition. The dodge reaches that
+## condition first, and a dodge shown for an attack that then never came would be a lie.
+static func attack_dodge_events(
+	timeline: Dictionary, library: Array, video_duration_ms: int
+) -> Array:
+	var out: Array = []
+	for attack: Dictionary in timeline.get("events", []) as Array:
+		var dodge: Dictionary = attack.get("dodge", {})
+		if str(attack.get("track", "")) != TRACK_ATTACK or dodge.is_empty():
+			continue
+		if str(attack.get("on", ON_ALWAYS)) != ON_ALWAYS:
+			continue
+		var knobs: Dictionary = _qte_knobs(library, str(dodge["game"]))
+		var attack_at: int = resolve_at_ms(attack, video_duration_ms)
+		if knobs.is_empty() or attack_at == NO_TIME or bool(knobs["pause_video"]):
+			continue
+		var start: int = maxi(0, attack_at - QuickTimeEventGame.min_duration_ms(knobs))
+		if attack_at - start < QuickTimeEventGame.one_prompt_ms(knobs):
+			continue
+		var event: Dictionary = {
+			"id": "%s_dodge" % attack["id"],
+			"track": TRACK_QTE,
+			"at_ms": start,
+			"anchor": ANCHOR_START,
+			"duration_ms": attack_at - start,
+			"on": ON_ALWAYS,
+			"variant_tag": str(attack.get("variant_tag", "")),
+			"game": dodge["game"],
+			"attack_id": attack["id"],
+			"gate_id": attack["id"],
+			"pass_score": dodge["pass_score"],
+		}
+		if attack.has("condition"):
+			event["condition"] = attack["condition"]
+		out.append(event)
+	return out
+
+
+# The knobs of the Quick-Time Event `game_id` in `library`, or {} when it isn't one.
+static func _qte_knobs(library: Array, game_id: String) -> Dictionary:
+	var definition: Dictionary = MiniGameLibrary.find(library, game_id)
+	if str(definition.get("kind", "")) != QuickTimeEventGame.KIND:
+		return {}
+	return definition["knobs"]
+
+
+## Every mini-game id the encounters on one node's data use, once per use. A round keeps its encounter on its
+## own data and on each of its pool entries.
+static func qte_games_on_node(data: Dictionary) -> Array:
+	var holders: Array = [data]
+	holders.append_array(data.get("pool_entries", []) as Array)
+	var games: Array = []
+	for holder: Variant in holders:
+		var timeline: Variant = (
+			(holder as Dictionary).get("timeline", {}) if holder is Dictionary else {}
+		)
+		if not (timeline is Dictionary):
+			continue
+		for event: Variant in (timeline as Dictionary).get("events", []) as Array:
+			if event is Dictionary:
+				var game: String = _event_qte_game(event as Dictionary)
+				if game != "":
+					games.append(game)
+	return games
+
+
+# The game an event plays, as a QTE of its own or to dodge itself, or "".
+static func _event_qte_game(event: Dictionary) -> String:
+	if event.has("dodge"):
+		return str((event["dodge"] as Dictionary).get("game", ""))
+	return str(event.get("game", "")) if str(event.get("track", "")) == TRACK_QTE else ""
+
+
 ## Every event with its anchor resolved, in play order: `{…event, resolved_at_ms}`. Unresolvable events
 ## are dropped. `include_outcomes` selects which set comes back — the normal pass excludes everything
 ## that fires on the way OUT of the round, and each exit path asks for its own.
@@ -857,6 +969,94 @@ static func resolved_phases(timeline: Dictionary, video_duration_ms: int) -> Arr
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
+
+
+## The problems with an encounter's QTEs, in validate()'s shape. Apart from validate() because they need the
+## journey's mini-game library, which the timeline doesn't hold.
+static func qte_issues(timeline: Dictionary, library: Array, video_duration_ms: int) -> Array:
+	var issues: Array = []
+	var windows: Array = attack_dodge_events(timeline, library, video_duration_ms)
+	var attacks_with_windows: Dictionary = {}
+	for window: Dictionary in windows:
+		attacks_with_windows[str(window["attack_id"])] = true
+	for event: Dictionary in timeline.get("events", []) as Array:
+		var game: String = _event_qte_game(event)
+		var is_qte: bool = str(event.get("track", "")) == TRACK_QTE
+		if game == "" and not is_qte:
+			continue
+		var id: String = str(event.get("id", ""))
+		var knobs: Dictionary = _qte_knobs(library, game)
+		if knobs.is_empty():
+			(
+				issues
+				. append(
+					_issue(
+						ISSUE_QTE_NO_GAME,
+						id,
+						(
+							"This QTE has no game picked."
+							if game == ""
+							else "This QTE plays a game that is no longer a Quick-Time Event in the library."
+						)
+					)
+				)
+			)
+		elif bool(knobs["pause_video"]):
+			continue  # it takes no time on the clock, so it can't be too short or overlap anything
+		elif is_qte:
+			windows.append(event)
+			if int(event.get("duration_ms", 0)) < QuickTimeEventGame.min_duration_ms(knobs):
+				issues.append(
+					_issue(
+						ISSUE_QTE_TOO_SHORT,
+						id,
+						"This QTE is too short for all its prompts, so fewer of them will play."
+					)
+				)
+		elif not attacks_with_windows.has(id) and video_duration_ms > 0:
+			issues.append(
+				_issue(
+					ISSUE_QTE_TOO_SHORT,
+					id,
+					"This attack comes too early for its dodge, so it can't be dodged."
+				)
+			)
+	issues.append_array(_qte_overlap_issues(timeline, windows, video_duration_ms))
+	return issues
+
+
+# Two QTEs at once put two rings on screen, with one player to answer them.
+static func _qte_overlap_issues(
+	timeline: Dictionary, windows: Array, video_duration_ms: int
+) -> Array:
+	var issues: Array = []
+	var owner: Dictionary = tag_owners(timeline)
+	var placed: Array = []
+	for window: Dictionary in windows:
+		var at: int = resolve_at_ms(window, video_duration_ms)
+		if at != NO_TIME:
+			placed.append(
+				{"at": at, "end": at + int(window.get("duration_ms", 0)), "event": window}
+			)
+	placed.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["at"] < b["at"])
+	for i in range(1, placed.size()):
+		var later: Dictionary = placed[i]
+		for j in i:
+			var earlier: Dictionary = placed[j]
+			if (
+				int(later["at"]) < int(earlier["end"])
+				and not are_exclusive(later["event"], earlier["event"], owner)
+			):
+				var event: Dictionary = later["event"]
+				issues.append(
+					_issue(
+						ISSUE_QTE_OVERLAP,
+						str(event.get("attack_id", event.get("id", ""))),
+						"This QTE starts before the previous one finishes."
+					)
+				)
+				break
+	return issues
 
 
 ## Authoring problems, as [{code, event_id, message}] — what the editor surfaces and the presave gate

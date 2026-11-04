@@ -76,6 +76,7 @@ var _open_child_id: String = ""
 const CAUSE_SETTING_MEDIA_MISSING: String = "setting_media_missing"
 const CAUSE_SHOP_SLOTS_SHORT: String = "shop_slots_short"
 const CAUSE_LAYOUT_STALE: String = "layout_stale"
+const CAUSE_MINIGAME_INVALID: String = "minigame_invalid"
 
 const GraphViewScene = preload("res://scenes/graph_view/GraphView.tscn")
 
@@ -151,6 +152,7 @@ var _journey_finish_label: String = ""  # what the give-up button says; "" = Jou
 var _journey_finish_hold_text: String = ""  # what its hold overlay says; "" = JourneyData.DEFAULT_FINISH_HOLD_TEXT
 var _journey_items: Array = []  # author-defined journey-scoped items (runtime snake-case dicts)
 var _journey_characters: Array = []  # storyboard cast (runtime dicts: id/name/portraits[]/placements[])
+var _journey_minigames: Array = []  # the mini-game library (MiniGameLibrary definitions)
 # Reusable places: {id, name, backgrounds[{id,name,path}], bgm, bgm_volume}. Referenced by id from
 # storyboards, shops, checkpoints and forks so one backdrop and one theme are authored once.
 var _journey_settings: Array = []
@@ -194,6 +196,7 @@ var _rendition_parent_summary: Dictionary = {}
 # (JourneyRendition's additive contract), and only those are written on save.
 var _rendition_parent_setting_ids: Dictionary = {}  # setting id -> true
 var _rendition_parent_character_ids: Dictionary = {}  # character id -> true
+var _rendition_parent_minigame_ids: Dictionary = {}  # mini-game definition id -> true (the base's)
 # The base's items while authoring a rendition (id -> the image the base gave it, "" for none). Locked
 # like its settings and cast, except that one with no image can be given one (ItemImages).
 var _rendition_parent_item_images: Dictionary = {}
@@ -369,6 +372,7 @@ func _setup_graph_view() -> void:
 	_graph.node_context_menu_requested.connect(_on_node_context_menu_requested)
 	_graph.warning_provider = _compute_node_warnings  # GraphView pulls soft-validation badges each layout
 	_graph.state_provider = _state_overlay  # ± STATE chips, recomputed each layout so edits show live
+	_graph.minigame_provider = _minigame_lookup  # mini-game nodes show their game's name
 	_graph.finish_id_provider = func() -> String: return _journey_finish_node  # badges the default aftercare
 	# Drag-to-reposition a backdrop layer writes its new offset back (mapping the combined-stack index to
 	# this journey's editable list) so the placement persists.
@@ -383,6 +387,11 @@ func _setup_graph_view() -> void:
 
 
 # Rebuilds the graph view from _graph_model. Called after a structural change.
+# {definition id: {name, kind}} for the canvas, from the live library.
+func _minigame_lookup() -> Dictionary:
+	return MiniGameLibrary.name_lookup(_journey_minigames)
+
+
 func _refresh_graph() -> void:
 	if not _graph:
 		return
@@ -409,6 +418,8 @@ func _compute_node_warnings() -> Dictionary:
 			"fork":
 				_save_check_fork_graph(n, "Fork", issues)
 				_check_dead_flag_paths(n, known_flags, issues)
+			"minigame":
+				_save_check_minigame(n.get("data", {}), "Mini-game", issues)
 		# Any node type can carry a setting, so this sits outside the match.
 		_save_check_settings(n, _node_audit_label(n), issues)
 		_save_check_shop_layout(n, _node_audit_label(n), issues)
@@ -1900,6 +1911,7 @@ func _show_canvas_context_menu(world_pos: Vector2) -> void:
 		["＋ STORYBOARD", "storyboard"],
 		["＋ FORK", "fork"],
 		["＋ CHECKPOINT", "checkpoint"],
+		["＋ MINI-GAME", "minigame"],
 		["＋ LOOP", "loop"],
 	]:
 		var t: String = spec[1]
@@ -2564,6 +2576,7 @@ func _render_graph_image() -> Image:
 	svp.add_child(g)
 	add_child(svp)  # offscreen — a bare SubViewport still renders to its texture
 
+	g.minigame_lookup = _minigame_lookup()
 	g.set_graph(_graph_model)
 	# Wait for the deferred layout chain (refresh → _do_layout → centre) to settle.
 	var tries: int = 0
@@ -3614,6 +3627,7 @@ func _load_graph(journey: Dictionary) -> void:
 	# reasoning as items above (`parsed["characters"]` would be the raw pass-through, unresolved).
 	_journey_characters = (journey.get("characters", []) as Array).duplicate(true)
 	_journey_settings = (journey.get("settings", []) as Array).duplicate(true)
+	_journey_minigames = (journey.get("minigames", []) as Array).duplicate(true)
 	_journey_bgm = (journey.get("bgm", []) as Array).duplicate(true)
 	_journey_bgm_volume = float(journey.get("bgm_volume", JourneyData.DEFAULT_BGM_VOLUME))
 	_journey_map_fog = bool(parsed.get("map_fog", false))
@@ -3677,6 +3691,9 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 			(rendition_over.get("characters", _journey_characters) as Array).duplicate(true)
 		)
 		_journey_items = (rendition_over.get("items", _journey_items) as Array).duplicate(true)
+		_journey_minigames = (
+			(rendition_over.get("minigames", _journey_minigames) as Array).duplicate(true)
+		)
 		_rendition_parent_id = str(rendition_over.get("parent_id", ""))
 		parent_title = str(rendition_over.get("parent_name", parent_title))
 	else:
@@ -3695,6 +3712,7 @@ func _enter_rendition_mode(base: Dictionary) -> void:
 	# Every setting and character shown so far is the base's (or an ancestor's): usable, locked.
 	_rendition_parent_setting_ids = _ids_of(_journey_settings)
 	_rendition_parent_character_ids = _ids_of(_journey_characters)
+	_rendition_parent_minigame_ids = _ids_of(_journey_minigames)
 	_rendition_parent_counter_names = _ids_of(_journey_counters, "name")
 	_rendition_parent_flag_names = _ids_of(_journey_flags, "name")
 	_rendition_parent_item_images = _item_images_of(_journey_items)
@@ -3772,6 +3790,7 @@ func _load_rendition_delta(summary: Dictionary) -> void:
 	_journey_flags = JourneyData.merge_by_id(_journey_flags, delta.get("flags", []), "name")
 	# Its own items after the base's, and any image it gave a base item that had none.
 	_journey_items = JourneyData.merge_by_id(_journey_items, delta.get("items", []))
+	_journey_minigames = JourneyData.merge_by_id(_journey_minigames, delta.get("minigames", []))
 	JourneyRendition.apply_item_images(_journey_items, delta.get("item_images", []))
 	# Its own notes and frames (the base's were dropped on entry — see _enter_rendition_mode).
 	_graph_model["comments"] = (delta.get("comments", []) as Array).duplicate(true)
@@ -5180,6 +5199,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 		"parent_ids": _rendition_parent_ids,
 		"setting_ids": _rendition_parent_setting_ids,
 		"character_ids": _rendition_parent_character_ids,
+		"minigame_ids": _rendition_parent_minigame_ids,
 		"counter_names": _rendition_parent_counter_names,
 		"flag_names": _rendition_parent_flag_names,
 		"item_images": _rendition_parent_item_images,
@@ -5235,6 +5255,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	# move: lock them all and the pack writes no Settings / Characters of its own.
 	_rendition_parent_setting_ids = _ids_of(_journey_settings)
 	_rendition_parent_character_ids = _ids_of(_journey_characters)
+	_rendition_parent_minigame_ids = _ids_of(_journey_minigames)
 	_rendition_parent_counter_names = _ids_of(_journey_counters, "name")
 	_rendition_parent_flag_names = _ids_of(_journey_flags, "name")
 	_rendition_parent_item_images = _item_images_of(_journey_items)
@@ -5251,6 +5272,7 @@ func _do_extract(result: Dictionary, rend_name: String) -> void:
 	_rendition_parent_ids = snap_rendition["parent_ids"]
 	_rendition_parent_setting_ids = snap_rendition["setting_ids"]
 	_rendition_parent_character_ids = snap_rendition["character_ids"]
+	_rendition_parent_minigame_ids = snap_rendition.get("minigame_ids", {})
 	_rendition_parent_counter_names = snap_rendition.get("counter_names", {})
 	_rendition_parent_flag_names = snap_rendition.get("flag_names", {})
 	_rendition_parent_item_images = snap_rendition.get("item_images", {})
@@ -5480,6 +5502,9 @@ func _do_merge_to_base(node_id: String) -> void:
 		"aftercare_links": aftercare_injections,
 		"settings": settings_move["entries"],
 		"characters": cast_move["entries"],
+		# A moving mini-game node takes its definition with it, or the base would hold a node pointing
+		# at a game it doesn't have.
+		"minigames": _minigames_used_by(branch_nodes, _rendition_owned_minigames()),
 		"comments": notes["moved"]["comments"],
 		"groups": notes["moved"]["groups"],
 		# What the parent's save cuts from this rendition once it has landed (see above).
@@ -5551,6 +5576,7 @@ func _apply_merge_inject(inj: Dictionary) -> void:
 	_journey_settings = JourneyData.merge_by_id(_journey_settings, inj.get("settings", []))
 	_journey_characters = JourneyData.merge_by_id(_journey_characters, inj.get("characters", []))
 	_journey_items = JourneyData.merge_by_id(_journey_items, inj.get("items", []))
+	_journey_minigames = JourneyData.merge_by_id(_journey_minigames, inj.get("minigames", []))
 	JourneyRendition.apply_item_images(_journey_items, inj.get("item_images", []))
 	if not _graph_model.has("comments"):
 		_graph_model["comments"] = []
@@ -5836,6 +5862,7 @@ func _write_rendition_pack() -> Dictionary:
 		"counters": _rendition_owned_counters(),
 		"flags": _rendition_owned_flags(),
 		"items": items,
+		"minigames": _rendition_owned_minigames(),
 		"item_images": item_images,
 	}
 	var data: Dictionary = JourneyRendition.coerce_rendition(rendition)
@@ -5966,6 +5993,35 @@ func _rendition_owned_counters() -> Array:
 		):
 			out.append(c)
 	return out
+
+
+func _rendition_owned_minigames() -> Array:
+	var out: Array = []
+	for definition: Variant in _journey_minigames:
+		if (
+			definition is Dictionary
+			and not _rendition_parent_minigame_ids.has(
+				str((definition as Dictionary).get("id", ""))
+			)
+		):
+			out.append(definition)
+	return out
+
+
+# The definitions in `library` that any mini-game node or boss encounter in `nodes` ({id: node}) plays.
+func _minigames_used_by(nodes: Dictionary, library: Array) -> Array:
+	var used: Dictionary = {}
+	for node: Variant in nodes.values():
+		if not (node is Dictionary):
+			continue
+		var data: Dictionary = (node as Dictionary).get("data", {})
+		if str((node as Dictionary).get("type", "")) == "minigame":
+			used[str(data.get("game", ""))] = true
+		for game: Variant in RoundTimeline.qte_games_on_node(data):
+			used[str(game)] = true
+	return library.filter(
+		func(definition: Dictionary) -> bool: return used.has(str(definition.get("id", "")))
+	)
 
 
 func _rendition_owned_characters() -> Array:
@@ -6139,6 +6195,8 @@ func _collect_rendition_presave_issues() -> Array:
 				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
 				_save_check_fork_graph(n, "Fork %d" % ordinal, issues)
+			"minigame":
+				_save_check_minigame(data, "Mini-game %d" % ordinal, issues)
 		# Any node type can carry a setting, so this sits outside the match.
 		_save_check_settings(
 			n, "%s %d" % [str(n.get("type", "Node")).capitalize(), ordinal], issues
@@ -6374,7 +6432,7 @@ func _check_animated_images() -> bool:
 	# round or storyboard uses, and these three carry theirs under different circumstances.
 	for id: String in _graph_model.get("nodes", {}) as Dictionary:
 		var node: Dictionary = (_graph_model["nodes"] as Dictionary)[id]
-		if str(node.get("type", "")) not in ["shop", "fork", "checkpoint"]:
+		if str(node.get("type", "")) not in ["shop", "fork", "checkpoint", "minigame"]:
 			continue
 		var own: String = str((node.get("data", {}) as Dictionary).get("image", ""))
 		if own != "" and MediaPoolService.is_animated_source(own):
@@ -6711,6 +6769,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		"Items": JourneyData.coerce_journey_items(items_for_save),
 		"Characters": JourneyData.coerce_journey_characters(characters_for_save),
 		"Settings": JourneyData.coerce_journey_settings(settings_for_save),
+		"MiniGames": MiniGameLibrary.parse_library(_journey_minigames),
 		"Bgm": journey_bgm_out,
 		"BgmVolume": clampf(_journey_bgm_volume, 0.0, 1.0),
 	}
@@ -6719,7 +6778,9 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 	JourneyData.stamp_journey_identity(
 		result,
 		_journey_id,
-		JourneyData.JOURNEY_MIN_APP_VERSION_WIDE_CODECS if _kept_wide_codec else ""
+		JourneyData.content_min_version(
+			_kept_wide_codec, JourneyData.graph_has_minigames(_graph_model)
+		)
 	)
 	_journey_id = str(result["JourneyId"])
 	result.merge(node_block)  # adds Format, Start, Nodes
@@ -6859,7 +6920,7 @@ func _pool_graph_nodes(paths: Dictionary, modal: Control, skip_ids: Dictionary =
 				saved_data = await _save_scene_override_media(
 					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
 				)
-			"shop", "checkpoint":
+			"shop", "checkpoint", "minigame":
 				saved_data = await _save_scene_override_media(
 					saved_data, data_in, abs_dir, abs_media_dir, id, copied_images, modal
 				)
@@ -8404,6 +8465,8 @@ func _collect_presave_issues_graph() -> Array:
 				_save_check_storyboard(data, "Storyboard %d" % ordinal, issues)
 			"fork":
 				_save_check_fork_graph(n, "Fork %d" % ordinal, issues)
+			"minigame":
+				_save_check_minigame(data, "Mini-game %d" % ordinal, issues)
 			"loop_end":
 				_save_check_loop(id, data, "Loop %d" % ordinal, issues)
 			"loop_start":
@@ -8539,9 +8602,10 @@ func _save_check_encounter(data: Dictionary, ctx: String, issues: Array) -> void
 	var raw: Variant = data.get("timeline", {})
 	if not (raw is Dictionary) or (raw as Dictionary).is_empty():
 		return
-	for issue: Dictionary in RoundTimeline.validate(
-		raw as Dictionary, int(data.get("length_ms", 0))
-	):
+	var length_ms: int = int(data.get("length_ms", 0))
+	var found: Array = RoundTimeline.validate(raw as Dictionary, length_ms)
+	found.append_array(RoundTimeline.qte_issues(raw as Dictionary, _journey_minigames, length_ms))
+	for issue: Dictionary in found:
 		(
 			issues
 			. append(
@@ -9223,6 +9287,32 @@ func _save_check_shop_layout(node: Dictionary, ctx: String, issues: Array) -> vo
 			}
 		)
 	)
+
+
+# A mini-game node must play a game that is in the library and can run between rounds. Without one,
+# the player would walk onto a node with nothing to do.
+func _save_check_minigame(data: Dictionary, ctx: String, issues: Array) -> void:
+	var game_id: String = str(data.get("game", ""))
+	var definition: Dictionary = MiniGameLibrary.find(_journey_minigames, game_id)
+	var detail: String = ""
+	if game_id == "":
+		detail = "No game picked."
+	elif definition.is_empty():
+		detail = "Plays a game that is no longer in the journey's mini-game library."
+	elif not MiniGameLibrary.HOST_NODE in MiniGameLibrary.KIND_HOSTS[definition["kind"]]:
+		detail = "Plays a game that only runs during a boss encounter, not between rounds."
+	if detail != "":
+		(
+			issues
+			. append(
+				{
+					"cause": CAUSE_MINIGAME_INVALID,
+					"item": ctx,
+					"detail": detail,
+					"hint": "Pick a game for this node in its side panel, or delete the node.",
+				}
+			)
+		)
 
 
 func _save_check_settings(node: Dictionary, ctx: String, issues: Array) -> void:

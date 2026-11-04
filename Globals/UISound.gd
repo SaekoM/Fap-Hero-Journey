@@ -32,6 +32,7 @@ const ITEM_USE_WAV_PATH: String = "res://assets/sfx/item use.wav"
 const JOURNEY_WAV_PATH: String = "res://assets/sfx/journey click.wav"
 const START_JOURNEY_WAV_PATH: String = "res://assets/sfx/start journey click.wav"
 const GAME_COMPLETE_WAV_PATH: String = "res://assets/sfx/game complete.wav"
+const LATCH_OPEN_WAV_PATH: String = "res://assets/sfx/latch_open.wav"
 
 var _streams: Dictionary = {}  # kind -> AudioStreamWAV
 var _players: Array[AudioStreamPlayer] = []
@@ -43,6 +44,30 @@ var _wired: Dictionary = {}
 
 var _enabled: bool = true
 var _volume_db: float = 0.0
+# Game sounds have their own switch and volume (Options → GAME SOUNDS), apart from the UI blips.
+var _game_enabled: bool = true
+var _game_volume_db: float = 0.0
+
+# Decibels added to a sound on top of its category's volume. The latch sample is one sharp transient: its
+# peak is near full scale but it carries little energy, so it reads as quiet next to the other sounds.
+const GAIN_DB: Dictionary = {"latch_open": 8.0}
+
+# The sounds that belong to play rather than to menus: in-play events and mini-game feedback. Every other
+# kind is a UI sound. Which switch and volume a sound obeys is decided by this list alone.
+const GAME_SOUNDS: Array[String] = [
+	"item_use",
+	"game_complete",
+	"dial_tick",
+	"dial_wrong",
+	"dial_open",
+	"latch_open",
+	"wheel_tick",
+	"win_sting",
+	"win_harmony",
+	"jackpot_sting",
+	"banked",
+	"bust_sting",
+]
 
 
 func _ready() -> void:
@@ -68,6 +93,8 @@ func _ready() -> void:
 func reload_settings() -> void:
 	_enabled = SettingsService.get_ui_sound_enabled()
 	_volume_db = linear_to_db(clampf(SettingsService.get_ui_sound_volume(), 0.0001, 1.0))
+	_game_enabled = SettingsService.get_game_sound_enabled()
+	_game_volume_db = linear_to_db(clampf(SettingsService.get_game_sound_volume(), 0.0001, 1.0))
 
 
 # ── Public play API ──────────────────────────────────────────────────────────
@@ -113,8 +140,73 @@ func error() -> void:
 	_play("error")
 
 
+# ── Mini-game sounds ──────────────────────────────────────────────────────────
+# Game sounds (see GAME_SOUNDS): Safe-Cracker's dial tick is the hint a player hears when the warmth meter
+# is off. The tick plays at the pitch it is given, with no random jitter, because its pitch IS the
+# information.
+
+
+# One notch of the dial. `pitch` rises as the dial nears the number (MiniGameScreen maps warmth to it).
+func dial_tick(pitch: float) -> void:
+	_play_unjittered("dial_tick", pitch)
+
+
+# A try on the wrong number: a dull, low thunk.
+func dial_wrong() -> void:
+	_play_unjittered("dial_wrong", 1.0)
+
+
+# A mechanical clunk resolving up into a chime: the cue for switching game sounds on, and the latch's stand-in
+# if its sample is missing.
+func dial_open() -> void:
+	_play_unjittered("dial_open", 1.0)
+
+
+# A lock giving way: a Safe-Cracker number opened.
+func latch_open() -> void:
+	_play_unjittered("latch_open", 1.0)
+
+
+# Double or Nothing's wheel passing a slice under the pointer. `pitch` falls as the wheel slows.
+func wheel_tick(pitch: float) -> void:
+	_play_unjittered("wheel_tick", pitch)
+
+
+# The wheel landed on WIN: a rising flourish. `pitch` climbs with the rung reached, and a `full` win (a
+# high rung) layers a harmony over it, so rung 4 sounds bigger than rung 1.
+func win_sting(pitch: float, full: bool) -> void:
+	_play_unjittered("win_sting", pitch)
+	if full:
+		_play_unjittered("win_harmony", pitch)
+
+
+# The top rung: a long, bright run of its own.
+func jackpot_sting() -> void:
+	_play_unjittered("jackpot_sting", 1.0)
+
+
+# Cashing out: a short two-note "banked" chime — pleased, not triumphant.
+func banked() -> void:
+	_play_unjittered("banked", 1.0)
+
+
+# The wheel landed on BUST: a falling drop.
+func bust_sting() -> void:
+	_play_unjittered("bust_sting", 1.0)
+
+
+func _play_unjittered(kind: String, pitch: float) -> void:
+	_start(kind, pitch)
+
+
 func _play(kind: String) -> void:
-	if not _enabled:
+	_start(kind, PITCH_SCALE * randf_range(1.0 - PITCH_VARIATION, 1.0 + PITCH_VARIATION))
+
+
+# Plays `kind` at `pitch`, under the switch and volume of its category (game or UI).
+func _start(kind: String, pitch: float) -> void:
+	var is_game: bool = kind in GAME_SOUNDS
+	if not (_game_enabled if is_game else _enabled):
 		return
 	var stream: AudioStream = _streams.get(kind)
 	if stream == null:
@@ -122,8 +214,8 @@ func _play(kind: String) -> void:
 	var p: AudioStreamPlayer = _players[_next_player]
 	_next_player = (_next_player + 1) % _players.size()
 	p.stream = stream
-	p.volume_db = _volume_db
-	p.pitch_scale = PITCH_SCALE * randf_range(1.0 - PITCH_VARIATION, 1.0 + PITCH_VARIATION)
+	p.volume_db = (_game_volume_db if is_game else _volume_db) + float(GAIN_DB.get(kind, 0.0))
+	p.pitch_scale = pitch
 	p.play()
 
 
@@ -210,6 +302,21 @@ func _build_streams() -> void:
 	_streams["confirm"] = _make_blip([659.3, 987.8, 1318.5], 0.16, 0.30, "sine")
 	_streams["back"] = _make_blip([659.3, 440.0], 0.12, 0.28, "sine")
 	_streams["error"] = _make_blip([196.0, 185.0], 0.20, 0.30, "square")
+	# Safe-Cracker. The tick is a very short, bright noise click so a fast spin stays crisp.
+	_streams["dial_tick"] = _make_blip([3200.0], 0.022, 0.75, "noise")
+	_streams["dial_wrong"] = _make_blip([110.0, 98.0], 0.22, 0.32, "square")
+	_streams["dial_open"] = _make_blip([392.0, 523.3, 784.0, 1046.5], 0.42, 0.34, "sine")
+	var latch_sample: AudioStream = _load_stream(LATCH_OPEN_WAV_PATH)
+	_streams["latch_open"] = latch_sample if latch_sample != null else _streams["dial_open"]
+	# Double or Nothing. The tick is a little duller than the dial's so the two games sound apart.
+	_streams["wheel_tick"] = _make_blip([2200.0], 0.02, 0.7, "noise")
+	_streams["win_sting"] = _make_blip([523.3, 659.3, 784.0, 1046.5, 1318.5], 0.6, 0.34, "sine")
+	_streams["bust_sting"] = _make_blip([392.0, 311.1, 233.1, 174.6], 0.65, 0.26, "saw")
+	_streams["win_harmony"] = _make_blip([659.3, 784.0, 987.8, 1318.5, 1568.0], 0.6, 0.2, "sine")
+	_streams["jackpot_sting"] = _make_blip(
+		[523.3, 659.3, 784.0, 1046.5, 1318.5, 1568.0, 2093.0], 1.1, 0.36, "sine"
+	)
+	_streams["banked"] = _make_blip([784.0, 1046.5], 0.26, 0.3, "sine")
 
 
 # Renders `notes` (played in equal time slices) into a mono 16-bit AudioStreamWAV.

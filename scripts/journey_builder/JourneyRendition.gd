@@ -63,6 +63,7 @@ static func parse_rendition(data: Dictionary) -> Dictionary:
 		"flags": JourneyData.parse_flag_defs(data.get("Flags", [])),
 		"characters": JourneyData.parse_journey_characters(data.get("Characters", [])),
 		"items": JourneyData.parse_journey_items(data.get("Items", [])),
+		"minigames": MiniGameLibrary.parse_library(data.get("MiniGames", [])),
 		"item_images": _parse_item_images(data.get("ItemImages", [])),
 	}
 
@@ -96,9 +97,18 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 		"Flags": JourneyData.coerce_flag_defs(rendition.get("flags", [])),
 		"Characters": JourneyData.coerce_journey_characters(rendition.get("characters", [])),
 		"Items": JourneyData.coerce_journey_items(rendition.get("items", [])),
+		"MiniGames": MiniGameLibrary.parse_library(rendition.get("minigames", [])),
 		"ItemImages": _coerce_item_images(rendition.get("item_images", [])),
 	}
-	JourneyData.stamp_journey_identity(out, str(rendition.get("journey_id", "")))
+	# A rendition that places a mini-game needs the build that plays them, like a base journey does.
+	var places_minigames: bool = JourneyData.graph_has_minigames(
+		{"nodes": rendition.get("nodes", {})}
+	)
+	JourneyData.stamp_journey_identity(
+		out,
+		str(rendition.get("journey_id", "")),
+		JourneyData.content_min_version(false, places_minigames)
+	)
 	return out
 
 

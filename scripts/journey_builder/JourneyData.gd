@@ -1334,6 +1334,9 @@ static func coerce_node_save_data(type: String, data: Dictionary) -> Dictionary:
 			# Any arrangement of its choices onto the setting's backdrop.
 			out["layout"] = normalize_layout_slots(data.get("layout", {}))
 			_carry_scene_override(out, data)
+		"minigame":
+			out["game"] = str(data.get("game", ""))
+			_carry_scene_override(out, data)
 		"checkpoint":
 			# A save point between rounds — its banner label, and any arrangement of its controls onto
 			# the setting's backdrop.
@@ -1512,6 +1515,33 @@ const JOURNEY_MIN_APP_VERSION: String = "0.6.0"
 # and display nothing — the failure has to land at LOAD, where JourneySelect can explain it, rather than
 # in the middle of play where it reads as a broken journey.
 const JOURNEY_MIN_APP_VERSION_WIDE_CODECS: String = "0.8.4"
+
+# The floor a journey needs once it places a mini-game. An older build walks onto a node type it has never
+# heard of, so the journey has to be refused at load, where JourneySelect explains why.
+const JOURNEY_MIN_APP_VERSION_MINIGAMES: String = "0.9.3"
+
+
+# The MinVersion a save should stamp: the highest floor any of the journey's content needs, or "" for
+# the standing one. Each floor is newer than the one before it, so the newest that applies wins.
+static func content_min_version(keeps_wide_codecs: bool, places_minigames: bool) -> String:
+	if places_minigames:
+		return JOURNEY_MIN_APP_VERSION_MINIGAMES
+	if keeps_wide_codecs:
+		return JOURNEY_MIN_APP_VERSION_WIDE_CODECS
+	return ""
+
+
+# Whether anything in the graph plays a mini-game: a mini-game node, or a QTE in a boss encounter.
+static func graph_has_minigames(graph: Dictionary) -> bool:
+	for node: Variant in (graph.get("nodes", {}) as Dictionary).values():
+		if not (node is Dictionary):
+			continue
+		if str((node as Dictionary).get("type", "")) == "minigame":
+			return true
+		var data: Dictionary = (node as Dictionary).get("data", {})
+		if not RoundTimeline.qte_games_on_node(data).is_empty():
+			return true
+	return false
 
 
 # A stable, globally-unique id for a journey, minted ONCE and preserved across every later save
@@ -3513,6 +3543,16 @@ static func new_item(type: String) -> Dictionary:
 				# Empty = the card's own arrangement. Filled once an author places SAVE / CONTINUE on
 				# the setting's backdrop.
 				"layout": {},
+				"node_id": new_node_id()
+			}
+		"minigame":
+			# A mini-game between rounds. `game` is the id of a definition in the journey's mini-game
+			# library (MiniGameLibrary); the node itself only says where it plays and what is behind it.
+			return {
+				"type": "minigame",
+				"game": "",
+				"setting": "",
+				"setting_bg": "",
 				"node_id": new_node_id()
 			}
 		"loop_start":

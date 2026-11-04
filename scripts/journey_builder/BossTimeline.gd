@@ -91,6 +91,7 @@ const DORMANT_TEXT_ALPHA: float = 0.45
 const LANES: Array[String] = [
 	RoundTimeline.TRACK_REGION,
 	RoundTimeline.TRACK_ATTACK,
+	RoundTimeline.TRACK_QTE,
 	RoundTimeline.TRACK_STANCE,
 	RoundTimeline.TRACK_EFFECT,
 	RoundTimeline.TRACK_CAST,
@@ -101,6 +102,8 @@ var _reference: Array = []  # Array[Vector2] (t_ms, pos 0-100) — the round's m
 # Extra curves drawn over the reference in ABSOLUTE round time: an imported attack's own stroke, and the
 # transformed curve inside an effect window. [{points: Array[Vector2], color: Color}]
 var _overlays: Array = []
+# Attack id → how long its dodge runs before it. Drawn leading into the attack's block, because it moves with it.
+var _dodge_leads: Dictionary = {}
 # Ids that failed validation — drawn with a ⚠ so the problem is on the block, not in a footnote.
 var _issues: Dictionary = {}
 var _events: Array = []  # normalized events, in the editor's own order
@@ -292,6 +295,11 @@ func set_reference(actions: Array) -> void:
 ## will play, or an effect window's transformed curve. Replaces whatever was there.
 func set_overlays(overlays: Array) -> void:
 	_overlays = overlays
+	queue_redraw()
+
+
+func set_dodge_leads(leads: Dictionary) -> void:
+	_dodge_leads = leads
 	queue_redraw()
 
 
@@ -759,6 +767,7 @@ func _draw_event(event: Dictionary) -> void:
 		return
 	var color: Color = track_color(str(event.get("track", "")))
 	var selected: bool = str(event.get("id", "")) == _selected_id
+	_draw_dodge_lead(event, rect)
 	# A block on a branch this roll did not pick is dimmed rather than hidden: an author needs to see
 	# every branch they wrote, and hiding half the timeline whenever the dice landed differently would
 	# make the encounter look like it had lost content.
@@ -797,11 +806,25 @@ func _draw_event(event: Dictionary) -> void:
 		)
 
 
+# The stretch before an attack when its dodge is on screen.
+func _draw_dodge_lead(event: Dictionary, rect: Rect2) -> void:
+	var lead_ms: int = int(_dodge_leads.get(str(event.get("id", "")), 0))
+	if lead_ms <= 0:
+		return
+	var from_x: float = _ms_to_x(_event_at_ms(event) - lead_ms)
+	var lead: Rect2 = Rect2(from_x, rect.position.y, rect.position.x - from_x, rect.size.y)
+	var body: Rect2 = lead.grow_individual(0.0, -6.0, 0.0, -6.0)
+	draw_rect(body, Color(UITheme.MINIGAME, 0.4))
+	draw_rect(body, UITheme.MINIGAME, false, 1.0)
+
+
 # A block's caption: whatever identifies the event to its author at a glance.
 static func _event_label(event: Dictionary) -> String:
 	match str(event.get("track", "")):
 		RoundTimeline.TRACK_ATTACK:
 			return str(event.get("name", "ATTACK"))
+		RoundTimeline.TRACK_QTE:
+			return "QTE"
 		RoundTimeline.TRACK_CAST:
 			var text: String = str(event.get("text", ""))
 			return text if text != "" else "CUE"
@@ -819,6 +842,8 @@ static func track_color(track: String) -> Color:
 	match track:
 		RoundTimeline.TRACK_ATTACK:
 			return UITheme.DANGER
+		RoundTimeline.TRACK_QTE:
+			return UITheme.MINIGAME
 		RoundTimeline.TRACK_REGION:
 			return UITheme.WHITE_SOFT
 		RoundTimeline.TRACK_STANCE:

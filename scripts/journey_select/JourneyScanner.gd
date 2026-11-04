@@ -251,6 +251,7 @@ static func compose_play_journey(
 	var counters: Array = base.get("counters", [])
 	var flags: Array = base.get("flags", [])
 	var items: Array = (base.get("items", []) as Array).duplicate(true)
+	var minigames: Array = (base.get("minigames", []) as Array).duplicate(true)
 	for rf: Variant in chain_folders:
 		var delta: Dictionary = load_rendition_delta(str(rf))
 		var composed: Dictionary = JourneyCompose.compose_graph(graph, delta)
@@ -263,6 +264,7 @@ static func compose_play_journey(
 		# Items, like the rest: the base's first, then each rendition's own; and a rendition may give a
 		# base item that has no image one.
 		items = JourneyData.merge_by_id(items, delta.get("items", []))
+		minigames = JourneyData.merge_by_id(minigames, delta.get("minigames", []))
 		JourneyRendition.apply_item_images(items, delta.get("item_images", []))
 	base["start"] = graph["start"]
 	base["nodes"] = graph["nodes"]
@@ -271,6 +273,7 @@ static func compose_play_journey(
 	base["counters"] = counters
 	base["flags"] = flags
 	base["items"] = items
+	base["minigames"] = minigames
 	base["compose_errors"] = errors
 	base["active_rendition"] = str(chain_folders[-1]) if not chain_folders.is_empty() else ""
 	# Rebuild the catalogue preview (round/fork/shop/storyboard lists + totals) from the MERGED graph so
@@ -764,6 +767,9 @@ static func _graph_meta(data: Dictionary, path: String, folder: String) -> Dicti
 		# Author-defined journey-scoped items — loaded into InventoryService at play and listed in the
 		# builder's item dropdowns. Parsed to the runtime (snake-case) shape, image paths resolved.
 		"items": _journey_items_resolved(data, path),
+		# The mini-game library: each definition set up once and referenced by id from mini-game nodes.
+		# Holds no media yet, so nothing to resolve.
+		"minigames": MiniGameLibrary.parse_library(data.get("MiniGames", [])),
 		# Storyboard cast — referenced by each storyboard line's `stage`. Each character carries its own
 		# portraits (paths resolved) and placements (position/size boxes).
 		"characters": _journey_characters_resolved(data, path),

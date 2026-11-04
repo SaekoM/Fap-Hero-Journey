@@ -93,6 +93,11 @@ var _open_sections: Dictionary = {}
 # inspector, so a warning never reflows the layout the way a growing footer label did.
 var _issues: Dictionary = {}
 
+# The journey's mini-game library, for the games a QTE can play. Held by reference, as the flags are.
+var _minigames: Array = []
+
+var _minigame_editor: MiniGameEditor = null  # opens a game's settings from here; null leaves that out
+
 # setup() resets zoom/pan, so it is a one-time call — see _refresh().
 var _view_ready: bool = false
 
@@ -129,7 +134,7 @@ var _clipboard: Dictionary = {}
 # to the original correctly counts as clean again.
 var _opened_json: String = ""
 
-# True while the discard confirmation is up, so its own keystrokes are not read as editor shortcuts.
+# True while the discard confirmation or a game's editor is up, so their keystrokes are not read as editor shortcuts.
 var _confirming: bool = false
 
 
@@ -147,9 +152,13 @@ func open(
 	allow_finish: bool = false,
 	flags: Array = [],
 	on_new_flag: Callable = Callable(),
-	notice: String = ""
+	notice: String = "",
+	minigames: Array = [],
+	minigame_editor: MiniGameEditor = null
 ) -> void:
 	_timeline = RoundTimeline.normalize(timeline)
+	_minigames = minigames
+	_minigame_editor = minigame_editor
 	_full_ms = maxi(1, full_ms)
 	_video_path = video_path
 	_funscript_path = funscript_path
@@ -984,12 +993,18 @@ func _refresh_scrollbar() -> void:
 # timeline around exactly while the author was trying to work on it.
 func _refresh_issues() -> void:
 	_issues = {}
-	for issue: Dictionary in RoundTimeline.validate(_timeline, _full_ms):
+	var found: Array = RoundTimeline.validate(_timeline, _full_ms)
+	found.append_array(RoundTimeline.qte_issues(_timeline, _minigames, _full_ms))
+	for issue: Dictionary in found:
 		var id: String = str(issue["event_id"])
 		if not _issues.has(id):
 			_issues[id] = []
 		(_issues[id] as Array).append(str(issue["message"]))
 	_timeline_view.set_issues(_issues)
+	var dodge_leads: Dictionary = {}
+	for dodge: Dictionary in RoundTimeline.attack_dodge_events(_timeline, _minigames, _full_ms):
+		dodge_leads[str(dodge["attack_id"])] = int(dodge["duration_ms"])
+	_timeline_view.set_dodge_leads(dodge_leads)
 
 
 # Adds a bare event of `track` at the playhead. It starts empty on purpose — the inspector is where it
@@ -1008,6 +1023,7 @@ func _add_event(track: String, at_ms: int = -1) -> void:
 		track == RoundTimeline.TRACK_EFFECT
 		or track == RoundTimeline.TRACK_STANCE
 		or track == RoundTimeline.TRACK_REGION
+		or track == RoundTimeline.TRACK_QTE
 	):
 		event["duration_ms"] = NEW_WINDOW_MS
 	# GUARDED rather than NORMAL: a stance window that changes nothing is a block an author placed for no
@@ -1263,6 +1279,9 @@ func _rebuild_inspector() -> void:
 			_add_script_field(event)
 			_add_immunity_toggle(event)
 			_add_play_length_field(event)
+			_add_attack_dodge_fields(event)
+		RoundTimeline.TRACK_QTE:
+			_add_qte_game_field(event)
 		RoundTimeline.TRACK_CAST:
 			_add_character_fields(event)
 			_add_line_edit(event, "text", "Subtitle (optional)")
@@ -3332,6 +3351,154 @@ func _add_fade_fields(event: Dictionary, in_key: String, out_key: String, label:
 # "Play raw": the same per-item flag an override carries. Off (the default) means any effect window this
 # attack overlaps transforms it, exactly as active curses transform an override item; on means it plays
 # untouched. The curve above redraws either way, so the choice is visible rather than theoretical.
+# ── QTEs ───────────────────────────────────────────────────────────────────
+
+
+# A picker of the library's Quick-Time Events. `on_pick` gets the chosen game's id, or "" for `none_label`.
+func _make_qte_game_picker(current: String, none_label: String, on_pick: Callable) -> OptionButton:
+	var ids: Array = [""]
+	var picker: OptionButton = OptionButton.new()
+	picker.clip_text = true  # or it sizes to its longest entry and pushes the inspector wider
+	picker.add_item(none_label)
+	for definition: Dictionary in _minigames:
+		if str(definition.get("kind", "")) == QuickTimeEventGame.KIND:
+			ids.append(str(definition["id"]))
+			picker.add_item(str(definition.get("name", "")))
+	picker.selected = maxi(0, ids.find(current))
+	UITheme.style_option_button(picker)
+	picker.item_selected.connect(func(index: int) -> void: on_pick.call(str(ids[index])))
+	return picker
+
+
+# The way to the game itself from here, so tuning a QTE doesn't mean leaving the encounter: ✎ EDIT GAME for the one
+# picked, and ＋ NEW QUICK-TIME EVENT for another. `pick` receives a new game, as if chosen from the picker.
+func _add_qte_game_buttons(current_game: String, pick: Callable) -> void:
+	var has_qtes: bool = false
+	for definition: Dictionary in _minigames:
+		if str(definition.get("kind", "")) == QuickTimeEventGame.KIND:
+			has_qtes = true
+	if not has_qtes:
+		_inspector.add_child(_make_quiet_note("This journey has no Quick-Time Event yet.", 10))
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var known: bool = not MiniGameLibrary.find(_minigames, current_game).is_empty()
+	if known and _minigame_editor != null and _minigame_editor.can_edit(current_game):
+		var edit: Button = Button.new()
+		edit.text = "✎ EDIT GAME"
+		edit.tooltip_text = (
+			UITheme
+			. wrap_tip(
+				"Its keys, colours, size, pausing and tiers. Every block playing this game uses the same settings."
+			)
+		)
+		UITheme.style_button_subtle(edit, UITheme.MINIGAME, 10, 6, 11)
+		edit.pressed.connect(_edit_qte_game.bind(current_game))
+		row.add_child(edit)
+	var create: Button = Button.new()
+	create.text = "＋ NEW QUICK-TIME EVENT"
+	UITheme.style_button_subtle(create, UITheme.MINIGAME, 10, 6, 11)
+	create.pressed.connect(
+		func() -> void:
+			var definition: Dictionary = MiniGameLibrary.new_definition(QuickTimeEventGame.KIND)
+			definition["name"] = MiniGameEditor.KIND_NAMES[QuickTimeEventGame.KIND]
+			_minigames.append(definition)
+			pick.call(str(definition["id"]))
+			_edit_qte_game(str(definition["id"]))
+	)
+	row.add_child(create)
+	_inspector.add_child(row)
+
+
+# Swaps to the game's own editor until it closes. The dodge's lead-in and the warnings depend on the game's settings, so
+# they are worked out again when it closes. Until then its keystrokes aren't this editor's shortcuts.
+func _edit_qte_game(game_id: String) -> void:
+	if _minigame_editor == null:
+		return
+	_confirming = true
+	if _stage.is_playing():
+		_toggle_play()
+	# Hidden, not just covered: this modal hangs off a plain Node, so it draws above everything inside the builder,
+	# including the game's editor and any prompt that editor opens.
+	_modal.visible = false
+	_minigame_editor.open_game(
+		game_id,
+		func() -> void:
+			_modal.visible = true
+			_confirming = false
+			_refresh()
+	)
+
+
+# Lets the player cancel this attack: the game runs right before it, and a pass score cancels it completely.
+func _add_attack_dodge_fields(event: Dictionary) -> void:
+	var dodge: Dictionary = event.get("dodge", {})
+	var pick: Callable = func(game: String) -> void:
+		_snapshot("field:dodge")
+		if game == "":
+			event.erase("dodge")
+		else:
+			var kept: Dictionary = event.get("dodge", {})
+			kept["game"] = game
+			event["dodge"] = kept
+		_refresh()
+	var picker: OptionButton = _make_qte_game_picker(str(dodge.get("game", "")), "No dodge", pick)
+	picker.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"A Quick-Time Event from the journey's mini-game library. If it pauses the video, it plays as this attack comes due, and the attack lands after it. If not, it plays over the video right before this attack, and moves with it."
+		)
+	)
+	_inspector.add_child(_labeled("Dodge", picker))
+	_add_qte_game_buttons(str(dodge.get("game", "")), pick)
+	if dodge.is_empty():
+		return
+	var pass_score: SpinBox = SpinBox.new()
+	pass_score.min_value = 0
+	pass_score.max_value = 100
+	pass_score.step = 1
+	pass_score.suffix = "%"
+	pass_score.value = int(dodge.get("pass_score", RoundTimeline.DEFAULT_DODGE_PASS_SCORE))
+	pass_score.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"The score the player needs to cancel this attack completely. Below it, the whole attack lands."
+		)
+	)
+	UITheme.style_spin_box(pass_score)
+	pass_score.value_changed.connect(
+		func(value: float) -> void:
+			_snapshot("field:dodge_pass_score")
+			dodge["pass_score"] = int(value)
+			_refresh_derived()
+	)
+	_inspector.add_child(_labeled("Pass score", pass_score))
+
+
+# A QTE on its own, paying out through its game's tiers. Picking a game makes room for all its prompts.
+func _add_qte_game_field(event: Dictionary) -> void:
+	var pick: Callable = func(game: String) -> void:
+		_snapshot("field:game")
+		event["game"] = game
+		var definition: Dictionary = MiniGameLibrary.find(_minigames, game)
+		if not definition.is_empty() and not bool(definition["knobs"]["pause_video"]):
+			event["duration_ms"] = maxi(
+				int(event.get("duration_ms", 0)),
+				QuickTimeEventGame.min_duration_ms(definition["knobs"])
+			)
+		_refresh()
+	var picker: OptionButton = _make_qte_game_picker(
+		str(event.get("game", "")), "(pick a game)", pick
+	)
+	picker.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"A Quick-Time Event from the journey's mini-game library. If it pauses the video, it plays where this block starts, however long the block is. If not, its prompts land at random within the block. Its tiers pay out when it's over."
+		)
+	)
+	_inspector.add_child(_labeled("Game", picker))
+	_add_qte_game_buttons(str(event.get("game", "")), pick)
+
+
 func _add_immunity_toggle(event: Dictionary) -> void:
 	var toggle: CheckButton = CheckButton.new()
 	toggle.text = "PLAY RAW (ignore effect windows)"

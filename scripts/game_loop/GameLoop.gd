@@ -729,6 +729,8 @@ func _load_current_item() -> void:
 				_advance_from_checkpoint()  # resumed onto it → don't re-show its banner
 			else:
 				_show_checkpoint_gate()
+		"minigame":
+			_show_minigame_screen(GameState.CurrentMiniGame())
 		"loop_start":
 			# The top marker of a Loop pair — a no-media passthrough. Advance into the body it precedes.
 			GameState.Advance()
@@ -881,6 +883,115 @@ func _on_shop_closed() -> void:
 			FunscriptPlayer.Resume()
 			_load_current_item()
 	)
+
+
+# ── Mini-game nodes ─────────────────────────────────────────────────────────
+
+
+# Opens a mini-game node's screen. The game is a definition in the journey's library; a node pointing at
+# one that is gone can't be saved, so the walk-through below only guards a hand-edited journey.
+func _show_minigame_screen(node_data: Dictionary) -> void:
+	var definition: Dictionary = MiniGameLibrary.find(
+		GameState.Journey.get("minigames", []), str(node_data.get("game", ""))
+	)
+	if definition.is_empty():
+		push_warning("GameLoop: mini-game node plays a game that isn't in the library — skipped")
+		GameState.Advance()
+		_load_current_item()
+		return
+	_apply_scene_music(node_data)
+	_is_overlay_open = true
+	_video.paused = true
+	FunscriptPlayer.Pause()
+	_set_cursor_hidden(false)
+	var screen: MiniGameScreen = MiniGameScreen.new()
+	screen.auto_advance_secs = _auto_advance_fork_secs if _auto_advance_enabled else 0
+	screen.resolved.connect(_on_minigame_resolved.bind(definition))
+	add_child(screen)
+	# Full-screen like a shop or a fork, so the HUD bar stays out of the way until it closes.
+	_hud_suppressed = true
+	_hud.visible = false
+	_current_overlay = screen
+	screen.setup(node_data, definition, _begin_minigame_attempt, _can_pay_retry, _pay_retry)
+
+
+# Counts a new attempt at the mini-game on the current node and returns its seed. Run seed + where the game
+# sits + the attempt number: every attempt gets its own layout, and since the attempt is also counted in
+# the stored save, quitting and resuming can't replay a layout already seen.
+func _begin_minigame_attempt() -> Dictionary:
+	var place: String = GameState.CurrentNodeId()
+	var attempt: int = GameState.BeginMiniGameAttempt(place)
+	if not _test_mode:
+		JourneySaveService.record_minigame_attempt(
+			str(GameState.Journey.get("folder_name", "")), place, attempt
+		)
+	return {
+		"seed": MiniGameResolver.attempt_seed(GameState.RunSeed, place, attempt),
+		"attempt": attempt,
+	}
+
+
+# A retry is payable when the player has the coins it costs; the rest of a cost (items taken, flags,
+# counters) always applies.
+func _can_pay_retry(cost: Dictionary) -> bool:
+	return CoinService.CanAfford(int(cost.get("coins", 0)))
+
+
+func _pay_retry(cost: Dictionary) -> void:
+	var coins: int = int(cost.get("coins", 0))
+	if coins > 0 and CoinService.SpendCoins(coins):
+		_show_pop("COINS", "−♦ %d" % coins, "→ ♦ %d" % CoinService.Balance, UITheme.AMBER)
+	GameState.ApplyRewardChanges(cost)
+
+
+# The player kept a result (or left the screen to time out): pay the tier, set its routing flag and clear
+# the other tiers', then move on exactly as a shop does when it closes.
+func _on_minigame_resolved(tier_id: String, definition: Dictionary) -> void:
+	DeviceFiller.stop()
+	_pay_minigame_tier(definition, tier_id)
+	_hud_suppressed = false
+	if not _curse_hud_hidden:
+		_hud.visible = true
+	_is_overlay_open = false
+	GameState.Advance()
+	if GameState.IsSequenceDone():
+		_transition_to_end_screen()
+		return
+	await _transition_swap(
+		func() -> void:
+			_video.paused = false
+			FunscriptPlayer.Resume()
+			_load_current_item()
+	)
+
+
+# What reaching a tier changes in the journey: its rewards, and the flags that record which one it was.
+func _pay_minigame_tier(definition: Dictionary, tier_id: String) -> void:
+	var rewards: Dictionary = {}
+	for tier: Dictionary in definition.get("tiers", []):
+		if str(tier["id"]) == tier_id:
+			rewards = tier.get("rewards", {})
+	_apply_minigame_rewards(rewards)
+	var flags: Dictionary = MiniGameResolver.flag_changes(definition, tier_id)
+	GameState.ApplyRewardChanges({"set_flags": flags["set"], "clear_flags": flags["clear"]})
+
+
+# A tier's rewards: coins either way, an item, score outside any round (so it never becomes the "last
+# round score" a fork reads), then the flag / counter / item-removal changes through GameState.
+func _apply_minigame_rewards(rewards: Dictionary) -> void:
+	var coins: int = int(rewards.get("coins", 0))
+	if coins > 0:
+		_grant_coins(coins)
+	elif coins < 0:
+		var taken: int = mini(-coins, CoinService.Balance)
+		if taken > 0 and CoinService.SpendCoins(taken):
+			_show_pop("COINS", "−♦ %d" % taken, "→ ♦ %d" % CoinService.Balance, UITheme.AMBER)
+	_grant_item(str(rewards.get("item", "")))
+	var score: int = int(rewards.get("score", 0))
+	if score > 0:
+		ScoreService.AddBonusScore(score)
+		_show_pop("SCORE", "+%d" % score, "", UITheme.PURPLE_BRIGHT)
+	GameState.ApplyRewardChanges(rewards)
 
 
 func _show_fork_screen(fork_data: Dictionary) -> void:
@@ -2530,6 +2641,12 @@ func _finish_journey() -> void:
 
 # Exit-to-menu hold-to-confirm. Begins on Esc-key-down or MENU-button-down; a centered overlay fills over
 # EXIT_HOLD_SECS and leaves to the menu at completion. Releasing (key / button up) cancels before then.
+# A test play is sitting on a screen that doesn't take Esc itself: the test banner's "ESC TO EXIT" has to
+# hold here too.
+func _test_overlay_lacks_exit() -> bool:
+	return _test_mode and (_current_overlay is MiniGameScreen or _current_overlay is ForkScreen)
+
+
 func _begin_exit_hold() -> void:
 	if _exiting:
 		return
@@ -3517,6 +3634,7 @@ func _build_map() -> void:
 		if not (map_graph["nodes"][nid] as Dictionary).has("pos"):
 			GraphLayout.seed_positions(map_graph)  # any node missing a pos → seed the whole graph
 			break
+	_map_view.minigame_lookup = MiniGameLibrary.name_lookup(GameState.Journey.get("minigames", []))
 	_map_view.set_graph(map_graph)
 	_apply_map_backdrop_to(_map_view)
 
@@ -4999,6 +5117,7 @@ func _tick_round_timeline(delta: float) -> void:
 	# it, and an attack landing there would seize a device that is already on its way out — the very
 	# thing the defeat track is restricted to cast and audio to avoid.
 	if _timeline_data.is_empty() or _outcome_playing:
+		_abandon_qtes()  # the fight is over: a ring left frozen on screen would be asking for nothing
 		return
 	# Ramps advance even while nothing else changes, and freeze with the round like everything else.
 	_tick_window_fades(delta)
@@ -5012,7 +5131,12 @@ func _tick_round_timeline(delta: float) -> void:
 		var length_s: float = _video.get_stream_length()
 		if length_s <= 0.0:
 			return  # duration not known yet — resolving end-anchored events would be a guess
-		_timeline_scheduler = RoundTimelineScheduler.new(_timeline_data, int(length_s * 1000.0))
+		_timeline_scheduler = RoundTimelineScheduler.new(
+			RoundTimeline.with_attack_dodges(
+				_timeline_data, GameState.Journey.get("minigames", []), int(length_s * 1000.0)
+			),
+			int(length_s * 1000.0)
+		)
 		# The encounter's music starts with the round, not on an event, and loops underneath it.
 		var bgm: Dictionary = _timeline_data.get("bgm", {})
 		if str(bgm.get("clip", "")) != "":
@@ -5039,6 +5163,7 @@ func _tick_round_timeline(delta: float) -> void:
 	_apply_timeline_decisions(
 		_timeline_scheduler.tick(int(_video.stream_position * 1000.0), _round_player_state())
 	)
+	_tick_qtes()
 	# After the decisions, never during them: _gate_region only records where to land, because seeking
 	# from inside _apply_timeline_decisions would re-enter the scheduler mid-tick.
 	if _pending_region_jump != RoundTimeline.NO_TIME:
@@ -5065,6 +5190,8 @@ func _fire_timeline_event(event: Dictionary) -> void:
 	match str(event.get("track", "")):
 		RoundTimeline.TRACK_ATTACK:
 			_begin_timeline_attack(event)
+		RoundTimeline.TRACK_QTE:
+			_begin_qte(event)
 		RoundTimeline.TRACK_CAST:
 			_ensure_cue_layer().show_cue(event, _cue_image_path(event), true)
 		RoundTimeline.TRACK_AUDIO:
@@ -5097,6 +5224,18 @@ func _cue_image_path(cue: Dictionary) -> String:
 # of the inventory. The event carries an override request in the item's own shape (scripts + trim), so
 # the existing loader reads it as-is.
 func _begin_timeline_attack(event: Dictionary) -> void:
+	if _dodged_attacks.erase(str(event.get("id", ""))):
+		return  # a dodge completely negates the attack
+	var definition: Dictionary = _qte_definition(
+		str((event.get("dodge", {}) as Dictionary).get("game", ""))
+	)
+	if not definition.is_empty() and bool(definition["knobs"]["pause_video"]):
+		_begin_held_qte(event, definition)  # the attack waits for the verdict
+		return
+	_launch_timeline_attack(event)
+
+
+func _launch_timeline_attack(event: Dictionary) -> void:
 	var bundle: OverrideBundle = _load_override_bundle(event)
 	if bundle == null or bundle.is_empty():
 		return
@@ -5125,6 +5264,9 @@ func _begin_timeline_window(event: Dictionary) -> void:
 		return  # a stance carries nothing else: no effects, no sensory, no ramp
 	if str(event.get("track", "")) == RoundTimeline.TRACK_REGION:
 		_gate_region(event)
+		return
+	if str(event.get("track", "")) == RoundTimeline.TRACK_QTE:
+		_begin_qte(event)
 		return
 	var effects: Array = JourneyData.express_effects(event.get("effects", []), _round_axis_context)
 	if effects.is_empty():
@@ -5245,12 +5387,206 @@ func _end_timeline_window(event: Dictionary) -> void:
 	if _boss_stance_windows.erase(source_id):
 		_push_boss_stance()
 		return
+	if str(event.get("track", "")) == RoundTimeline.TRACK_QTE:
+		_end_qte(event)
+		return
 	# The registry side goes immediately: a stroke or score modifier has no meaningful "half applied"
 	# state, so easing it would just make the window's end fuzzy. Only the VISUAL eases out.
 	InventoryService.RemoveBossEffectsFrom(source_id)
 	if _window_fades.end(source_id, event):
 		return  # the ramp drops the sensory entries when it reaches zero
 	_drop_window_sensory(source_id)
+
+
+# ── Quick-Time Event ─────────────────────────────────────────────────────────
+#
+# Runs one of two ways, as its creator chooses.
+#
+# OVER THE VIDEO: a window on the timeline, so pause, seeks and replays work as they do for every other window. It
+# reads the video's position, never the frame clock. One dodging an attack closes as the attack comes due, and the
+# scheduler stops windows before firing events, so the verdict is in by the time _begin_timeline_attack asks.
+#
+# HOLDING THE ROUND: the video pauses and dims where the event falls, it runs on its own clock, and the round carries
+# on after it, with the attack it guarded landing then. So the player never misses any of the video for it. This is
+# a system pause, like a shop or a fork: it costs no score, and it isn't the player's to lift.
+var _qte_views: Dictionary = {}  # QTE event id → QuickTimeEventView, for those over the video
+var _dodged_attacks: Dictionary = {}  # attack event id → true, for attacks the player has dodged
+var _held_qte: QuickTimeEventView = null
+var _waiting_held_qtes: Array = []  # [{event, definition}] due while another held the round
+
+
+# The Quick-Time Event `game_id` in the journey's library, or {} when it isn't one.
+func _qte_definition(game_id: String) -> Dictionary:
+	var definition: Dictionary = MiniGameLibrary.find(
+		GameState.Journey.get("minigames", []), game_id
+	)
+	return definition if str(definition.get("kind", "")) == QuickTimeEventGame.KIND else {}
+
+
+# Counted but not written to the stored save, unlike a node's game: a resume replays the round from the start, and
+# a disk write here could hitch the video the player is timing against.
+func _new_qte_game(event: Dictionary, knobs: Dictionary, duration_ms: int) -> QuickTimeEventGame:
+	var place: String = "%s/%s" % [GameState.CurrentNodeId(), event["id"]]
+	return QuickTimeEventGame.new(
+		knobs,
+		duration_ms,
+		MiniGameResolver.attempt_seed(
+			GameState.RunSeed, place, GameState.BeginMiniGameAttempt(place)
+		)
+	)
+
+
+func _begin_qte(event: Dictionary) -> void:
+	var definition: Dictionary = _qte_definition(str(event.get("game", "")))
+	if definition.is_empty():
+		return  # no such game any more: an attack it was guarding simply lands
+	if bool(definition["knobs"]["pause_video"]):
+		_begin_held_qte(event, definition)
+		return
+	if int(event.get("duration_ms", 0)) <= 0:
+		return  # over the video it needs a length to play in; the editor flags this one
+	_dodged_attacks.erase(str(event.get("attack_id", "")))
+	var view: QuickTimeEventView = QuickTimeEventView.new()
+	add_child(view)
+	view.setup(
+		_new_qte_game(event, definition["knobs"], int(event["duration_ms"])),
+		definition["knobs"],
+		int(event["resolved_at_ms"])
+	)
+	_qte_views[str(event["id"])] = view
+
+
+func _end_qte(event: Dictionary) -> void:
+	var id: String = str(event.get("id", ""))
+	var view: QuickTimeEventView = _qte_views.get(id)
+	if view == null:
+		return  # one that held the round finished long ago
+	_qte_views.erase(id)
+	var position_ms: int = int(_video.stream_position * 1000.0)
+	if not view.played_through_to(position_ms):
+		view.queue_free()  # a seek or a replay took the round away from it: it wasn't really played
+		return
+	view.advance_to(position_ms)
+	var definition: Dictionary = _qte_definition(str(event.get("game", "")))
+	var tier_id: String = MiniGameResolver.tier_for_score(definition["tiers"], view.score())
+	_pay_minigame_tier(definition, tier_id)
+	var attack_id: String = str(event.get("attack_id", ""))
+	if attack_id == "":
+		_show_qte_tier(view, definition, tier_id)
+		return
+	var dodged: bool = view.score() >= int(event.get("pass_score", 0))
+	if dodged:
+		_dodged_attacks[attack_id] = true
+	_show_dodge_result(view, dodged)
+
+
+func _show_dodge_result(view: QuickTimeEventView, dodged: bool) -> void:
+	view.show_result("DODGED" if dodged else "HIT", UITheme.AMBER if dodged else UITheme.DANGER)
+
+
+# A QTE on its own has no attack to speak of, so it announces the tier it reached.
+func _show_qte_tier(view: QuickTimeEventView, definition: Dictionary, tier_id: String) -> void:
+	var tier_name: String = "%d%%" % view.score()
+	for tier: Dictionary in definition.get("tiers", []):
+		if str(tier["id"]) == tier_id and str(tier.get("name", "")) != "":
+			tier_name = str(tier["name"]).to_upper()
+	view.show_result(tier_name, UITheme.AMBER)
+
+
+# Holding the round for `event`: a QTE of its own, or an attack that has come due with a dodge.
+func _begin_held_qte(event: Dictionary, definition: Dictionary) -> void:
+	if _held_qte != null:
+		_waiting_held_qtes.append({"event": event, "definition": definition})
+		return
+	_hold_round(true)
+	var knobs: Dictionary = definition["knobs"]
+	_held_qte = QuickTimeEventView.new()
+	add_child(_held_qte)
+	_held_qte.setup_held(
+		_new_qte_game(event, knobs, QuickTimeEventGame.held_duration_ms(knobs)), knobs
+	)
+	_held_qte.game_over.connect(_on_held_qte_over.bind(event, definition))
+
+
+func _on_held_qte_over(event: Dictionary, definition: Dictionary) -> void:
+	var score: int = _held_qte.score()
+	var tier_id: String = MiniGameResolver.tier_for_score(definition["tiers"], score)
+	_pay_minigame_tier(definition, tier_id)
+	var is_attack: bool = str(event.get("track", "")) == RoundTimeline.TRACK_ATTACK
+	var lands: bool = false
+	if is_attack:
+		var dodge: Dictionary = event["dodge"]
+		lands = score < int(dodge.get("pass_score", RoundTimeline.DEFAULT_DODGE_PASS_SCORE))
+		_show_dodge_result(_held_qte, not lands)
+	else:
+		_show_qte_tier(_held_qte, definition, tier_id)
+	_held_qte.released.connect(_on_held_qte_released.bind(event if lands else {}))
+
+
+# The result has been shown, so the round carries on. `landing_attack` is the attack the player failed to dodge.
+func _on_held_qte_released(landing_attack: Dictionary) -> void:
+	_held_qte = null
+	if _waiting_held_qtes.is_empty():
+		_hold_round(false)
+	else:
+		var next: Dictionary = _waiting_held_qtes.pop_front()
+		_begin_held_qte(next["event"], next["definition"])
+	if not landing_attack.is_empty():
+		_launch_timeline_attack(landing_attack)
+
+
+# Stops everything the round drives, and hides the HUD. _is_overlay_open mutes the hotkeys, as it does for a shop.
+func _hold_round(on: bool) -> void:
+	_is_overlay_open = on
+	_video.paused = on
+	_end_timer.paused = on
+	InventoryService.SetPaused(on or _effect_lingering)
+	_hud_suppressed = on
+	if on:
+		_hud.visible = false
+		FunscriptPlayer.Pause()
+		_handy_pause()
+	else:
+		if not _curse_hud_hidden:
+			_hud.visible = true
+		FunscriptPlayer.Resume()
+		_handy_resume()
+
+
+func _tick_qtes() -> void:
+	if _qte_views.is_empty():
+		return
+	var position_ms: int = int(_video.stream_position * 1000.0)
+	for view: QuickTimeEventView in _qte_views.values():
+		view.advance_to(position_ms)
+
+
+# A key press. Returns whether it landed on a prompt. One over the video reads the video's time, so a press can't
+# count while the round is held up behind a pause or an overlay.
+func _press_qte(key: String) -> bool:
+	if _paused:
+		return false
+	if _held_qte != null:
+		return _held_qte.press_held(key)
+	if _is_overlay_open:
+		return false
+	var position_ms: int = int(_video.stream_position * 1000.0)
+	for view: QuickTimeEventView in _qte_views.values():
+		if view.press(position_ms, key):
+			return true
+	return false
+
+
+func _abandon_qtes() -> void:
+	for view: QuickTimeEventView in _qte_views.values():
+		view.queue_free()
+	_qte_views.clear()
+	_dodged_attacks.clear()
+	_waiting_held_qtes.clear()
+	if _held_qte != null:
+		_held_qte.queue_free()
+		_held_qte = null
+		_hold_round(false)
 
 
 # ── Effect-window easing ─────────────────────────────────────────────────────
@@ -5324,6 +5660,7 @@ func _play_outcome(on_mode: String) -> void:
 # The round is over: drop anything the timeline still holds. The attack itself is cut by
 # _cancel_override on the round boundary (the "cut at round end" rule).
 func _finish_round_timeline() -> void:
+	_abandon_qtes()  # first, so the windows closing below don't pay out for a game nobody finished
 	if _timeline_scheduler != null:
 		_apply_timeline_decisions(_timeline_scheduler.finish())
 	_timeline_scheduler = null
@@ -5600,6 +5937,10 @@ func _input(event: InputEvent) -> void:
 					_close_map_viewer()
 				get_viewport().set_input_as_handled()
 				return
+			# A key a Quick-Time Event is asking for. Its keys never clash with the hotkeys below.
+			if _press_qte(OS.get_keycode_string(key_event.keycode)):
+				get_viewport().set_input_as_handled()
+				return
 			match key_event.keycode:
 				KEY_M:
 					# M: open the journey map (when the author enabled it). Blocked while a
@@ -5644,10 +5985,17 @@ func _input(event: InputEvent) -> void:
 					# Esc: close the Quick Settings drawer or inventory if open, otherwise begin the
 					# hold-to-exit (a stray tap can't dump the run; releasing cancels — see the key-up
 					# branch below). Overlay screens (shop/storyboard) capture Esc themselves before it
-					# reaches here; the fork screen intentionally does not (no escape). The bake
+					# reaches here; the fork screen intentionally does not (no escape in real play). The bake
 					# wait mutes the hotkeys through _is_overlay_open too, but it has no timeout —
-					# Esc stays open there so the menu route is always reachable.
-					if not _is_overlay_open or _bake_waiting:
+					# Esc stays open there so the menu route is always reachable. So it does through a QTE
+					# holding the round, and for an author testing a fork or a mini-game, whose screens
+					# have no way out of their own.
+					if (
+						not _is_overlay_open
+						or _bake_waiting
+						or _held_qte != null
+						or _test_overlay_lacks_exit()
+					):
 						if is_instance_valid(_session_panel):
 							_session_panel.close()
 						elif is_instance_valid(_inventory_panel):

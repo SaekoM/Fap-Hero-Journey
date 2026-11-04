@@ -136,6 +136,7 @@ const DANGER: Color = Color(0.9, 0.15, 0.15, 1.0)
 
 # Aliases for clarity at the call site
 const STORYBOARD: Color = Color(0.0, 0.78, 0.88, 1.0)  # used by JourneyBuilder
+const MINIGAME: Color = Color(0.40, 0.62, 1.0, 1.0)  # periwinkle — mini-game nodes on the canvas
 
 # Readability thresholds (WCAG), measured against PANEL_BG: text 4.5:1, control edges 3:1.
 const MIN_TEXT_CONTRAST: float = 4.5
