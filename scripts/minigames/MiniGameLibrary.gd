@@ -428,6 +428,36 @@ static func unreachable_tiers(definition: Dictionary) -> Array:
 	return out
 
 
+# Every result of a game that can change the run, as [{label, rewards}]: the tiers of a skill game; the rungs and
+# the bust of a chance game, whose tiers repeat them; and the cost of a retry, when one can be offered.
+static func reward_sources(definition: Dictionary) -> Array:
+	var sources: Array = []
+	var kind: String = str(definition.get("kind", ""))
+	if is_chance(kind):
+		var rungs: Array = definition.get("rungs", [])
+		for index: int in rungs.size():
+			sources.append(
+				{"label": "Rung %d" % (index + 1), "rewards": rungs[index].get("rewards", {})}
+			)
+		sources.append({"label": "Bust", "rewards": definition.get("bust_rewards", {})})
+	else:
+		var tiers: Array = definition.get("tiers", [])
+		for index: int in tiers.size():
+			var name: String = str(tiers[index].get("name", "")).strip_edges()
+			(
+				sources
+				. append(
+					{
+						"label": name if name != "" else "Tier %d" % (index + 1),
+						"rewards": tiers[index].get("rewards", {}),
+					}
+				)
+			)
+	if HOST_NODE in KIND_HOSTS.get(kind, []) and int(definition.get("attempts", 1)) > 1:
+		sources.append({"label": "Retry", "rewards": definition.get("retry_cost", {})})
+	return sources
+
+
 # {definition id: {name, kind}} — what a graph view needs to label mini-game nodes (GraphView.minigame_lookup).
 static func name_lookup(library: Array) -> Dictionary:
 	var lookup: Dictionary = {}

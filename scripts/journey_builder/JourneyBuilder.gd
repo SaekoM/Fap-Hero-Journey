@@ -858,7 +858,9 @@ func _state_overlay() -> Dictionary:
 	if not (_state_btn and _state_btn.button_pressed):
 		_show_state_list({})
 		return {}
-	var marks: Dictionary = JourneyData.state_marks_in_graph(_graph_model, _audit_item_table())
+	var marks: Dictionary = JourneyData.state_marks_in_graph(
+		_graph_model, _audit_item_table(), _journey_minigames
+	)
 	# Deferred: this runs in the middle of the graph's layout, and the list is a separate panel.
 	_show_state_list.call_deferred(marks)
 	return {"marks": marks, "focus": _state_focus}
@@ -1013,7 +1015,9 @@ func _fill_state_pick() -> void:
 		entries.append(["⚑ %s%s" % [name, undeclared], JourneyData.state_focus_key("flag", name)])
 	# Items: every one the journey gives, takes, sells or checks — not the whole registry.
 	var touched: Dictionary = {}  # item id → true
-	var marks: Dictionary = JourneyData.state_marks_in_graph(_graph_model, items)
+	var marks: Dictionary = JourneyData.state_marks_in_graph(
+		_graph_model, items, _journey_minigames
+	)
 	for group: String in ["nodes", "edges"]:
 		for key: String in marks[group]:
 			for mark: Dictionary in marks[group][key]:

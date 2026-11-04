@@ -2757,7 +2757,12 @@ static func flag_names_in_graph(graph: Dictionary) -> Array:
 # `items` ({item_id: item}) adds what USING an item does: a node that can hand out an item with a flag
 # or counter effect shows that effect too ("🎒 Keycard → ⚑ has_key"), since the run state can change
 # there if the player uses it. Items show only when they matter to routing — see _routing_item_ids.
-static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> Dictionary:
+#
+# `minigames` is the journey's library. A game's rewards live there rather than on the node that plays it, so
+# without it the node shows nothing. See _minigame_marks.
+static func state_marks_in_graph(
+	graph: Dictionary, items: Dictionary = {}, minigames: Array = []
+) -> Dictionary:
 	var node_marks: Dictionary = {}
 	var edge_marks: Dictionary = {}
 	var item_ids: Array = items.keys()
@@ -2769,6 +2774,7 @@ static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> D
 		marks.append_array(_item_given_marks(node, items, item_ids))
 		for iid: String in items_given_by_node(node, item_ids):
 			marks.append_array(_item_effect_marks(items[iid] as Dictionary, iid))
+		marks.append_array(_minigame_marks(node, items, minigames))
 		for timeline: Dictionary in boss_timelines(data):
 			for key: String in RoundTimeline.OUTCOME_FLAG_KEYS:
 				var flag: String = str(timeline.get(key, "")).strip_edges()
@@ -2804,6 +2810,58 @@ static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> D
 		"nodes": _keep_tracked_items(node_marks, tracked),
 		"edges": _keep_tracked_items(edge_marks, tracked),
 	}
+
+
+# What the games a node plays can change: a mini-game node's game, and any Quick-Time Events on its encounters.
+# Which of these happen depends on the result, so each chip names the results that do it, and results doing the
+# same thing share one chip: "⚑ opened_safe (Pass, Perfect)".
+static func _minigame_marks(node: Dictionary, items: Dictionary, minigames: Array) -> Array:
+	var data: Dictionary = node.get("data", {})
+	var game_ids: Array = RoundTimeline.qte_games_on_node(data)
+	if str(node.get("type", "")) == "minigame":
+		game_ids.append(str(data.get("game", "")))
+	var seen_games: Dictionary = {}
+	var marks: Array = []
+	for game_id: Variant in game_ids:
+		if seen_games.has(game_id):
+			continue
+		seen_games[game_id] = true
+		var definition: Dictionary = MiniGameLibrary.find(minigames, str(game_id))
+		if not definition.is_empty():
+			marks.append_array(_labelled_reward_marks(definition, items))
+	return marks
+
+
+# The marks for one game's results, each with its results listed after it.
+static func _labelled_reward_marks(definition: Dictionary, items: Dictionary) -> Array:
+	var marks: Array = []
+	var labels_by_text: Dictionary = {}  # a mark's text → the labels of the results that make it
+	for source: Dictionary in MiniGameLibrary.reward_sources(definition):
+		for mark: Dictionary in _reward_marks(source["rewards"], items):
+			var text: String = str(mark["text"])
+			if not labels_by_text.has(text):
+				labels_by_text[text] = []
+				marks.append(mark)
+			var labels: Array = labels_by_text[text]
+			if not labels.has(source["label"]):
+				labels.append(source["label"])
+	for mark: Dictionary in marks:
+		var labels: Array = labels_by_text[str(mark["text"])]
+		mark["text"] = "%s (%s)" % [str(mark["text"]), ", ".join(PackedStringArray(labels))]
+	return marks
+
+
+# What one set of rewards changes, including what using the item it gives can do.
+static func _reward_marks(rewards: Dictionary, items: Dictionary) -> Array:
+	var marks: Array = _state_change_marks(rewards, items)
+	var given: String = str(rewards.get("item", ""))
+	if given != "":
+		marks.append(
+			_state_mark("item", given, "change", "up", "🎒 +%s" % _item_label(items, given))
+		)
+		if items.has(given):
+			marks.append_array(_item_effect_marks(items[given] as Dictionary, given))
+	return marks
 
 
 # The items worth following on the map: those a fork, sacrifice or loop exit checks, and those whose
