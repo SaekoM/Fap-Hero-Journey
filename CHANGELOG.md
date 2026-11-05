@@ -8,6 +8,12 @@
   in the where-used list, so a flag set by a game no longer looks like nothing sets it. Chips sit on the
   mini-game's node, or on the boss round for a Quick-Time Event, and name the results that make the change:
   `⚑ opened_safe (Pass, Perfect)`, `+2 grit (Perfect)`, `⚐ lucky (Bust)`, `−1 grit (Retry)`.
+- **Options from the builder.** A new **⚙ OPTIONS** button on the top bar opens your settings over the
+  builder, so you can check a device or change a setting without leaving your journey. Unsaved work stays
+  as it is. A new colour mode or language reaches the builder the next time you open it.
+- **Readable fork destinations.** A fork choice leading to a loop showed an internal ID like `n_1a2b`. It now
+  reads **Loop to Round — Training**, naming the node the loop starts on. Checkpoints, mini-game nodes and Loop
+  Ends get proper names there too.
 
 ## v0.9.2
 

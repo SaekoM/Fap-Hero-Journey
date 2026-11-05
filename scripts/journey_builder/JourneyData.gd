@@ -3111,6 +3111,46 @@ static func items_given_by_node(node: Dictionary, item_ids: Array) -> Array:
 	return out
 
 
+# What the builder's panels call a node, such as in a fork choice's LEADS TO. Always something an author can read:
+# never the node's id. A Loop Start has no name of its own, so it's named for where it loops to.
+static func graph_node_label(nodes: Dictionary, node_id: String, minigames: Array = []) -> String:
+	if not nodes.has(node_id):
+		return "(missing node)"
+	var node: Dictionary = nodes[node_id]
+	var data: Dictionary = node.get("data", {})
+	var type: String = str(node.get("type", ""))
+	match type:
+		"round":
+			return _named_node_label("Round", data.get("name", ""))
+		"shop":
+			return _named_node_label("Shop", data.get("title", ""))
+		"storyboard":
+			return _named_node_label("Storyboard", data.get("name", ""))
+		"fork":
+			return _named_node_label("Fork", data.get("title", ""))
+		"checkpoint":
+			return _named_node_label("Checkpoint", data.get("name", ""))
+		"minigame":
+			var game: Dictionary = MiniGameLibrary.find(minigames, str(data.get("game", "")))
+			return _named_node_label("Mini-Game", game.get("name", ""))
+		"loop_start":
+			var out: Array = node.get("out", [])
+			var next_id: String = (
+				str((out[0] as Dictionary).get("to", "")) if not out.is_empty() else ""
+			)
+			if not nodes.has(next_id):
+				return "Loop to (nothing yet)"
+			return "Loop to %s" % graph_node_label(nodes, next_id, minigames)
+		"loop_end":
+			return "Loop End"
+	return type.capitalize() if type != "" else "Node"
+
+
+static func _named_node_label(kind: String, name: Variant) -> String:
+	var shown: String = str(name).strip_edges()
+	return "%s — %s" % [kind, shown if shown != "" else "(unnamed)"]
+
+
 # The key the overlay's picker uses for one counter or flag: "counter:Ammo", "flag:beat_boss".
 static func state_focus_key(kind: String, name: String) -> String:
 	return "%s:%s" % [kind, name]

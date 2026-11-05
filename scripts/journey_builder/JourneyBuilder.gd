@@ -24,6 +24,8 @@ const TOP_BAR_HEIGHT: int = 64
 # encode live in MediaPoolService (shared with the randomizer library). This file
 # owns only the graph walk that builds the plan and the save-progress modal.
 
+const OptionsScene = preload("res://scenes/options/Options.tscn")
+
 # ── Save error / copy result cause codes ────────────────────────────────────
 # Every SaveError flowing through _show_save_error_modal carries one of these
 # in its `cause` field, and every _copy_file_chunked result carries one in
@@ -358,6 +360,9 @@ func _setup_graph_view() -> void:
 	_graph.anchor_bottom = 1.0
 	_graph.keyboard_pan_enabled = true  # arrows / WASD scroll the canvas (builder only)
 	_graph_host.add_child(_graph)
+	# Behind everything else in the host, so the status banner stays readable over the map. Tree order rather than
+	# a z_index, which would also lift the banner over any window opened on top of the builder, such as Options.
+	_graph_host.move_child(_graph, 0)
 	# Rendered from _graph_model, populated IN PLACE by _load_graph (existing journey) before this
 	# deferred call fires; empty for a new journey. Selection drives the side panel; a click while
 	# wiring picks the edge target; a drag-start snapshots for undo.
@@ -585,11 +590,7 @@ func _apply_layout() -> void:
 	var animated_bg: Control = $AnimatedBackground
 	animated_bg.anchor_right = 1.0
 	animated_bg.anchor_bottom = 1.0
-	# Optional plain-black canvas: hide the animated layer (the black Background ColorRect shows through) and
-	# stop its per-frame processing — a hidden node still runs _process, so this makes "off" truly idle.
-	var bg_on: bool = SettingsService.get_builder_animated_bg_enabled()
-	animated_bg.visible = bg_on
-	animated_bg.set_process(bg_on)
+	_apply_animated_background_setting()
 
 	_top_bar.anchor_right = 1.0
 	_top_bar.offset_left = 16
@@ -655,7 +656,6 @@ func _apply_theme() -> void:
 	_status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_status_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_status_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_status_lbl.z_index = 10
 	var toast_bg: StyleBoxFlat = StyleBoxFlat.new()
 	toast_bg.bg_color = Color(UITheme.PANEL_BG.r, UITheme.PANEL_BG.g, UITheme.PANEL_BG.b, 0.92)
 	toast_bg.border_color = UITheme.PURPLE_MID
@@ -800,6 +800,20 @@ func _setup_toolbar_buttons() -> void:
 	)
 	_top_bar.add_child(_state_pick)
 	_top_bar.move_child(_state_pick, _save_btn.get_index())
+
+	var options_btn: Button = Button.new()
+	options_btn.text = "⚙ OPTIONS"
+	options_btn.focus_mode = Control.FOCUS_NONE
+	options_btn.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"Your own settings: devices, display, sound and more. Your journey stays open, unsaved changes included."
+		)
+	)
+	UITheme.style_button(options_btn, UITheme.PURPLE_MID)
+	options_btn.pressed.connect(_on_options_pressed)
+	_top_bar.add_child(options_btn)
+	_top_bar.move_child(options_btn, _save_btn.get_index())
 
 	# 🗒 NOTE, ▭ GROUP and ⌨ SHORTCUTS moved off the toolbar into the canvas right-click context menu
 	# (_show_canvas_context_menu) to cut top-bar clutter — they drop at the cursor instead of the view
@@ -2956,6 +2970,34 @@ func _input(event: InputEvent) -> void:
 func _focus_is_text_field() -> bool:
 	var f: Control = get_viewport().gui_get_focus_owner()
 	return f is LineEdit or f is TextEdit
+
+
+# Opens the player's Options over the builder, as a round does. It joins the modals so the canvas's shortcuts and
+# OS file drops stand down (_modal_shield_open). Keyboard panning polls the keys rather than taking events, so nothing
+# blocks it and it has to be switched off: Options' arrow keys would otherwise scroll the map behind it.
+func _on_options_pressed() -> void:
+	var options: Control = OptionsScene.instantiate()
+	options.overlay_mode = true
+	options.add_to_group("ui_modal")
+	options.tree_exited.connect(_on_options_closed)
+	_graph.keyboard_pan_enabled = false
+	add_child(options)
+
+
+func _on_options_closed() -> void:
+	if not is_inside_tree():
+		return  # the builder itself is going
+	_graph.keyboard_pan_enabled = true
+	_apply_animated_background_setting()
+
+
+# Optional plain-black canvas: hides the animated layer, which lets the black Background ColorRect show, and stops
+# its per-frame processing, because a hidden node still runs _process.
+func _apply_animated_background_setting() -> void:
+	var animated_bg: Control = $AnimatedBackground
+	var bg_on: bool = SettingsService.get_builder_animated_bg_enabled()
+	animated_bg.visible = bg_on
+	animated_bg.set_process(bg_on)
 
 
 func _on_back_pressed() -> void:

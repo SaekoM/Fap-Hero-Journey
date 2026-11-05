@@ -5686,25 +5686,9 @@ func _make_aftercare_link_block(node_id: String, with_title: bool = true) -> Con
 
 # Short readable label for a graph node (used by the fork choice "LEADS TO" line).
 func _graph_node_label(node_id: String) -> String:
-	var nodes: Dictionary = _owner._graph_model.get("nodes", {})
-	if not nodes.has(node_id):
-		return "(missing node)"
-	var n: Dictionary = nodes[node_id]
-	var d: Dictionary = n.get("data", {})
-	match str(n.get("type", "")):
-		"round":
-			var rn: String = str(d.get("name", "")).strip_edges()
-			return "Round — %s" % (rn if rn != "" else "(unnamed)")
-		"shop":
-			var sn: String = str(d.get("title", "")).strip_edges()
-			return "Shop — %s" % (sn if sn != "" else "(unnamed)")
-		"storyboard":
-			var sbn: String = str(d.get("name", "")).strip_edges()
-			return "Storyboard — %s" % (sbn if sbn != "" else "(unnamed)")
-		"fork":
-			var fn: String = str(d.get("title", "")).strip_edges()
-			return "Fork — %s" % (fn if fn != "" else "(unnamed)")
-	return node_id
+	return JourneyData.graph_node_label(
+		_owner._graph_model.get("nodes", {}), node_id, _owner._journey_minigames
+	)
 
 
 # Test-play controls block: the "Test From Here" button plus the seed inputs.
@@ -6110,7 +6094,7 @@ func _loop_exit_target_label(loop_id: String) -> String:
 	var to: String = str((out[0] as Dictionary).get("to", ""))
 	if to == "" or not nodes.has(to):
 		return ""
-	return _loop_node_label(to)
+	return _graph_node_label(to)
 
 
 # A readable item name (built-in or journey custom) for an item id, for the read-back phrasing.
@@ -6266,15 +6250,6 @@ func _loop_item_field(target: Dictionary) -> Control:
 	dd.item_selected.connect(func(i: int) -> void: target["item"] = str(dd.get_item_metadata(i)))
 	col.add_child(dd)
 	return col
-
-
-# A short "Type — Name" label for a node id (used for the End's CONTINUES-TO target).
-func _loop_node_label(nid: String) -> String:
-	var node: Dictionary = (_owner._graph_model.get("nodes", {}) as Dictionary).get(nid, {})
-	var t: String = str(node.get("type", ""))
-	var nm: String = str((node.get("data", {}) as Dictionary).get("name", "")).strip_edges()
-	var pretty: String = t.capitalize() if t != "" else "Node"
-	return "%s — %s" % [pretty, nm] if nm != "" else pretty
 
 
 # The graph node id whose live data dict IS `data` (reference identity — arr[0] IS node.data, so two
