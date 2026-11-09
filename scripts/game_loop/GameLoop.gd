@@ -5490,9 +5490,7 @@ func _end_qte(event: Dictionary) -> void:
 
 
 func _show_dodge_result(view: QuickTimeEventView, dodged: bool, detail: String) -> void:
-	view.show_result(
-		"DODGED" if dodged else "HIT", UITheme.AMBER if dodged else UITheme.DANGER, detail
-	)
+	view.show_dodge_result(dodged, detail)
 
 
 # A QTE on its own has no attack to speak of, so it announces the tier it reached.
@@ -5593,6 +5591,17 @@ func _press_qte(key: String) -> bool:
 	var position_ms: int = int(_video.stream_position * 1000.0)
 	for view: QuickTimeEventView in _qte_views.values():
 		if view.press(position_ms, key):
+			return true
+	return false
+
+
+# A key let go. Returns whether it ended a hold. Like a press, it reads the video's time over the video.
+func _release_qte(key: String) -> bool:
+	if _held_qte != null:
+		return _held_qte.release_held(key)
+	var position_ms: int = int(_video.stream_position * 1000.0)
+	for view: QuickTimeEventView in _qte_views.values():
+		if view.release(position_ms, key):
 			return true
 	return false
 
@@ -6058,6 +6067,8 @@ func _input(event: InputEvent) -> void:
 					if not _is_overlay_open:
 						_nudge_intiface_delay(DELAY_STEP)
 						get_viewport().set_input_as_handled()
+		elif not key_event.pressed and _release_qte(OS.get_keycode_string(key_event.keycode)):
+			get_viewport().set_input_as_handled()  # the end of a Quick-Time Event hold
 		elif not key_event.pressed and key_event.keycode == KEY_ESCAPE:
 			# Esc released — abort an in-progress hold-to-exit (a no-op when none is running).
 			_cancel_exit_hold()

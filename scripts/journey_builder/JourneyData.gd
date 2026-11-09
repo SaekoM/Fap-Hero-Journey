@@ -1538,13 +1538,21 @@ static func content_min_version(
 	return ""
 
 
-# Whether a mini-game node in the graph plays a game from `library` that needs a newer build than the first
-# mini-games did. A rendition's nodes can also play its base's games, which the base's own floor already covers.
+# Whether the graph plays a game from `library` that needs a newer build than the first mini-games did: a newer
+# kind on a mini-game node, or a Quick-Time Event with Hold or Mash prompts in a boss encounter. A rendition's
+# nodes can also play its base's games, which the base's own floor already covers.
 static func graph_needs_newer_game(graph: Dictionary, library: Array) -> bool:
 	for node: Variant in (graph.get("nodes", {}) as Dictionary).values():
-		if not (node is Dictionary) or str((node as Dictionary).get("type", "")) != "minigame":
+		if not (node is Dictionary):
 			continue
 		var data: Dictionary = (node as Dictionary).get("data", {})
+		for game_id: Variant in RoundTimeline.qte_games_on_node(data):
+			var qte: Dictionary = MiniGameLibrary.find(library, str(game_id))
+			if str(qte.get("kind", "")) == QuickTimeEventGame.KIND:
+				if QuickTimeEventGame.needs_newer_build(qte.get("knobs", {})):
+					return true
+		if str((node as Dictionary).get("type", "")) != "minigame":
+			continue
 		var definition: Dictionary = MiniGameLibrary.find(library, str(data.get("game", "")))
 		if str(definition.get("kind", "")) in MiniGameLibrary.NEWER_KINDS:
 			return true

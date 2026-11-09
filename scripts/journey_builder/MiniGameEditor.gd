@@ -705,6 +705,7 @@ func _add_quick_time_event_knobs(body: VBoxContainer, definition: Dictionary) ->
 	)
 	var ranges: Dictionary = QuickTimeEventGame.KNOB_RANGES
 	body.add_child(_knob_row(knobs, "prompts", "PROMPTS", ranges, ""))
+	_add_qte_prompt_kinds(body, knobs)
 	_add_qte_key_picker(body, knobs)
 	_add_qte_pause_toggle(body, knobs)
 	_add_qte_look(body, knobs)
@@ -768,6 +769,92 @@ func _make_qte_colour_row(knobs: Dictionary, key: String, label: String) -> Cont
 	swatch.color_changed.connect(func(value: Color) -> void: knobs[key] = value.to_html(false))
 	row.add_child(swatch)
 	return row
+
+
+const QTE_PROMPT_KIND_NAMES: Dictionary = {
+	QuickTimeEventGame.PROMPT_PRESS: "PRESS",
+	QuickTimeEventGame.PROMPT_HOLD: "HOLD",
+	QuickTimeEventGame.PROMPT_MASH: "MASH",
+}
+
+
+# Which kinds of prompt the event may use, one toggle each and always at least one on, with each kind's own
+# setting under the toggles.
+func _add_qte_prompt_kinds(body: VBoxContainer, knobs: Dictionary) -> void:
+	(
+		body
+		. add_child(
+			(
+				_panel
+				. _side_field_label(
+					"PROMPT KINDS",
+					(
+						"Each prompt is one of these, at random. PRESS: press the key on time. HOLD: press it on time and "
+						+ "keep it down until the fill round the target completes. MASH: once the ring lands, press the key fast "
+						+ "enough to fill the target before time runs out. Filling it scores 100%; falling short misses."
+					)
+				)
+			)
+		)
+	)
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var kinds: Array = knobs["prompt_kinds"]
+	for kind: String in QuickTimeEventGame.PROMPT_KINDS:
+		var toggle: Button = Button.new()
+		toggle.text = QTE_PROMPT_KIND_NAMES[kind]
+		toggle.toggle_mode = true
+		toggle.button_pressed = kinds.has(kind)
+		toggle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		UITheme.style_button(toggle, UITheme.MINIGAME)
+		toggle.toggled.connect(
+			func(on: bool) -> void:
+				if on:
+					kinds.append(kind)
+				elif kinds.size() > 1:
+					kinds.erase(kind)
+				else:
+					toggle.set_pressed_no_signal(true)
+		)
+		row.add_child(toggle)
+	body.add_child(row)
+	var ranges: Dictionary = QuickTimeEventGame.KNOB_RANGES
+	(
+		body
+		. add_child(
+			_knob_row(
+				knobs,
+				"hold_ms",
+				"HOLD TIME",
+				ranges,
+				" ms",
+				"HOLD prompts only: how long the key has to stay down after the press. The assist doesn't lengthen it."
+			)
+		)
+	)
+	(
+		body
+		. add_child(
+			_knob_row(
+				knobs,
+				"mash_ms",
+				"MASH TIME",
+				ranges,
+				" ms",
+				"MASH prompts only: how long the player has to fill it, from the moment the ring lands. The assist gives half as much again."
+			)
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"mash_presses",
+			"MASH PRESSES",
+			ranges,
+			"",
+			"MASH prompts only: how many presses fill it."
+		)
+	)
 
 
 # One toggle per key a creator can ask for. Always at least one on: an event needs a key to press.

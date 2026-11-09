@@ -24,9 +24,16 @@
   it, a shield saves the player from one trap, and a trap with no shield loses it all. Drawn tokens stay out, so the odds
   follow from what's left. A **STACK** setting picks the look: **Casino chips**, **Gold coins** or **Wooden blocks**, each
   falling its own way. The pot pays through **tiers** the creator sets, with a **TIER UP** moment as it crosses one, and
-  **BIG DRAW!** and **CLOSE CALL!** mark the lucky pushes. A game of chance, so it never awards journey score. Journeys
-  that place one need FHJ 0.9.3 or newer.
-
+  **BIG DRAW!** and **CLOSE CALL!** mark the lucky pushes. Shields land as cyan pieces and doublers as green ones,
+  each with its own emblem, and a shield that takes a trap cracks. A game of chance, so it never awards journey score.
+  Journeys that place one need FHJ 0.9.3 or newer.
+- **Quick-Time Events: Hold and Mash prompts.** A new **PROMPT KINDS** setting lets an event mix plain presses with
+  **HOLD** rings, kept down while a fill runs round the target (**HOLD TIME**), and **MASH** rings, where the key is pressed
+  fast enough to fill the target before time runs out (**MASH TIME**, **MASH PRESSES**). A mash heats up, trembles and
+  throws sparks as it nears full, and is all or nothing. Each ring's kind is picked at random from the ones ticked.
+  Press-only events play exactly as before. Journeys with Hold or Mash prompts need FHJ 0.9.3 or newer.
+- **Quick-Time Event dodges are staged.** A dodge now ends with a stamped **DODGED** and a streak of light, and a
+  failure with a stamped **HIT**, red edges and a shake.
 ### ◆ Builder
 
 - **± STATE shows mini-games.** Flags, counters and items a mini-game can change now appear on the map and
