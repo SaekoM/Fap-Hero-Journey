@@ -107,6 +107,9 @@ const MINIGAME_KIND_LABELS: Dictionary = {
 	SafeCrackerGame.KIND: "SAFE-CRACKER",
 	DoubleOrNothingGame.KIND: "DOUBLE OR NOTHING",
 	QuickTimeEventGame.KIND: "QUICK-TIME EVENT",
+	StopTheBarGame.KIND: "STOP THE BAR",
+	HoldReleaseGame.KIND: "HOLD & RELEASE",
+	PushYourLuckGame.KIND: "PUSH YOUR LUCK",
 }
 var _state_marks: Dictionary = {}
 var _state_focus: String = ""

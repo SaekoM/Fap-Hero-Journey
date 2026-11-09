@@ -9,7 +9,12 @@ extends RefCounted
 # LISTED THERE IS DROPPED on load and save — the fixed-key-list trap — so a new field must be added here.
 
 const KINDS: Array[String] = [
-	SafeCrackerGame.KIND, QuickTimeEventGame.KIND, DoubleOrNothingGame.KIND
+	SafeCrackerGame.KIND,
+	QuickTimeEventGame.KIND,
+	DoubleOrNothingGame.KIND,
+	StopTheBarGame.KIND,
+	HoldReleaseGame.KIND,
+	PushYourLuckGame.KIND,
 ]
 
 # Which host each game can run on. MINIGAMES_DESIGN.md → "Placement — two hosts".
@@ -19,11 +24,21 @@ const KIND_HOSTS: Dictionary = {
 	SafeCrackerGame.KIND: [HOST_NODE],
 	QuickTimeEventGame.KIND: [HOST_MOMENT],
 	DoubleOrNothingGame.KIND: [HOST_NODE],
+	StopTheBarGame.KIND: [HOST_NODE],
+	HoldReleaseGame.KIND: [HOST_NODE],
+	PushYourLuckGame.KIND: [HOST_NODE],
 }
 
 # Skill games score 0–100 and the author draws tiers on the score; chance games end in named outcomes,
 # one tier each, and can never award journey score.
-const CHANCE_KINDS: Array[String] = [DoubleOrNothingGame.KIND]
+const CHANCE_KINDS: Array[String] = [DoubleOrNothingGame.KIND, PushYourLuckGame.KIND]
+
+# Games newer than the first mini-game release. normalize_definition turns a kind it doesn't know into a
+# Safe-Cracker, so an older build would play these as the wrong game: placing one raises the journey's version
+# floor (JourneyData.JOURNEY_MIN_APP_VERSION_NEWER_GAMES).
+const NEWER_KINDS: Array[String] = [
+	StopTheBarGame.KIND, HoldReleaseGame.KIND, PushYourLuckGame.KIND
+]
 
 const MAX_ATTEMPTS: int = 5
 
@@ -37,7 +52,15 @@ const DEFAULT_RUNGS: int = 3
 const GAME_CHARACTER_MOMENTS: Dictionary = {
 	SafeCrackerGame.KIND: ["idle", "opened", "wrong", "success", "failed"],
 	DoubleOrNothingGame.KIND: ["idle", "win", "bust"],
+	StopTheBarGame.KIND: ["idle", "hit", "miss", "passed", "failed"],
+	HoldReleaseGame.KIND: ["idle", "hit", "miss", "passed", "failed"],
+	PushYourLuckGame.KIND: ["idle", "win", "bust", "banked"],
 }
+
+# The tiers a new Push Your Luck starts with: [id, name, lowest pot].
+const DEFAULT_POT_TIERS: Array = [
+	["small", "Small", 0], ["medium", "Medium", 60], ["large", "Large", 150]
+]
 
 # The tiers a new skill game starts with: [id, name, lowest score].
 const DEFAULT_SKILL_TIERS: Array = [
@@ -87,6 +110,21 @@ static func normalize_definition(raw: Dictionary) -> Dictionary:
 			definition["lock"] = lock if lock in LockArt.STYLES else LockArt.DEFAULT_STYLE
 		QuickTimeEventGame.KIND:
 			definition["knobs"] = QuickTimeEventGame.normalize_knobs(raw_knobs)
+		StopTheBarGame.KIND:
+			definition["knobs"] = StopTheBarGame.normalize_knobs(raw_knobs)
+		PushYourLuckGame.KIND:
+			definition["knobs"] = PushYourLuckGame.normalize_knobs(raw_knobs)
+			var stack: String = str(raw.get("stack", StackArt.DEFAULT_STYLE))
+			definition["stack"] = stack if stack in StackArt.STYLES else StackArt.DEFAULT_STYLE
+			definition["pot_tiers"] = _normalize_pot_tiers(raw.get("pot_tiers", []))
+			definition["bust_rewards"] = normalize_rewards(raw.get("bust_rewards", {}), false)
+			definition["bust_result_text"] = str(raw.get("bust_result_text", "")).strip_edges()
+		HoldReleaseGame.KIND:
+			definition["knobs"] = HoldReleaseGame.normalize_knobs(raw_knobs)
+			var container: String = str(raw.get("container", GaugeArt.DEFAULT_STYLE))
+			definition["container"] = (
+				container if container in GaugeArt.STYLES else GaugeArt.DEFAULT_STYLE
+			)
 		DoubleOrNothingGame.KIND:
 			definition["knobs"] = {
 				"odds":
@@ -102,8 +140,12 @@ static func normalize_definition(raw: Dictionary) -> Dictionary:
 			raw.get("game_character", {}), kind
 		)
 	if is_chance(kind):
-		definition["tiers"] = _ladder_tiers(definition)
-		# A chance game left alone cashes out what the player holds (DoubleOrNothingGame.time_out), so
+		definition["tiers"] = (
+			_pot_game_tiers(definition)
+			if kind == PushYourLuckGame.KIND
+			else _ladder_tiers(definition)
+		)
+		# A chance game left alone keeps what the player holds (untouched_chance_tier), so
 		# it has no timeout tier to pick.
 		definition["timeout_tier"] = ""
 	else:
@@ -127,41 +169,40 @@ static func normalize_definition(raw: Dictionary) -> Dictionary:
 # there are no gaps to fall through. A tier on a score another already starts at moves up to the next
 # free one, rather than vanishing along with its rewards; one that can't fit under 100 is dropped.
 static func _score_tiers(raw_tiers: Array) -> Array:
+	return _threshold_tiers(raw_tiers, "min_score", 100, DEFAULT_SKILL_TIERS)
+
+
+static func _threshold_tiers(raw_tiers: Array, key: String, highest: int, defaults: Array) -> Array:
 	var source: Array = raw_tiers
 	if source.is_empty():
-		source = DEFAULT_SKILL_TIERS.map(
-			func(spec: Array) -> Dictionary:
-				return {"id": spec[0], "name": spec[1], "min_score": spec[2]}
+		source = defaults.map(
+			func(spec: Array) -> Dictionary: return {"id": spec[0], "name": spec[1], key: spec[2]}
 		)
 	var tiers: Array = []
 	for raw: Variant in source:
 		if raw is Dictionary:
 			var tier: Dictionary = _tier_base(raw as Dictionary)
-			tier["min_score"] = clampi(int((raw as Dictionary).get("min_score", 0)), 0, 100)
+			tier[key] = clampi(int((raw as Dictionary).get(key, 0)), 0, highest)
 			tiers.append(tier)
 	# Stable for equal scores, so the tier listed first keeps the score they share.
 	for i in tiers.size():
 		tiers[i]["_order"] = i
 	tiers.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
-			return (
-				a["min_score"] < b["min_score"]
-				if a["min_score"] != b["min_score"]
-				else a["_order"] < b["_order"]
-			)
+			return a[key] < b[key] if a[key] != b[key] else a["_order"] < b["_order"]
 	)
 	var kept: Array = []
 	for tier: Dictionary in tiers:
 		tier.erase("_order")
-		if not kept.is_empty() and tier["min_score"] <= kept[-1]["min_score"]:
-			tier["min_score"] = kept[-1]["min_score"] + 1
-		if tier["min_score"] <= 100:
+		if not kept.is_empty() and tier[key] <= kept[-1][key]:
+			tier[key] = kept[-1][key] + 1
+		if tier[key] <= highest:
 			kept.append(tier)
 	tiers = kept
 	if tiers.is_empty():
 		tiers.append(_tier_base({"id": "fail", "name": "Fail"}))
-		tiers[0]["min_score"] = 0
-	tiers[0]["min_score"] = 0
+		tiers[0][key] = 0
+	tiers[0][key] = 0
 	_dedupe_ids(tiers)
 	return tiers
 
@@ -198,6 +239,42 @@ static func _ladder_tiers(definition: Dictionary) -> Array:
 			)
 		)
 	return tiers
+
+
+# Push Your Luck's tiers: a bust, paying bust_rewards, and then the creator's pot tiers, lowest first. Each pot tier
+# keeps its lowest pot, which is how PushYourLuckGame.tier_for_pot tells them from the bust.
+static func _pot_game_tiers(definition: Dictionary) -> Array:
+	var tiers: Array = [
+		{
+			"id": PushYourLuckGame.OUTCOME_BUSTED,
+			"name": default_outcome_name(DoubleOrNothingGame.OUTCOME_BUSTED),
+			"rewards": definition["bust_rewards"],
+			"result_text": definition["bust_result_text"],
+		}
+	]
+	for pot_tier: Dictionary in definition["pot_tiers"]:
+		tiers.append(pot_tier.duplicate())
+	_dedupe_ids(tiers)  # the bust is first, so a pot tier named "Busted" is the one that moves aside
+	return tiers
+
+
+# The creator's pot tiers, sorted, the lowest starting at nothing so every pot lands in one, and never paying journey
+# score.
+static func _normalize_pot_tiers(raw: Variant) -> Array:
+	var raw_tiers: Array = raw if raw is Array else []
+	var tiers: Array = _threshold_tiers(
+		raw_tiers, "min_pot", PushYourLuckGame.MAX_POT, DEFAULT_POT_TIERS
+	)
+	for tier: Dictionary in tiers:
+		tier["rewards"] = normalize_rewards(tier["rewards"], false)
+	return tiers
+
+
+# What a chance game pays if auto-advance runs out before the player starts it: what the game would have them hold.
+static func untouched_chance_tier(definition: Dictionary) -> String:
+	if str(definition.get("kind", "")) == PushYourLuckGame.KIND:
+		return str((definition["pot_tiers"] as Array)[0]["id"])
+	return DoubleOrNothingGame.CASHED_PREFIX + "1"
 
 
 static func outcome_names(kind: String, definition: Dictionary) -> Array[String]:
@@ -403,15 +480,20 @@ static func _all_changes(library: Array) -> Array:
 			changes.append(definition.get("bust_rewards", {}))
 			for rung: Dictionary in definition.get("rungs", []):
 				changes.append(rung.get("rewards", {}))
+			for pot_tier: Dictionary in definition.get("pot_tiers", []):
+				changes.append(pot_tier.get("rewards", {}))
 		else:
 			for tier: Dictionary in definition.get("tiers", []):
 				changes.append(tier.get("rewards", {}))
 	return changes
 
 
-# The tiers of a skill game that no score can land in, given its knobs. A Quick-Time Event's score moves in fine
-# steps, so only a Safe-Cracker's can have gaps; and a chance game's tiers are the ways it can end.
+# The tiers of a skill game that no score can land in, given its knobs. The scores of Quick-Time Event, Stop
+# the Bar and Hold & Release move in fine steps, so only a Safe-Cracker's can have gaps; and a chance game's tiers are the ways it can
+# end.
 static func unreachable_tiers(definition: Dictionary) -> Array:
+	if str(definition.get("kind", "")) == PushYourLuckGame.KIND:
+		return _unreachable_pot_tiers(definition)
 	if str(definition.get("kind", "")) != SafeCrackerGame.KIND:
 		return []
 	var scores: Dictionary = SafeCrackerGame.reachable_scores(definition["knobs"])
@@ -428,6 +510,14 @@ static func unreachable_tiers(definition: Dictionary) -> Array:
 	return out
 
 
+# The pot tiers that start above the most any run could hold.
+static func _unreachable_pot_tiers(definition: Dictionary) -> Array:
+	var highest: int = PushYourLuckGame.highest_pot(definition["knobs"])
+	return (definition["tiers"] as Array).filter(
+		func(tier: Dictionary) -> bool: return int(tier.get("min_pot", 0)) > highest
+	)
+
+
 # Every result of a game that can change the run, as [{label, rewards}]: the tiers of a skill game; the rungs and
 # the bust of a chance game, whose tiers repeat them; and the cost of a retry, when one can be offered.
 static func reward_sources(definition: Dictionary) -> Array:
@@ -439,6 +529,8 @@ static func reward_sources(definition: Dictionary) -> Array:
 			sources.append(
 				{"label": "Rung %d" % (index + 1), "rewards": rungs[index].get("rewards", {})}
 			)
+		for pot_tier: Dictionary in definition.get("pot_tiers", []):
+			sources.append({"label": str(pot_tier["name"]), "rewards": pot_tier.get("rewards", {})})
 		sources.append({"label": "Bust", "rewards": definition.get("bust_rewards", {})})
 	else:
 		var tiers: Array = definition.get("tiers", [])

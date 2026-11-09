@@ -338,40 +338,8 @@ func _jackpot() -> void:
 	create_tween().tween_property(_wheel, "gold", 1.0, 0.6)
 	_burst(1.0)
 	get_tree().create_timer(0.35).timeout.connect(func() -> void: _burst(1.0))
-	_show_banner("JACKPOT")
+	MiniGameFx.show_banner(self, "JACKPOT", JACKPOT_HOLD_SECS)
 	await get_tree().create_timer(JACKPOT_HOLD_SECS).timeout
-
-
-func _show_banner(text: String) -> void:
-	var layer: CanvasLayer = CanvasLayer.new()
-	layer.layer = 10  # above the screen's own UI, below nothing the player needs mid-celebration
-	add_child(layer)
-	var banner: Label = Label.new()
-	banner.text = text
-	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	banner.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	banner.set_anchors_and_offsets_preset(Control.PRESET_HCENTER_WIDE)
-	banner.offset_top = -70.0
-	banner.offset_bottom = 70.0
-	UITheme.style_label(banner, UITheme.AMBER, 96)
-	var backing: StyleBoxFlat = StyleBoxFlat.new()
-	backing.bg_color = Color(0, 0, 0, 0.6)
-	banner.add_theme_stylebox_override("normal", backing)
-	banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(banner)
-	banner.modulate.a = 0.0
-	var arrive: Tween = banner.create_tween().set_parallel(true)
-	arrive.tween_property(banner, "modulate:a", 1.0, 0.5)
-	if not SettingsService.get_reduce_flashing():
-		var width: float = get_viewport_rect().size.x
-		banner.position.x = -width
-		arrive.tween_property(banner, "position:x", 0.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(
-			Tween.EASE_OUT
-		)
-	var leave: Tween = banner.create_tween()
-	leave.tween_interval(JACKPOT_HOLD_SECS - 0.5)
-	leave.tween_property(banner, "modulate:a", 0.0, 0.4)
-	leave.tween_callback(layer.queue_free)
 
 
 # A bust shakes the tower and drains it red — shape (the shake) as well as colour.

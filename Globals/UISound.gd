@@ -67,6 +67,19 @@ const GAME_SOUNDS: Array[String] = [
 	"jackpot_sting",
 	"banked",
 	"bust_sting",
+	"gauge_creak",
+	"gauge_near_miss",
+	"gauge_burst",
+	"gauge_pop",
+	"gauge_shatter",
+	"gauge_steam",
+	"gauge_heartbreak",
+	"gauge_heartbeat",
+	"stack_clatter",
+	"stack_spill",
+	"stack_tumble",
+	"stack_close_call",
+	"gauge_shield_block",
 ]
 
 
@@ -195,6 +208,65 @@ func bust_sting() -> void:
 	_play_unjittered("bust_sting", 1.0)
 
 
+# Hold & Release's gauge nearing its limit: a dull strain, rising in `pitch` as it gets closer.
+func gauge_creak(pitch: float) -> void:
+	_play_unjittered("gauge_creak", pitch)
+
+
+# Let go just past the limit: a short falling groan.
+func gauge_near_miss() -> void:
+	_play_unjittered("gauge_near_miss", 1.0)
+
+
+# The ways a full gauge fails, one per container.
+func gauge_burst() -> void:
+	_play_unjittered("gauge_burst", 1.0)
+
+
+func gauge_pop() -> void:
+	_play_unjittered("gauge_pop", 1.0)
+
+
+func gauge_shatter() -> void:
+	_play_unjittered("gauge_shatter", 1.0)
+
+
+func gauge_steam() -> void:
+	_play_unjittered("gauge_steam", 1.0)
+
+
+# The heart's warning, in place of the creak.
+func gauge_heartbeat(pitch: float) -> void:
+	_play_unjittered("gauge_heartbeat", pitch)
+
+
+func gauge_heartbreak() -> void:
+	_play_unjittered("gauge_heartbreak", 1.0)
+
+
+# The ways Push Your Luck's stack comes down, one per look.
+func stack_clatter() -> void:
+	_play_unjittered("stack_clatter", 1.0)
+
+
+func stack_spill() -> void:
+	_play_unjittered("stack_spill", 1.0)
+
+
+func stack_tumble() -> void:
+	_play_unjittered("stack_tumble", 1.0)
+
+
+# Surviving a risky push: a quick, relieved rise.
+func stack_close_call() -> void:
+	_play_unjittered("stack_close_call", 1.0)
+
+
+# A shield taking a trap: a hard knock that rings off.
+func gauge_shield_block() -> void:
+	_play_unjittered("gauge_shield_block", 1.0)
+
+
 func _play_unjittered(kind: String, pitch: float) -> void:
 	_start(kind, pitch)
 
@@ -317,6 +389,24 @@ func _build_streams() -> void:
 		[523.3, 659.3, 784.0, 1046.5, 1318.5, 1568.0, 2093.0], 1.1, 0.36, "sine"
 	)
 	_streams["banked"] = _make_blip([784.0, 1046.5], 0.26, 0.3, "sine")
+	# Hold & Release. For a noise wave, each "note" is a lowpass cutoff in Hz, so a falling list sounds like a thud
+	# and a steady high one like a hiss.
+	_streams["gauge_creak"] = _make_blip([420.0, 300.0], 0.14, 0.55, "noise")
+	_streams["gauge_near_miss"] = _make_blip([233.1, 207.7, 185.0, 155.6], 0.55, 0.22, "saw")
+	_streams["gauge_burst"] = _make_blip([1800.0, 700.0, 300.0], 0.4, 0.85, "noise")
+	_streams["gauge_pop"] = _make_blip([6000.0, 1500.0], 0.12, 0.95, "noise")
+	_streams["gauge_shatter"] = _make_blip([7000.0, 5000.0, 3000.0], 0.5, 0.7, "noise")
+	_streams["gauge_steam"] = _make_blip([4000.0, 3600.0, 3200.0], 0.9, 0.35, "noise")
+	_streams["gauge_heartbreak"] = _make_blip([5000.0, 1200.0, 500.0], 0.4, 0.85, "noise")
+	_streams["gauge_heartbeat"] = _make_blip([80.0, 55.0], 0.22, 0.8, "sine")
+	# Push Your Luck.
+	_streams["stack_clatter"] = _make_blip([5200.0, 2600.0, 4200.0, 1800.0], 0.5, 0.8, "noise")
+	_streams["stack_spill"] = _make_blip(
+		[8000.0, 6500.0, 7500.0, 5500.0, 6000.0], 0.7, 0.55, "noise"
+	)
+	_streams["stack_tumble"] = _make_blip([900.0, 400.0, 700.0, 300.0], 0.6, 0.9, "noise")
+	_streams["stack_close_call"] = _make_blip([440.0, 659.3], 0.24, 0.26, "sine")
+	_streams["gauge_shield_block"] = _make_blip([1760.0, 1318.5, 1046.5], 0.4, 0.3, "square")
 
 
 # Renders `notes` (played in equal time slices) into a mono 16-bit AudioStreamWAV.

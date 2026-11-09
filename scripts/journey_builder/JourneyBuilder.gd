@@ -6832,7 +6832,9 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		result,
 		_journey_id,
 		JourneyData.content_min_version(
-			_kept_wide_codec, JourneyData.graph_has_minigames(_graph_model)
+			_kept_wide_codec,
+			JourneyData.graph_has_minigames(_graph_model),
+			JourneyData.graph_needs_newer_game(_graph_model, _journey_minigames)
 		)
 	)
 	_journey_id = str(result["JourneyId"])

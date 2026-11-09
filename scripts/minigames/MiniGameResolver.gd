@@ -17,6 +17,14 @@ static func tier_for_score(tiers: Array, score: int) -> String:
 	return reached
 
 
+# How good a tier is, 0 (the lowest) to 1 (the highest). Tiers are sorted lowest first. A game's only tier is 1.
+static func tier_strength(tiers: Array, tier_id: String) -> float:
+	for index: int in tiers.size():
+		if str((tiers[index] as Dictionary)["id"]) == tier_id:
+			return float(index) / (tiers.size() - 1) if tiers.size() > 1 else 1.0
+	return 0.0
+
+
 # A chance game's tier is its named outcome. "" when the outcome has no tier (an unknown outcome name).
 static func tier_for_outcome(tiers: Array, outcome: String) -> String:
 	for tier: Dictionary in tiers:

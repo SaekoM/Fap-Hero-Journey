@@ -1520,15 +1520,35 @@ const JOURNEY_MIN_APP_VERSION_WIDE_CODECS: String = "0.8.4"
 # heard of, so the journey has to be refused at load, where JourneySelect explains why.
 const JOURNEY_MIN_APP_VERSION_MINIGAMES: String = "0.9.2"
 
+# The floor a journey needs once it places a game newer than that (MiniGameLibrary.NEWER_KINDS).
+const JOURNEY_MIN_APP_VERSION_NEWER_GAMES: String = "0.9.3"
+
 
 # The MinVersion a save should stamp: the highest floor any of the journey's content needs, or "" for
 # the standing one. Each floor is newer than the one before it, so the newest that applies wins.
-static func content_min_version(keeps_wide_codecs: bool, places_minigames: bool) -> String:
+static func content_min_version(
+	keeps_wide_codecs: bool, places_minigames: bool, places_newer_games: bool = false
+) -> String:
+	if places_newer_games:
+		return JOURNEY_MIN_APP_VERSION_NEWER_GAMES
 	if places_minigames:
 		return JOURNEY_MIN_APP_VERSION_MINIGAMES
 	if keeps_wide_codecs:
 		return JOURNEY_MIN_APP_VERSION_WIDE_CODECS
 	return ""
+
+
+# Whether a mini-game node in the graph plays a game from `library` that needs a newer build than the first
+# mini-games did. A rendition's nodes can also play its base's games, which the base's own floor already covers.
+static func graph_needs_newer_game(graph: Dictionary, library: Array) -> bool:
+	for node: Variant in (graph.get("nodes", {}) as Dictionary).values():
+		if not (node is Dictionary) or str((node as Dictionary).get("type", "")) != "minigame":
+			continue
+		var data: Dictionary = (node as Dictionary).get("data", {})
+		var definition: Dictionary = MiniGameLibrary.find(library, str(data.get("game", "")))
+		if str(definition.get("kind", "")) in MiniGameLibrary.NEWER_KINDS:
+			return true
+	return false
 
 
 # Whether anything in the graph plays a mini-game: a mini-game node, or a QTE in a boss encounter.

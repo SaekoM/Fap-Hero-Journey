@@ -14,16 +14,34 @@ const KIND_NAMES: Dictionary = {
 	SafeCrackerGame.KIND: "Safe-Cracker",
 	DoubleOrNothingGame.KIND: "Double or Nothing",
 	QuickTimeEventGame.KIND: "Quick-Time Event",
+	StopTheBarGame.KIND: "Stop the Bar",
+	HoldReleaseGame.KIND: "Hold & Release",
+	PushYourLuckGame.KIND: "Push Your Luck",
 }
 # The games a node can host, in the order the builder offers them. Quick-Time Event runs on a boss
 # timeline instead (phase 3).
-const NODE_KINDS: Array[String] = [SafeCrackerGame.KIND, DoubleOrNothingGame.KIND]
+const NODE_KINDS: Array[String] = [
+	SafeCrackerGame.KIND,
+	DoubleOrNothingGame.KIND,
+	StopTheBarGame.KIND,
+	HoldReleaseGame.KIND,
+	PushYourLuckGame.KIND,
+]
 const INTRO_FIELD_HEIGHT: float = 72.0
 const QTE_KEY_COLUMNS: int = 11
 const QTE_KEY_BUTTON_SIZE: float = 34.0
 const LIBRARY_KINDS: Array[String] = [
-	SafeCrackerGame.KIND, DoubleOrNothingGame.KIND, QuickTimeEventGame.KIND
+	SafeCrackerGame.KIND,
+	DoubleOrNothingGame.KIND,
+	StopTheBarGame.KIND,
+	HoldReleaseGame.KIND,
+	PushYourLuckGame.KIND,
+	QuickTimeEventGame.KIND,
 ]
+# How far above the current top a new pot tier starts.
+const POT_TIER_STEP: int = 20
+# The ＋ buttons that add a game wrap into rows, so the list of games can grow without squeezing them.
+const LIBRARY_ADD_COLUMNS: int = 2
 
 # What each game-character moment is called in the editor.
 const MOMENT_LABELS: Dictionary = {
@@ -34,6 +52,10 @@ const MOMENT_LABELS: Dictionary = {
 	"failed": "FAILED",
 	"win": "ON A WIN",
 	"bust": "ON A BUST",
+	"hit": "IN THE ZONE",
+	"miss": "MISSED",
+	"passed": "PASSED",
+	"banked": "ON BANKING",
 }
 
 const LIBRARY_MODAL_SIZE: Vector2i = Vector2i(600, 560)
@@ -110,8 +132,10 @@ func open_library() -> void:
 	scroll.add_child(_library_list)
 	_rebuild_library_list()
 
-	var add_row: HBoxContainer = HBoxContainer.new()
-	add_row.add_theme_constant_override("separation", 8)
+	var add_row: GridContainer = GridContainer.new()
+	add_row.columns = LIBRARY_ADD_COLUMNS
+	add_row.add_theme_constant_override("h_separation", 8)
+	add_row.add_theme_constant_override("v_separation", 8)
 	for kind: String in LIBRARY_KINDS:
 		var add_btn: Button = Button.new()
 		add_btn.text = "＋ " + KIND_NAMES[kind]
@@ -358,6 +382,12 @@ func _fill_definition(body: VBoxContainer, definition: Dictionary, rebuild: Call
 			_add_safe_cracker_knobs(body, definition)
 		DoubleOrNothingGame.KIND:
 			_add_double_or_nothing_knobs(body, definition)
+		StopTheBarGame.KIND:
+			_add_stop_the_bar_knobs(body, definition)
+		HoldReleaseGame.KIND:
+			_add_hold_release_knobs(body, definition)
+		PushYourLuckGame.KIND:
+			_add_push_your_luck_knobs(body, definition)
 		QuickTimeEventGame.KIND:
 			_add_quick_time_event_knobs(body, definition)
 
@@ -370,7 +400,9 @@ func _fill_definition(body: VBoxContainer, definition: Dictionary, rebuild: Call
 		_add_attempts(body, definition, rebuild)
 
 	body.add_child(_panel._side_divider_line())
-	if MiniGameLibrary.is_chance(definition["kind"]):
+	if str(definition["kind"]) == PushYourLuckGame.KIND:
+		_add_pot_tiers(body, definition, rebuild)
+	elif MiniGameLibrary.is_chance(definition["kind"]):
 		_add_ladder(body, definition, rebuild)
 	else:
 		_add_score_tiers(body, definition, rebuild)
@@ -505,6 +537,153 @@ func _add_safe_cracker_knobs(body: VBoxContainer, definition: Dictionary) -> voi
 		func(i: int) -> void: knobs["warmth"] = SafeCrackerGame.WARMTH_MODES[i]
 	)
 	body.add_child(warmth)
+
+
+func _add_stop_the_bar_knobs(body: VBoxContainer, definition: Dictionary) -> void:
+	var knobs: Dictionary = definition["knobs"]
+	(
+		body
+		. add_child(
+			(
+				_panel
+				. _side_hint(
+					(
+						"A marker sweeps along a bar, and the player stops it in a zone. Dead centre scores 100%, "
+						+ "falling to 0% at the zone's edge. The score is the average of every stop."
+					)
+				)
+			)
+		)
+	)
+	var ranges: Dictionary = StopTheBarGame.KNOB_RANGES
+	body.add_child(_knob_row(knobs, "stops", "STOPS", ranges, ""))
+	body.add_child(
+		_knob_row(
+			knobs,
+			"sweep_ms",
+			"SWEEP TIME",
+			ranges,
+			" ms",
+			"How long the marker takes to cross the bar once. Lower is harder."
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs, "zone_pct", "ZONE SIZE", ranges, "%", "How much of the bar the zone covers."
+		)
+	)
+	_add_move_zone_toggle(
+		body,
+		knobs,
+		"On: the zone moves to a random place for each stop. Off: it stays in the middle of the bar."
+	)
+	_add_gets_harder(
+		body,
+		knobs,
+		ranges,
+		"By the last stop, the sweep time and the zone are this much smaller, shrinking evenly from the first stop. 0 = off."
+	)
+	_add_show_tiers_toggle(body, knobs)
+
+
+func _add_hold_release_knobs(body: VBoxContainer, definition: Dictionary) -> void:
+	var knobs: Dictionary = definition["knobs"]
+	(
+		body
+		. add_child(
+			(
+				_panel
+				. _side_hint(
+					(
+						"Holding fills a gauge, and the player lets go in a zone. The zone's top edge scores 100% and "
+						+ "anything past it scores 0%. Below the zone earns up to 30%. The score is the average of every hold."
+					)
+				)
+			)
+		)
+	)
+	body.add_child(
+		_panel._side_field_label(
+			"CONTAINER", "What the player is filling. It changes the look only, not the rules."
+		)
+	)
+	var container: OptionButton = OptionButton.new()
+	for style: String in GaugeArt.STYLES:
+		container.add_item(str(GaugeArt.STYLE_NAMES[style]))
+	container.selected = maxi(0, GaugeArt.STYLES.find(str(definition["container"])))
+	UITheme.style_option_button(container)
+	container.item_selected.connect(
+		func(i: int) -> void: definition["container"] = GaugeArt.STYLES[i]
+	)
+	body.add_child(container)
+	var ranges: Dictionary = HoldReleaseGame.KNOB_RANGES
+	body.add_child(_knob_row(knobs, "holds", "HOLDS", ranges, ""))
+	body.add_child(
+		_knob_row(
+			knobs,
+			"fill_ms",
+			"FILL TIME",
+			ranges,
+			" ms",
+			"How long holding takes to fill the gauge completely. Lower is harder."
+		)
+	)
+	body.add_child(_panel._side_field_label("FILL"))
+	var fill_curve: OptionButton = OptionButton.new()
+	fill_curve.add_item("Speeds up — slow at first, faster as it rises")
+	fill_curve.add_item("Steady — one rate all the way")
+	fill_curve.selected = HoldReleaseGame.FILL_CURVES.find(str(knobs["fill_curve"]))
+	UITheme.style_option_button(fill_curve)
+	fill_curve.item_selected.connect(
+		func(i: int) -> void: knobs["fill_curve"] = HoldReleaseGame.FILL_CURVES[i]
+	)
+	body.add_child(fill_curve)
+	body.add_child(
+		_knob_row(
+			knobs, "zone_pct", "ZONE SIZE", ranges, "%", "How much of the gauge the zone covers."
+		)
+	)
+	_add_move_zone_toggle(
+		body,
+		knobs,
+		"On: the zone moves to a random place for each hold. Off: it stays in one place."
+	)
+	_add_gets_harder(
+		body,
+		knobs,
+		ranges,
+		"By the last hold, the fill time and the zone are this much smaller, shrinking evenly from the first hold. 0 = off."
+	)
+	_add_show_tiers_toggle(body, knobs)
+
+
+func _add_move_zone_toggle(body: VBoxContainer, knobs: Dictionary, tip: String) -> void:
+	var moving: CheckButton = CheckButton.new()
+	moving.text = "MOVE THE ZONE"
+	moving.button_pressed = bool(knobs["moving_zone"])
+	moving.tooltip_text = UITheme.wrap_tip(tip)
+	moving.toggled.connect(func(on: bool) -> void: knobs["moving_zone"] = on)
+	body.add_child(moving)
+
+
+func _add_gets_harder(
+	body: VBoxContainer, knobs: Dictionary, ranges: Dictionary, tip: String
+) -> void:
+	body.add_child(_knob_row(knobs, "harder_pct", "GETS HARDER", ranges, "%", tip))
+
+
+func _add_show_tiers_toggle(body: VBoxContainer, knobs: Dictionary) -> void:
+	var show_tiers: CheckButton = CheckButton.new()
+	show_tiers.text = "SHOW TIERS ON THE METER"
+	show_tiers.button_pressed = bool(knobs["show_tiers"])
+	show_tiers.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			"On: the score meter marks and names each tier, so the player can see what they're chasing. Off: it shows only the score, and the tier stays a surprise until the end."
+		)
+	)
+	show_tiers.toggled.connect(func(on: bool) -> void: knobs["show_tiers"] = on)
+	body.add_child(show_tiers)
 
 
 func _add_quick_time_event_knobs(body: VBoxContainer, definition: Dictionary) -> void:
@@ -976,6 +1155,10 @@ func _add_ladder(body: VBoxContainer, definition: Dictionary, rebuild: Callable)
 		)
 		body.add_child(add_btn)
 
+	_add_bust_card(body, definition)
+
+
+func _add_bust_card(body: VBoxContainer, definition: Dictionary) -> void:
 	var bust: VBoxContainer = _card()
 	var bust_head: Label = Label.new()
 	bust_head.text = "IF THEY BUST"
@@ -984,6 +1167,202 @@ func _add_ladder(body: VBoxContainer, definition: Dictionary, rebuild: Callable)
 	bust.add_child(_make_result_text_field(definition, "bust_result_text"))
 	bust.add_child(_rewards_toggle(definition["bust_rewards"], false))
 	body.add_child(bust.get_parent())
+
+
+# ── The pot (Push Your Luck) ─────────────────────────────────────────────────
+
+
+func _add_pot_tiers(body: VBoxContainer, definition: Dictionary, rebuild: Callable) -> void:
+	(
+		body
+		. add_child(
+			(
+				_panel
+				. _side_field_label(
+					"POT TIERS",
+					"Banking reaches the highest tier whose FROM POT the pot meets. The lowest tier always starts at 0."
+				)
+			)
+		)
+	)
+	var tiers: Array = definition["pot_tiers"]
+	for i: int in tiers.size():
+		body.add_child(_make_pot_tier_card(tiers, i, rebuild))
+	var add_btn: Button = Button.new()
+	add_btn.text = "＋ ADD TIER"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(
+		func() -> void:
+			var top: int = int((tiers[-1] as Dictionary)["min_pot"])
+			tiers.append({"name": "Tier %d" % (tiers.size() + 1), "min_pot": top + POT_TIER_STEP})
+			rebuild.call()
+	)
+	body.add_child(add_btn)
+	_add_bust_card(body, definition)
+
+
+func _make_pot_tier_card(tiers: Array, index: int, rebuild: Callable) -> Control:
+	var tier: Dictionary = tiers[index]
+	var card: VBoxContainer = _card()
+	var head: HBoxContainer = HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	var name_edit: LineEdit = LineEdit.new()
+	name_edit.text = str(tier["name"])
+	name_edit.placeholder_text = "Tier name, e.g. Big Win"
+	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_line_edit(name_edit)
+	name_edit.text_changed.connect(func(v: String) -> void: tier["name"] = v)
+	head.add_child(name_edit)
+	if index == 0:
+		var from_zero: Label = Label.new()
+		from_zero.text = "FROM 0"
+		UITheme.style_label(from_zero, UITheme.TEXT_HINT, 11)
+		head.add_child(from_zero)
+	else:
+		var from: SpinBox = SpinBox.new()
+		from.min_value = 1
+		from.max_value = PushYourLuckGame.MAX_POT
+		from.prefix = "FROM"
+		from.value = int(tier["min_pot"])
+		UITheme.style_spin_box(from)
+		# Re-sorted when the editor closes or something is added, so typing doesn't jump the tier around.
+		from.value_changed.connect(func(v: float) -> void: tier["min_pot"] = int(v))
+		head.add_child(from)
+	if tiers.size() > 1:
+		var remove: Button = Button.new()
+		remove.text = "✕"
+		remove.tooltip_text = "Remove this tier"
+		UITheme.style_button(remove, UITheme.DANGER, 8, 4, 11)
+		remove.pressed.connect(
+			func() -> void:
+				tiers.remove_at(index)
+				rebuild.call()
+		)
+		head.add_child(remove)
+	card.add_child(head)
+	card.add_child(_make_result_text_field(tier, "result_text"))
+	card.add_child(_rewards_toggle(tier["rewards"], false))
+	return card.get_parent() as Control
+
+
+func _add_push_your_luck_knobs(body: VBoxContainer, definition: Dictionary) -> void:
+	var knobs: Dictionary = definition["knobs"]
+	(
+		body
+		. add_child(
+			(
+				_panel
+				. _side_hint(
+					(
+						"The player starts with a small pot and chooses: bank it, or draw a token from a bag whose "
+						+ "contents are always shown. Drawn tokens stay out, so the risk follows from what's left. "
+						+ "With nothing left but traps, it banks by itself. A game of chance: it never awards journey "
+						+ "score."
+					)
+				)
+			)
+		)
+	)
+	body.add_child(
+		_panel._side_field_label(
+			"STACK", "What the player is piling up. It changes the look only, not the rules."
+		)
+	)
+	var stack: OptionButton = OptionButton.new()
+	for style: String in StackArt.STYLES:
+		stack.add_item(str(StackArt.STYLE_NAMES[style]))
+	stack.selected = maxi(0, StackArt.STYLES.find(str(definition["stack"])))
+	UITheme.style_option_button(stack)
+	stack.item_selected.connect(func(i: int) -> void: definition["stack"] = StackArt.STYLES[i])
+	body.add_child(stack)
+
+	var ranges: Dictionary = PushYourLuckGame.KNOB_RANGES
+	var bag_hint: Label = _panel._side_hint("")
+	var refresh_hint: Callable = func(_value: int = 0) -> void:
+		var values: int = int(knobs["value_tokens"])
+		var traps: int = int(knobs["traps"])
+		var total: int = values + traps + int(knobs["shields"]) + int(knobs["doublers"])
+		bag_hint.text = (
+			"The first push's risk is %d in %d (%d%%). Typical pots: %d at the start, %d with half the value tokens, %d with them all. With doubling, the most a run can hold is %d."
+			% [
+				traps,
+				total,
+				roundi(100.0 * traps / total),
+				PushYourLuckGame.typical_pot(knobs, 0),
+				PushYourLuckGame.typical_pot(knobs, floori(values / 2.0)),
+				PushYourLuckGame.typical_pot(knobs, values),
+				PushYourLuckGame.highest_pot(knobs),
+			]
+		)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"value_tokens",
+			"VALUE TOKENS",
+			ranges,
+			"",
+			"Each adds to the pot, and adds more than the one before.",
+			refresh_hint
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"traps",
+			"TRAPS",
+			ranges,
+			"",
+			"Each busts the player, unless they hold a shield.",
+			refresh_hint
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"shields",
+			"SHIELDS",
+			ranges,
+			"",
+			"Each saves the player from one trap.",
+			refresh_hint
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"doublers",
+			"DOUBLERS",
+			ranges,
+			"",
+			"Each doubles the pot as it stands, so a late one is worth the most.",
+			refresh_hint
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"base_gain",
+			"AVERAGE VALUE",
+			ranges,
+			"",
+			"What the starting pot averages. Each value lands up to half as much again either way.",
+			refresh_hint
+		)
+	)
+	body.add_child(
+		_knob_row(
+			knobs,
+			"gain_growth",
+			"VALUE GROWS BY",
+			ranges,
+			"",
+			"Added to the average with each value token drawn.",
+			refresh_hint
+		)
+	)
+	refresh_hint.call()
+	body.add_child(bag_hint)
 
 
 # ── Rewards ──────────────────────────────────────────────────────────────────
@@ -1144,8 +1523,8 @@ func make_node_editor(data: Dictionary, reselect: Callable) -> Control:
 			edit_btn.pressed.connect(func() -> void: open_definition(index, reselect.bind(0)))
 			col.add_child(edit_btn)
 
-	var new_row: HBoxContainer = HBoxContainer.new()
-	new_row.add_theme_constant_override("separation", 6)
+	var new_buttons: VBoxContainer = VBoxContainer.new()
+	new_buttons.add_theme_constant_override("separation", 6)
 	for kind: String in NODE_KINDS:
 		var new_btn: Button = Button.new()
 		new_btn.text = "＋ NEW " + KIND_NAMES[kind]
@@ -1158,8 +1537,8 @@ func make_node_editor(data: Dictionary, reselect: Callable) -> Control:
 				_owner._refresh_graph()
 				open_definition(new_index, reselect.bind(0))
 		)
-		new_row.add_child(new_btn)
-	col.add_child(new_row)
+		new_buttons.add_child(new_btn)
+	col.add_child(new_buttons)
 
 	col.add_child(_panel._side_divider_line())
 	col.add_child(_panel._make_setting_picker(data))

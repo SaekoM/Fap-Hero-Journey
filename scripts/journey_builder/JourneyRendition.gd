@@ -107,7 +107,13 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 	JourneyData.stamp_journey_identity(
 		out,
 		str(rendition.get("journey_id", "")),
-		JourneyData.content_min_version(false, places_minigames)
+		JourneyData.content_min_version(
+			false,
+			places_minigames,
+			JourneyData.graph_needs_newer_game(
+				{"nodes": rendition.get("nodes", {})}, out["MiniGames"]
+			)
+		)
 	)
 	return out
 
