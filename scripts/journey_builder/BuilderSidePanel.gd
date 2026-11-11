@@ -6743,11 +6743,12 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 			count_spin.editable = sel == 0
 	)
 
-	# Price multiplier — applied on top of each item's base price.
+	# Price multiplier — applied on top of each item's base price. 0 makes a free shop.
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("PRICE MULTIPLIER"))
 	var mult_spin: SpinBox = SpinBox.new()
-	mult_spin.min_value = 0.1
+	mult_spin.min_value = 0.0
+	mult_spin.tooltip_text = "Scales every price here. 0 makes everything free."
 	mult_spin.max_value = 100.0
 	mult_spin.step = 0.1
 	mult_spin.value = float(shop_data.get("price_multiplier", 1.0))

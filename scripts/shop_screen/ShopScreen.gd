@@ -180,7 +180,7 @@ func _slot_element(index: int, id: String) -> Dictionary:
 	var accent: Color = UITheme.TOXIC_GREEN
 	if not _purchased.get(id, false):
 		var affordable: bool = CoinService.CanAfford(price)
-		sub = "♦ %d" % price if affordable else "✕ ♦ %d" % price
+		sub = _price_text(price) if affordable else "✕ ♦ %d" % price
 		accent = UITheme.COIN if affordable else UITheme.STATUS_ERROR
 	return {
 		"key": "slot_%d" % index,
@@ -342,6 +342,11 @@ func _price_of(data: Dictionary) -> int:
 	return int(round(float(data.get("price", 0)) * _price_mult))
 
 
+# A price as the shop shows it: FREE for nothing (a shop with a 0 multiplier, or a free item), else in coins.
+func _price_text(price: int) -> String:
+	return tr("FREE") if price <= 0 else "♦ %d" % price
+
+
 # --------------------------------------------------------------------------
 # Item cards
 # --------------------------------------------------------------------------
@@ -416,7 +421,7 @@ func _make_card(id: String, data: Dictionary) -> Control:
 	col.add_child(price_row)
 
 	var price_lbl: Label = Label.new()
-	price_lbl.text = "♦ %d" % price
+	price_lbl.text = _price_text(price)
 	price_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
 	price_lbl.add_theme_font_size_override("font_size", 22)
 	price_row.add_child(price_lbl)
@@ -488,7 +493,7 @@ func _update_buy_button(id: String, buy: Button, card: PanelContainer) -> void:
 		return
 
 	if CoinService.CanAfford(price):
-		buy.text = tr("> BUY  ♦ %d") % price
+		buy.text = tr("> BUY") + "  " + _price_text(price)
 		buy.disabled = false
 	else:
 		buy.text = tr("✕ INSUFFICIENT  ♦ %d") % price

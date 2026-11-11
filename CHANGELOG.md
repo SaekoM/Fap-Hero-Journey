@@ -47,6 +47,8 @@
 
 ### ◆ Builder
 
+- **Free shops.** A shop's **PRICE MULTIPLIER** can now be 0, which makes everything in it free. Prices read
+  **FREE** instead of ♦ 0.
 - **± STATE shows mini-games.** Flags, counters and items a mini-game can change now appear on the map and
   in the where-used list, so a flag set by a game no longer looks like nothing sets it. Chips sit on the
   mini-game's node, or on the boss round for a Quick-Time Event, and name the results that make the change:
