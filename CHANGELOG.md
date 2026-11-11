@@ -42,7 +42,8 @@
   dissolve finishes.
 - **One set of animations for the whole cast.** Storyboards, boss CAST cues and mini-game characters now share
   the same list: Cut, Fade, Pop, Rise, Drop, Slide (left, right, top or bottom), Wipe, Flip, Spin, Silhouette,
-  Nod, Jump, Lean in, Shake and Tremble. Boss cues gain an
+  Nod, Jump, Lean in, Shake and Tremble. Silhouette and Lean in hold for as long as each storyboard line keeps
+  them, then the colour fills back in or they ease back. Boss cues gain an
   **Exit** to go with their **Entrance** (Fade by default, as before), and the old Flash entrance is now Cut.
 
 ### ◆ Builder
@@ -70,6 +71,11 @@
 - **Grainy grey picture on some Intel graphics (Windows).** A new **RENDERER** choice in **Options → General** switches
   from Direct3D 12 (the default) to Vulkan, which clears it. It applies after a restart, and the hint shows which
   renderer is running now.
+- **Truer video colours.** Video was shown as if it used the full range of values and the old SD colour standard,
+  which made blacks a little grey, whites a little dim and colours slightly off. Each video's own colour standard
+  (SD, HD or UHD) and range are now read from the file and used.
+- **Esc on a storyboard.** It went straight to the main menu, even from a builder test play, and didn't count the
+  run as abandoned. It's now the same hold-to-exit as during a round: back to the builder from a test play.
 - **Mini-game result cards.** Retrying while the coins were still counting up logged an error. The count now stops
   with the card.
 

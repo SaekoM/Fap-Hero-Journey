@@ -2647,9 +2647,11 @@ func _finish_journey() -> void:
 
 # Exit-to-menu hold-to-confirm. Begins on Esc-key-down or MENU-button-down; a centered overlay fills over
 # EXIT_HOLD_SECS and leaves to the menu at completion. Releasing (key / button up) cancels before then.
-# A test play is sitting on a screen that doesn't take Esc itself: the test banner's "ESC TO EXIT" has to
-# hold here too.
-func _test_overlay_lacks_exit() -> bool:
+# The open screen leaves Esc to the hold-to-exit. A storyboard always does; in a test play, so do the screens that
+# have no way out of their own, so the test banner's "ESC TO EXIT" holds there too.
+func _overlay_exits_by_hold() -> bool:
+	if _current_overlay is StoryboardScreen:
+		return true
 	return _test_mode and (_current_overlay is MiniGameScreen or _current_overlay is ForkScreen)
 
 
@@ -6013,8 +6015,9 @@ func _input(event: InputEvent) -> void:
 				KEY_ESCAPE:
 					# Esc: close the Quick Settings drawer or inventory if open, otherwise begin the
 					# hold-to-exit (a stray tap can't dump the run; releasing cancels — see the key-up
-					# branch below). Overlay screens (shop/storyboard) capture Esc themselves before it
-					# reaches here; the fork screen intentionally does not (no escape in real play). The bake
+					# branch below). The shop captures Esc itself (it continues) before it reaches here; a
+					# storyboard leaves it to this hold; the fork screen intentionally does not (no escape in
+					# real play). The bake
 					# wait mutes the hotkeys through _is_overlay_open too, but it has no timeout —
 					# Esc stays open there so the menu route is always reachable. So it does through a QTE
 					# holding the round, and for an author testing a fork or a mini-game, whose screens
@@ -6023,7 +6026,7 @@ func _input(event: InputEvent) -> void:
 						not _is_overlay_open
 						or _bake_waiting
 						or _held_qte != null
-						or _test_overlay_lacks_exit()
+						or _overlay_exits_by_hold()
 					):
 						if is_instance_valid(_session_panel):
 							_session_panel.close()

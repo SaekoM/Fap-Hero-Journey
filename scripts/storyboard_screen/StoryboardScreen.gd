@@ -1,3 +1,4 @@
+class_name StoryboardScreen
 extends Control
 
 signal completed(coins: int)
@@ -378,12 +379,23 @@ func _stage_character(
 		CastMotion.enter(view, motion, size)
 		return
 	view.visible = true
-	if portrait == str(_portrait_paths.get(cid, "")):
-		return
-	if scene_changed:
-		_show_portrait(cid, portrait)  # the dissolve is the change
-	else:
+	var new_picture: bool = portrait != str(_portrait_paths.get(cid, ""))
+	if new_picture and not scene_changed:
 		CastMotion.change(view, motion, size, _show_portrait.bind(cid, portrait))
+		return
+	if new_picture:
+		CastMotion.swap_picture(view, _show_portrait.bind(cid, portrait))  # the dissolve is the change
+	_update_hold(view, motion)
+
+
+# A character staying on with no reaction to play. A hold lasts only while each line keeps it: a Silhouette or Lean
+# in set on this line takes hold (or carries on), and the first line that sets anything else releases it.
+func _update_hold(view: JourneyImage, motion: String) -> void:
+	var holding: String = CastMotion.held(view)
+	if CastMotion.holds(motion) and holding != motion:
+		CastMotion.change(view, motion, size, func() -> void: pass)  # releases another hold first
+	elif holding != "" and motion != holding:
+		CastMotion.release(view)
 
 
 # A character the line dropped. Within a scene they make their exit; across a scene change the dissolve takes them.
@@ -444,11 +456,9 @@ func _moved(view: JourneyImage, box: Dictionary) -> bool:
 	)
 
 
+# Esc isn't handled here: GameLoop's hold-to-exit takes it, which returns a test play to the builder and records a
+# real run as abandoned, as Esc does during a round.
 func _input(event: InputEvent) -> void:
-	if event.is_action_pressed("ui_cancel"):
-		get_viewport().set_input_as_handled()
-		Transition.change_scene("res://scenes/main/Main.tscn")
-		return
 	if not _can_advance:
 		return
 	if event is InputEventMouseButton:

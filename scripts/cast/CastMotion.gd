@@ -16,19 +16,23 @@ extends RefCounted
 #   Wipe        revealed left to right    hidden left to right       wiped away, wiped back in
 #   Flip        turns in from edge-on     turns away to edge-on      turns over like a card
 #   Spin        spins in                  spins out                  one full turn
-#   Silhouette  a black shape that        drains to black, then      drains to black, swaps,
-#               fills with colour         fades                      fills again
+#   Silhouette  arrives as a black shape  fades as a shape           drains to black, swaps     (holds)
 #   Nod         nods as it fades in       nods, then fades           nods twice, swapping on the first
 #   Jump        springs up from a         crouches and jumps away    crouches, jumps (swapping at
 #               crouch and lands                                     the top) and lands
-#   Lean in     comes back from close     comes close as it fades    leans in, swaps, settles back
+#   Lean in     comes in close            comes closer as it fades   leans in, swaps            (holds)
 #   Shake       appears with a shake      shakes, then vanishes      swaps with a shake
 #   Tremble     appears with a shiver     shivers, then vanishes     swaps with a shiver
 #
 # Each call animates one Control and owns its tween, so a new call on the same Control first stops the last one and
 # puts it back where it rests. `stage` is the size of what the art moves within, which slides, rises and drops are
 # measured against. With `fade` off, the caller fades something else itself (a boss cue fades its whole cue as one).
-# Silhouette and Wipe colour or clip the art through a shader that's only on it while they play.
+# Silhouette and Wipe colour or clip the art through a shader that's only on it while it's needed.
+#
+# Silhouette and Lean in HOLD: the art stays black, or leaned in, after the animation. The caller ends a hold with
+# release(), which animates back (colour fills in, or it eases back) and is what change() does first when it's asked
+# for anything but the held motion; asked for the held motion again, it swaps the picture and keeps holding. An
+# entrance starts from no hold, and an exit leaves from the held pose and clears it.
 
 const CUT: String = "cut"
 const FADE: String = "fade"
@@ -96,8 +100,11 @@ const OLD_NAMES: Dictionary = {"flash": CUT, "slide": SLIDE_LEFT}
 const DEFAULT_SECS: float = 0.3
 # Entrances and exits that need longer than DEFAULT_SECS to read, used when the caller doesn't give a length.
 const OWN_SECS: Dictionary = {
-	DROP: 0.45, WIPE: 0.45, SILHOUETTE: 0.8, NOD: 0.4, JUMP: 0.5, LEAN_IN: 0.35
+	DROP: 0.45, WIPE: 0.45, SILHOUETTE: 0.5, NOD: 0.4, JUMP: 0.5, LEAN_IN: 0.35
 }
+# The motions that leave the art held in a pose until it's released.
+const HOLDS: Array[String] = [SILHOUETTE, LEAN_IN]
+const RELEASE_SECS: float = 0.25
 const SHORTEST_SECS: float = 0.14  # a movement any quicker reads as a glitch
 const HALF_CHANGE_SECS: float = 0.13  # each half of a change that swaps in the middle
 const SPIN_CHANGE_SECS: float = 0.5
@@ -113,7 +120,7 @@ const JUMP_FRACTION: float = 0.06  # of the stage's height
 const SQUASHED: Vector2 = Vector2(1.08, 0.9)  # a crouch or a landing, about the art's feet
 const STRETCHED: Vector2 = Vector2(0.94, 1.08)  # in the air
 const LEAN_FROM_SCALE: float = 1.15  # how close a Lean in comes from, or goes to
-const LEAN_REACT_SCALE: float = 1.08
+const LEAN_HELD_SCALE: float = 1.08  # how much bigger a held Lean in stays
 const SHAKE_STEP_SECS: float = 0.05
 const SHAKE_OFFSETS: Array[float] = [-14.0, 12.0, -9.0, 6.0, -3.0, 0.0]
 const TREMBLE_STEP_SECS: float = 0.035
@@ -124,6 +131,7 @@ const WIPE_SOFT_EDGE: float = 12.0  # pixels the wipe's edge blends over
 const _META_TWEEN: StringName = &"cast_motion_tween"
 const _META_HOME: StringName = &"cast_motion_home"
 const _META_EFFECT: StringName = &"cast_motion_effect"
+const _META_HELD: StringName = &"cast_motion_held"
 
 # Darkens the art towards black (silhouette 0..1) and shows only what lies between two canvas x positions (wipe).
 # Positions are on the canvas rather than the art so one material can cover the art's children too.
@@ -142,8 +150,10 @@ void vertex() {
 
 void fragment() {
 	COLOR.rgb = mix(COLOR.rgb, vec3(0.0), silhouette);
-	float shown = smoothstep(wipe_from - soft_edge, wipe_from, canvas_x)
-		* (1.0 - smoothstep(wipe_to, wipe_to + soft_edge, canvas_x));
+	// Linear ramps rather than smoothstep: with no wipe running the edges sit a billion pixels out, where
+	// `edge - soft_edge` rounds back to `edge` and smoothstep would divide by zero.
+	float shown = clamp((canvas_x - wipe_from) / soft_edge + 1.0, 0.0, 1.0)
+		* clamp((wipe_to - canvas_x) / soft_edge + 1.0, 0.0, 1.0);
 	COLOR.a *= shown;
 }
 """
@@ -167,6 +177,7 @@ static func enter(
 	target: Control, motion: String, stage: Vector2, secs: float = -1.0, fade: bool = true
 ) -> Tween:
 	stop(target)
+	_clear_hold(target)  # an entrance starts from nothing held
 	if motion == CUT or (motion == FADE and not fade):
 		return null
 	var home: Vector2 = target.position
@@ -227,17 +238,8 @@ static func enter(
 			_ease(tween.tween_property(target, "rotation", 0.0, secs), Tween.TRANS_CUBIC)
 			_ease(tween.tween_property(target, "scale", Vector2.ONE, secs), Tween.TRANS_CUBIC)
 		SILHOUETTE:
-			var shape_secs: float = _entrance_fade(SILHOUETTE).y * secs
-			var effect: ShaderMaterial = _effect(target)
-			effect.set_shader_parameter("silhouette", 1.0)  # black from the first frame
-			_sequence(
-				tween,
-				effect,
-				"shader_parameter/silhouette",
-				1.0,
-				[[0.0, secs - shape_secs, Tween.TRANS_SINE, Tween.EASE_IN_OUT]],
-				shape_secs
-			)
+			_hold(target, SILHOUETTE)  # black from the first frame, and it stays
+			tween.tween_interval(secs)  # the shape fades in with the alpha tween above
 		NOD:
 			var nodded: Vector2 = home + Vector2(0.0, stage.y * NOD_FRACTION)
 			_sequence(
@@ -276,8 +278,11 @@ static func enter(
 			)
 			_land(tween, target, secs * 0.65, secs * 0.35)
 		LEAN_IN:
+			_hold(target, LEAN_IN)
 			target.scale = Vector2(LEAN_FROM_SCALE, LEAN_FROM_SCALE)
-			_ease(tween.tween_property(target, "scale", Vector2.ONE, secs), Tween.TRANS_CUBIC)
+			_ease(
+				tween.tween_property(target, "scale", _held_scale(target), secs), Tween.TRANS_CUBIC
+			)
 		SHAKE:
 			tween.set_parallel(false)
 			_shake(tween, target, home)
@@ -299,9 +304,10 @@ static func exit(
 	secs: float = -1.0,
 	fade: bool = true
 ) -> Tween:
-	stop(target)
+	stop(target)  # leaves from the held pose, if there is one
 	if motion == CUT or (motion == FADE and not fade):
 		on_done.call()
+		_clear_hold(target)
 		return null
 	var home: Vector2 = target.position
 	var tween: Tween = _begin(target, motion)
@@ -383,11 +389,13 @@ static func exit(
 				Tween.EASE_IN
 			)
 		SILHOUETTE:
+			# Drains to black first, unless it's already a held shape.
+			var effect: ShaderMaterial = _effect(target)
 			_sequence(
 				tween,
-				_effect(target),
+				effect,
 				"shader_parameter/silhouette",
-				0.0,
+				float(effect.get_shader_parameter("silhouette")),
 				[[1.0, _exit_fade(SILHOUETTE).x * secs, Tween.TRANS_SINE, Tween.EASE_IN_OUT]]
 			)
 		NOD:
@@ -442,14 +450,25 @@ static func exit(
 		_:
 			tween.tween_interval(secs)
 	tween.chain().tween_callback(on_done)
-	tween.tween_callback(func() -> void: _put_back(target, home))
+	tween.tween_callback(
+		func() -> void:
+			_put_back(target, home)
+			_clear_hold(target)
+	)
 	return tween
 
 
 # `target` changes what it shows: `swap` is called at the moment the new picture should appear. A Cut swaps at once
-# and returns null.
+# and returns null. Held in another pose, it's released first and the change follows; held in this motion's pose,
+# the picture swaps and the hold carries on.
 static func change(target: Control, motion: String, stage: Vector2, swap: Callable) -> Tween:
 	stop(target)
+	var holding: String = held(target)
+	if holding == motion:
+		swap_picture(target, swap)
+		return null
+	if holding != "":
+		return _release_then(target, func() -> void: change(target, motion, stage, swap))
 	if motion == CUT:
 		swap.call()
 		return null
@@ -532,7 +551,7 @@ static func change(target: Control, motion: String, stage: Vector2, swap: Callab
 				edges.x,
 				[[edges.y, out_secs, Tween.TRANS_SINE, Tween.EASE_IN]]
 			)
-			tween.tween_callback(_swap_under_effect.bind(target, swap)).set_delay(out_secs)
+			tween.tween_callback(swap_picture.bind(target, swap)).set_delay(out_secs)
 			tween.tween_callback(effect.set_shader_parameter.bind("wipe_from", edges.x)).set_delay(
 				out_secs
 			)
@@ -563,22 +582,19 @@ static func change(target: Control, motion: String, stage: Vector2, swap: Callab
 			tween.tween_callback(swap).set_delay(SPIN_CHANGE_SECS / 2.0)
 			tween.chain().tween_callback(func() -> void: target.rotation = 0.0)
 		SILHOUETTE:
-			# Drains to black, swaps while it's a shape, and fills with colour again.
+			# Drains to black, swaps while it's a shape, and stays black.
 			var effect: ShaderMaterial = _effect(target)
-			var drain_secs: float = 0.2
+			var drain_secs: float = 0.25
 			tween.set_parallel(true)
 			_sequence(
 				tween,
 				effect,
 				"shader_parameter/silhouette",
 				0.0,
-				[
-					[1.0, drain_secs, Tween.TRANS_SINE, Tween.EASE_IN],
-					[1.0, 0.1, Tween.TRANS_LINEAR, Tween.EASE_IN_OUT],
-					[0.0, 0.3, Tween.TRANS_SINE, Tween.EASE_OUT],
-				]
+				[[1.0, drain_secs, Tween.TRANS_SINE, Tween.EASE_IN]]
 			)
-			tween.tween_callback(_swap_under_effect.bind(target, swap)).set_delay(drain_secs)
+			tween.tween_callback(swap_picture.bind(target, swap)).set_delay(drain_secs)
+			tween.tween_callback(_hold.bind(target, SILHOUETTE)).set_delay(drain_secs)
 		NOD:
 			# Two nods, the new picture showing at the bottom of the first.
 			var nodded: Vector2 = home + Vector2(0.0, stage.y * NOD_FRACTION)
@@ -626,19 +642,11 @@ static func change(target: Control, motion: String, stage: Vector2, swap: Callab
 			tween.tween_callback(swap).set_delay(0.25)
 			_land(tween, target, 0.37, 0.16)
 		LEAN_IN:
-			var leaned: Vector2 = Vector2(LEAN_REACT_SCALE, LEAN_REACT_SCALE)
+			# Leans in, swaps, and stays leaned in.
+			var leaned: Vector2 = Vector2(LEAN_HELD_SCALE, LEAN_HELD_SCALE)
+			_hold(target, LEAN_IN)
 			tween.set_parallel(true)
-			_sequence(
-				tween,
-				target,
-				"scale",
-				Vector2.ONE,
-				[
-					[leaned, 0.15, Tween.TRANS_CUBIC, Tween.EASE_OUT],
-					[leaned, 0.12, Tween.TRANS_LINEAR, Tween.EASE_IN_OUT],
-					[Vector2.ONE, 0.18, Tween.TRANS_SINE, Tween.EASE_IN_OUT],
-				]
-			)
+			_ease(tween.tween_property(target, "scale", leaned, 0.2), Tween.TRANS_CUBIC)
 			tween.tween_callback(swap).set_delay(0.15)
 		TREMBLE:
 			swap.call()
@@ -649,7 +657,50 @@ static func change(target: Control, motion: String, stage: Vector2, swap: Callab
 	return tween
 
 
-# Stops whatever `target` was doing and puts it back at rest where it stood. Safe to call on one that's at rest.
+# The motion `target` is held in (Silhouette or Lean in), or "" when it's at plain rest.
+static func held(target: Control) -> String:
+	return str(target.get_meta(_META_HELD)) if target.has_meta(_META_HELD) else ""
+
+
+# Whether `motion` leaves the art held in a pose until it's released.
+static func holds(motion: String) -> bool:
+	return motion in HOLDS
+
+
+# Ends a hold: colour fills back in, or the art eases back to its own size. Returns null when nothing is held.
+static func release(target: Control) -> Tween:
+	stop(target)
+	var holding: String = held(target)
+	if holding == "":
+		return null
+	var tween: Tween = _begin(target, holding)
+	target.remove_meta(_META_HELD)  # stopped partway, it's put back at plain rest
+	match holding:
+		SILHOUETTE:
+			var effect: ShaderMaterial = _effect(target)
+			_ease(
+				tween.tween_property(effect, "shader_parameter/silhouette", 0.0, RELEASE_SECS),
+				Tween.TRANS_SINE,
+				Tween.EASE_IN_OUT
+			)
+		_:
+			_ease(
+				tween.tween_property(target, "scale", Vector2.ONE, RELEASE_SECS),
+				Tween.TRANS_SINE,
+				Tween.EASE_IN_OUT
+			)
+	return tween
+
+
+# Shows a new picture on art that may be held: a silhouette's shader also has to cover the picture's new children.
+static func swap_picture(target: Control, swap: Callable) -> void:
+	swap.call()
+	if is_instance_valid(target) and target.has_meta(_META_EFFECT):
+		_share_effect(target)
+
+
+# Stops whatever `target` was doing and puts it back at rest where it stood (in its held pose, if it has one). Safe
+# to call on one that's at rest.
 static func stop(target: Control) -> void:
 	# has_meta first: get_meta treats a null default as "no default" and logs an error when the key is missing.
 	if target.has_meta(_META_TWEEN):
@@ -693,7 +744,12 @@ static func _begin(target: Control, motion: String) -> Tween:
 	target.set_meta(_META_HOME, target.position)
 	var tween: Tween = target.create_tween()
 	target.set_meta(_META_TWEEN, tween)
-	tween.finished.connect(func() -> void: _forget(target))
+	# Only its own: a release's follow-up (_release_then) has already started the next tween by the time this fires.
+	tween.finished.connect(
+		func() -> void:
+			if is_instance_valid(target) and target.get_meta(_META_TWEEN, tween) == tween:
+				_forget(target)
+	)
 	return tween
 
 
@@ -707,16 +763,52 @@ static func _forget(target: Control) -> void:
 	if is_instance_valid(target):
 		target.remove_meta(_META_TWEEN)
 		target.remove_meta(_META_HOME)
-		_drop_effect(target)
+		if held(target) != SILHOUETTE:  # a held silhouette keeps its shader
+			_drop_effect(target)
 
 
 static func _put_back(target: Control, home: Vector2) -> void:
 	if not is_instance_valid(target):
 		return
 	target.position = home
-	target.scale = Vector2.ONE
+	target.scale = _held_scale(target)
 	target.rotation = 0.0
 	target.modulate.a = 1.0
+	if held(target) == SILHOUETTE:
+		_effect(target).set_shader_parameter("silhouette", 1.0)
+
+
+# Holds `target` in `motion`'s pose from now on. A silhouette is black at once.
+static func _hold(target: Control, motion: String) -> void:
+	target.set_meta(_META_HELD, motion)
+	if motion == SILHOUETTE:
+		_effect(target).set_shader_parameter("silhouette", 1.0)
+
+
+# Drops any hold at once, with no animation, leaving the art at plain rest.
+static func _clear_hold(target: Control) -> void:
+	if not is_instance_valid(target) or held(target) == "":
+		return
+	target.remove_meta(_META_HELD)
+	target.scale = Vector2.ONE
+	_drop_effect(target)
+
+
+static func _held_scale(target: Control) -> Vector2:
+	return Vector2(LEAN_HELD_SCALE, LEAN_HELD_SCALE) if held(target) == LEAN_IN else Vector2.ONE
+
+
+# Releases the hold, then runs `follow` (the change that was asked for). A release that's stopped partway never runs
+# it: whatever stopped it has taken over.
+static func _release_then(target: Control, follow: Callable) -> Tween:
+	var tween: Tween = release(target)
+	tween.finished.connect(
+		func() -> void:
+			if is_instance_valid(target):
+				follow.call(),
+		CONNECT_ONE_SHOT
+	)
+	return tween
 
 
 # The motion's length: the one asked for, or its own when none was.
@@ -740,8 +832,6 @@ static func _entrance_fade(motion: String) -> Vector2:
 			return Vector2(0.0, 0.35)
 		DROP:
 			return Vector2(0.0, 0.4)
-		SILHOUETTE:
-			return Vector2(0.0, 0.35)  # the black shape appears, then fills with colour
 	return Vector2(0.0, 1.0)
 
 
@@ -882,12 +972,6 @@ static func _share_effect(target: Control) -> void:
 			item.use_parent_material = true
 			shared.append(item)
 		waiting.append_array(item.get_children())
-
-
-static func _swap_under_effect(target: Control, swap: Callable) -> void:
-	swap.call()
-	if is_instance_valid(target) and target.has_meta(_META_EFFECT):
-		_share_effect(target)
 
 
 # Takes the effect off again, putting back the material the art had and what its children drew with.

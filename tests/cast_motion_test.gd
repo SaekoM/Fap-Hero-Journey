@@ -15,7 +15,24 @@ func _art() -> Control:
 	return art
 
 
+# At rest after a motion that doesn't hold, or held in the pose of one that does.
+func _assert_settled(art: Control, motion: String) -> void:
+	if motion == CastMotion.SILHOUETTE:
+		assert_str(CastMotion.held(art)).is_equal(motion)
+		assert_bool(art.material is ShaderMaterial).is_true()
+		assert_bool(art.scale.is_equal_approx(Vector2.ONE)).is_true()
+	elif motion == CastMotion.LEAN_IN:
+		assert_str(CastMotion.held(art)).is_equal(motion)
+		assert_bool(art.scale.is_equal_approx(Vector2.ONE * CastMotion.LEAN_HELD_SCALE)).is_true()
+		assert_object(art.material).is_null()
+	else:
+		_assert_at_rest(art)
+	assert_bool(art.position.is_equal_approx(Vector2(400.0, 200.0))).is_true()
+	assert_float(art.modulate.a).is_equal_approx(1.0, 0.0001)
+
+
 func _assert_at_rest(art: Control) -> void:
+	assert_str(CastMotion.held(art)).is_empty()
 	assert_bool(art.position.is_equal_approx(Vector2(400.0, 200.0))).is_true()
 	assert_bool(art.scale.is_equal_approx(Vector2.ONE)).is_true()
 	assert_float(art.rotation).is_equal_approx(0.0, 0.0001)
@@ -53,14 +70,14 @@ func test_slides_and_rises_travel_from_their_side() -> void:
 
 
 # Every motion plays at once on its own art, so the suite waits once rather than once per motion.
-func test_every_entrance_ends_at_rest() -> void:
+func test_every_entrance_ends_at_rest_or_held() -> void:
 	var arts: Array[Control] = []
 	for motion: String in CastMotion.ALL:
 		arts.append(_art())
 		CastMotion.enter(arts.back(), motion, STAGE)
 	await await_millis(SETTLE_MS)
-	for art: Control in arts:
-		_assert_at_rest(art)
+	for index: int in arts.size():
+		_assert_settled(arts[index], CastMotion.ALL[index])
 
 
 func test_a_cut_entrance_has_nothing_to_animate() -> void:
@@ -81,7 +98,7 @@ func test_every_exit_calls_back_once_and_leaves_the_art_ready_to_show_again() ->
 		_assert_at_rest(arts[index])
 
 
-func test_every_change_swaps_exactly_once_and_ends_at_rest() -> void:
+func test_every_change_swaps_exactly_once_and_ends_at_rest_or_held() -> void:
 	var arts: Array[Control] = []
 	var swaps: Array[int] = []
 	for motion: String in CastMotion.ALL:
@@ -92,7 +109,7 @@ func test_every_change_swaps_exactly_once_and_ends_at_rest() -> void:
 	await await_millis(SETTLE_MS)
 	for index: int in arts.size():
 		assert_int(swaps[index]).override_failure_message(CastMotion.ALL[index]).is_equal(1)
-		_assert_at_rest(arts[index])
+		_assert_settled(arts[index], CastMotion.ALL[index])
 
 
 # A storyboard line can arrive before the last one's animation is done: the new one starts from rest.
@@ -108,7 +125,7 @@ func test_starting_again_mid_animation_puts_the_art_back_first() -> void:
 
 
 # Silhouette and Wipe draw the art's children through their shader, then hand back what the art had: an additive
-# boss cue stays additive.
+# boss cue stays additive. A silhouette keeps it until it's released.
 func test_silhouette_and_wipe_put_back_the_art_material_and_its_children() -> void:
 	for motion: String in [CastMotion.SILHOUETTE, CastMotion.WIPE]:
 		var art: Control = _art()
@@ -121,7 +138,9 @@ func test_silhouette_and_wipe_put_back_the_art_material_and_its_children() -> vo
 		assert_bool(art.material is ShaderMaterial).is_true()
 		assert_bool(picture.use_parent_material).is_true()
 		await await_millis(SETTLE_MS)
-		assert_object(art.material).is_same(additive)
+		CastMotion.release(art)  # nothing to release after a wipe
+		await await_millis(SETTLE_MS)
+		assert_object(art.material).override_failure_message(motion).is_same(additive)
 		assert_bool(picture.use_parent_material).is_false()
 
 
@@ -134,11 +153,89 @@ func test_a_silhouette_change_covers_the_new_picture() -> void:
 		art.add_child(picture)
 		seen[0] = true
 	CastMotion.change(art, CastMotion.SILHOUETTE, STAGE, swap)
-	await await_millis(250)
+	await await_millis(400)
 	assert_bool(seen[0]).is_true()
 	assert_bool((art.get_child(0) as CanvasItem).use_parent_material).is_true()
+
+
+# ── Holds ────────────────────────────────────────────────────────────────────
+
+
+func test_only_silhouette_and_lean_in_hold() -> void:
+	for motion: String in CastMotion.ALL:
+		assert_bool(CastMotion.holds(motion)).override_failure_message(motion).is_equal(
+			motion in [CastMotion.SILHOUETTE, CastMotion.LEAN_IN]
+		)
+
+
+# Asked for another motion, a held character is released first (colour fills in), then the change plays.
+func test_a_different_reaction_releases_the_hold_then_plays() -> void:
+	var art: Control = _art()
+	CastMotion.enter(art, CastMotion.SILHOUETTE, STAGE)
 	await await_millis(SETTLE_MS)
-	assert_object(art.material).is_null()
+	var swaps: Array[int] = [0]
+	CastMotion.change(art, CastMotion.FADE, STAGE, func() -> void: swaps[0] += 1)
+	await await_idle_frame()
+	assert_int(swaps[0]).is_equal(0)  # still releasing
+	await await_millis(SETTLE_MS)
+	assert_int(swaps[0]).is_equal(1)
+	_assert_at_rest(art)
+
+
+# Asked for the held motion again (a new expression, still in shadow), it swaps and keeps holding.
+func test_the_same_reaction_swaps_and_keeps_holding() -> void:
+	var art: Control = _art()
+	CastMotion.enter(art, CastMotion.LEAN_IN, STAGE)
+	await await_millis(SETTLE_MS)
+	var swaps: Array[int] = [0]
+	CastMotion.change(art, CastMotion.LEAN_IN, STAGE, func() -> void: swaps[0] += 1)
+	assert_int(swaps[0]).is_equal(1)
+	assert_str(CastMotion.held(art)).is_equal(CastMotion.LEAN_IN)
+	assert_bool(art.scale.is_equal_approx(Vector2.ONE * CastMotion.LEAN_HELD_SCALE)).is_true()
+
+
+func test_a_cut_change_also_ends_a_hold() -> void:
+	var art: Control = _art()
+	CastMotion.enter(art, CastMotion.LEAN_IN, STAGE)
+	await await_millis(SETTLE_MS)
+	var swaps: Array[int] = [0]
+	CastMotion.change(art, CastMotion.CUT, STAGE, func() -> void: swaps[0] += 1)
+	await await_millis(SETTLE_MS)
+	assert_int(swaps[0]).is_equal(1)
+	_assert_at_rest(art)
+
+
+func test_an_exit_leaves_from_the_hold_and_clears_it() -> void:
+	var art: Control = _art()
+	CastMotion.enter(art, CastMotion.SILHOUETTE, STAGE)
+	await await_millis(SETTLE_MS)
+	var calls: Array[int] = [0]
+	CastMotion.exit(art, CastMotion.SLIDE_LEFT, STAGE, func() -> void: calls[0] += 1)
+	await await_millis(SETTLE_MS)
+	assert_int(calls[0]).is_equal(1)
+	_assert_at_rest(art)
+
+
+# Stopped partway (a storyboard line overtaking it), held art goes back to its held pose, not to plain rest.
+func test_stopping_keeps_the_hold() -> void:
+	var art: Control = _art()
+	CastMotion.enter(art, CastMotion.SILHOUETTE, STAGE)
+	await await_idle_frame()
+	CastMotion.stop(art)
+	assert_str(CastMotion.held(art)).is_equal(CastMotion.SILHOUETTE)
+	assert_bool(art.material is ShaderMaterial).is_true()
+	(
+		assert_float(float((art.material as ShaderMaterial).get_shader_parameter("silhouette")))
+		. is_equal(1.0)
+	)
+
+
+func test_an_entrance_starts_from_no_hold() -> void:
+	var art: Control = _art()
+	CastMotion.enter(art, CastMotion.LEAN_IN, STAGE)
+	await await_millis(SETTLE_MS)
+	CastMotion.enter(art, CastMotion.CUT, STAGE)
+	_assert_at_rest(art)
 
 
 func test_stop_is_safe_on_art_at_rest() -> void:

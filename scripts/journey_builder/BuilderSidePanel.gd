@@ -7978,9 +7978,18 @@ func _make_insert_line_btn(lines_arr: Array, insert_at: int, refresh: Callable) 
 				var prev: Variant = lines_arr[insert_at - 1].get("stage", [])
 				if prev is Array:
 					carried = (prev as Array).duplicate(true)
-					# Their exit carries on; an entrance belongs to the line it was set on.
+					# Their exit carries on; an entrance belongs to the line it was set on. A held pose
+					# (Silhouette, Lean in) carries too: a hold lasts only while each line keeps it, so a
+					# line inserted mid-hold would otherwise break it.
 					for kept: Variant in carried:
-						if kept is Dictionary:
+						if (
+							kept is Dictionary
+							and not CastMotion.holds(
+								CastMotion.normalize(
+									(kept as Dictionary).get("enter", ""), CastMotion.CUT
+								)
+							)
+						):
 							(kept as Dictionary).erase("enter")
 			var new_line: Dictionary = {"speaker": "", "text": "", "image": ""}
 			if not carried.is_empty():
