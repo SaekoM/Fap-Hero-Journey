@@ -27,6 +27,7 @@ var _start_ticks: int = 0
 var _duration_ms: int = 0
 var _running: bool = false
 var _handy: bool = false  # a Handy session is live and needs feeding + stopping
+var _autoblow: bool = false  # the Autoblow is playing the pattern and needs stopping
 var _override: bool = false  # a FunscriptPlayer override is live and needs stopping
 
 
@@ -66,6 +67,8 @@ func start() -> bool:
 	var backend: String = DeviceRouting.stroke_backend(SettingsService.get_stroke_target())
 	if backend == DeviceRouting.HANDY_TARGET:
 		return await _start_handy()
+	if backend == DeviceRouting.AUTOBLOW_TARGET:
+		return await _start_autoblow()
 	if backend == "":
 		return false
 	# Immune: the pattern is a ruler, and an item scaling it would change what is being measured.
@@ -91,6 +94,19 @@ func _start_handy() -> bool:
 	return true
 
 
+# Uploads the pattern and starts it on the pattern's clock. No stroke effects: the pattern is a ruler.
+func _start_autoblow() -> bool:
+	if not AutoblowService.has_token():
+		return false
+	AutoblowService.load_actions(_actions)
+	AutoblowService.set_effects([])
+	_autoblow = await AutoblowService.start(now_ms)
+	if _autoblow and not _running:
+		AutoblowService.stop()
+		_autoblow = false
+	return _autoblow
+
+
 func stop() -> void:
 	if not _running:
 		return
@@ -103,6 +119,9 @@ func stop() -> void:
 	if _handy:
 		HandyService.stop()
 		_handy = false
+	if _autoblow:
+		AutoblowService.stop()
+		_autoblow = false
 
 
 func _process(_delta: float) -> void:

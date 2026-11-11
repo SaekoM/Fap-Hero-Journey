@@ -262,6 +262,8 @@ func _current_delay_ms() -> int:
 	match _backend:
 		DeviceRouting.HANDY_TARGET:
 			return SettingsService.get_handy_delay_ms()
+		DeviceRouting.AUTOBLOW_TARGET:
+			return SettingsService.get_autoblow_delay_ms()
 		DeviceRouting.SERIAL_TARGET:
 			return SettingsService.get_serial_delay_ms()
 		DeviceRouting.BP_BACKEND:
@@ -275,6 +277,8 @@ func _on_delay_changed(value: float) -> void:
 	match _backend:
 		DeviceRouting.HANDY_TARGET:
 			SettingsService.set_handy_delay_ms(ms)
+		DeviceRouting.AUTOBLOW_TARGET:
+			SettingsService.set_autoblow_delay_ms(ms)
 		DeviceRouting.SERIAL_TARGET:
 			SettingsService.set_serial_delay_ms(ms)
 		DeviceRouting.BP_BACKEND:
@@ -289,6 +293,8 @@ func _apply_delay_to_device() -> void:
 	match _backend:
 		DeviceRouting.HANDY_TARGET:
 			HandyService.resync_timing()
+		DeviceRouting.AUTOBLOW_TARGET:
+			AutoblowService.apply_delay()
 		DeviceRouting.SERIAL_TARGET:
 			FunscriptPlayer.SetSerialDelay(ms)
 		DeviceRouting.BP_BACKEND:
@@ -300,6 +306,8 @@ func _backend_name() -> String:
 	match _backend:
 		DeviceRouting.HANDY_TARGET:
 			return "THE HANDY (WIFI)"
+		DeviceRouting.AUTOBLOW_TARGET:
+			return "AUTOBLOW (WIFI)"
 		DeviceRouting.SERIAL_TARGET:
 			return "SERIAL STROKER"
 		DeviceRouting.BP_BACKEND:

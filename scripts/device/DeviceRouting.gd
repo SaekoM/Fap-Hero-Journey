@@ -21,6 +21,8 @@ extends RefCounted
 
 const SERIAL_TARGET: String = "serial"
 const HANDY_TARGET: String = "handy"
+# Autoblow Ultra / Vacuglide over Autoblow's cloud API — like the Handy, GameLoop drives it (AutoblowService).
+const AUTOBLOW_TARGET: String = "autoblow"
 # The Buttplug/Intiface backend has no sentinel target — any actuator id resolves to it — so it needs a
 # name of its own wherever the backend itself is what's being talked about.
 const BP_BACKEND: String = "bp"
@@ -42,6 +44,8 @@ static func stroke_backend(stroke_target: String) -> String:
 		return SERIAL_TARGET
 	if stroke_target == HANDY_TARGET:
 		return HANDY_TARGET
+	if stroke_target == AUTOBLOW_TARGET:
+		return AUTOBLOW_TARGET
 	return BP_BACKEND if stroke_target != "" else ""
 
 
@@ -89,6 +93,8 @@ static func resolve(
 		plan["stroke"] = {"backend": SERIAL_TARGET}
 	elif stroke_target == HANDY_TARGET:
 		plan["stroke"] = {"backend": HANDY_TARGET}
+	elif stroke_target == AUTOBLOW_TARGET:
+		plan["stroke"] = {"backend": AUTOBLOW_TARGET}
 	elif stroke_target != "":
 		var s: Dictionary = parse_actuator_id(stroke_target)
 		if not s.is_empty() and s["kind"] == "linear" and by_id.has(s["device"]):

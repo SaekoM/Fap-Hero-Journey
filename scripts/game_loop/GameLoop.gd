@@ -528,6 +528,7 @@ func _ready() -> void:
 	# the one that eats the ~9-call handshake, and so you can see + feel it's ready before play. No-op for
 	# every other stroker, in test mode, or when already connected.
 	await _handy_journey_sync_gate()
+	await _autoblow_journey_check()
 	_load_current_item()
 	_show_hud()
 	if _test_mode:
@@ -1421,6 +1422,7 @@ func _begin_round(round: Dictionary, cover: Control = null) -> void:
 	# explicit. Scoring + beat bar stay on FunscriptPlayer's clock regardless.
 	#
 	_handy_begin_round(fs_path)
+	_autoblow_begin_round(fs_path)
 	# "I came" appears only once playback has been started — a hold completed during the reveal card or the
 	# clip load would stop a round that the rest of this function then starts.
 	_show_finish_button()
@@ -1463,6 +1465,7 @@ func _wait_for_baked_round(index: int) -> int:
 	# (boss intro / checkpoint banner); _bake_waiting reopens the Esc exit alone.
 	_halt_playback_for_gate()
 	_handy_pause()
+	_autoblow_pause()
 	_is_overlay_open = true
 	_bake_waiting = true
 
@@ -2624,6 +2627,7 @@ func _finish_journey() -> void:
 	_end_timer.stop()
 	FunscriptPlayer.Stop()
 	_handy_stop()
+	_autoblow_stop()
 	# The effect clock runs again for whatever plays next, and a pause the player was already in doesn't
 	# muffle the gave-in moment (see _update_muffle).
 	InventoryService.SetPaused(_effect_lingering)
@@ -3306,6 +3310,7 @@ func _on_round_ended(skipped: bool = false) -> void:
 	_remove_warmup_skip_button()
 	_finish_round_timeline()  # drop anything the authored encounter still holds
 	_handy_stop()  # the device would otherwise keep playing into the transition
+	_autoblow_stop()
 	# Extract the name here in GDScript where Dictionary access is reliable,
 	# then pass it explicitly so C# never needs to look up the key itself.
 	var _cur: Dictionary = GameState.CurrentRound()
@@ -3752,6 +3757,7 @@ func _go_to_menu() -> void:
 	_video.stop()
 	FunscriptPlayer.Stop()
 	_handy_stop()
+	_autoblow_stop()
 	# In a test play, "back to menu" (button or Esc) returns to the builder the
 	# preview was launched from, not the main menu.
 	if _test_mode:
@@ -4204,6 +4210,7 @@ func _on_options_pressed() -> void:
 	# Freeze the active-effect clock while the Options overlay is open.
 	InventoryService.SetPaused(true)
 	_handy_pause()
+	_autoblow_pause()
 	_update_muffle()  # before add_child so the overlay sits above the dim
 	var opts: Control = OptionsScene.instantiate()
 	opts.overlay_mode = true
@@ -4221,6 +4228,7 @@ func _on_options_closed() -> void:
 		FunscriptPlayer.Resume()
 		InventoryService.SetPaused(false)
 		_handy_resume()
+		_autoblow_resume()
 	# Output mode may have changed in Options — re-evaluate the disconnect
 	# banner against whatever backend is now selected.
 	_refresh_device_warning()
@@ -4263,10 +4271,12 @@ func _set_paused(on: bool) -> void:
 		FunscriptPlayer.Pause()
 		_pause_btn.text = "> RESUME"
 		_handy_pause()
+		_autoblow_pause()
 	else:
 		FunscriptPlayer.Resume()
 		_pause_btn.text = "|| PAUSE"
 		_handy_resume()
+		_autoblow_resume()
 	_update_muffle()
 
 
@@ -4420,6 +4430,80 @@ func _handy_stop() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Autoblow Ultra / Vacuglide (cloud stroke, experimental)
+# ---------------------------------------------------------------------------
+
+# AutoblowService plays the round's whole script, uploaded at round start and started on the video clock.
+# Pause / resume / seek re-anchor it to the video; effects and the stroke range re-upload it. FunscriptPlayer
+# keeps running deviceless for scoring and the beat bar, as with the Handy. Only offered where
+# AutoblowService.available() (the editor, or the experimental project setting).
+var _autoblow_ready: bool = false  # this round's script is playing on the device
+
+
+func _autoblow_stroke_selected() -> bool:
+	return (
+		SettingsService.get_stroke_target() == DeviceRouting.AUTOBLOW_TARGET
+		and AutoblowService.available()
+	)
+
+
+# Checks the device once before the journey starts, so round 1 doesn't pay for finding its cluster. Never blocks
+# play: an unreachable device just leaves the journey deviceless, with a toast.
+func _autoblow_journey_check() -> void:
+	if _test_mode or not _autoblow_stroke_selected() or not AutoblowService.has_token():
+		return
+	if not await AutoblowService.ensure_ready():
+		_show_toast("✕  THE AUTOBLOW IS UNREACHABLE — CHECK THE TOKEN / WIFI", 5.0)
+
+
+# Per round: upload the script (effects and range baked in) and start it where the video is by then. Any failure
+# drops to a toast and the round plays without the device.
+func _autoblow_begin_round(fs_path: String) -> void:
+	_autoblow_ready = false
+	if not _autoblow_stroke_selected() or fs_path == "":
+		return
+	AutoblowService.load_actions(JourneyData.read_funscript_actions(fs_path))
+	AutoblowService.set_effects(
+		InventoryService.GetActiveEffects(), SettingsService.get_home_position()
+	)
+	if not await AutoblowService.start(_handy_video_ms):
+		_show_toast("✕  AUTOBLOW SYNC FAILED — ROUND PLAYS WITHOUT IT", 5.0)
+		return
+	_autoblow_ready = true
+	if _paused:  # a pause that landed during the upload couldn't reach the device yet
+		_autoblow_pause()
+
+
+func _autoblow_effects_changed() -> void:
+	if not _autoblow_ready:
+		return
+	AutoblowService.set_effects(
+		InventoryService.GetActiveEffects(), SettingsService.get_home_position()
+	)
+	AutoblowService.reload()
+
+
+func _autoblow_pause() -> void:
+	if _autoblow_ready:
+		AutoblowService.pause()
+
+
+# Starts the script again where the video is (or where the override is, while one owns the device).
+func _autoblow_resume() -> void:
+	if not _autoblow_ready:
+		return
+	if AutoblowService.is_override_active() and _override_bundle != null:
+		AutoblowService.start_override(_override_bundle.main, _override_immune, _override_ms)
+	else:
+		AutoblowService.seek(int(_video.stream_position * 1000.0))
+
+
+func _autoblow_stop() -> void:
+	_autoblow_ready = false
+	AutoblowService.stop()
+
+
+# ---------------------------------------------------------------------------
 # Override items — device takeover coordinator
 # ---------------------------------------------------------------------------
 # Owns the source-agnostic OverrideSession (see OVERRIDE_ITEMS_DESIGN.md): when an override item is
@@ -4469,6 +4553,8 @@ func _begin_override(
 	FunscriptPlayer.BeginOverride(bundle.main, bundle.axes, bundle.vibes, _override_immune)
 	if _handy_ready:
 		HandyService.start_override(bundle.main, _override_immune, _override_ms)
+	if _autoblow_ready:
+		AutoblowService.start_override(bundle.main, _override_immune, _override_ms)
 
 
 # Loads an override item's funscript bundle from its `scripts` map ({main, axes{name:path},
@@ -4521,6 +4607,8 @@ func _end_override() -> void:
 	FunscriptPlayer.EndOverride(live_sec)
 	if _handy_ready:
 		HandyService.stop_override(int(live_sec * 1000.0))
+	if _autoblow_ready:
+		AutoblowService.stop_override(int(live_sec * 1000.0))
 	_override_bundle = null
 	_override_item_name = ""
 
@@ -4895,6 +4983,8 @@ func _move_playhead_to(target: int) -> void:
 	# the keyframe cursor behind, and the next frame would then score every stroke the jump passed over.
 	FunscriptPlayer.SeekTo(target / 1000.0)
 	HandyService.seek(target)
+	if _autoblow_ready:
+		AutoblowService.seek(target)
 	_video.stream_position = target / 1000.0
 	# The round ended inside the line above — the jump landed on the clip's end. Drop the queued fade
 	# back up: it would lift the black off exactly the frames the region was gating, and the round
@@ -5566,11 +5656,13 @@ func _hold_round(on: bool) -> void:
 		_hud.visible = false
 		FunscriptPlayer.Pause()
 		_handy_pause()
+		_autoblow_pause()
 	else:
 		if not _curse_hud_hidden:
 			_hud.visible = true
 		FunscriptPlayer.Resume()
 		_handy_resume()
+		_autoblow_resume()
 
 
 func _tick_qtes() -> void:
@@ -5811,6 +5903,7 @@ func _exit_tree() -> void:
 	# no matter which exit path got us here.
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_handy_stop()  # the Handy is external and would keep stroking without this stop
+	_autoblow_stop()
 	if _muffle_lp == null:
 		return
 	var master: int = AudioServer.get_bus_index("Master")
@@ -6185,6 +6278,7 @@ func _connect_signals() -> void:
 	InventoryService.ActiveEffectsChanged.connect(_apply_oneshot_item_effects)
 	InventoryService.ActiveEffectsChanged.connect(_refresh_effect_chips)
 	InventoryService.ActiveEffectsChanged.connect(_handy_effects_changed)
+	InventoryService.ActiveEffectsChanged.connect(_autoblow_effects_changed)
 	InventoryService.ActiveEffectsChanged.connect(_reconcile_sensory)
 	InventoryService.ActiveEffectsChanged.connect(_reconcile_hud_hide)
 	# Override items don't join the effect list — they seize the device via the takeover coordinator.
