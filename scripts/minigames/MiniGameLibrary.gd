@@ -374,9 +374,10 @@ static func _normalize_game_character(raw: Variant, kind: String) -> Dictionary:
 		var entry: Dictionary = (
 			raw_moments.get(moment, {}) if raw_moments.get(moment) is Dictionary else {}
 		)
-		var transition: String = str(entry.get("transition", GameCharacterView.DEFAULT_TRANSITION))
-		if not transition in GameCharacterView.TRANSITIONS:
-			transition = GameCharacterView.DEFAULT_TRANSITION
+		var transition: String = CastMotion.normalize(
+			entry.get("transition", GameCharacterView.DEFAULT_TRANSITION),
+			GameCharacterView.DEFAULT_TRANSITION
+		)
 		moments[moment] = {"portrait": str(entry.get("portrait", "")), "transition": transition}
 	return {
 		"character": character,

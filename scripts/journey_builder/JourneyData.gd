@@ -2569,9 +2569,13 @@ static func without_ids(list: Array, ids: Array, key: String = "id") -> Array:
 
 
 # ── Stage (a line's list of on-stage characters) ────────────────────────────
-# A LIST of {character, portrait?, placement?}. portrait/placement omitted → the character's default
-# (first) of each. Entries with no character are dropped; ids are NOT validated here (a stale id just
-# renders nothing at runtime, never a crash).
+# A LIST of {character, portrait?, placement?, enter?, exit?}. portrait/placement omitted → the character's
+# default (first) of each. enter (on arriving or changing expression) and exit (on leaving after this line) are
+# from the cast's shared set (CastMotion), omitted when they're a Cut, the default. Entries with no character are
+# dropped; ids are NOT validated here (a stale id just renders nothing at runtime, never a crash).
+const STAGE_MOTION_KEYS: Array[String] = ["enter", "exit"]
+
+
 static func clean_stage(v: Variant) -> Array:
 	var out: Array = []
 	if not (v is Array):
@@ -2589,6 +2593,12 @@ static func clean_stage(v: Variant) -> Array:
 			entry["portrait"] = por
 		if plc != "":
 			entry["placement"] = plc
+		for key: String in STAGE_MOTION_KEYS:
+			var motion: String = CastMotion.normalize(
+				(e as Dictionary).get(key, ""), CastMotion.CUT
+			)
+			if motion != CastMotion.CUT:
+				entry[key] = motion
 		out.append(entry)
 	return out
 

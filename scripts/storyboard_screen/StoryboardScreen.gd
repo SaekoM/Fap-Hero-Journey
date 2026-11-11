@@ -73,6 +73,9 @@ var _bg_fade: Tween = null
 var _cast: Dictionary = {}  # character id → character dict (name/portraits[]/placements[])
 var _portraits: Dictionary = {}  # character id → JourneyImage
 var _portrait_paths: Dictionary = {}  # character id → the path currently shown (skips a needless reload)
+# Everyone on stage now: character id → {exit}, the exit they make if a later line drops them.
+var _on_stage_now: Dictionary = {}
+var _stage_generation: int = 0  # bumped every line, so an entrance waiting on a dissolve knows it was overtaken
 
 var show_map_button: bool = true  # GameLoop clears this when the journey hides the map
 
@@ -110,7 +113,7 @@ func setup(data: Dictionary) -> void:
 	_line_idx = 0
 	_build_cast()
 	if _lines.is_empty():
-		_apply_scene({})
+		_apply_scene({})  # no lines: just the backdrop
 		return
 	_show_line()
 
@@ -193,15 +196,18 @@ func _changes_scene(line: Dictionary) -> bool:
 	return incoming != _bg_shown
 
 
-# Draws the backdrop and sets the music for one line (or for a storyboard with no lines at all).
-func _apply_scene(line: Dictionary) -> void:
+# Draws the backdrop and sets the music for one line (or for a storyboard with no lines at all). Returns whether
+# the scene changed, so the stage knows the dissolve is carrying its characters.
+func _apply_scene(line: Dictionary) -> bool:
 	# Ghost BEFORE anything changes — the copy has to be of the scene being left.
-	if _changes_scene(line):
+	var changed: bool = _changes_scene(line)
+	if changed:
 		_ghost_stage()
 	_load_bg_view(
 		JourneyData.resolved_background_view(GameState.Journey.get("settings", []), _node, line)
 	)
 	_apply_scene_audio(line)
+	return changed
 
 
 # Linear 0–1 author volume → dB for an AudioStreamPlayer; 0 mutes.
@@ -211,14 +217,14 @@ func _volume_db(v: float) -> float:
 
 func _show_line() -> void:
 	var line: Dictionary = _lines[_line_idx]
-	_apply_scene(line)
+	var scene_changed: bool = _apply_scene(line)
 
 	var spk: String = line.get("speaker", "")
 	_speaker.visible = spk != ""
 	_speaker.text = spk.to_upper()
 	_dialogue.text = line.get("text", "")
 
-	_update_stage(line)
+	_update_stage(line, scene_changed)
 
 	var is_last: bool = _line_idx >= _lines.size() - 1
 	_hint.text = "▶ CLICK OR SPACE TO COMPLETE" if is_last else "▶ CLICK OR SPACE TO CONTINUE"
@@ -300,33 +306,23 @@ func _ensure_portrait(character_id: String) -> JourneyImage:
 	return view
 
 
-# Renders the line's persistent stage: a list of {character, portrait, placement}. Each shows that
-# character's chosen portrait (default = their first) in their chosen placement box (default = their
-# first), and a character whose NAME matches the line's speaker is lit while the rest dim. Characters
-# no longer on stage are hidden; a line with no stage clears everything.
-func _update_stage(line: Dictionary) -> void:
+# Renders the line's persistent stage: a list of {character, portrait, placement, enter, exit}. Each shows that
+# character's chosen portrait (default = their first) in their chosen placement box (default = their first), and a
+# character whose NAME matches the line's speaker is lit while the rest dim.
+#
+# Characters move through the cast's shared animations (CastMotion): one arriving plays its `enter`, one whose
+# expression changes plays its `enter` as a reaction, and one the line drops plays the `exit` it was given on the
+# line before. When the scene changes, the dissolve carries everyone already there, and arrivals make their
+# entrance as it finishes.
+func _update_stage(line: Dictionary, scene_changed: bool = false) -> void:
+	_stage_generation += 1
 	var stage: Array = line.get("stage", []) if line.get("stage", null) is Array else []
 	var speaker: String = str(line.get("speaker", "")).strip_edges().to_lower()
 
-	# Which character ids are on stage this line, and whether the speaker is one of them (only then do
+	# Who is on stage this line, with the portrait each shows, and whether the speaker is one of them (only then do
 	# we dim the others — narration / an off-stage speaker leaves everyone at full brightness).
-	var on_stage: Dictionary = {}
+	var showing: Dictionary = {}  # character id → {entry, portrait}
 	var lit_present: bool = false
-	for e: Variant in stage:
-		if e is Dictionary:
-			var cid: String = str((e as Dictionary).get("character", ""))
-			on_stage[cid] = true
-			if (
-				speaker != ""
-				and str(_cast.get(cid, {}).get("name", "")).strip_edges().to_lower() == speaker
-			):
-				lit_present = true
-
-	# Hide any portrait whose character dropped off the stage this line.
-	for cid: String in _portraits:
-		if not on_stage.has(cid):
-			(_portraits[cid] as JourneyImage).visible = false
-
 	for e: Variant in stage:
 		if not (e is Dictionary):
 			continue
@@ -336,34 +332,116 @@ func _update_stage(line: Dictionary) -> void:
 			chr, str((e as Dictionary).get("portrait", ""))
 		)
 		if portrait == "":
-			if _portraits.has(cid):
-				(_portraits[cid] as JourneyImage).visible = false
-			continue
-		var view: JourneyImage = _ensure_portrait(cid)
-		# Position by the character's chosen placement box. Fractions → anchors, no pixel offsets.
-		var box: Dictionary = JourneyData.resolve_placement(
-			str((e as Dictionary).get("placement", "")), chr.get("placements", [])
-		)
-		view.anchor_left = clampf(float(box["x"]), 0.0, 1.0)
-		view.anchor_top = clampf(float(box["y"]), 0.0, 1.0)
-		view.anchor_right = clampf(float(box["x"]) + float(box["w"]), 0.0, 1.0)
-		view.anchor_bottom = clampf(float(box["y"]) + float(box["h"]), 0.0, 1.0)
-		view.offset_left = 0.0
-		view.offset_top = 0.0
-		view.offset_right = 0.0
-		view.offset_bottom = 0.0
-		# Only (re)load when the portrait path actually changed — a character keeping the same expression
-		# keeps their (possibly animated) portrait running instead of restarting it.
-		if portrait != str(_portrait_paths.get(cid, "")):
-			_portrait_paths[cid] = portrait
-			view.show_path(
-				portrait, TextureRect.EXPAND_IGNORE_SIZE, JourneyImage.STRETCH_FIT_HEIGHT
-			)
+			continue  # nothing to show: as good as off stage
+		showing[cid] = {"entry": e, "portrait": portrait}
+		if speaker != "" and str(chr.get("name", "")).strip_edges().to_lower() == speaker:
+			lit_present = true
+
+	for cid: String in _on_stage_now:
+		if not showing.has(cid):
+			_leave_stage(cid, str(_on_stage_now[cid]["exit"]), scene_changed)
+
+	var now: Dictionary = {}
+	for cid: String in showing:
+		var entry: Dictionary = showing[cid]["entry"]
+		var chr: Dictionary = _cast.get(cid, {})
+		var is_speaker: bool = str(chr.get("name", "")).strip_edges().to_lower() == speaker
+		var tint: Color = PORTRAIT_LIT if (is_speaker or not lit_present) else PORTRAIT_DIM
+		_stage_character(cid, entry, str(showing[cid]["portrait"]), tint, scene_changed)
+		now[cid] = {"exit": CastMotion.normalize(entry.get("exit", ""), CastMotion.CUT)}
+	_on_stage_now = now
+
+
+# Puts one character on this line's stage: arriving, reacting to a new expression, or simply staying.
+func _stage_character(
+	cid: String, entry: Dictionary, portrait: String, tint: Color, scene_changed: bool
+) -> void:
+	var view: JourneyImage = _ensure_portrait(cid)
+	var arriving: bool = not _on_stage_now.has(cid)
+	var motion: String = CastMotion.normalize(entry.get("enter", ""), CastMotion.CUT)
+	var box: Dictionary = JourneyData.resolve_placement(
+		str(entry.get("placement", "")), _cast.get(cid, {}).get("placements", [])
+	)
+	if arriving or _moved(view, box):
+		CastMotion.stop(view)  # a leaving or arriving animation would otherwise fight the new place
+		_place_portrait(view, box)
+	# The tint keeps whatever fade is running, so a dim or a light never jumps an entrance to full.
+	view.modulate = Color(tint, view.modulate.a)
+
+	if arriving:
+		_show_portrait(cid, portrait)
+		if scene_changed and motion != CastMotion.CUT:
+			view.visible = false
+			_enter_after_dissolve(view, motion, _stage_generation)
+			return
 		view.visible = true
-		var is_speaker: bool = (
-			lit_present and str(chr.get("name", "")).strip_edges().to_lower() == speaker
+		CastMotion.enter(view, motion, size)
+		return
+	view.visible = true
+	if portrait == str(_portrait_paths.get(cid, "")):
+		return
+	if scene_changed:
+		_show_portrait(cid, portrait)  # the dissolve is the change
+	else:
+		CastMotion.change(view, motion, size, _show_portrait.bind(cid, portrait))
+
+
+# A character the line dropped. Within a scene they make their exit; across a scene change the dissolve takes them.
+func _leave_stage(cid: String, motion: String, scene_changed: bool) -> void:
+	if not _portraits.has(cid):
+		return
+	var view: JourneyImage = _portraits[cid]
+	if scene_changed:
+		CastMotion.stop(view)
+		view.visible = false
+		return
+	CastMotion.exit(view, motion, size, func() -> void: view.visible = false)
+
+
+# An arrival on a line that changes the scene waits for the dissolve, unless the player has moved on by then.
+func _enter_after_dissolve(view: JourneyImage, motion: String, generation: int) -> void:
+	await get_tree().create_timer(BG_FADE_SECS).timeout
+	if generation != _stage_generation or not is_instance_valid(view):
+		return
+	view.visible = true
+	CastMotion.enter(view, motion, size)
+
+
+# Loads a character's portrait, only when it's a different one, so an animated portrait keeps running through a
+# line that keeps the same expression.
+func _show_portrait(cid: String, portrait: String) -> void:
+	if portrait == str(_portrait_paths.get(cid, "")):
+		return
+	_portrait_paths[cid] = portrait
+	(_portraits[cid] as JourneyImage).show_path(
+		portrait, TextureRect.EXPAND_IGNORE_SIZE, JourneyImage.STRETCH_FIT_HEIGHT
+	)
+
+
+# Positions a portrait by its placement box. Fractions → anchors, no pixel offsets.
+func _place_portrait(view: JourneyImage, box: Dictionary) -> void:
+	view.anchor_left = clampf(float(box["x"]), 0.0, 1.0)
+	view.anchor_top = clampf(float(box["y"]), 0.0, 1.0)
+	view.anchor_right = clampf(float(box["x"]) + float(box["w"]), 0.0, 1.0)
+	view.anchor_bottom = clampf(float(box["y"]) + float(box["h"]), 0.0, 1.0)
+	view.offset_left = 0.0
+	view.offset_top = 0.0
+	view.offset_right = 0.0
+	view.offset_bottom = 0.0
+
+
+# Whether a character staying on stage has been given a different place on this line.
+func _moved(view: JourneyImage, box: Dictionary) -> bool:
+	return (
+		not is_equal_approx(view.anchor_left, clampf(float(box["x"]), 0.0, 1.0))
+		or not is_equal_approx(view.anchor_top, clampf(float(box["y"]), 0.0, 1.0))
+		or not is_equal_approx(
+			view.anchor_right, clampf(float(box["x"]) + float(box["w"]), 0.0, 1.0)
 		)
-		view.modulate = PORTRAIT_LIT if (is_speaker or not lit_present) else PORTRAIT_DIM
+		or not is_equal_approx(
+			view.anchor_bottom, clampf(float(box["y"]) + float(box["h"]), 0.0, 1.0)
+		)
+	)
 
 
 func _input(event: InputEvent) -> void:

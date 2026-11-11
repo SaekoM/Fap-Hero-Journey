@@ -34,6 +34,17 @@
   Press-only events play exactly as before. Journeys with Hold or Mash prompts need FHJ 0.9.3 or newer.
 - **Quick-Time Event dodges are staged.** A dodge now ends with a stamped **DODGED** and a streak of light, and a
   failure with a stamped **HIT**, red edges and a shake.
+### ◆ Cast
+
+- **Storyboard characters can make an entrance.** Each character on a line now has **Enter/react**, played when they
+  arrive or their expression changes, and **Exit**, played when they leave after that line. Both start as Cut, so
+  existing storyboards look the same. On a line that changes the scene, arrivals make their entrance once the
+  dissolve finishes.
+- **One set of animations for the whole cast.** Storyboards, boss CAST cues and mini-game characters now share
+  the same list: Cut, Fade, Pop, Rise, Drop, Slide (left, right, top or bottom), Wipe, Flip, Spin, Silhouette,
+  Nod, Jump, Lean in, Shake and Tremble. Boss cues gain an
+  **Exit** to go with their **Entrance** (Fade by default, as before), and the old Flash entrance is now Cut.
+
 ### ◆ Builder
 
 - **± STATE shows mini-games.** Flags, counters and items a mini-game can change now appear on the map and
@@ -49,6 +60,14 @@
 
 ### 🩹 Fixes
 
+- **Smooth playback of large videos on laptops (Windows).** Video is now decoded on the graphics chip (D3D11VA, or
+  DXVA2 on older drivers) for H.264, HEVC and VP9, the way media players do. 4K and 60 fps video that lagged on
+  laptop processors now plays smoothly. If the graphics chip can't take a video, FHJ switches to the processor by
+  itself and carries on from the same moment. A new **HARDWARE VIDEO DECODING** switch in **Options → General** turns
+  it off if a graphics driver misbehaves. AV1 and Linux still decode on the processor.
+- **Grainy grey picture on some Intel graphics (Windows).** A new **RENDERER** choice in **Options → General** switches
+  from Direct3D 12 (the default) to Vulkan, which clears it. It applies after a restart, and the hint shows which
+  renderer is running now.
 - **Mini-game result cards.** Retrying while the coins were still counting up logged an error. The count now stops
   with the card.
 

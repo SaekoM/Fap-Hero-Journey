@@ -3297,33 +3297,61 @@ func _mult_text(stance: String) -> String:
 	return str(int(mult)) if is_equal_approx(mult, float(int(mult))) else str(mult)
 
 
-# How a cast cue ENTERS. All three modes were implemented in BossCueLayer from the start but none had a
-# control: `flash` could only be obtained by stamping the telegraph preset, and `slide` was unreachable
-# altogether — an author could not have produced one however hard they tried.
+# How a cast cue arrives and leaves, from the cast's shared set (CastMotion), which storyboards and mini-game
+# characters use too. Each plays over the cue's fade-in or fade-out time below.
 func _add_transition_field(event: Dictionary) -> void:
-	var transition: OptionButton = OptionButton.new()
-	for mode: String in RoundTimeline.TRANSITIONS:
-		transition.add_item(mode.to_upper().replace("_", " "))
-	transition.selected = maxi(
-		0,
-		RoundTimeline.TRANSITIONS.find(str(event.get("transition", RoundTimeline.TRANSITION_FADE)))
-	)
-	transition.tooltip_text = (UITheme.wrap_tip(
-		(
-			"How the cue arrives, over the fade-in time below. FADE simply eases in. FLASH appears "
-			+ "instantly and ignores that time — the telegraph look. POP punches in slightly "
-			+ "oversized and settles. RISE drifts gently up, for dialogue. SLIDE travels in from "
-			+ "the named edge — usually the edge the cue sits nearest, so it does not cross the "
-			+ "whole picture on its way in."
+	(
+		_inspector
+		. add_child(
+			_labeled(
+				"Entrance",
+				_cast_motion_picker(
+					event,
+					"transition",
+					(
+						"How the cue arrives, over the fade-in time below. FADE simply eases in. CUT appears at "
+						+ "once and ignores that time: the telegraph look. POP punches up from small. RISE drifts "
+						+ "gently up, for dialogue. SLIDE travels in from the named edge, usually the one the cue "
+						+ "sits nearest. FLIP turns in from edge-on, SPIN spins in, and SHAKE appears with a shake."
+					)
+				)
+			)
 		)
-	))
-	transition.item_selected.connect(
+	)
+	(
+		_inspector
+		. add_child(
+			_labeled(
+				"Exit",
+				_cast_motion_picker(
+					event,
+					"exit_transition",
+					(
+						"How the cue leaves, over the fade-out time below. FADE eases out. CUT vanishes at once. "
+						+ "The rest mirror their entrances: POP shrinks away, RISE sinks, SLIDE travels off to the "
+						+ "named edge, FLIP turns away, SPIN spins out, and SHAKE shakes and then vanishes."
+					)
+				)
+			)
+		)
+	)
+
+
+func _cast_motion_picker(event: Dictionary, key: String, tip: String) -> OptionButton:
+	var picker: OptionButton = OptionButton.new()
+	for motion: String in CastMotion.ALL:
+		picker.add_item(CastMotion.NAMES[motion])
+	picker.selected = maxi(
+		0, CastMotion.ALL.find(str(event.get(key, RoundTimeline.DEFAULT_CUE_MOTION)))
+	)
+	picker.tooltip_text = UITheme.wrap_tip(tip)
+	picker.item_selected.connect(
 		func(index: int) -> void:
-			_snapshot("field:transition")
-			event["transition"] = RoundTimeline.TRANSITIONS[index]
+			_snapshot("field:" + key)
+			event[key] = CastMotion.ALL[index]
 			_refresh_derived()
 	)
-	_inspector.add_child(_labeled("Entrance", transition))
+	return picker
 
 
 # Ease-in / ease-out, in ms. Without these a cue or an effect window snaps on and off, which reads as a

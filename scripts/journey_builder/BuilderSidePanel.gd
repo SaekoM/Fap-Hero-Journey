@@ -7842,7 +7842,54 @@ func _make_stage_entry_row(
 			entry, "placement", chr.get("placements", []), "Position", "default (first)"
 		)
 	)
+	(
+		box
+		. add_child(
+			_stage_motion_dropdown(
+				entry,
+				"enter",
+				"Enter/react",
+				"Plays when this character arrives on this line, or when their expression changes on it."
+			)
+		)
+	)
+	box.add_child(
+		_stage_motion_dropdown(
+			entry, "exit", "Exit", "Plays when this character leaves the stage after this line."
+		)
+	)
 	return panel
+
+
+# A labelled dropdown of the cast's shared animations (CastMotion), writing to entry[key]. A Cut, the default, is
+# stored as nothing at all.
+func _stage_motion_dropdown(entry: Dictionary, key: String, label: String, tip: String) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var lbl: Label = Label.new()
+	lbl.text = label
+	lbl.custom_minimum_size = Vector2(72, 0)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
+	lbl.add_theme_font_size_override("font_size", 11)
+	row.add_child(lbl)
+	var dd: OptionButton = OptionButton.new()
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for motion: String in CastMotion.ALL:
+		dd.add_item(CastMotion.NAMES[motion])
+	dd.selected = maxi(
+		0, CastMotion.ALL.find(CastMotion.normalize(entry.get(key, ""), CastMotion.CUT))
+	)
+	dd.tooltip_text = UITheme.wrap_tip(tip)
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(i: int) -> void:
+			if CastMotion.ALL[i] == CastMotion.CUT:
+				entry.erase(key)
+			else:
+				entry[key] = CastMotion.ALL[i]
+	)
+	row.add_child(dd)
+	return row
 
 
 # A labelled dropdown over a character's portraits/placements, writing the picked id to entry[key]
@@ -7930,6 +7977,10 @@ func _make_insert_line_btn(lines_arr: Array, insert_at: int, refresh: Callable) 
 				var prev: Variant = lines_arr[insert_at - 1].get("stage", [])
 				if prev is Array:
 					carried = (prev as Array).duplicate(true)
+					# Their exit carries on; an entrance belongs to the line it was set on.
+					for kept: Variant in carried:
+						if kept is Dictionary:
+							(kept as Dictionary).erase("enter")
 			var new_line: Dictionary = {"speaker": "", "text": "", "image": ""}
 			if not carried.is_empty():
 				new_line["stage"] = carried

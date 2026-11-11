@@ -1002,16 +1002,12 @@ func _make_moment_row(label: String, entry: Dictionary, portraits: Array) -> Con
 	row.add_child(pick)
 
 	var transition: OptionButton = OptionButton.new()
-	for name: String in GameCharacterView.TRANSITIONS:
-		transition.add_item(name.capitalize())
-	transition.selected = maxi(
-		0, GameCharacterView.TRANSITIONS.find(str(entry.get("transition", "")))
-	)
+	for motion: String in CastMotion.ALL:
+		transition.add_item(CastMotion.NAMES[motion])
+	transition.selected = maxi(0, CastMotion.ALL.find(str(entry.get("transition", ""))))
 	transition.custom_minimum_size = Vector2(110, 0)
 	UITheme.style_option_button(transition)
-	transition.item_selected.connect(
-		func(i: int) -> void: entry["transition"] = GameCharacterView.TRANSITIONS[i]
-	)
+	transition.item_selected.connect(func(i: int) -> void: entry["transition"] = CastMotion.ALL[i])
 	row.add_child(transition)
 	return row
 
