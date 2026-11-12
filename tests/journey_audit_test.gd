@@ -164,6 +164,21 @@ func test_sacrifice_cost_findings() -> void:
 	assert_int(int((dead[0] as Dictionary)["edge_idx"])).is_equal(1)
 
 
+# A fork the player picks from gets a note past MANY_FORK_CHOICES; one the game decides doesn't.
+func test_a_long_player_fork_gets_a_note() -> void:
+	for resolution: String in ["choice", "random"]:
+		var nodes: Dictionary = {"r1": {"type": "round", "data": {}, "out": [_edge("f")]}}
+		var out: Array = []
+		for i: int in JourneyAudit.MANY_FORK_CHOICES + 1:
+			out.append(_edge("p%d" % i, {"name": "Path %d" % i}))
+			nodes["p%d" % i] = _round(0)
+		nodes["f"] = {"type": "fork", "data": {"resolution": resolution}, "out": out}
+		var found: Array = _findings_of_kind(
+			_audit({"start": "r1", "nodes": nodes}), "many_fork_choices"
+		)
+		assert_int(found.size()).is_equal(1 if resolution == "choice" else 0)
+
+
 # Conditional score gates compare against the preceding round's baseline score.
 func test_conditional_score_gate() -> void:
 	var graph := {

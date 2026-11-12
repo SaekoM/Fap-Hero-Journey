@@ -110,7 +110,7 @@ static func coerce_rendition(rendition: Dictionary) -> Dictionary:
 		JourneyData.content_min_version(
 			false,
 			places_minigames,
-			JourneyData.graph_needs_newer_game(
+			JourneyData.graph_needs_newer_build(
 				{"nodes": rendition.get("nodes", {})}, out["MiniGames"]
 			)
 		)

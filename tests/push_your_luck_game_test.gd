@@ -293,7 +293,7 @@ func test_a_tier_out_of_reach_is_reported() -> void:
 func test_placing_one_needs_the_build_that_plays_it() -> void:
 	var library: Array = [{"id": "push", "kind": PushYourLuckGame.KIND}]
 	var graph: Dictionary = {"nodes": {"a": {"type": "minigame", "data": {"game": "push"}}}}
-	assert_bool(JourneyData.graph_needs_newer_game(graph, library)).is_true()
+	assert_bool(JourneyData.graph_needs_newer_build(graph, library)).is_true()
 
 
 func test_an_untouched_game_pays_the_lowest_pot_tier() -> void:

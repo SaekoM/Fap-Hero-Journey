@@ -207,6 +207,7 @@ var _rendition_parent_flag_names: Dictionary = {}  # flag name -> true (flags ke
 
 var _selected_graph_node_id: String = ""  # the lone selected node id, or "" when 0 or 2+ are selected
 var _selected_graph_node_ids: Array = []  # the full selection set (mirrors GraphView; drives group ops)
+var _arrange_btn: Button = null  # ⊞ ARRANGE: the whole graph, or just the selection when two or more are selected
 var _connecting_from: String = ""  # source node while wiring an edge (click-to-connect), else ""
 var _connecting_edge_idx: int = -1  # while wiring: the fork choice index to wire, or -1 for a regular node's single out-edge
 
@@ -370,6 +371,7 @@ func _setup_graph_view() -> void:
 	_graph.connect_target_picked.connect(_on_connect_target_picked)
 	_graph.nodes_drag_started.connect(_push_undo)
 	_graph.edge_drawn.connect(_on_edge_drawn)
+	_graph.fork_choice_clicked.connect(_on_fork_choice_clicked)
 	_graph.comment_clicked.connect(_on_comment_clicked)
 	_graph.frame_clicked.connect(_on_frame_clicked)
 	_graph.frame_toggle_collapse.connect(_on_frame_toggle_collapse)
@@ -714,16 +716,13 @@ func _setup_toolbar_buttons() -> void:
 	_top_bar.add_child(fit_btn)
 	_top_bar.move_child(fit_btn, _save_btn.get_index())
 
-	var arrange_btn: Button = Button.new()
-	arrange_btn.text = "⊞ ARRANGE"
-	arrange_btn.focus_mode = Control.FOCUS_NONE
-	arrange_btn.tooltip_text = UITheme.wrap_tip(
-		"Auto-arrange the graph into tidy layers (Sugiyama). Undoable with Ctrl+Z."
-	)
-	UITheme.style_button(arrange_btn, UITheme.PURPLE_MID)
-	arrange_btn.pressed.connect(_on_arrange_pressed)
-	_top_bar.add_child(arrange_btn)
-	_top_bar.move_child(arrange_btn, _save_btn.get_index())
+	_arrange_btn = Button.new()
+	_arrange_btn.focus_mode = Control.FOCUS_NONE
+	UITheme.style_button(_arrange_btn, UITheme.PURPLE_MID)
+	_arrange_btn.pressed.connect(_on_arrange_pressed)
+	_top_bar.add_child(_arrange_btn)
+	_top_bar.move_child(_arrange_btn, _save_btn.get_index())
+	_refresh_arrange_button()
 
 	var img_btn: Button = Button.new()
 	img_btn.text = "📷 IMAGE"
@@ -1057,12 +1056,42 @@ func _fill_state_pick() -> void:
 		_refresh_graph()
 
 
-# Auto-arranges the whole graph into tidy Sugiyama layers (rows by depth, crossings reduced, x
-# aligned to neighbours). One undo step; frames the result. Manual positions are replaced — Ctrl+Z
-# restores them.
+# The nodes ⊞ ARRANGE works on alone: the selection, when it's two or more nodes. Empty means the whole graph.
+func _arrange_selection() -> Array:
+	var nodes: Dictionary = _graph_model.get("nodes", {})
+	var selected: Array = _selected_graph_node_ids.filter(
+		func(id: Variant) -> bool: return nodes.has(str(id))
+	)
+	return selected if selected.size() >= 2 else []
+
+
+func _refresh_arrange_button() -> void:
+	if _arrange_btn == null:
+		return
+	var selected: int = _arrange_selection().size()
+	_arrange_btn.text = "⊞ ARRANGE %d" % selected if selected > 0 else "⊞ ARRANGE"
+	_arrange_btn.tooltip_text = (
+		UITheme
+		. wrap_tip(
+			(
+				(
+					"Arrange the %d selected nodes into tidy layers, by the links between them. They stay where they are; nothing else moves. Undoable with Ctrl+Z."
+					% selected
+				)
+				if selected > 0
+				else "Auto-arrange the graph into tidy layers (Sugiyama). Select two or more nodes to arrange just those. Undoable with Ctrl+Z."
+			)
+		)
+	)
+
+
+# Auto-arranges the graph into tidy Sugiyama layers (rows by depth, crossings reduced, x aligned to neighbours): the
+# whole graph, or only the selected nodes when two or more are selected, which keep their place. One undo step; a
+# whole-graph arrange frames the result. Manual positions are replaced — Ctrl+Z restores them.
 func _on_arrange_pressed() -> void:
 	if not _graph or (_graph_model.get("nodes", {}) as Dictionary).is_empty():
 		return
+	var selection: Array = _arrange_selection()
 	_push_undo()
 	# Capture each frame's current members BEFORE the relayout, so the frame can re-wrap them after.
 	var groups: Array = _graph_model.get("groups", [])
@@ -1075,7 +1104,10 @@ func _on_arrange_pressed() -> void:
 	var old_pos: Dictionary = {}
 	for id: String in nodes:
 		old_pos[id] = (nodes[id] as Dictionary).get("pos", Vector2.ZERO)
-	GraphLayout.auto_layout(_graph_model)
+	if selection.is_empty():
+		GraphLayout.auto_layout(_graph_model)
+	else:
+		GraphLayout.auto_layout_nodes(_graph_model, selection)
 	# Pinned notes travel with their node: shift each by the delta its node moved.
 	for c: Dictionary in _graph_model.get("comments", []):
 		var nid: String = str(c.get("node_id", ""))
@@ -1098,8 +1130,12 @@ func _on_arrange_pressed() -> void:
 			_apply_frame_reflow(g2)
 			_apply_frame_shift(g2, gi)
 	_refresh_graph()
-	_graph.call_deferred("fit_to_view")
-	_show_status("Arranged the graph into layers. Ctrl+Z to undo.", false)
+	if selection.is_empty():
+		_graph.call_deferred("fit_to_view")
+		_show_status("Arranged the graph into layers. Ctrl+Z to undo.", false)
+	else:
+		_graph.set_selection(selection)  # keep them selected, so arranging again or moving them is one click
+		_show_status("Arranged the %d selected nodes. Ctrl+Z to undo." % selection.size(), false)
 
 
 # ---------------------------------------------------------------------------
@@ -3894,6 +3930,7 @@ func _on_graph_selection_changed(ids: Array) -> void:
 	_selected_frame_idx = -1
 	_selected_graph_node_ids = ids.duplicate()
 	_selected_graph_node_id = str(ids[0]) if ids.size() == 1 else ""
+	_refresh_arrange_button()
 	match ids.size():
 		0:
 			_side_renderer.show_journey_info_panel()
@@ -4396,15 +4433,12 @@ func _begin_connect_fork_edge(fork_id: String, edge_idx: int) -> void:
 
 # Rendition authoring: appends an OVERLAY choice to a ghosted base fork — an extra option shown only when
 # this rendition is installed. It's an append-anchor ({_anchor}, no `_slot`), unconnected until the author
-# wires it. Capped at the 4-choice ForkScreen layout (base slots + overlay choices).
+# wires it.
 func _add_overlay_fork_choice(fork_id: String) -> void:
 	var nodes: Dictionary = _graph_model.get("nodes", {})
 	if not nodes.has(fork_id):
 		return
 	var out: Array = (nodes[fork_id] as Dictionary).get("out", [])
-	if out.size() >= 4:
-		_show_status("This fork is full — 4 choices max.", true)
-		return
 	_push_undo()
 	out.append({"to": "", "name": "", "image_path": "", "_anchor": true})
 	(nodes[fork_id] as Dictionary)["out"] = out
@@ -4732,7 +4766,7 @@ func _add_fork_edge(fork_id: String) -> void:
 		. append(
 			{
 				"to": "",
-				"name": "Path %s" % char(65 + edges.size()),
+				"name": JourneyData.default_fork_choice_name(edges.size()),
 				"description": "",
 				"image_path": "",
 				"weight": 1,
@@ -4743,6 +4777,13 @@ func _add_fork_edge(fork_id: String) -> void:
 		)
 	)
 	(nodes[fork_id] as Dictionary)["out"] = edges
+	_side_renderer.open_fork_choice(fork_id, edges.size() - 1)
+	_graph.select_graph_node(fork_id)
+
+
+# A fork choice's handle was clicked on the canvas: select the fork with that choice open in the side panel.
+func _on_fork_choice_clicked(fork_id: String, edge_idx: int) -> void:
+	_side_renderer.open_fork_choice(fork_id, edge_idx)
 	_graph.select_graph_node(fork_id)
 
 
@@ -6834,7 +6875,7 @@ func _save_graph_nodes(paths: Dictionary, modal: Control) -> Dictionary:
 		JourneyData.content_min_version(
 			_kept_wide_codec,
 			JourneyData.graph_has_minigames(_graph_model),
-			JourneyData.graph_needs_newer_game(_graph_model, _journey_minigames)
+			JourneyData.graph_needs_newer_build(_graph_model, _journey_minigames)
 		)
 	)
 	_journey_id = str(result["JourneyId"])

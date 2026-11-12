@@ -99,6 +99,43 @@ static func auto_layout(graph: Dictionary) -> void:
 			(nodes[id] as Dictionary)["pos"] = Vector2(float(x[id]), float(l_idx) * ROW_H)
 
 
+# Arranges only the nodes `ids`, by the links among them, and keeps the group where it was: the arranged block's
+# horizontal centre and top edge land where the selection's were, moved by whole grid steps so the layout inside it
+# stays exact. Every other node stays put, so the block can end up overlapping one. Fewer than two nodes: no change.
+static func auto_layout_nodes(graph: Dictionary, ids: Array) -> void:
+	var nodes: Dictionary = graph.get("nodes", {})
+	var chosen: Dictionary = {}  # the same node dictionaries, so the layout writes their positions in place
+	for id: Variant in ids:
+		if nodes.has(str(id)):
+			chosen[str(id)] = nodes[str(id)]
+	if chosen.size() < 2:
+		return
+	var before: Rect2 = _position_bounds(chosen)
+	# Links to nodes outside the selection are ignored: _adjacency drops edges to targets it wasn't given.
+	auto_layout({"nodes": chosen})
+	var after: Rect2 = _position_bounds(chosen)
+	var shift: Vector2 = snap(
+		Vector2(before.get_center().x - after.get_center().x, before.position.y - after.position.y)
+	)
+	for id: String in chosen:
+		var node: Dictionary = chosen[id]
+		node["pos"] = (node.get("pos", Vector2.ZERO) as Vector2) + shift
+
+
+# The box around the nodes' positions (their top-left corners).
+static func _position_bounds(nodes: Dictionary) -> Rect2:
+	var bounds: Rect2 = Rect2()
+	var first: bool = true
+	for id: String in nodes:
+		var pos: Vector2 = (nodes[id] as Dictionary).get("pos", Vector2.ZERO)
+		if first:
+			bounds = Rect2(pos, Vector2.ZERO)
+			first = false
+		else:
+			bounds = bounds.expand(pos)
+	return bounds
+
+
 # Predecessor + successor id lists per node (edges to missing/empty targets ignored).
 static func _adjacency(graph: Dictionary) -> Dictionary:
 	var nodes: Dictionary = graph.get("nodes", {})

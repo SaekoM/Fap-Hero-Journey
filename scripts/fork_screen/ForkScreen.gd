@@ -10,10 +10,29 @@ signal map_requested  # player tapped the in-fork "◇ MAP" button (GameLoop own
 @onready var _fork_sub: Label = $CenterBox/ForkSubtitle
 @onready var _cards_row: HBoxContainer = $CenterBox/CardsRow
 
+# Up to this many choices sit side by side as cards. More than that and the fork switches to a list: a scrolling column
+# of compact rows beside a large preview of the selected choice, which is its card at full size.
+const CARD_LAYOUT_MOST: int = 6
+const CARD_SIZE: Vector2 = Vector2(220.0, 360.0)
+const LIST_WIDTH: float = 460.0
+const LIST_ROW_HEIGHT: float = 76.0
+const LIST_THUMB_SIZE: Vector2 = Vector2(96.0, 60.0)
+const DIMMED: Color = Color(1, 1, 1, 0.35)
+# The reveal's roll takes at most this many steps, whatever the number of choices, so a long list doesn't spin for long.
+const REVEAL_MOST_STEPS: int = 24
+
 # Tracked for the auto-resolve reveal animation (random / conditional forks).
 var _cards: Array = []  # Array[Control] — one per path, in order
 var _choose_buttons: Array = []  # Array[Button]  — the "> CHOOSE" buttons
 var _paths: Array = []  # the fork's path data dicts
+# The list layout (more than CARD_LAYOUT_MOST choices): a row per path, and which path the preview shows.
+var _list_rows: Array[Button] = []
+var _list_scroll: ScrollContainer = null
+var _selected: int = -1
+# The frame _selected last changed on. A click focuses its row and presses it on the same frame, so a press on that
+# frame only selects; a press on an already-selected row (a second click, or Enter on a row reached with the arrows)
+# chooses it.
+var _selected_on_frame: int = -1
 var _resolution: String = "choice"  # how this fork resolves
 var _cond_metric: String = "score"  # conditional metric (score/coins/item)
 var _default_path: int = 0  # conditional fallback path index
@@ -65,10 +84,12 @@ func setup(fork_data: Dictionary) -> void:
 	_default_path = int(fork_data.get("default_path", 0))
 	_paths = fork_data.get("paths", [])
 	for i in _paths.size():
-		var path_data: Dictionary = _paths[i]
-		var card: Control = _make_card(i, path_data)
-		_cards.append(card)
-		_cards_row.add_child(card)
+		_cards.append(_make_card(i, _paths[i]))
+	if _is_list_layout():
+		_build_list_layout()
+	else:
+		for card: Control in _cards:
+			_cards_row.add_child(card)
 
 	# Interactive forks (player choice / sacrifice / conditional-player) let the player consult the
 	# journey map before committing. Auto-resolving forks play a reveal on timers instead, so the
@@ -153,7 +174,7 @@ func _apply_fork_layout(fork_data: Dictionary, backdrop: JourneyImage) -> void:
 
 func _make_card(index: int, path_data: Dictionary) -> Control:
 	var card: Control = Control.new()
-	card.custom_minimum_size = Vector2(220, 360)
+	card.custom_minimum_size = CARD_SIZE
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	card.clip_contents = true
@@ -305,6 +326,187 @@ func _make_card(index: int, path_data: Dictionary) -> Control:
 	_choose_buttons.append(btn)
 
 	return card
+
+
+# ── List layout ──────────────────────────────────────────────────────────────
+
+
+func _is_list_layout() -> bool:
+	return _paths.size() > CARD_LAYOUT_MOST
+
+
+# The rows go in a scrolling column on the left; every card goes in the preview on the right, with only the selected
+# one showing, so moving through the list never reloads a picture.
+func _build_list_layout() -> void:
+	_list_scroll = ScrollContainer.new()
+	_list_scroll.custom_minimum_size.x = LIST_WIDTH
+	_list_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_list_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_cards_row.add_child(_list_scroll)
+	var rows: VBoxContainer = VBoxContainer.new()
+	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rows.add_theme_constant_override("separation", 6)
+	_list_scroll.add_child(rows)
+
+	# The preview keeps the card's own shape, which is what fork pictures are made for.
+	var preview: AspectRatioContainer = AspectRatioContainer.new()
+	preview.ratio = CARD_SIZE.x / CARD_SIZE.y
+	preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_cards_row.add_child(preview)
+
+	for i: int in _paths.size():
+		var row: Button = _make_list_row(i, _paths[i])
+		_list_rows.append(row)
+		rows.add_child(row)
+		var card: Control = _cards[i]
+		card.visible = false
+		preview.add_child(card)
+
+	var first: int = 0
+	for i: int in _paths.size():
+		if _is_selectable(i):
+			first = i
+			break
+	_select(first)
+	if not _is_auto_resolved():
+		_list_rows[first].grab_focus.call_deferred()
+
+
+# A compact row: the choice's picture, its name, and a line with what the card would say about it.
+func _make_list_row(index: int, path_data: Dictionary) -> Button:
+	var row: Button = Button.new()
+	row.custom_minimum_size.y = LIST_ROW_HEIGHT
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.toggle_mode = true
+	row.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
+	_style_list_row(row)
+
+	var margin: MarginContainer = MarginContainer.new()
+	for side: String in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(side, 8)
+	_fill(margin)
+	row.add_child(margin)
+	var line: HBoxContainer = HBoxContainer.new()
+	line.add_theme_constant_override("separation", 12)
+	margin.add_child(line)
+
+	var image_path: String = str(path_data.get("image_path", ""))
+	if image_path != "":
+		var thumb: JourneyImage = JourneyImage.new()
+		thumb.custom_minimum_size = LIST_THUMB_SIZE
+		if thumb.show_path(
+			image_path, TextureRect.EXPAND_IGNORE_SIZE, TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		):
+			line.add_child(thumb)
+		else:
+			thumb.queue_free()
+
+	var words: VBoxContainer = VBoxContainer.new()
+	words.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	words.alignment = BoxContainer.ALIGNMENT_CENTER
+	line.add_child(words)
+	var name_lbl: Label = Label.new()
+	name_lbl.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	name_lbl.text = _path_display_name(index).to_upper()
+	name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_lbl.add_theme_color_override("font_color", UITheme.WHITE_SOFT)
+	name_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(17))
+	words.add_child(name_lbl)
+	var detail: String = _row_detail_text(index, path_data)
+	if detail != "":
+		var detail_lbl: Label = Label.new()
+		detail_lbl.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		detail_lbl.text = detail
+		detail_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		var blocked: bool = not _is_auto_resolved() and not _is_selectable(index)
+		detail_lbl.add_theme_color_override(
+			"font_color", UITheme.ERROR_SOFT if blocked else UITheme.PURPLE_BRIGHT
+		)
+		detail_lbl.add_theme_font_size_override("font_size", UITheme.story_font_size(12))
+		words.add_child(detail_lbl)
+
+	_let_clicks_through(margin)
+	row.focus_entered.connect(_select.bind(index))
+	row.pressed.connect(_on_row_pressed.bind(index))
+	return row
+
+
+# A row reads as selected by a tinted fill and a brighter edge, rather than the solid fill of a pressed button, so its
+# text stays readable.
+func _style_list_row(row: Button) -> void:
+	var idle: StyleBoxFlat = StyleBoxFlat.new()
+	idle.bg_color = Color(UITheme.PURPLE_BRIGHT, 0.08)
+	idle.border_color = Color(UITheme.PURPLE_MID, 0.8)
+	idle.set_border_width_all(1)
+	idle.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	var hover: StyleBoxFlat = idle.duplicate()
+	hover.bg_color = Color(UITheme.PURPLE_BRIGHT, 0.18)
+	var selected: StyleBoxFlat = idle.duplicate()
+	selected.bg_color = Color(UITheme.PURPLE_BRIGHT, 0.3)
+	selected.border_color = UITheme.PURPLE_BRIGHT
+	selected.set_border_width_all(2)
+	var focus: StyleBoxFlat = StyleBoxFlat.new()
+	focus.draw_center = false
+	focus.border_color = UITheme.WHITE_SOFT
+	focus.set_border_width_all(1)
+	focus.set_corner_radius_all(UITheme.CORNER_RADIUS)
+	row.add_theme_stylebox_override("normal", idle)
+	row.add_theme_stylebox_override("hover", hover)
+	row.add_theme_stylebox_override("pressed", selected)
+	row.add_theme_stylebox_override("hover_pressed", selected)
+	row.add_theme_stylebox_override("focus", focus)
+
+
+# The row's line under the name: its round count, then what it costs or needs, as its card shows them.
+func _row_detail_text(index: int, path_data: Dictionary) -> String:
+	var parts: PackedStringArray = []
+	if show_round_counts:
+		var round_count: int = int(
+			path_data.get("round_count", (path_data.get("rounds", []) as Array).size())
+		)
+		parts.append("%d ROUND%s" % [round_count, "S" if round_count != 1 else ""])
+	if _resolution == "sacrifice":
+		var cost: int = int(path_data.get("cost", 0))
+		var required_item: String = str(path_data.get("required_item", ""))
+		var cost_text: String = _cost_text(cost, required_item)
+		parts.append(cost_text if _is_selectable(index) else "✕ " + cost_text)
+	elif _resolution == "conditional":
+		var requirement: String = _conditional_req_text(index, path_data)
+		if requirement != "":
+			parts.append(("🔒 " if _cond_locked(index, path_data) else "") + requirement)
+	return "   ·   ".join(parts)
+
+
+# The row's contents are for show: the row itself takes the click.
+func _let_clicks_through(control: Control) -> void:
+	control.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for child: Node in control.get_children():
+		if child is Control:
+			_let_clicks_through(child)
+
+
+func _on_row_pressed(index: int) -> void:
+	var already_selected: bool = (
+		index == _selected and _selected_on_frame != Engine.get_process_frames()
+	)
+	_select(index)
+	if already_selected and _is_selectable(index):
+		_on_path_chosen(index)
+
+
+# Shows `index` in the preview and marks its row.
+func _select(index: int) -> void:
+	if index < 0 or index >= _list_rows.size():
+		return
+	if index != _selected:
+		_selected = index
+		_selected_on_frame = Engine.get_process_frames()
+	for i: int in _list_rows.size():
+		_list_rows[i].set_pressed_no_signal(i == index)
+		(_cards[i] as Control).visible = i == index
+	_list_scroll.ensure_control_visible(_list_rows[index])
 
 
 # Anchors a control to fill its parent completely.
@@ -551,6 +753,9 @@ func reveal(index: int, caption: String = "FATE DECIDES…") -> void:
 	for b: Button in _choose_buttons:
 		b.disabled = true
 		b.visible = false
+	for row: Button in _list_rows:
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.focus_mode = Control.FOCUS_NONE
 	_fork_sub.text = tr(caption)
 
 	var n: int = _cards.size()
@@ -567,12 +772,14 @@ func reveal(index: int, caption: String = "FATE DECIDES…") -> void:
 	await get_tree().create_timer(1.0).timeout
 
 	# Roulette: cycle the highlight, decelerating, ending exactly on `index`.
-	var steps: int = n * 3 + index
+	var roll: Vector2i = reveal_roll(n, index)
+	var first: int = roll.x
+	var steps: int = roll.y
 	var delay: float = 0.05
 	for s in steps + 1:
-		_set_card_state(s % n, "active")
+		_set_card_state((first + s) % n, "active")
 		if s > 0:
-			_set_card_state((s - 1) % n, "idle")
+			_set_card_state((first + s - 1) % n, "idle")
 		await get_tree().create_timer(delay).timeout
 		delay = min(delay * 1.13, 0.32)
 
@@ -585,8 +792,20 @@ func reveal(index: int, caption: String = "FATE DECIDES…") -> void:
 	emit_signal("path_chosen", index)
 
 
+# Where the reveal's roll starts and how many steps it takes to land on `index` of `n` choices, as (first, steps): three
+# times round from the first, or, when that would take too long, REVEAL_MOST_STEPS started far enough back to land on it.
+static func reveal_roll(n: int, index: int) -> Vector2i:
+	var steps: int = n * 3 + index
+	if steps <= REVEAL_MOST_STEPS:
+		return Vector2i(0, steps)
+	return Vector2i(posmod(index - REVEAL_MOST_STEPS, n), REVEAL_MOST_STEPS)
+
+
 func _set_card_state(j: int, state: String) -> void:
 	if j < 0 or j >= _cards.size():
+		return
+	if _is_list_layout():
+		_set_row_state(j, state)
 		return
 	var c: Control = _cards[j]
 	match state:
@@ -594,11 +813,23 @@ func _set_card_state(j: int, state: String) -> void:
 			c.modulate = Color(1, 1, 1, 1)
 			c.scale = Vector2(1.06, 1.06)
 		"dim":
-			c.modulate = Color(1, 1, 1, 0.35)
+			c.modulate = DIMMED
 			c.scale = Vector2(1, 1)
 		_:
 			c.modulate = Color(1, 1, 1, 1)
 			c.scale = Vector2(1, 1)
+
+
+# The list's version of a card's reveal state: the lit row is selected, so its card shows in the preview.
+func _set_row_state(j: int, state: String) -> void:
+	match state:
+		"active":
+			_list_rows[j].modulate = Color.WHITE
+			_select(j)
+		"dim":
+			_list_rows[j].modulate = DIMMED
+		_:
+			_list_rows[j].modulate = Color.WHITE
 
 
 func _path_display_name(index: int) -> String:
@@ -643,8 +874,9 @@ func _apply_layout() -> void:
 	# Opaque so the paused round's frozen last frame doesn't bleed through behind the fork.
 	_backdrop.color = Color(0.0, 0.0, 0.0, 1.0)
 
-	_center_box.anchor_left = 0.1
-	_center_box.anchor_right = 0.9
+	# Wide: the cards stretch to fill it, and six of them use the room either side.
+	_center_box.anchor_left = 0.05
+	_center_box.anchor_right = 0.95
 	_center_box.anchor_top = 0.1
 	_center_box.anchor_bottom = 0.9
 	_center_box.offset_left = 0

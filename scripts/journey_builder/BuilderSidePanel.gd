@@ -79,6 +79,15 @@ var _owner: JourneyBuilder
 var _pool_drop: Dictionary = {}
 # Effect picker rows whose editor the author left open, by effect name — kept across panel rebuilds.
 var _effect_editors_open: Dictionary = {}
+# A fork's choices fold to one summary line each, with one open at a time: fork node id → the open choice's index,
+# kept across panel rebuilds. A fork not in here opens its first choice.
+var _open_fork_choice: Dictionary = {}
+# The shown fork's choice blocks, [{body, refresh_header}] by index, so a header click can fold the others in place without a
+# rebuild, which would jump the panel's scroll. Rebuilt with the panel.
+var _fork_choice_blocks: Array[Dictionary] = []
+# Set when a choice is opened from outside the panel (its canvas handle, or + ADD CHOICE), so the rebuilt panel scrolls
+# it into view.
+var _scroll_to_open_choice: bool = false
 # An override's play length tops out at ten minutes — far past any sensible item — so a typo can't unroll
 # an hour of points.
 const MAX_OVERRIDE_PLAY_SECS: int = 600
@@ -4918,10 +4927,28 @@ func _channel_overlay_row(
 	return row
 
 
+# Says how the player will see a fork with `choice_count` choices: side-by-side cards up to ForkScreen.CARD_LAYOUT_MOST,
+# a list with a large preview past that. Forks arranged on their picture place every choice themselves.
+func _fork_layout_note(choice_count: int) -> Label:
+	var note: Label = Label.new()
+	note.text = (
+		"Players see these as cards side by side (up to %d)." % ForkScreen.CARD_LAYOUT_MOST
+		if choice_count <= ForkScreen.CARD_LAYOUT_MOST
+		else (
+			"More than %d choices: players see a list with a large preview."
+			% ForkScreen.CARD_LAYOUT_MOST
+		)
+	)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", UITheme.TEXT_HINT)
+	note.add_theme_font_size_override("font_size", 10)
+	return note
+
+
 # The side-panel editor for a ghosted base FORK during rendition authoring. The base's prompt and its own
 # choices are shown read-only for context (they render identically when the base is played standalone);
 # below them the rendition can ADD overlay choices — append-anchors, each with its OWN name + card image +
-# target — up to the 4-choice ForkScreen cap. Base-owned config (prompt/resolution/base labels) is never
+# target, as many as the author wants. Base-owned config (prompt/resolution/base labels) is never
 # editable here; the base fork is never re-saved.
 func _make_rendition_fork_editor(node_id: String, node: Dictionary) -> Control:
 	var data: Dictionary = node.get("data", {})
@@ -4970,20 +4997,13 @@ func _make_rendition_fork_editor(node_id: String, node: Dictionary) -> Control:
 		else:
 			col.add_child(_make_base_choice_summary(out, ei))
 
-	# ForkScreen shows at most 4 choices — cap on the total (base slots + overlay choices).
-	if out.size() < 4:
-		var add_btn: Button = Button.new()
-		add_btn.text = "+ ADD OVERLAY CHOICE"
-		add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		UITheme.style_button(add_btn, UITheme.CYAN)
-		add_btn.pressed.connect(func() -> void: _owner._add_overlay_fork_choice(node_id))
-		col.add_child(add_btn)
-	else:
-		var capped: Label = Label.new()
-		capped.text = "Fork is full — 4 choices max."
-		capped.add_theme_color_override("font_color", UITheme.TEXT_HINT)
-		capped.add_theme_font_size_override("font_size", 10)
-		col.add_child(capped)
+	var add_btn: Button = Button.new()
+	add_btn.text = "+ ADD OVERLAY CHOICE"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.CYAN)
+	add_btn.pressed.connect(func() -> void: _owner._add_overlay_fork_choice(node_id))
+	col.add_child(add_btn)
+	col.add_child(_fork_layout_note(out.size()))
 
 	return col
 
@@ -5398,17 +5418,25 @@ func _make_graph_fork_editor(node_id: String, node: Dictionary, reselect: Callab
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("CHOICES"))
 
+	_fork_choice_blocks.clear()
+	# -1 is every choice folded; an index past the end (a choice was deleted) opens the last.
+	var open_choice: int = mini(int(_open_fork_choice.get(node_id, 0)), out.size() - 1)
 	for ei in out.size():
-		col.add_child(_make_graph_choice_block(node_id, out, ei, resolution, metric, reselect))
+		var block: Control = _make_graph_choice_block(
+			node_id, out, ei, resolution, metric, reselect, ei == open_choice
+		)
+		col.add_child(block)
+		if ei == open_choice and _scroll_to_open_choice:
+			_scroll_to_open_choice = false
+			_scroll_side_panel_to.call_deferred(block)
 
-	# Cap at 4 to match the proven ForkScreen choice layout.
-	if out.size() < 4:
-		var add_btn: Button = Button.new()
-		add_btn.text = "+ ADD CHOICE"
-		add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		UITheme.style_button(add_btn, UITheme.PURPLE_MID)
-		add_btn.pressed.connect(func() -> void: _owner._add_fork_edge(node_id))
-		col.add_child(add_btn)
+	var add_btn: Button = Button.new()
+	add_btn.text = "+ ADD CHOICE"
+	add_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_button(add_btn, UITheme.PURPLE_MID)
+	add_btn.pressed.connect(func() -> void: _owner._add_fork_edge(node_id))
+	col.add_child(add_btn)
+	col.add_child(_fork_layout_note(out.size()))
 
 	return col
 
@@ -5461,7 +5489,13 @@ func _add_choice_resolution_and_effects(
 # resolution field (weight / threshold / cost / required item — reusing the tree helpers, which
 # write to out[ei] just as they do for a tree path), and the "LEADS TO" wiring (connect / clear).
 func _make_graph_choice_block(
-	node_id: String, out: Array, ei: int, resolution: String, metric: String, reselect: Callable
+	node_id: String,
+	out: Array,
+	ei: int,
+	resolution: String,
+	metric: String,
+	reselect: Callable,
+	is_open: bool
 ) -> Control:
 	var edge: Dictionary = out[ei]
 
@@ -5487,12 +5521,17 @@ func _make_graph_choice_block(
 	var hdr: HBoxContainer = HBoxContainer.new()
 	hdr.add_theme_constant_override("separation", ROW_SEP)
 	sub.add_child(hdr)
-	var choice_lbl: Label = Label.new()
-	choice_lbl.text = tr("CHOICE %d") % (ei + 1)
-	choice_lbl.add_theme_color_override("font_color", UITheme.MAGENTA)
-	choice_lbl.add_theme_font_size_override("font_size", 11)
-	choice_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hdr.add_child(choice_lbl)
+	# The header is the choice's summary line, and clicking it opens this choice and folds the rest.
+	var header: Button = Button.new()
+	header.flat = true
+	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	header.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_theme_color_override("font_color", UITheme.MAGENTA)
+	header.add_theme_color_override("font_hover_color", UITheme.WHITE_SOFT)
+	header.add_theme_font_size_override("font_size", 11)
+	header.pressed.connect(func() -> void: _open_choice_block(node_id, ei))
+	hdr.add_child(header)
 	# A fork needs ≥2 choices (matches the tree's path minimum + ForkScreen).
 	if out.size() > 2:
 		var rm_btn: Button = UITheme.make_icon_btn("✕", false, UITheme.MAGENTA)
@@ -5500,29 +5539,42 @@ func _make_graph_choice_block(
 		rm_btn.pressed.connect(func() -> void: _owner._remove_fork_edge(node_id, ei))
 		hdr.add_child(rm_btn)
 
-	sub.add_child(_side_field_label("NAME"))
+	var body: VBoxContainer = VBoxContainer.new()
+	body.add_theme_constant_override("separation", 4)
+	body.visible = is_open
+	sub.add_child(body)
+	var refresh_header: Callable = func() -> void:
+		header.text = _choice_header_text(out[ei], ei, body.visible, resolution, metric)
+	refresh_header.call()
+	_fork_choice_blocks.append({"body": body, "refresh_header": refresh_header})
+
+	body.add_child(_side_field_label("NAME"))
 	var name_edit: LineEdit = LineEdit.new()
 	name_edit.placeholder_text = "Choice name..."
 	name_edit.text = edge.get("name", "")
 	UITheme.style_line_edit(name_edit)
-	name_edit.text_changed.connect(func(v: String) -> void: out[ei]["name"] = v)
-	sub.add_child(name_edit)
+	name_edit.text_changed.connect(
+		func(v: String) -> void:
+			out[ei]["name"] = v
+			refresh_header.call()
+	)
+	body.add_child(name_edit)
 
-	sub.add_child(_side_field_label("DESCRIPTION"))
+	body.add_child(_side_field_label("DESCRIPTION"))
 	var cdesc_edit: LineEdit = LineEdit.new()
 	cdesc_edit.placeholder_text = "Description (optional)..."
 	cdesc_edit.text = edge.get("description", "")
 	UITheme.style_line_edit(cdesc_edit)
 	cdesc_edit.text_changed.connect(func(v: String) -> void: out[ei]["description"] = v)
-	sub.add_child(cdesc_edit)
+	body.add_child(cdesc_edit)
 
-	sub.add_child(_side_field_label("CARD IMAGE"))
+	body.add_child(_side_field_label("CARD IMAGE"))
 	var img_zone: PanelContainer = DropZoneScript.new()
 	img_zone.accepted_extensions = JourneyData.ANIMATED_IMAGE_EXTENSIONS.duplicate()
 	img_zone.picker_title = "Select Card Image for Choice %d" % (ei + 1)
 	img_zone.picker_filters = ["*.png,*.jpg,*.jpeg,*.webp ; Image Files"]
 	img_zone.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sub.add_child(img_zone)
+	body.add_child(img_zone)
 	if edge.get("image_path", "") != "":
 		img_zone.call_deferred("set_file", edge["image_path"])
 	var img_rm_btn: Button = Button.new()
@@ -5542,17 +5594,17 @@ func _make_graph_choice_block(
 			out[ei]["image_path"] = p
 			img_rm_btn.visible = true
 	)
-	sub.add_child(img_rm_btn)
-	sub.add_child(_make_image_fit_field(out[ei], "stretch"))
+	body.add_child(img_rm_btn)
+	body.add_child(_make_image_fit_field(out[ei], "stretch"))
 
 	# Per-resolution gate field(s) + on-take effects (flags/counters). Shared with rendition overlay
 	# choices so an overlay option behaves exactly like a native one.
 	_add_choice_resolution_and_effects(
-		sub, out, ei, resolution, metric, func() -> void: reselect.call(ei)
+		body, out, ei, resolution, metric, func() -> void: reselect.call(ei)
 	)
 	# LEADS TO — the choice's target node, wired via connect mode.
-	sub.add_child(_side_section_separator())
-	sub.add_child(_side_field_label("LEADS TO"))
+	body.add_child(_side_section_separator())
+	body.add_child(_side_field_label("LEADS TO"))
 	var to_id: String = str(edge.get("to", ""))
 	var target_lbl: Label = Label.new()
 	target_lbl.text = (
@@ -5562,7 +5614,7 @@ func _make_graph_choice_block(
 		"font_color", UITheme.SUCCESS if to_id != "" else UITheme.DARK_TEXT
 	)
 	target_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sub.add_child(target_lbl)
+	body.add_child(target_lbl)
 
 	var connecting: bool = _owner._connecting_from == node_id and _owner._connecting_edge_idx == ei
 	var conn_btn: Button = UITheme.make_icon_btn(
@@ -5570,16 +5622,82 @@ func _make_graph_choice_block(
 	)
 	conn_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	conn_btn.pressed.connect(func() -> void: _owner._begin_connect_fork_edge(node_id, ei))
-	sub.add_child(conn_btn)
+	body.add_child(conn_btn)
 	if to_id != "":
 		var clear_btn: Button = UITheme.make_icon_btn(
 			"✂ CLEAR (END ON THIS CHOICE)", false, UITheme.PURPLE_MID
 		)
 		clear_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		clear_btn.pressed.connect(func() -> void: _owner._clear_fork_edge(node_id, ei))
-		sub.add_child(clear_btn)
+		body.add_child(clear_btn)
 
 	return panel
+
+
+# Opens choice `index` of the fork being shown and folds the others, in place. Clicking the open one folds it too.
+func _open_choice_block(node_id: String, index: int) -> void:
+	var opening: bool = not (_fork_choice_blocks[index]["body"] as Control).visible
+	_open_fork_choice[node_id] = index if opening else -1
+	for i: int in _fork_choice_blocks.size():
+		var block: Dictionary = _fork_choice_blocks[i]
+		(block["body"] as Control).visible = opening and i == index
+		(block["refresh_header"] as Callable).call()
+
+
+# Brings `control` into view in the side panel, once the rebuilt panel has been laid out.
+func _scroll_side_panel_to(control: Control) -> void:
+	if is_instance_valid(control) and is_instance_valid(_owner._side_scroll):
+		_owner._side_scroll.ensure_control_visible(control)
+
+
+# Shows choice `index` open the next time this fork's panel is built: for the canvas, when a choice's handle is
+# clicked, and for a choice just added.
+func open_fork_choice(node_id: String, index: int) -> void:
+	_open_fork_choice[node_id] = index
+	_scroll_to_open_choice = true
+
+
+# A choice's one-line summary: open or folded, its number and name, what its fork weighs it by, and where it leads.
+func _choice_header_text(
+	edge: Dictionary, index: int, is_open: bool, resolution: String, metric: String
+) -> String:
+	var parts: PackedStringArray = []
+	var name: String = str(edge.get("name", "")).strip_edges()
+	parts.append(name if name != "" else "(no name)")
+	var gate: String = _choice_gate_summary(edge, resolution, metric)
+	if gate != "":
+		parts.append(gate)
+	var to_id: String = str(edge.get("to", ""))
+	parts.append("→ " + (_graph_node_label(to_id) if to_id != "" else "ends the run"))
+	return "%s %d · %s" % ["▾" if is_open else "▸", index + 1, "  ·  ".join(parts)]
+
+
+# What a folded choice shows of its gate: its weight, cost or requirement, as the fork resolves.
+func _choice_gate_summary(edge: Dictionary, resolution: String, metric: String) -> String:
+	match resolution:
+		"random":
+			return "weight %d" % int(edge.get("weight", 1))
+		"sacrifice":
+			var cost: int = int(edge.get("cost", 0))
+			var item: String = str(edge.get("required_item", "")).strip_edges()
+			if cost <= 0 and item == "":
+				return "free"
+			return " + ".join(
+				PackedStringArray(
+					(["♦%d" % cost] if cost > 0 else []) + (["needs an item"] if item != "" else [])
+				)
+			)
+		"conditional":
+			match metric:
+				"item":
+					return "needs an item" if str(edge.get("required_item", "")) != "" else ""
+				"flag":
+					var flag: String = str(edge.get("required_flag", ""))
+					return "needs flag %s" % flag if flag != "" else ""
+				_:
+					var threshold: int = int(edge.get("threshold", 0))
+					return "%s ≥ %d" % [metric, threshold] if threshold > 0 else ""
+	return ""
 
 
 # Whether `node_id` can carry an aftercare link: a journey round — not one inside an aftercare sequence,

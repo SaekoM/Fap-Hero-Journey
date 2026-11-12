@@ -185,8 +185,8 @@ func test_placing_a_stop_the_bar_needs_the_build_that_plays_it() -> void:
 	]
 	var plays_bar: Dictionary = {"nodes": {"a": {"type": "minigame", "data": {"game": "bar"}}}}
 	var plays_safe: Dictionary = {"nodes": {"a": {"type": "minigame", "data": {"game": "safe"}}}}
-	assert_bool(JourneyData.graph_needs_newer_game(plays_bar, library)).is_true()
-	assert_bool(JourneyData.graph_needs_newer_game(plays_safe, library)).is_false()
+	assert_bool(JourneyData.graph_needs_newer_build(plays_bar, library)).is_true()
+	assert_bool(JourneyData.graph_needs_newer_build(plays_safe, library)).is_false()
 	assert_str(JourneyData.content_min_version(false, true, true)).is_equal(
 		JourneyData.JOURNEY_MIN_APP_VERSION_NEWER_GAMES
 	)

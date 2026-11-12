@@ -41,6 +41,18 @@
   Press-only events play exactly as before. Journeys with Hold or Mash prompts need FHJ 0.9.3 or newer.
 - **Quick-Time Event dodges are staged.** A dodge now ends with a stamped **DODGED** and a streak of light, and a
   failure with a stamped **HIT**, red edges and a shake.
+### ◆ Forks
+
+- **Forks can have any number of choices.** The limit of 4 is gone. Up to 6 choices show as cards side by side, as
+  before. More than that show as a scrolling list beside a large preview of the selected choice's card: click or arrow
+  to a choice to preview it, then click it again, press **Enter** or click **> CHOOSE**. A random or conditional fork's
+  reveal rolls through the list the same way, and takes no longer however many choices there are. New choices are
+  named Path A to Path Z, then numbered. The audit notes a player-picked fork with more than 10 choices. Journeys with a
+  fork of more than 4 choices need FHJ 0.9.3 or newer.
+- **Fork choices are easier to find in the builder.** Each choice folds to a one-line summary (number, name, weight,
+  cost or requirement, and where it leads), and only the one being edited is open. Clicking a choice's handle on the
+  canvas opens the fork with that choice ready to edit, and a new choice opens as soon as it's added.
+
 ### ◆ Cast
 
 - **Storyboard characters can make an entrance.** Each character on a line now has **Enter/react**, played when they
@@ -55,6 +67,9 @@
 
 ### ◆ Builder
 
+- **Arrange just a selection.** With two or more nodes selected, **⊞ ARRANGE** becomes **⊞ ARRANGE N** and tidies only
+  those nodes, laid out by the links between them, in the same spot on the map. Nothing else moves, and they stay
+  selected. With fewer selected it arranges the whole map as before.
 - **Free shops.** A shop's **PRICE MULTIPLIER** can now be 0, which makes everything in it free. Prices read
   **FREE** instead of ♦ 0.
 - **± STATE shows mini-games.** Flags, counters and items a mini-game can change now appear on the map and

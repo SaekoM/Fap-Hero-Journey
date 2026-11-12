@@ -1520,16 +1520,19 @@ const JOURNEY_MIN_APP_VERSION_WIDE_CODECS: String = "0.8.4"
 # heard of, so the journey has to be refused at load, where JourneySelect explains why.
 const JOURNEY_MIN_APP_VERSION_MINIGAMES: String = "0.9.2"
 
-# The floor a journey needs once it places a game newer than that (MiniGameLibrary.NEWER_KINDS).
+# The floor a journey needs once it places a game newer than that (MiniGameLibrary.NEWER_KINDS), or a fork with more
+# choices than older builds' fork screen could lay out.
 const JOURNEY_MIN_APP_VERSION_NEWER_GAMES: String = "0.9.3"
+# Older builds show a fork's choices as one row of cards that fits this many.
+const OLDER_BUILDS_FORK_CHOICES: int = 4
 
 
 # The MinVersion a save should stamp: the highest floor any of the journey's content needs, or "" for
 # the standing one. Each floor is newer than the one before it, so the newest that applies wins.
 static func content_min_version(
-	keeps_wide_codecs: bool, places_minigames: bool, places_newer_games: bool = false
+	keeps_wide_codecs: bool, places_minigames: bool, needs_newer_build: bool = false
 ) -> String:
-	if places_newer_games:
+	if needs_newer_build:
 		return JOURNEY_MIN_APP_VERSION_NEWER_GAMES
 	if places_minigames:
 		return JOURNEY_MIN_APP_VERSION_MINIGAMES
@@ -1538,13 +1541,19 @@ static func content_min_version(
 	return ""
 
 
-# Whether the graph plays a game from `library` that needs a newer build than the first mini-games did: a newer
-# kind on a mini-game node, or a Quick-Time Event with Hold or Mash prompts in a boss encounter. A rendition's
-# nodes can also play its base's games, which the base's own floor already covers.
-static func graph_needs_newer_game(graph: Dictionary, library: Array) -> bool:
+# Whether the graph needs a newer build than the first mini-games did (JOURNEY_MIN_APP_VERSION_NEWER_GAMES): a newer
+# game kind on a mini-game node, a Quick-Time Event with Hold or Mash prompts in a boss encounter, or a fork with more
+# choices than older builds could lay out. A rendition's nodes can also play its base's games, which the base's own
+# floor already covers.
+static func graph_needs_newer_build(graph: Dictionary, library: Array) -> bool:
 	for node: Variant in (graph.get("nodes", {}) as Dictionary).values():
 		if not (node is Dictionary):
 			continue
+		if (
+			str((node as Dictionary).get("type", "")) == "fork"
+			and ((node as Dictionary).get("out", []) as Array).size() > OLDER_BUILDS_FORK_CHOICES
+		):
+			return true
 		var data: Dictionary = (node as Dictionary).get("data", {})
 		for game_id: Variant in RoundTimeline.qte_games_on_node(data):
 			var qte: Dictionary = MiniGameLibrary.find(library, str(game_id))
@@ -4106,6 +4115,13 @@ static func validate(items: Array, journey_name: String) -> String:
 # Recursively validates a fork. Returns "" if OK, or an error message.
 # `context_label` is used in messages so the user knows where the error is
 # (e.g. "fork after round 3" or "nested fork in path \"Path A\"").
+# The name a new fork choice starts with: Path A to Path Z, then numbered.
+static func default_fork_choice_name(existing_choices: int) -> String:
+	if existing_choices < 26:
+		return "Path %s" % char(65 + existing_choices)
+	return "Path %d" % (existing_choices + 1)
+
+
 static func validate_fork(fork_item: Dictionary, context_label: String) -> String:
 	var paths: Array = fork_item.get("paths", [])
 	if paths.size() < 2:

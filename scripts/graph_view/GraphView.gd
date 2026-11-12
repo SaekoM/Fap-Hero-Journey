@@ -159,6 +159,8 @@ var _connect_drag_invalid: Dictionary = {}  # node ids that can't be targets (so
 # Aftercare links (a round's "I came" target — JourneyGraph.AFTERCARE_KEY). Each round gets a second handle
 # on its RIGHT side for them, revealed on hover / selection and kept once wired; the links draw dashed
 # rose and faint, lighting up while either end is hovered or selected. Editor only — never on the map.
+# A press and release on an out-handle closer together than this, in canvas pixels, is a click, not a drag.
+const HANDLE_CLICK_SLOP: float = 6.0
 const AFTERCARE_EDGE_IDX: int = -2  # edge_drawn's edge_idx for a drag from an aftercare handle
 const AFTERCARE_FAINT_ALPHA: float = 0.25  # an unfocused aftercare link's opacity
 var _aftercare_handles: Dictionary = {}  # round id -> its aftercare handle (rebuilt each layout)
@@ -187,6 +189,8 @@ signal connect_target_picked(node_id: String)
 signal nodes_drag_started
 # An out-handle was dragged onto a target node — the builder wires source→target (edge_idx = fork
 # choice, or -1 for a regular node's single out-edge), reusing its connect validation + undo.
+# A fork choice's out-handle was clicked rather than dragged: the builder opens that choice's editor.
+signal fork_choice_clicked(fork_id: String, edge_idx: int)
 signal edge_drawn(source_id: String, edge_idx: int, target_id: String)  # edge_idx AFTERCARE_EDGE_IDX = an aftercare link
 
 # A sticky-note comment was clicked (a press with no drag) — the builder shows its editor.
@@ -986,6 +990,14 @@ func _handle_connect_drag_input(event: InputEvent) -> void:
 			# Valid drop only: a node, not the source, not an ancestor (which would form a cycle).
 			if target != "" and target != src and not _connect_drag_invalid.has(target):
 				edge_drawn.emit(src, eidx, target)
+			elif (
+				eidx >= 0
+				and (
+					_connect_drag_from.distance_to(_canvas.get_local_mouse_position())
+					< HANDLE_CLICK_SLOP
+				)
+			):
+				fork_choice_clicked.emit(src, eidx)
 			get_viewport().set_input_as_handled()
 
 

@@ -178,4 +178,4 @@ func test_a_definition_survives_the_library() -> void:
 func test_placing_one_needs_the_build_that_plays_it() -> void:
 	var library: Array = [{"id": "hold", "kind": HoldReleaseGame.KIND}]
 	var graph: Dictionary = {"nodes": {"a": {"type": "minigame", "data": {"game": "hold"}}}}
-	assert_bool(JourneyData.graph_needs_newer_game(graph, library)).is_true()
+	assert_bool(JourneyData.graph_needs_newer_build(graph, library)).is_true()

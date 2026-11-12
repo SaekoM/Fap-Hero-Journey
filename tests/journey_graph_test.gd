@@ -507,6 +507,32 @@ func test_auto_layout_layers_and_no_overlap() -> void:
 	assert_float(g["nodes"]["x"]["pos"].x).is_equal(px)
 
 
+# Arranging a selection lays out just those nodes, by the links among them, keeps the block's top edge and centre
+# where they were, and leaves every other node alone.
+func test_arranging_a_selection_moves_only_those_nodes_and_keeps_their_place() -> void:
+	var round_to: Callable = func(to: String, pos: Vector2) -> Dictionary:
+		return {"type": "round", "data": {}, "out": [{"to": to}] if to != "" else [], "pos": pos}
+	var g: Dictionary = {
+		"start": "a",
+		"nodes":
+		{
+			"a": round_to.call("b", Vector2(0, 0)),
+			"b": round_to.call("c", Vector2(960, 480)),  # a tangle: b below and far right of c
+			"c": round_to.call("d", Vector2(480, 240)),
+			"d": round_to.call("", Vector2(-2000, 3000)),
+		}
+	}
+	GraphLayout.auto_layout_nodes(g, ["b", "c"])
+	var b: Vector2 = g["nodes"]["b"]["pos"]
+	var c: Vector2 = g["nodes"]["c"]["pos"]
+	assert_float(b.y).is_less(c.y)  # b feeds c, so it sits a row above
+	assert_float(b.y).is_equal(240.0)  # the block's top edge stays where the selection's was
+	assert_bool(g["nodes"]["a"]["pos"] == Vector2(0, 0)).is_true()  # the rest don't move
+	assert_bool(g["nodes"]["d"]["pos"] == Vector2(-2000, 3000)).is_true()
+	GraphLayout.auto_layout_nodes(g, ["c"])  # one node: nothing to arrange
+	assert_bool(g["nodes"]["c"]["pos"] == c).is_true()
+
+
 # ── Catalogue preview reconstruction (detail-modal forks) ───────────────────
 # parse_graph rebuilds an approximate nested tree from the graph so the JourneySelect
 # detail modal shows the real fork structure (not a flat round list). The inverse of the

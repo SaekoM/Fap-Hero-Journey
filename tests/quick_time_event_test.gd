@@ -367,8 +367,8 @@ func test_a_boss_encounter_with_holds_raises_the_journeys_floor() -> void:
 	var graph_with: Callable = func(game_id: String) -> Dictionary:
 		var event: Dictionary = {"track": RoundTimeline.TRACK_QTE, "game": game_id}
 		return {"nodes": {"n1": {"type": "round", "data": {"timeline": {"events": [event]}}}}}
-	assert_bool(JourneyData.graph_needs_newer_game(graph_with.call("q_hold"), library)).is_true()
-	assert_bool(JourneyData.graph_needs_newer_game(graph_with.call("q_plain"), library)).is_false()
+	assert_bool(JourneyData.graph_needs_newer_build(graph_with.call("q_hold"), library)).is_true()
+	assert_bool(JourneyData.graph_needs_newer_build(graph_with.call("q_plain"), library)).is_false()
 
 
 # ── Hold ─────────────────────────────────────────────────────────────────────

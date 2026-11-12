@@ -51,6 +51,10 @@ const SEV_DEAD: String = "dead"  # can never happen — dead authored content
 const SEV_WARN: String = "warn"  # fails on some routes / some runs
 const SEV_INFO: String = "info"  # worth knowing; not necessarily a problem
 
+# A fork the player picks from with more choices than this gets a note: past here, a choice gets skimmed rather than
+# weighed. Only a note, since a fork has no limit.
+const MANY_FORK_CHOICES: int = 10
+
 # The tag (data/tags.json) that marks a journey as written for multi-axis devices.
 const MULTI_AXIS_TAG: String = "multi_axis"
 # The tag that marks a journey as having mini-games in it.
@@ -795,6 +799,27 @@ static func _fork_findings(id: String, node: Dictionary, flow: Dictionary) -> Ar
 	var guar: Dictionary = flow["guaranteed"].get(id, {})
 	var poss: Dictionary = flow["possible"].get(id, {})
 	var in_flags: Dictionary = flow["flags"].get(id, {})
+
+	var player_picks: bool = (
+		resolution in ["choice", "sacrifice"]
+		or (resolution == "conditional" and str(data.get("cond_decider", "game")) == "player")
+	)
+	if player_picks and out.size() > MANY_FORK_CHOICES:
+		(
+			findings
+			. append(
+				_finding(
+					SEV_INFO,
+					"many_fork_choices",
+					id,
+					-1,
+					(
+						"This fork offers %d choices. Past %d, players tend to skim a list rather than weigh each one."
+						% [out.size(), MANY_FORK_CHOICES]
+					)
+				)
+			)
+		)
 
 	for ei: int in out.size():
 		var e: Dictionary = out[ei]
