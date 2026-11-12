@@ -39,6 +39,13 @@ const TIER_UP_BURST_STRENGTH: float = 0.5
 const BANKED_BURST_STRENGTH: float = 0.6
 # From this risk, the risk reads as a warning and the stack creaks.
 const WARNING_RISK_PCT: int = 50
+
+# Device: a stroke that quickens with the risk shown, set again after each draw lands. On a serial multi-axis device the
+# roll swings to the stack's sway, wider and quicker as the risk shown rises. Both go by the risk on show, which only
+# changes once a piece lands, so neither can give a hovering draw away. A shield taking a trap jolts; a bust jolts and
+# stops; banking or clearing the bag nods and eases.
+const CALM_HALF_CYCLE_MS: int = 1400
+const RISKY_HALF_CYCLE_MS: int = 300
 const CREAK_GAP_FAR: float = 1.1
 const CREAK_GAP_NEAR: float = 0.45
 const CREAK_PITCH_FAR: float = 0.8
@@ -87,9 +94,12 @@ var _definition: Dictionary
 var _accent: Color = Color.WHITE  # the creator's accent colour, or the app's
 var _game: PushYourLuckGame
 var _character: GameCharacterView = null  # stands outside the panel; owned by MiniGameScreen
+var _device: MiniGameDevice
 # True from PUSH until the player can choose again. Every way of acting checks it, because E goes straight to _push:
 # disabling the buttons doesn't stop a key.
 var _locked: bool = false
+# The roll waits until then (Time.get_ticks_msec) while a jolt plays, which may be on the roll itself.
+var _roll_resumes_ms: int = 0
 var _done: bool = false
 var _shown_pot: int = 0
 var _creak_left: float = 0.0
@@ -107,10 +117,16 @@ var _bank_btn: Button
 var _push_btn: Button
 
 
-func setup(definition: Dictionary, game: PushYourLuckGame, character: GameCharacterView) -> void:
+func setup(
+	definition: Dictionary,
+	game: PushYourLuckGame,
+	device: MiniGameDevice,
+	character: GameCharacterView
+) -> void:
 	_definition = definition
 	_accent = MiniGameLibrary.accent_color(definition)
 	_game = game
+	_device = device
 	_character = character
 	add_theme_constant_override("separation", 24)
 	alignment = BoxContainer.ALIGNMENT_CENTER
@@ -198,6 +214,8 @@ func _bag_tile(token: String, tile_name: String, is_bad_news: bool) -> PanelCont
 
 
 func _process(delta: float) -> void:
+	if not _done and Time.get_ticks_msec() >= _roll_resumes_ms:
+		_device.follow_axes(MiniGameAxes.stack_roll(_stack.sway_wave(), _stack.sway_share))
 	# The stack creaks at a high risk, but not during a push: the game already knows the result by then, and the risk it
 	# reads would give the draw away.
 	if _done or _locked or _game.risk_pct() < WARNING_RISK_PCT:
@@ -230,6 +248,7 @@ func _bank() -> void:
 	waiting_changed.emit(false)
 	UISound.banked()
 	_react("banked")
+	_device.play_axis_moves_then(MiniGameAxes.WIN_NOD, _device.ease_out)
 	_stack.settle()
 	_stack.sweep_to(_point_in_stack(_pot_label))
 	_show_stamp("BANKED", _accent)
@@ -302,6 +321,9 @@ func _land_piece() -> void:
 # A trap, but a shield takes it: no piece, the stack shudders, and the shield is gone.
 func _block_trap() -> void:
 	_stack.block_trap()
+	var jolt: Array[Dictionary] = _jolt()
+	_device.play_axis_moves(jolt)
+	_roll_resumes_ms = Time.get_ticks_msec() + MiniGameAxes.moves_ms(jolt)
 	_stack.shields_up = _game.shields_held
 	UISound.gauge_shield_block()
 	_react("win")
@@ -388,6 +410,7 @@ func _bust() -> void:
 	UISound.bust_sting()
 	_stack.art.play_fall_sound()
 	_react("bust")
+	_device.play_axis_moves_then(_jolt(), _device.stop)
 	_stack.topple()
 	_risk_meter.set_risk(0.0)
 	_risk_label.text = ""
@@ -406,6 +429,7 @@ func _clear_bag() -> void:
 	_done = true
 	UISound.jackpot_sting()
 	_feedback.text = "NOTHING LEFT BUT TRAPS"
+	_device.play_axis_moves_then(MiniGameAxes.WIN_NOD, _device.ease_out)
 	_stack.turn_gold()
 	MiniGameFx.burst(_stack, _stack.top_point(), 1.0)
 	var second_burst: Tween = create_tween()
@@ -423,6 +447,7 @@ func time_out() -> void:
 		return
 	_done = true
 	_game.bank()
+	_device.ease_out()
 	finished.emit(_game.final_tier_id(_tiers()), "TIME'S UP  —  BANKED %d" % _game.pot)
 
 
@@ -491,6 +516,7 @@ func _shatter_pot() -> void:
 func _refresh() -> void:
 	var risk: int = _game.risk_pct()
 	_stack.sway_share = risk / 100.0
+	_device.hold(0, 100, risk_half_cycle_ms(_stack.sway_share))
 	_refresh_bag()
 	if _game.is_finished():
 		_risk_label.text = ""
@@ -620,6 +646,15 @@ func _point_in_stack(control: Control) -> Vector2:
 
 func _tiers() -> Array:
 	return _definition["tiers"]
+
+
+# The stroke for a risk of `risk_share`, 0-1: slow when safe, quickening as the risk rises.
+static func risk_half_cycle_ms(risk_share: float) -> int:
+	return roundi(lerpf(CALM_HALF_CYCLE_MS, RISKY_HALF_CYCLE_MS, clampf(risk_share, 0.0, 1.0)))
+
+
+func _jolt() -> Array[Dictionary]:
+	return MiniGameAxes.wrong_try_jolt(_device.has_axis(MiniGameAxes.SWAY))
 
 
 func _set_buttons_enabled(enabled: bool) -> void:

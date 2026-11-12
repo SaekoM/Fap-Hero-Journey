@@ -7,6 +7,9 @@ extends VBoxContainer
 #
 # MiniGameScreen owns the intro and the result card, and passes in key and mouse events. A turn is scored from the
 # same clock reading the stage was last drawn at, so the player is judged on exactly what they saw.
+#
+# Device: each game drives the stroke and follows its stage on a secondary axis (the hooks below). Shared here: a dead-on
+# turn nods, a miss jolts sideways, the tally strokes slowly, and the result nods and eases home, or stops on a fail.
 
 signal finished(score: int)
 # True while the game waits on the player — the screen runs auto-advance only then.
@@ -39,10 +42,13 @@ const TALLY_TICK_PITCH_HIGH: float = 1.9
 const TIER_STING_PITCH_LOW: float = 1.0
 const TIER_STING_PITCH_HIGH: float = 1.2
 
+const ENDING_HALF_CYCLE_MS: int = 1400
+
 var _definition: Dictionary
 var _game: TurnScoreGame
 var _accent: Color = Color.WHITE  # the creator's accent colour, or the app's
 var _character: GameCharacterView = null  # stands outside the panel; owned by MiniGameScreen
+var _device: MiniGameDevice
 
 var _state: int = State.PLAYING
 var _landed_left: float = 0.0
@@ -56,9 +62,15 @@ var _feedback: Label
 var _hint: Label
 
 
-func setup(definition: Dictionary, game: TurnScoreGame, character: GameCharacterView) -> void:
+func setup(
+	definition: Dictionary,
+	game: TurnScoreGame,
+	device: MiniGameDevice,
+	character: GameCharacterView
+) -> void:
 	_definition = definition
 	_game = game
+	_device = device
 	_accent = MiniGameLibrary.accent_color(definition)
 	_character = character
 	add_theme_constant_override("separation", 12)
@@ -130,6 +142,16 @@ func _play_tick(_delta: float) -> void:
 	pass
 
 
+# Every frame of a turn and of the hold after it: move the secondary axis with the stage (MiniGameDevice.follow_axes).
+func _follow_stage_on_device() -> void:
+	pass
+
+
+# The nod for a dead-on turn and a passing result.
+func _celebration_nod() -> Array[Dictionary]:
+	return MiniGameAxes.WIN_NOD
+
+
 # What a dead-on turn is called.
 func _dead_on_word(_accuracy: float) -> String:
 	return "DEAD ON"
@@ -188,7 +210,9 @@ func _process(delta: float) -> void:
 	match _state:
 		State.PLAYING:
 			_play_tick(delta)
+			_follow_stage_on_device()
 		State.LANDED:
+			_follow_stage_on_device()
 			_landed_left -= delta
 			if _landed_left <= 0.0:
 				if _game.is_finished():
@@ -231,10 +255,12 @@ func _land_turn(
 	_feedback.text = _dead_on_word(accuracy) if dead_on else word
 	if dead_on:
 		_celebrate_dead_on(accuracy)
+		_device.play_axis_moves(_celebration_nod())
 	elif on_target:
 		UISound.dial_tick(lerpf(HIT_TICK_PITCH_LOW, HIT_TICK_PITCH_HIGH, accuracy))
 	else:
 		off_target_sound.call()
+		_device.play_axis_moves(MiniGameAxes.wrong_try_jolt(_device.has_axis(MiniGameAxes.SWAY)))
 	var colour: Color = UITheme.AMBER if on_target else UITheme.DANGER
 	_float_percent("%d%%" % roundi(accuracy * 100.0), colour)
 	# The last turn gets the game's ending instead.
@@ -275,6 +301,7 @@ func _begin_ending() -> void:
 	_state = State.ENDING
 	_hint.text = "PRESS E TO SKIP"
 	UITheme.style_label(_feedback, UITheme.WHITE_SOFT, UITheme.story_font_size(FINAL_FONT_SIZE))
+	_device.hold(0, 100, ENDING_HALF_CYCLE_MS)
 	_ending = create_tween()
 	for index: int in _game.accuracies.size():
 		_ending.tween_callback(_tally_lamp.bind(index))
@@ -304,6 +331,10 @@ func _land_result() -> void:
 	var tier_name: String = MiniGameResolver.tier_name(_definition, tier_id).to_upper()
 	_feedback.text = "%d%%  —  %s" % [_game.score(), tier_name]
 	_react_to_tier(strength)
+	if strength <= 0.0:
+		_device.stop()
+	else:
+		_device.play_axis_moves_then(_celebration_nod(), _device.ease_out)
 	if _game.is_flawless():
 		_celebrate_flawless()
 	elif strength <= 0.0:

@@ -3,6 +3,9 @@ extends TurnGameView
 
 # Stop the Bar's play view: a needle sweeps a bar, and a press stops it. The rules live in StopTheBarGame, and what
 # this shares with Hold & Release in TurnGameView.
+#
+# Device: a full stroke at the marker's pace, one stroke per crossing, so it quickens as the stops get harder. On a
+# serial multi-axis device the twist follows the needle from one side to the other.
 
 const TRAIL_STEPS: int = 5
 const TRAIL_STEP_MS: int = 16
@@ -25,6 +28,12 @@ func _hint_text() -> String:
 
 func _on_turn_starting() -> void:
 	_sweep_elapsed_ms = 0.0
+	var bar_game: StopTheBarGame = _game
+	_device.hold(0, 100, bar_game.current_sweep_ms())
+
+
+func _follow_stage_on_device() -> void:
+	_device.follow_axes(MiniGameAxes.needle_twist(_track.marker))
 
 
 func _on_press_in_play() -> void:

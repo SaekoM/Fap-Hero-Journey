@@ -148,3 +148,24 @@ func test_every_look_draws_in_every_state() -> void:
 		stage.topple()
 		await await_idle_frame()
 		remove_child(stage)
+
+
+# The widest swing, on top of the furthest a piece can land off-centre, keeps every look's pieces on the stage.
+func test_the_widest_swing_stays_on_the_stage() -> void:
+	for style: String in StackArt.STYLES:
+		var art: StackArt = StackArt.art_for(style)
+		var furthest: float = (
+			PushStackStage.LEAN_LIMIT + PushStackStage.SWAY_RISKY + art.piece_width() / 2.0
+		)
+		assert_float(furthest).is_less_equal(PushYourLuckView.STACK_WIDTH / 2.0)
+
+
+func test_the_stack_swings_wider_as_the_risk_rises() -> void:
+	var stage: PushStackStage = auto_free(PushStackStage.new())
+	stage.most_pieces = 10
+	stage.pieces = 5
+	stage.sway_share = 0.0
+	var safe_reach: float = stage._top_sway_reach()
+	stage.sway_share = 1.0
+	assert_float(safe_reach).is_greater(0.0)  # it moves a little even with no risk
+	assert_float(stage._top_sway_reach()).is_greater(safe_reach)

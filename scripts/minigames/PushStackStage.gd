@@ -2,7 +2,8 @@ class_name PushStackStage
 extends Control
 
 # Push Your Luck's stage: a stack on a table, in whichever look the creator picked, with a dotted outline of how tall it
-# could get. The pieces sway harder and land less straight as the risk rises. A pushed piece hovers above the stack
+# could get. The pieces sway wider and quicker, and land less straight, as the risk rises. The sway is the same swing
+# the device's roll follows (MiniGameAxes.stack_roll), sized the same way, so the player can see what they feel. A pushed piece hovers above the stack
 # before it lands or the stack comes down. PushYourLuckView drives it; none of this affects the result.
 
 const STAGE_HEIGHT: float = 300.0
@@ -15,10 +16,16 @@ const PIECE_GAP: float = 2.0
 const OUTLINE_ALPHA: float = 0.35
 const OUTLINE_DASH: float = 5.0
 
-const SWAY_MOST: float = 22.0
+# How far the top of a full-height stack swings either side, in pixels: a little even with no risk, most at the highest.
+# The widest, with the furthest a piece can land off-centre, still keeps the widest piece on the stage.
+const SWAY_SAFE: float = 10.0
+const SWAY_RISKY: float = 36.0
+# A short stack swings this share of that, growing to all of it as the stack reaches its full height.
+const SWAY_SHORT_STACK_SHARE: float = 0.6
+# How far the top piece tips, in radians, at the widest swing, so the swing reads as the stack rocking.
+const SWAY_TILT_MOST: float = 0.14
 const SWAY_SPEED_CALM: float = 1.4
 const SWAY_SPEED_RISKY: float = 4.0
-const SWAY_FULL_HEIGHT: float = 15.0
 const SETTLE_SECS: float = 0.5
 # How far a piece can land off-centre at the highest risk, on top of its look's own looseness. The offsets add up, so
 # a tall stack visibly leans.
@@ -64,6 +71,9 @@ var most_pieces: int = 1
 var sway_share: float = 0.0  # how risky the next push is, 0–1
 var shields_up: int = 0  # how many shields the player holds; drawn as a dome over the stack
 var clock: float = 0.0  # seconds, for the things that keep moving
+# How far through its swing the sway is, in radians. Counted up at the sway's speed rather than worked out from the
+# clock, so a change of speed when the risk changes carries on from where the swing was instead of jumping.
+var _sway_phase: float = 0.0
 
 var _leans: PackedFloat32Array = [0.0]  # how far off-centre each piece sits
 # Which token each piece came from. The first is the free draw the game starts with.
@@ -89,6 +99,7 @@ func _init() -> void:
 
 func _process(delta: float) -> void:
 	clock += delta
+	_sway_phase += delta * lerpf(SWAY_SPEED_CALM, SWAY_SPEED_RISKY, sway_share)
 	queue_redraw()
 
 
@@ -182,6 +193,12 @@ func top_point() -> Vector2:
 	return Vector2(size.x / 2.0 + _offset_at(pieces - 1), _piece_y(pieces - 1))
 
 
+# Where the sway is in its swing right now, -1 to 1, and 0 once the stack has settled: the beat every piece sways to,
+# for a device to swing with.
+func sway_wave() -> float:
+	return sin(_sway_phase) * _sway_scale
+
+
 func _table_y() -> float:
 	return size.y - TABLE_HEIGHT
 
@@ -191,13 +208,28 @@ func _piece_y(index: int) -> float:
 	return _table_y() - (index + 1) * (art.piece_height() + PIECE_GAP) + settled
 
 
-# How far piece `index` is off-centre right now: where it landed, plus the sway, which moves the top most.
+# How far piece `index` is off-centre right now: where it landed, plus the sway.
 func _offset_at(index: int) -> float:
 	var lean: float = _leans[mini(index, _leans.size() - 1)]
-	var height_share: float = index / SWAY_FULL_HEIGHT
-	var speed: float = lerpf(SWAY_SPEED_CALM, SWAY_SPEED_RISKY, sway_share)
-	var reach: float = SWAY_MOST * sway_share * pow(height_share, 1.5) * _sway_scale
-	return lean + sin(clock * speed) * reach
+	return lean + sway_wave() * _top_sway_reach() * _share_of_sway(index)
+
+
+# How far piece `index` tips with the sway, in radians.
+func _tilt_at(index: int) -> float:
+	var widest_share: float = _top_sway_reach() / SWAY_RISKY
+	return sway_wave() * SWAY_TILT_MOST * widest_share * _share_of_sway(index)
+
+
+# How far the top of the stack swings either side right now: wider as the risk rises, and as the stack grows.
+func _top_sway_reach() -> float:
+	var grown: float = clampf(float(pieces - 1) / maxf(1.0, most_pieces - 1), 0.0, 1.0)
+	return lerpf(SWAY_SAFE, SWAY_RISKY, sway_share) * lerpf(SWAY_SHORT_STACK_SHARE, 1.0, grown)
+
+
+# How much of the swing piece `index` gets: a little at the bottom, rising up the stack, curving so the stack bends
+# rather than sliding along the table. All of it goes to the place just above the top, where a piece hovers.
+func _share_of_sway(index: int) -> float:
+	return pow(float(index + 1) / (pieces + 1), 1.5)
 
 
 # ── Drawing ──────────────────────────────────────────────────────────────────
@@ -217,7 +249,7 @@ func _draw() -> void:
 		var at: Vector2 = Vector2(
 			centre_x + _offset_at(pieces) + trembling, _piece_y(pieces) - _hover_height
 		)
-		_draw_at(at, 0.0, pieces, PushYourLuckGame.TOKEN_VALUE, 1.0)
+		_draw_at(at, _tilt_at(pieces), pieces, PushYourLuckGame.TOKEN_VALUE, 1.0)
 	draw_set_transform(Vector2(_shake_x, 0.0))
 	if shields_up > 0 and _topple < 0.0 and _sweep < 0.0:
 		_draw_shield_dome(centre_x)
@@ -296,7 +328,7 @@ func _draw_dust(centre_x: float) -> void:
 
 func _draw_stack_piece(index: int, centre_x: float) -> void:
 	var at: Vector2 = Vector2(centre_x + _offset_at(index), _piece_y(index))
-	var spin: float = 0.0
+	var spin: float = _tilt_at(index)
 	var opacity: float = 1.0
 	var shrink: float = 1.0
 	if index == pieces - 1:

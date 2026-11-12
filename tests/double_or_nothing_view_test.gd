@@ -5,32 +5,7 @@ extends GdUnitTestSuite
 
 const RUNGS: int = 6
 
-
-# Records what the view asks of the device, without any hardware.
-class RecordingDevice:
-	extends MiniGameDevice
-
-	var calls: Array[String] = []
-	var streamed_axes: Array[Dictionary] = []
-	var axis_moves: Array = []
-
-	func stream_axes(positions: Dictionary) -> void:
-		streamed_axes.append(positions)
-
-	func play_axis_moves(steps: Array) -> void:
-		axis_moves.append(steps)
-
-	func hold(_lo: int, _hi: int, _half_cycle_ms: int) -> void:
-		calls.append("hold")
-
-	func walk(_fastest_ms: int, _slowest_ms: int, _secs: float) -> void:
-		calls.append("walk")
-
-	func ease_out() -> void:
-		calls.append("ease_out")
-
-	func stop() -> void:
-		calls.append("stop")
+const RecordingDevice = preload("res://tests/recording_device.gd")
 
 
 func _press_e(view: DoubleOrNothingView) -> void:
