@@ -85,10 +85,15 @@ func stop(sweep_elapsed_ms: int) -> float:
 
 # Where the marker is, `sweep_elapsed_ms` into a sweep: out from the left end, back from the right, and so on.
 func marker_at(sweep_elapsed_ms: int) -> float:
-	var sweep_ms: int = _sweeps_ms[current_turn()]
+	var sweep_ms: int = current_sweep_ms()
 	var through_round_trip: int = maxi(0, sweep_elapsed_ms) % (2 * sweep_ms)
 	var outward: float = float(through_round_trip) / sweep_ms
 	return outward if outward <= 1.0 else 2.0 - outward
+
+
+# The marker's time for one crossing on this stop.
+func current_sweep_ms() -> int:
+	return _sweeps_ms[current_turn()]
 
 
 func current_zone_centre() -> float:

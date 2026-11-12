@@ -416,6 +416,24 @@ func get_handy_delay_ms() -> int:
 	return int(_config.get_value("handy", "delay_ms", 0))
 
 
+# Autoblow Ultra / Vacuglide (cloud API, experimental — AutoblowService.available()): the device token from
+# Autoblow's online setup, and its own delay (positive = the device fires later).
+func get_autoblow_token() -> String:
+	return str(_config.get_value("autoblow", "device_token", ""))
+
+
+func set_autoblow_token(value: String) -> void:
+	_config.set_value("autoblow", "device_token", value.strip_edges())
+
+
+func get_autoblow_delay_ms() -> int:
+	return int(_config.get_value("autoblow", "delay_ms", 0))
+
+
+func set_autoblow_delay_ms(value: int) -> void:
+	_config.set_value("autoblow", "delay_ms", value)
+
+
 func get_serial_delay_ms() -> int:
 	return int(_config.get_value("device", "serial_delay_ms", get_latency_offset_ms()))
 

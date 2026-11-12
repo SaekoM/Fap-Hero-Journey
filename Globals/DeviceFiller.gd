@@ -30,6 +30,7 @@ func start(lo: int, hi: int, half_cycle_ms: int) -> void:
 	# Fire-and-forget: the Handy path is HTTP, and a caller opening a storyboard shouldn't wait on a
 	# round trip to show it. A failure there is already reported by HandyService.
 	HandyService.start_filler(bottom, top, half)
+	AutoblowService.start_filler(bottom, top, half)
 
 
 ## Re-aims a running stroke without restarting it, for a live edit while testing.
@@ -42,6 +43,8 @@ func set_params(lo: int, hi: int, half_cycle_ms: int) -> void:
 	# The Handy is looping a script rather than taking commands, so a new aim IS a new script.
 	if HandyService.is_filler_active():
 		HandyService.start_filler(bottom, top, half)
+	if AutoblowService.is_filler_active():
+		AutoblowService.start_filler(bottom, top, half)
 
 
 ## Small strokes walking up and down the range, slowing from `fastest_ms` to `slowest_ms` over `secs`. A Handy
@@ -55,6 +58,7 @@ func walk(fastest_ms: int, slowest_ms: int, secs: float) -> void:
 	_walk_tween = create_tween()
 	_walk_tween.tween_method(_steer_along.bind(points), 0.0, length_ms, length_ms / 1000.0)
 	HandyService.start_filler_walk(fastest_ms, slowest_ms, slowdown_ms)
+	AutoblowService.start_filler_walk(fastest_ms, slowest_ms, slowdown_ms)
 
 
 # Sets the stroke to match the part of the script at `time_ms`.
@@ -95,6 +99,7 @@ func ease_out() -> void:
 	_end_axis_moves()
 	FunscriptPlayer.StopFiller()  # already eases to neutral
 	HandyService.ease_filler_home()
+	AutoblowService.stop_filler()  # a live speed has no position to glide to: it just stops
 
 
 ## Stops every device. Both halves are idempotent and neither is conditional on this having started
@@ -104,6 +109,7 @@ func stop() -> void:
 	_end_axis_moves()
 	FunscriptPlayer.StopFiller()
 	HandyService.stop_filler()
+	AutoblowService.stop_filler()
 
 
 func _end_axis_moves() -> void:

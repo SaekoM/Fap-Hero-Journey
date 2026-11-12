@@ -45,6 +45,7 @@ UpdateService="*res://Globals/UpdateService.gd"
 GlowEnvironment="*res://Globals/GlowEnvironment.gd"
 UISound="*res://Globals/UISound.gd"
 HandyService="*res://Globals/HandyService.gd"
+AutoblowService="*res://Globals/AutoblowService.gd"
 DeviceFiller="*res://Globals/DeviceFiller.gd"
 
 [display]

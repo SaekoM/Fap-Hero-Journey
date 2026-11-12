@@ -27,6 +27,7 @@ var _wrap_ms: int = 0
 var _start_ticks: int = 0  # wall-clock at play start; elapsed is read from it so it can't drift slow
 var _duration_ms: int = 1
 var _handy: bool = false
+var _autoblow: bool = false
 
 
 # Elapsed play time (ms). Read from the wall clock rather than summed per-frame deltas — accumulating
@@ -72,6 +73,16 @@ func start(bundle: OverrideBundle, timeline: Control, trim_in_ms: int, wrap_ms: 
 				SettingsService.get_range_min(), SettingsService.get_range_max()
 			)
 
+	# Autoblow path (if connected): the slice is uploaded and started on our elapsed clock.
+	if AutoblowService.is_connected_ok():
+		AutoblowService.load_actions(bundle.main)
+		AutoblowService.set_effects([])
+		var started: bool = await AutoblowService.start(_now_ms)
+		if _bundle == null:
+			AutoblowService.stop()
+			return
+		_autoblow = started
+
 
 func stop() -> void:
 	if _bundle == null:
@@ -79,11 +90,14 @@ func stop() -> void:
 	FunscriptPlayer.Stop()
 	if _handy:
 		HandyService.stop()
+	if _autoblow:
+		AutoblowService.stop()
 	if is_instance_valid(_timeline):
 		_timeline.set_playhead(-1)
 	_bundle = null
 	_timeline = null
 	_handy = false
+	_autoblow = false
 	set_process(false)
 	state_changed.emit(false)
 

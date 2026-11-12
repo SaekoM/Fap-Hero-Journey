@@ -57,3 +57,54 @@ func test_a_one_off_movement_always_ends_back_at_centre() -> void:
 func test_only_the_axes_a_device_has_are_kept() -> void:
 	var kept: Dictionary = MiniGameDevice.only_axes_in({"R0": 10.0, "L2": 20.0}, ["R0", "R1"])
 	assert_dict(kept).is_equal({"R0": 10.0})
+
+
+# ── Stop the Bar, Hold & Release, Push Your Luck ─────────────────────────────
+
+
+func test_the_twist_follows_the_needle_from_side_to_side() -> void:
+	var left: float = MiniGameAxes.needle_twist(0.0)[MiniGameAxes.TWIST]
+	var middle: float = MiniGameAxes.needle_twist(0.5)[MiniGameAxes.TWIST]
+	var right: float = MiniGameAxes.needle_twist(1.0)[MiniGameAxes.TWIST]
+	assert_float(middle).is_equal_approx(MiniGameAxes.CENTRE, 0.01)
+	assert_float(left).is_less(middle)
+	assert_float(right).is_greater(middle)
+	_in_range(MiniGameAxes.needle_twist(1.5))
+
+
+func test_the_tilt_rises_as_the_gauge_fills() -> void:
+	var empty: float = MiniGameAxes.gauge_tilt(0.0)[MiniGameAxes.PITCH]
+	assert_float(empty).is_equal_approx(MiniGameAxes.CENTRE, 0.01)
+	assert_float(MiniGameAxes.gauge_tilt(1.0)[MiniGameAxes.PITCH]).is_greater(empty)
+	_in_range(MiniGameAxes.gauge_tilt(2.0))
+
+
+func test_the_roll_swings_wider_as_the_risk_rises() -> void:
+	assert_float(MiniGameAxes.stack_roll(0.0, 1.0)[MiniGameAxes.ROLL]).is_equal_approx(50.0, 0.01)
+	var safe_reach: float = MiniGameAxes.stack_roll(1.0, 0.0)[MiniGameAxes.ROLL] - 50.0
+	var risky_reach: float = MiniGameAxes.stack_roll(1.0, 1.0)[MiniGameAxes.ROLL] - 50.0
+	assert_float(safe_reach).is_greater(0.0)  # felt even with no risk
+	assert_float(risky_reach).is_greater(safe_reach)
+	assert_float(MiniGameAxes.stack_roll(-1.0, 1.0)[MiniGameAxes.ROLL]).is_equal_approx(
+		50.0 - risky_reach, 0.01
+	)
+	_in_range(MiniGameAxes.stack_roll(-3.0, 2.0))
+	_in_range(MiniGameAxes.stack_roll(3.0, 2.0))
+
+
+# A nod from a raised tilt heads back towards the middle rather than into the end of the range, and ends where it began.
+func test_a_nod_from_anywhere_stays_in_range_and_returns() -> void:
+	for pitch: float in [0.0, MiniGameAxes.CENTRE, 90.0, 100.0]:
+		var nod: Array[Dictionary] = MiniGameAxes.nod_from(pitch)
+		_in_range(nod[0]["positions"])
+		assert_float(absf(float(nod[0]["positions"][MiniGameAxes.PITCH]) - pitch)).is_equal_approx(
+			MiniGameAxes.NOD_REACH, 0.01
+		)
+		assert_float(float(nod[-1]["positions"][MiniGameAxes.PITCH])).is_equal(pitch)
+	assert_array(MiniGameAxes.nod_from(MiniGameAxes.CENTRE)).is_equal(MiniGameAxes.WIN_NOD)
+
+
+func test_a_movement_lasts_as_long_as_its_steps() -> void:
+	assert_int(MiniGameAxes.moves_ms(MiniGameAxes.WIN_NOD)).is_equal(
+		MiniGameAxes.NOD_DOWN_MS + MiniGameAxes.NOD_BACK_MS
+	)

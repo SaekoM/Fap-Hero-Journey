@@ -318,7 +318,10 @@ func _start_attempt() -> void:
 			_push_view.waiting_changed.connect(_on_game_waiting)
 			_body.add_child(_push_view)
 			_push_view.setup(
-				_definition, PushYourLuckGame.new(_definition["knobs"], seed_value), _character
+				_definition,
+				PushYourLuckGame.new(_definition["knobs"], seed_value),
+				_device,
+				_character
 			)
 		StopTheBarGame.KIND:
 			_build_turn_view(
@@ -607,7 +610,7 @@ func _build_turn_view(view: TurnGameView, game: TurnScoreGame) -> void:
 	_turn_view.finished.connect(_on_turn_game_finished)
 	_turn_view.waiting_changed.connect(_on_game_waiting)
 	_body.add_child(_turn_view)
-	_turn_view.setup(_definition, game, _character)
+	_turn_view.setup(_definition, game, _device, _character)
 	_turn_mouse_catcher = Control.new()
 	_turn_mouse_catcher.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_turn_mouse_catcher.gui_input.connect(_turn_view.handle_pointer)

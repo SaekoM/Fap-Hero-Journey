@@ -21,10 +21,20 @@ const WHEEL_TWIST_REACH: float = 40.0
 const WHEEL_FADE_IN_UNTIL: float = 0.3
 const WHEEL_FADE_OUT_FROM: float = 0.8
 
+# Stop the Bar's twist follows the needle; Hold & Release's tilt rises with the gauge; Push Your Luck's roll swings
+# with the stack, gently when it's safe and widely near certain loss.
+const NEEDLE_TWIST_REACH: float = 40.0
+const GAUGE_TILT_REACH: float = 40.0
+const STACK_ROLL_SAFE_REACH: float = 8.0
+const STACK_ROLL_RISKY_REACH: float = 35.0
+
 # One-off movements, as [{positions, ms}] steps: go to `positions` over `ms`, then the next step.
+const NOD_REACH: float = 25.0
+const NOD_DOWN_MS: int = 140
+const NOD_BACK_MS: int = 240
 const WIN_NOD: Array[Dictionary] = [
-	{"positions": {PITCH: 75.0}, "ms": 140},
-	{"positions": {PITCH: CENTRE}, "ms": 240},
+	{"positions": {PITCH: CENTRE + NOD_REACH}, "ms": NOD_DOWN_MS},
+	{"positions": {PITCH: CENTRE}, "ms": NOD_BACK_MS},
 ]
 const WRONG_TRY_JOLT_REACH: float = 28.0
 const WRONG_TRY_JOLT_STEP_MS: Array[int] = [70, 80, 110]
@@ -52,6 +62,41 @@ static func spinning_wheel(turns_so_far: float, progress: float) -> Dictionary:
 		ROLL: CENTRE + CIRCLE_REACH * strength * cos(circle_angle),
 		TWIST: CENTRE + WHEEL_TWIST_REACH * strength * sin(twist_angle),
 	}
+
+
+# The twist for Stop the Bar's needle, `needle` 0 at the bar's left end to 1 at its right: one side to the other.
+static func needle_twist(needle: float) -> Dictionary:
+	return {TWIST: CENTRE + NEEDLE_TWIST_REACH * (2.0 * clampf(needle, 0.0, 1.0) - 1.0)}
+
+
+# The tilt for Hold & Release's gauge, `level` 0 empty to 1 full: centred when empty, rising as it fills.
+static func gauge_tilt(level: float) -> Dictionary:
+	return {PITCH: CENTRE + GAUGE_TILT_REACH * clampf(level, 0.0, 1.0)}
+
+
+# The roll for Push Your Luck's stack: `wave` is where the sway is in its swing, -1 to 1, and `risk` the risk on show,
+# 0-1, which sets how wide it swings. It goes by the risk rather than how far the pieces move on screen, because a short
+# stack barely moves there at all.
+static func stack_roll(wave: float, risk: float) -> Dictionary:
+	var reach: float = lerpf(STACK_ROLL_SAFE_REACH, STACK_ROLL_RISKY_REACH, clampf(risk, 0.0, 1.0))
+	return {ROLL: CENTRE + reach * clampf(wave, -1.0, 1.0)}
+
+
+# A nod from wherever the tilt already is, ending back there: away from the nearer end, so it's never cut short.
+static func nod_from(pitch: float) -> Array[Dictionary]:
+	var nod_to: float = pitch + NOD_REACH if pitch <= CENTRE else pitch - NOD_REACH
+	return [
+		{"positions": {PITCH: nod_to}, "ms": NOD_DOWN_MS},
+		{"positions": {PITCH: pitch}, "ms": NOD_BACK_MS},
+	]
+
+
+# How long a one-off movement takes to play.
+static func moves_ms(steps: Array) -> int:
+	var total: int = 0
+	for step: Dictionary in steps:
+		total += int(step["ms"])
+	return total
 
 
 # A short shake from side to side, on whichever sideways axis the device has: sway, or roll without it.

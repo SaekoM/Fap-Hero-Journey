@@ -27,6 +27,13 @@
   **BIG DRAW!** and **CLOSE CALL!** mark the lucky pushes. Shields land as cyan pieces and doublers as green ones,
   each with its own emblem, and a shield that takes a trap cracks. A game of chance, so it never awards journey score.
   Journeys that place one need FHJ 0.9.3 or newer.
+- **The new games drive the device.** Stop the Bar strokes once per crossing of the marker, so the stroke quickens as
+  the stops get harder. Hold & Release strokes slowly while the player waits, then faster as the gauge fills, and
+  drops back on letting go. Push Your Luck's stroke quickens with the risk on show. On a serial multi-axis device the
+  twist follows the needle, the tilt rises with the gauge, and the roll swings with the stack, wider and quicker as the risk rises. Push Your Luck's stack now rocks visibly
+  in the same swing, from a gentle sway when it's safe to a wide, tipping one near certain loss. A dead-on turn, a passing
+  result or a bank nods; a miss, a shield taking a trap or a bust jolts sideways. Everything the device does is also on
+  screen, and nothing about it changes a score.
 - **Quick-Time Events: Hold and Mash prompts.** A new **PROMPT KINDS** setting lets an event mix plain presses with
   **HOLD** rings, kept down while a fill runs round the target (**HOLD TIME**), and **MASH** rings, where the key is pressed
   fast enough to fill the target before time runs out (**MASH TIME**, **MASH PRESSES**). A mash heats up, trembles and

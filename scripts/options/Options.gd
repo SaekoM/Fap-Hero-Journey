@@ -189,6 +189,10 @@ var _filler_section: VBoxContainer = null
 # Device-routing section (built in code) — device cards + per-actuator source assignment.
 var _routing_section: VBoxContainer = null
 var _routing_cards_vbox: VBoxContainer = null
+var _autoblow_section: VBoxContainer = null  # only built where AutoblowService.available()
+var _autoblow_status_lbl: Label = null
+var _autoblow_delay_slider: HSlider = null
+var _autoblow_delay_lbl: Label = null
 var _handy_section: VBoxContainer = null  # The Handy (WiFi) connection block — lives on the CONNECTION tab
 var _stroker_summary_lbl: Label = null
 var _serial_delay_slider: HSlider = null
@@ -935,6 +939,9 @@ func _apply_layout() -> void:
 			if SettingsService.get_stroke_target() == DeviceRouting.HANDY_TARGET:
 				HandyService.set_slider_debounced(roundi(lo), roundi(hi))
 			_save_settings()
+			# The Autoblow has the range baked into its script, so a change re-sends it once the drag settles.
+			if SettingsService.get_stroke_target() == DeviceRouting.AUTOBLOW_TARGET:
+				AutoblowService.range_changed()
 	)
 
 	# Hint beneath the slider
@@ -1232,6 +1239,8 @@ func _apply_layout() -> void:
 
 	_build_routing_section()
 	_build_handy_section()
+	if AutoblowService.available():
+		_build_autoblow_section()
 	_build_restim_section()
 	_build_restim_axes_section()
 
@@ -1430,6 +1439,7 @@ func _tab_pages() -> Array:
 			get_node(vbox + "IntifaceSection"),
 			get_node(vbox + "SerialSection"),
 			_handy_section,
+			_autoblow_section,
 			_restim_section,
 		],
 		# DEVICES
@@ -2995,6 +3005,24 @@ func _build_routing_section() -> void:
 			SettingsService.save()
 	)
 
+	if AutoblowService.available():
+		var d_autoblow: Dictionary = _add_delay_row(
+			timing,
+			"Autoblow delay",
+			"Timing offset for an Autoblow over WiFi, in milliseconds. Positive = the device fires later, negative = earlier."
+		)
+		_autoblow_delay_slider = d_autoblow["slider"]
+		_autoblow_delay_lbl = d_autoblow["value"]
+		_autoblow_delay_slider.value = SettingsService.get_autoblow_delay_ms()
+		_autoblow_delay_lbl.text = "%d ms" % SettingsService.get_autoblow_delay_ms()
+		_autoblow_delay_slider.value_changed.connect(
+			func(v: float) -> void:
+				_autoblow_delay_lbl.text = "%d ms" % roundi(v)
+				SettingsService.set_autoblow_delay_ms(roundi(v))
+				SettingsService.save()
+				AutoblowService.apply_delay()
+		)
+
 	# Serial stroke smoothing (the T-code interp interval factor) — a per-device/firmware tuning for
 	# the OSR/SR6 stream. Same row shape as the delays, but a ×factor rather than milliseconds.
 	var d_interp: Dictionary = _add_factor_row(
@@ -3059,6 +3087,9 @@ func _reread_delay_sliders() -> void:
 	if _handy_delay_slider != null:
 		_handy_delay_slider.set_value_no_signal(SettingsService.get_handy_delay_ms())
 		_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
+	if _autoblow_delay_slider != null:
+		_autoblow_delay_slider.set_value_no_signal(SettingsService.get_autoblow_delay_ms())
+		_autoblow_delay_lbl.text = "%d ms" % SettingsService.get_autoblow_delay_ms()
 
 
 # ── The Handy (direct WiFi) ──────────────────────────────────────────────────
@@ -3159,6 +3190,118 @@ func _build_handy_section() -> void:
 	disclosure.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_style_label(disclosure, UITheme.TEXT_HINT, 11, false)
 	section.add_child(disclosure)
+
+
+# ── Autoblow Ultra / Vacuglide (WiFi, experimental) ─────────────────────────
+
+
+# Only built where AutoblowService.available(): the editor, or the experimental project setting. Untested on a real
+# device, and it says so.
+func _build_autoblow_section() -> void:
+	var section: VBoxContainer = VBoxContainer.new()
+	section.add_theme_constant_override("separation", 10)
+	_content_vbox.add_child(section)
+	_autoblow_section = section
+
+	var header: Label = Label.new()
+	header.text = "AUTOBLOW ULTRA / VACUGLIDE (WIFI) — EXPERIMENTAL"
+	_style_label(header, UITheme.PURPLE_BRIGHT, 13, true)
+	section.add_child(header)
+
+	var divider: HSeparator = HSeparator.new()
+	divider.add_theme_stylebox_override("separator", _make_separator_style())
+	section.add_child(divider)
+
+	var token_row: HBoxContainer = HBoxContainer.new()
+	token_row.add_theme_constant_override("separation", 16)
+	section.add_child(token_row)
+
+	var token_lbl: Label = Label.new()
+	token_lbl.text = "Device token"
+	token_lbl.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(token_lbl, UITheme.WHITE_SOFT, 14, false)
+	token_row.add_child(token_lbl)
+
+	var token_edit: LineEdit = LineEdit.new()
+	token_edit.placeholder_text = "From Autoblow's online setup for your device"
+	token_edit.text = SettingsService.get_autoblow_token()
+	token_edit.secret = true  # a device token controls the device; it isn't shown over a shoulder
+	token_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	UITheme.style_line_edit(token_edit)
+	token_row.add_child(token_edit)
+
+	_autoblow_status_lbl = Label.new()
+	_style_label(_autoblow_status_lbl, UITheme.PURPLE_TEXT, 11, true)
+	token_row.add_child(_autoblow_status_lbl)
+	_refresh_autoblow_status()
+	if not AutoblowService.connection_changed.is_connected(_on_autoblow_connection_changed):
+		AutoblowService.connection_changed.connect(_on_autoblow_connection_changed)
+
+	var connect_btn: Button = UITheme.make_icon_btn("⟳ CONNECT", false, UITheme.CYAN)
+	connect_btn.tooltip_text = "Save the token and look for the device through Autoblow's servers"
+	token_row.add_child(connect_btn)
+	connect_btn.pressed.connect(
+		func() -> void:
+			SettingsService.set_autoblow_token(token_edit.text)
+			SettingsService.save()
+			_refresh_routing_cards()  # the routing card appears once a token exists
+			_set_autoblow_status("Checking…", UITheme.PURPLE_TEXT)
+			var ok: bool = await AutoblowService.connect_and_check()
+			(
+				_refresh_autoblow_status()
+				if ok
+				else _set_autoblow_status("✕ Not reachable", UITheme.STATUS_ERROR)
+			)
+	)
+
+	var test_btn: Button = UITheme.make_icon_btn("↕ TEST", false, UITheme.PURPLE_BRIGHT)
+	test_btn.tooltip_text = "Run the device briefly to confirm it responds"
+	token_row.add_child(test_btn)
+	test_btn.pressed.connect(
+		func() -> void:
+			if not AutoblowService.is_connected_ok():
+				_set_autoblow_status("Connect first", UITheme.PURPLE_TEXT)
+				return
+			_set_autoblow_status("Testing…", UITheme.PURPLE_TEXT)
+			if await AutoblowService.test_stroke():
+				_set_autoblow_status("✓ Sent", UITheme.SUCCESS)
+			else:
+				_set_autoblow_status("✕ Test failed", UITheme.STATUS_ERROR)
+	)
+
+	var disclosure: Label = Label.new()
+	disclosure.text = (
+		"EXPERIMENTAL — not yet tried on a real device. Plays each round's script through Autoblow's cloud "
+		+ "service (autoblowapi.com) and needs an internet connection; turn on the device's online mode first. "
+		+ "The whole script is uploaded at the start of a round, so the device joins a moment after the video. "
+		+ "Stroke items, curses and your stroke range reach it, landing a second or two after a change. "
+		+ "How the Vacuglide reads stroke depth isn't documented, so the range may do little on it."
+	)
+	disclosure.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(disclosure, UITheme.TEXT_HINT, 11, false)
+	section.add_child(disclosure)
+
+
+func _set_autoblow_status(text: String, color: Color) -> void:
+	if is_instance_valid(_autoblow_status_lbl):
+		_autoblow_status_lbl.text = text
+		_autoblow_status_lbl.add_theme_color_override("font_color", color)
+
+
+func _refresh_autoblow_status() -> void:
+	if SettingsService.get_autoblow_token() == "":
+		_set_autoblow_status("No token set", UITheme.PURPLE_TEXT)
+	elif AutoblowService.is_connected_ok():
+		_set_autoblow_status("✓ " + AutoblowService.device_name(), UITheme.SUCCESS)
+	else:
+		_set_autoblow_status("Not checked", UITheme.PURPLE_TEXT)
+
+
+func _on_autoblow_connection_changed(connected: bool) -> void:
+	if connected:
+		_refresh_autoblow_status()
+	else:
+		_set_autoblow_status("✕ Not reachable", UITheme.STATUS_ERROR)
 
 
 # ---------------------------------------------------------------------------
@@ -3564,6 +3707,16 @@ func _refresh_routing_cards() -> void:
 		handy_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_style_label(handy_note, UITheme.TEXT_HINT, 10, false)
 		handy_body.add_child(handy_note)
+
+	# Autoblow Ultra / Vacuglide — offered once a token is saved, where this build drives them at all.
+	if AutoblowService.available() and SettingsService.get_autoblow_token() != "":
+		var autoblow_body: VBoxContainer = _make_routing_card("AUTOBLOW (WIFI)", UITheme.CYAN)
+		_add_stroker_row(autoblow_body, DeviceRouting.AUTOBLOW_TARGET, "Linear (cloud script)")
+		var autoblow_note: Label = Label.new()
+		autoblow_note.text = ("Experimental. Stroke items, curses & range reach it; a change mid-round lands a second or two later.")
+		autoblow_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_style_label(autoblow_note, UITheme.TEXT_HINT, 10, false)
+		autoblow_body.add_child(autoblow_note)
 
 	var catalog: Array = ButtplugService.GetDeviceCatalog()
 	if catalog.is_empty():
@@ -4060,6 +4213,8 @@ func _update_stroker_summary() -> void:
 		_stroker_summary_lbl.text = "Stroker: Serial (T-code)"
 	elif target == DeviceRouting.HANDY_TARGET:
 		_stroker_summary_lbl.text = "Stroker: The Handy (WiFi)"
+	elif target == DeviceRouting.AUTOBLOW_TARGET:
+		_stroker_summary_lbl.text = "Stroker: Autoblow (WiFi)"
 	elif target != "":
 		_stroker_summary_lbl.text = (
 			"Stroker: %s" % str(DeviceRouting.parse_actuator_id(target).get("device", target))

@@ -18,6 +18,8 @@ var _serial_delay_slider: HSlider = null
 var _serial_delay_lbl: Label = null
 var _handy_delay_slider: HSlider = null
 var _handy_delay_lbl: Label = null
+var _autoblow_delay_slider: HSlider = null  # only where AutoblowService.available()
+var _autoblow_delay_lbl: Label = null
 var _meter: StrokeMeter = null
 
 
@@ -119,6 +121,14 @@ func _build() -> void:
 	_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
 	_handy_delay_slider.value_changed.connect(_on_handy_delay_changed)
 
+	if AutoblowService.available():
+		var d_autoblow: Dictionary = _add_delay(vb, "AUTOBLOW DELAY")
+		_autoblow_delay_slider = d_autoblow["slider"]
+		_autoblow_delay_lbl = d_autoblow["value"]
+		_autoblow_delay_slider.set_value_no_signal(SettingsService.get_autoblow_delay_ms())
+		_autoblow_delay_lbl.text = "%d ms" % SettingsService.get_autoblow_delay_ms()
+		_autoblow_delay_slider.value_changed.connect(_on_autoblow_delay_changed)
+
 	(
 		vb
 		. add_child(
@@ -175,6 +185,8 @@ func _on_range_changed(lo: float, hi: float) -> void:
 	# device — it maps to the slide zone (debounced; drags spam this handler).
 	if SettingsService.get_stroke_target() == DeviceRouting.HANDY_TARGET:
 		HandyService.set_slider_debounced(int(lo), int(hi))
+	if SettingsService.get_stroke_target() == DeviceRouting.AUTOBLOW_TARGET:
+		AutoblowService.range_changed()  # baked into its script: re-sent once the drag settles
 
 
 func _on_intiface_delay_changed(v: float) -> void:
@@ -201,6 +213,13 @@ func _on_handy_delay_changed(v: float) -> void:
 		HandyService.resync_timing()
 
 
+func _on_autoblow_delay_changed(v: float) -> void:
+	_autoblow_delay_lbl.text = "%d ms" % int(v)
+	SettingsService.set_autoblow_delay_ms(int(v))
+	SettingsService.save()
+	AutoblowService.apply_delay()  # the device's own sync offset: takes effect without a restart
+
+
 # Points the meter at whatever GameLoop is currently driving the device with, and the clock that goes
 # with it. Both are read live rather than snapshotted, so an override item seizing the device mid-round
 # changes the picture instead of leaving a stale one. Without this the meter reads NO SCRIPT, which is
@@ -216,6 +235,8 @@ func _active_delay_ms() -> int:
 	match DeviceRouting.stroke_backend(SettingsService.get_stroke_target()):
 		DeviceRouting.HANDY_TARGET:
 			return SettingsService.get_handy_delay_ms()
+		DeviceRouting.AUTOBLOW_TARGET:
+			return SettingsService.get_autoblow_delay_ms()
 		DeviceRouting.SERIAL_TARGET:
 			return SettingsService.get_serial_delay_ms()
 		DeviceRouting.BP_BACKEND:
@@ -246,6 +267,9 @@ func resync() -> void:
 	if _handy_delay_slider != null:
 		_handy_delay_slider.set_value_no_signal(SettingsService.get_handy_delay_ms())
 		_handy_delay_lbl.text = "%d ms" % SettingsService.get_handy_delay_ms()
+	if _autoblow_delay_slider != null:
+		_autoblow_delay_slider.set_value_no_signal(SettingsService.get_autoblow_delay_ms())
+		_autoblow_delay_lbl.text = "%d ms" % SettingsService.get_autoblow_delay_ms()
 
 
 # ── Slide animation (mirrors InventoryPanel) ───────────────────────────────────
