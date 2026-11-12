@@ -153,6 +153,7 @@ func _ready() -> void:
 	DisplayServer.window_set_mode(mode)
 
 	apply_ui_scale()
+	apply_hardware_video_decoding()
 	UITheme.set_colour_mode(get_colour_mode())  # UITheme loads first, so the saved mode is applied here
 
 	# UI language. "auto" keeps Godot's own OS-locale pick (the boot default); anything
@@ -916,6 +917,59 @@ func get_reduce_flashing() -> bool:
 
 func set_reduce_flashing(on: bool) -> void:
 	_config.set_value("display", "reduce_flashing", on)
+
+
+# Hardware video decoding: the video add-on decodes on the graphics chip when it can (D3D11VA / DXVA2 on Windows),
+# falling back to the processor by itself if the hardware can't take a video. On by default; a player turns it off
+# only if their graphics driver misbehaves. The add-on reads the project setting as each video opens.
+const HARDWARE_VIDEO_DECODING_SETTING: String = "ffmpeg/hardware_decoding"
+
+
+func get_hardware_video_decoding() -> bool:
+	return bool(_config.get_value("display", "hardware_video_decoding", true))
+
+
+func set_hardware_video_decoding(on: bool) -> void:
+	_config.set_value("display", "hardware_video_decoding", on)
+	apply_hardware_video_decoding()
+
+
+func apply_hardware_video_decoding() -> void:
+	ProjectSettings.set_setting(HARDWARE_VIDEO_DECODING_SETTING, get_hardware_video_decoding())
+
+
+# Renderer (Windows only): Direct3D 12 or Vulkan. Godot picks its renderer before any script runs, so the choice is
+# written to RENDERER_OVERRIDE_PATH, which project.godot names as its settings override file; it applies from the
+# next launch. That file is the only place the choice lives. Some Intel graphics drivers show grey grain under
+# Direct3D 12 that Vulkan doesn't. A --rendering-driver launch flag still wins over this.
+const RENDERER_OVERRIDE_PATH: String = "user://override.cfg"
+const RENDERER_SECTION: String = "rendering"
+const RENDERER_KEY: String = "rendering_device/driver.windows"
+const RENDERER_D3D12: String = "d3d12"
+const RENDERER_VULKAN: String = "vulkan"
+const RENDERERS: Array[String] = [RENDERER_D3D12, RENDERER_VULKAN]
+const RENDERER_NAMES: Dictionary = {RENDERER_D3D12: "Direct3D 12", RENDERER_VULKAN: "Vulkan"}
+
+
+func get_renderer() -> String:
+	var override: ConfigFile = ConfigFile.new()
+	override.load(RENDERER_OVERRIDE_PATH)  # missing file = the project's default
+	var chosen: String = str(override.get_value(RENDERER_SECTION, RENDERER_KEY, RENDERER_D3D12))
+	return chosen if RENDERERS.has(chosen) else RENDERER_D3D12
+
+
+func set_renderer(renderer: String) -> void:
+	if not RENDERERS.has(renderer):
+		return
+	var override: ConfigFile = ConfigFile.new()
+	override.load(RENDERER_OVERRIDE_PATH)  # keep anything else that's in it
+	override.set_value(RENDERER_SECTION, RENDERER_KEY, renderer)
+	override.save(RENDERER_OVERRIDE_PATH)
+
+
+# The renderer this session is actually running on, which can differ from the choice until the next launch.
+func running_renderer() -> String:
+	return RenderingServer.get_current_rendering_driver_name()
 
 
 # Mini-game assist (MiniGameAssist): more time on timed mini-games, and the run is marked ASSISTED. Off by default.

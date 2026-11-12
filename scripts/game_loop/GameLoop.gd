@@ -2647,9 +2647,11 @@ func _finish_journey() -> void:
 
 # Exit-to-menu hold-to-confirm. Begins on Esc-key-down or MENU-button-down; a centered overlay fills over
 # EXIT_HOLD_SECS and leaves to the menu at completion. Releasing (key / button up) cancels before then.
-# A test play is sitting on a screen that doesn't take Esc itself: the test banner's "ESC TO EXIT" has to
-# hold here too.
-func _test_overlay_lacks_exit() -> bool:
+# The open screen leaves Esc to the hold-to-exit. A storyboard always does; in a test play, so do the screens that
+# have no way out of their own, so the test banner's "ESC TO EXIT" holds there too.
+func _overlay_exits_by_hold() -> bool:
+	if _current_overlay is StoryboardScreen:
+		return true
 	return _test_mode and (_current_overlay is MiniGameScreen or _current_overlay is ForkScreen)
 
 
@@ -5490,9 +5492,7 @@ func _end_qte(event: Dictionary) -> void:
 
 
 func _show_dodge_result(view: QuickTimeEventView, dodged: bool, detail: String) -> void:
-	view.show_result(
-		"DODGED" if dodged else "HIT", UITheme.AMBER if dodged else UITheme.DANGER, detail
-	)
+	view.show_dodge_result(dodged, detail)
 
 
 # A QTE on its own has no attack to speak of, so it announces the tier it reached.
@@ -5593,6 +5593,17 @@ func _press_qte(key: String) -> bool:
 	var position_ms: int = int(_video.stream_position * 1000.0)
 	for view: QuickTimeEventView in _qte_views.values():
 		if view.press(position_ms, key):
+			return true
+	return false
+
+
+# A key let go. Returns whether it ended a hold. Like a press, it reads the video's time over the video.
+func _release_qte(key: String) -> bool:
+	if _held_qte != null:
+		return _held_qte.release_held(key)
+	var position_ms: int = int(_video.stream_position * 1000.0)
+	for view: QuickTimeEventView in _qte_views.values():
+		if view.release(position_ms, key):
 			return true
 	return false
 
@@ -6004,8 +6015,9 @@ func _input(event: InputEvent) -> void:
 				KEY_ESCAPE:
 					# Esc: close the Quick Settings drawer or inventory if open, otherwise begin the
 					# hold-to-exit (a stray tap can't dump the run; releasing cancels — see the key-up
-					# branch below). Overlay screens (shop/storyboard) capture Esc themselves before it
-					# reaches here; the fork screen intentionally does not (no escape in real play). The bake
+					# branch below). The shop captures Esc itself (it continues) before it reaches here; a
+					# storyboard leaves it to this hold; the fork screen intentionally does not (no escape in
+					# real play). The bake
 					# wait mutes the hotkeys through _is_overlay_open too, but it has no timeout —
 					# Esc stays open there so the menu route is always reachable. So it does through a QTE
 					# holding the round, and for an author testing a fork or a mini-game, whose screens
@@ -6014,7 +6026,7 @@ func _input(event: InputEvent) -> void:
 						not _is_overlay_open
 						or _bake_waiting
 						or _held_qte != null
-						or _test_overlay_lacks_exit()
+						or _overlay_exits_by_hold()
 					):
 						if is_instance_valid(_session_panel):
 							_session_panel.close()
@@ -6058,6 +6070,8 @@ func _input(event: InputEvent) -> void:
 					if not _is_overlay_open:
 						_nudge_intiface_delay(DELAY_STEP)
 						get_viewport().set_input_as_handled()
+		elif not key_event.pressed and _release_qte(OS.get_keycode_string(key_event.keycode)):
+			get_viewport().set_input_as_handled()  # the end of a Quick-Time Event hold
 		elif not key_event.pressed and key_event.keycode == KEY_ESCAPE:
 			# Esc released — abort an in-progress hold-to-exit (a no-op when none is running).
 			_cancel_exit_hold()

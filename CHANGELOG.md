@@ -1,5 +1,84 @@
 # Changelog
 
+## v0.9.3
+
+### ◆ Mini-games
+
+- **Stop the Bar, a new game between rounds.** A marker sweeps along a bar, and the player stops it in a zone
+  with **E**, **Enter** or a click. Dead centre scores 100%, falling to 0% at the zone's edge, and the score is
+  the average of every stop. Creators set **STOPS**, **SWEEP TIME** and **ZONE SIZE**, can have the zone move
+  to a new place for each stop, and can use **GETS HARDER** to shrink the sweep time and zone towards the last
+  stop. A live score meter shows the tiers, unless the creator hides them. Dead-on stops burst, misses shake the
+  bar, and the ending tallies the stops into a score, with a **FLAWLESS** moment when every stop is 90% or better.
+  **MINI-GAME ASSIST** slows the sweep and widens the zone by half. Journeys that place one need FHJ 0.9.3 or newer.
+- **Hold & Release, a new game between rounds.** Holding **E**, **Enter** or the mouse button fills a tall gauge,
+  and the player lets go in a zone. The zone's top edge scores 100%, and anything past it scores 0%, so it pays to
+  get greedy. Below the zone earns up to 30%. Creators set **HOLDS**, **FILL TIME**, **ZONE SIZE** and whether the
+  **FILL** speeds up or stays steady, and it has the same moving zone, **GETS HARDER**, live meter, ending and
+  **FLAWLESS** as Stop the Bar. A **CONTAINER** setting picks the look: a **Tube** that cracks, a **Bottle** whose
+  cork pops, a **Thermometer** that shatters, a **Pressure dial** that vents steam, or a **Heart** that beats faster as it nears the limit and breaks in two. It creaks as it nears the limit,
+  a release at the very top of the zone is called **ON THE EDGE**, one barely past it **JUST OVER**, and a faint line
+  shows where you let go last time. Journeys that place one need FHJ 0.9.3 or newer.
+- **Push Your Luck, a new game between rounds.** The player starts with a small pot and chooses: **BANK** it, or
+  **PUSH** to draw a token from a bag whose contents are always on show. Value tokens add to the pot, a doubler doubles
+  it, a shield saves the player from one trap, and a trap with no shield loses it all. Drawn tokens stay out, so the odds
+  follow from what's left. A **STACK** setting picks the look: **Casino chips**, **Gold coins** or **Wooden blocks**, each
+  falling its own way. The pot pays through **tiers** the creator sets, with a **TIER UP** moment as it crosses one, and
+  **BIG DRAW!** and **CLOSE CALL!** mark the lucky pushes. Shields land as cyan pieces and doublers as green ones,
+  each with its own emblem, and a shield that takes a trap cracks. A game of chance, so it never awards journey score.
+  Journeys that place one need FHJ 0.9.3 or newer.
+- **Quick-Time Events: Hold and Mash prompts.** A new **PROMPT KINDS** setting lets an event mix plain presses with
+  **HOLD** rings, kept down while a fill runs round the target (**HOLD TIME**), and **MASH** rings, where the key is pressed
+  fast enough to fill the target before time runs out (**MASH TIME**, **MASH PRESSES**). A mash heats up, trembles and
+  throws sparks as it nears full, and is all or nothing. Each ring's kind is picked at random from the ones ticked.
+  Press-only events play exactly as before. Journeys with Hold or Mash prompts need FHJ 0.9.3 or newer.
+- **Quick-Time Event dodges are staged.** A dodge now ends with a stamped **DODGED** and a streak of light, and a
+  failure with a stamped **HIT**, red edges and a shake.
+### ◆ Cast
+
+- **Storyboard characters can make an entrance.** Each character on a line now has **Enter/react**, played when they
+  arrive or their expression changes, and **Exit**, played when they leave after that line. Both start as Cut, so
+  existing storyboards look the same. On a line that changes the scene, arrivals make their entrance once the
+  dissolve finishes.
+- **One set of animations for the whole cast.** Storyboards, boss CAST cues and mini-game characters now share
+  the same list: Cut, Fade, Pop, Rise, Drop, Slide (left, right, top or bottom), Wipe, Flip, Spin, Silhouette,
+  Nod, Jump, Lean in, Shake and Tremble. Silhouette and Lean in hold for as long as each storyboard line keeps
+  them, then the colour fills back in or they ease back. Boss cues gain an
+  **Exit** to go with their **Entrance** (Fade by default, as before), and the old Flash entrance is now Cut.
+
+### ◆ Builder
+
+- **Free shops.** A shop's **PRICE MULTIPLIER** can now be 0, which makes everything in it free. Prices read
+  **FREE** instead of ♦ 0.
+- **± STATE shows mini-games.** Flags, counters and items a mini-game can change now appear on the map and
+  in the where-used list, so a flag set by a game no longer looks like nothing sets it. Chips sit on the
+  mini-game's node, or on the boss round for a Quick-Time Event, and name the results that make the change:
+  `⚑ opened_safe (Pass, Perfect)`, `+2 grit (Perfect)`, `⚐ lucky (Bust)`, `−1 grit (Retry)`.
+- **Options from the builder.** A new **⚙ OPTIONS** button on the top bar opens your settings over the
+  builder, so you can check a device or change a setting without leaving your journey. Unsaved work stays
+  as it is. A new colour mode or language reaches the builder the next time you open it.
+- **Readable fork destinations.** A fork choice leading to a loop showed an internal ID like `n_1a2b`. It now
+  reads **Loop to Round — Training**, naming the node the loop starts on. Checkpoints, mini-game nodes and Loop
+  Ends get proper names there too.
+
+### 🩹 Fixes
+
+- **Smooth playback of large videos on laptops (Windows).** Video is now decoded on the graphics chip (D3D11VA, or
+  DXVA2 on older drivers) for H.264, HEVC and VP9, the way media players do. 4K and 60 fps video that lagged on
+  laptop processors now plays smoothly. If the graphics chip can't take a video, FHJ switches to the processor by
+  itself and carries on from the same moment. A new **HARDWARE VIDEO DECODING** switch in **Options → General** turns
+  it off if a graphics driver misbehaves. AV1 and Linux still decode on the processor.
+- **Grainy grey picture on some Intel graphics (Windows).** A new **RENDERER** choice in **Options → General** switches
+  from Direct3D 12 (the default) to Vulkan, which clears it. It applies after a restart, and the hint shows which
+  renderer is running now.
+- **Truer video colours.** Video was shown as if it used the full range of values and the old SD colour standard,
+  which made blacks a little grey, whites a little dim and colours slightly off. Each video's own colour standard
+  (SD, HD or UHD) and range are now read from the file and used.
+- **Esc on a storyboard.** It went straight to the main menu, even from a builder test play, and didn't count the
+  run as abandoned. It's now the same hold-to-exit as during a round: back to the builder from a test play.
+- **Mini-game result cards.** Retrying while the coins were still counting up logged an error. The count now stops
+  with the card.
+
 ## v0.9.2
 
 ### ◆ Mini-games

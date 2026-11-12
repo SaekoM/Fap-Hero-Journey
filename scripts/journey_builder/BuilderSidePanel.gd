@@ -5686,25 +5686,9 @@ func _make_aftercare_link_block(node_id: String, with_title: bool = true) -> Con
 
 # Short readable label for a graph node (used by the fork choice "LEADS TO" line).
 func _graph_node_label(node_id: String) -> String:
-	var nodes: Dictionary = _owner._graph_model.get("nodes", {})
-	if not nodes.has(node_id):
-		return "(missing node)"
-	var n: Dictionary = nodes[node_id]
-	var d: Dictionary = n.get("data", {})
-	match str(n.get("type", "")):
-		"round":
-			var rn: String = str(d.get("name", "")).strip_edges()
-			return "Round — %s" % (rn if rn != "" else "(unnamed)")
-		"shop":
-			var sn: String = str(d.get("title", "")).strip_edges()
-			return "Shop — %s" % (sn if sn != "" else "(unnamed)")
-		"storyboard":
-			var sbn: String = str(d.get("name", "")).strip_edges()
-			return "Storyboard — %s" % (sbn if sbn != "" else "(unnamed)")
-		"fork":
-			var fn: String = str(d.get("title", "")).strip_edges()
-			return "Fork — %s" % (fn if fn != "" else "(unnamed)")
-	return node_id
+	return JourneyData.graph_node_label(
+		_owner._graph_model.get("nodes", {}), node_id, _owner._journey_minigames
+	)
 
 
 # Test-play controls block: the "Test From Here" button plus the seed inputs.
@@ -6110,7 +6094,7 @@ func _loop_exit_target_label(loop_id: String) -> String:
 	var to: String = str((out[0] as Dictionary).get("to", ""))
 	if to == "" or not nodes.has(to):
 		return ""
-	return _loop_node_label(to)
+	return _graph_node_label(to)
 
 
 # A readable item name (built-in or journey custom) for an item id, for the read-back phrasing.
@@ -6266,15 +6250,6 @@ func _loop_item_field(target: Dictionary) -> Control:
 	dd.item_selected.connect(func(i: int) -> void: target["item"] = str(dd.get_item_metadata(i)))
 	col.add_child(dd)
 	return col
-
-
-# A short "Type — Name" label for a node id (used for the End's CONTINUES-TO target).
-func _loop_node_label(nid: String) -> String:
-	var node: Dictionary = (_owner._graph_model.get("nodes", {}) as Dictionary).get(nid, {})
-	var t: String = str(node.get("type", ""))
-	var nm: String = str((node.get("data", {}) as Dictionary).get("name", "")).strip_edges()
-	var pretty: String = t.capitalize() if t != "" else "Node"
-	return "%s — %s" % [pretty, nm] if nm != "" else pretty
 
 
 # The graph node id whose live data dict IS `data` (reference identity — arr[0] IS node.data, so two
@@ -6768,11 +6743,12 @@ func _make_side_shop_editor(arr: Array, idx: int) -> Control:
 			count_spin.editable = sel == 0
 	)
 
-	# Price multiplier — applied on top of each item's base price.
+	# Price multiplier — applied on top of each item's base price. 0 makes a free shop.
 	col.add_child(_side_section_separator())
 	col.add_child(_side_field_label("PRICE MULTIPLIER"))
 	var mult_spin: SpinBox = SpinBox.new()
-	mult_spin.min_value = 0.1
+	mult_spin.min_value = 0.0
+	mult_spin.tooltip_text = "Scales every price here. 0 makes everything free."
 	mult_spin.max_value = 100.0
 	mult_spin.step = 0.1
 	mult_spin.value = float(shop_data.get("price_multiplier", 1.0))
@@ -7867,7 +7843,54 @@ func _make_stage_entry_row(
 			entry, "placement", chr.get("placements", []), "Position", "default (first)"
 		)
 	)
+	(
+		box
+		. add_child(
+			_stage_motion_dropdown(
+				entry,
+				"enter",
+				"Enter/react",
+				"Plays when this character arrives on this line, or when their expression changes on it."
+			)
+		)
+	)
+	box.add_child(
+		_stage_motion_dropdown(
+			entry, "exit", "Exit", "Plays when this character leaves the stage after this line."
+		)
+	)
 	return panel
+
+
+# A labelled dropdown of the cast's shared animations (CastMotion), writing to entry[key]. A Cut, the default, is
+# stored as nothing at all.
+func _stage_motion_dropdown(entry: Dictionary, key: String, label: String, tip: String) -> Control:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var lbl: Label = Label.new()
+	lbl.text = label
+	lbl.custom_minimum_size = Vector2(72, 0)
+	lbl.add_theme_color_override("font_color", UITheme.TEXT_HINT)
+	lbl.add_theme_font_size_override("font_size", 11)
+	row.add_child(lbl)
+	var dd: OptionButton = OptionButton.new()
+	dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for motion: String in CastMotion.ALL:
+		dd.add_item(CastMotion.NAMES[motion])
+	dd.selected = maxi(
+		0, CastMotion.ALL.find(CastMotion.normalize(entry.get(key, ""), CastMotion.CUT))
+	)
+	dd.tooltip_text = UITheme.wrap_tip(tip)
+	UITheme.style_option_button(dd)
+	dd.item_selected.connect(
+		func(i: int) -> void:
+			if CastMotion.ALL[i] == CastMotion.CUT:
+				entry.erase(key)
+			else:
+				entry[key] = CastMotion.ALL[i]
+	)
+	row.add_child(dd)
+	return row
 
 
 # A labelled dropdown over a character's portraits/placements, writing the picked id to entry[key]
@@ -7955,6 +7978,19 @@ func _make_insert_line_btn(lines_arr: Array, insert_at: int, refresh: Callable) 
 				var prev: Variant = lines_arr[insert_at - 1].get("stage", [])
 				if prev is Array:
 					carried = (prev as Array).duplicate(true)
+					# Their exit carries on; an entrance belongs to the line it was set on. A held pose
+					# (Silhouette, Lean in) carries too: a hold lasts only while each line keeps it, so a
+					# line inserted mid-hold would otherwise break it.
+					for kept: Variant in carried:
+						if (
+							kept is Dictionary
+							and not CastMotion.holds(
+								CastMotion.normalize(
+									(kept as Dictionary).get("enter", ""), CastMotion.CUT
+								)
+							)
+						):
+							(kept as Dictionary).erase("enter")
 			var new_line: Dictionary = {"speaker": "", "text": "", "image": ""}
 			if not carried.is_empty():
 				new_line["stage"] = carried

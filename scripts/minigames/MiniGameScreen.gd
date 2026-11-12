@@ -4,7 +4,7 @@ extends Control
 # The play screen of a mini-game node: an intro, the game itself, and a result card offering KEEP and,
 # when the game allows it, RETRY. Built in code, like the other overlays GameLoop opens.
 #
-# The rules live in the pure game classes (SafeCrackerGame, DoubleOrNothingGame); this screen feeds them
+# The rules live in the pure game classes (SafeCrackerGame, DoubleOrNothingGame and so on); this screen feeds them
 # input and clock time, draws them, and drives the device through DeviceFiller. It never pays anything
 # out: when the player keeps a result it emits `resolved` and GameLoop applies the tier (as with every
 # other overlay, GameLoop also owns freeing the screen).
@@ -80,6 +80,9 @@ var _warmth_label: Label = null
 var _wrong_label: Label = null
 var _feedback: Label = null
 var _ladder_view: DoubleOrNothingView = null
+var _push_view: PushYourLuckView = null
+var _turn_view: TurnGameView = null
+var _turn_mouse_catcher: Control = null  # covers the screen during a turn game, so a click anywhere counts
 
 
 func setup(
@@ -162,6 +165,11 @@ func _clear_body(keep: Control = null) -> void:
 			child.queue_free()
 	_lock = null
 	_ladder_view = null
+	_push_view = null
+	_turn_view = null
+	if _turn_mouse_catcher != null:
+		_turn_mouse_catcher.queue_free()
+		_turn_mouse_catcher = null
 
 
 func _attempts_text() -> String:
@@ -220,6 +228,57 @@ func _instructions() -> String:
 				)
 				% int(_definition["knobs"]["odds"])
 			)
+		StopTheBarGame.KIND:
+			var bar_knobs: Dictionary = _definition["knobs"]
+			var stops: int = int(bar_knobs["stops"])
+			return (
+				(
+					"A marker sweeps along the bar. Stop it in the zone with E, Enter or a click: dead centre "
+					+ "scores 100%%, falling to 0%% at the zone's edge. %s%s%s"
+				)
+				% [
+					"You have one stop." if stops == 1 else "You have %d stops." % stops,
+					(
+						" The zone moves each time."
+						if stops > 1 and bool(bar_knobs["moving_zone"])
+						else ""
+					),
+					(
+						" Each stop is harder than the last."
+						if stops > 1 and int(bar_knobs["harder_pct"]) > 0
+						else ""
+					),
+				]
+			)
+		HoldReleaseGame.KIND:
+			var hold_knobs: Dictionary = _definition["knobs"]
+			var holds: int = int(hold_knobs["holds"])
+			return (
+				(
+					"Hold E, Enter or the mouse button to fill the gauge, and let go in the zone. The higher "
+					+ "the better, up to the zone's top edge, but past that scores nothing. %s%s%s"
+				)
+				% [
+					"You have one hold." if holds == 1 else "You have %d holds." % holds,
+					(
+						" The zone moves each time."
+						if holds > 1 and bool(hold_knobs["moving_zone"])
+						else ""
+					),
+					(
+						" Each hold is harder than the last."
+						if holds > 1 and int(hold_knobs["harder_pct"]) > 0
+						else ""
+					),
+				]
+			)
+		PushYourLuckGame.KIND:
+			return (
+				"You start with a small pot. Bank it to keep it, or push to draw a token from the bag, with "
+				+ "PUSH or E. Value tokens add to the pot, a doubler doubles it, a shield saves you from one "
+				+ "trap, and a trap with no shield loses it all. What's left in the bag is always shown, so "
+				+ "the odds are yours to judge. The bigger the pot you bank, the better the prize."
+			)
 	return ""
 
 
@@ -250,9 +309,27 @@ func _start_attempt() -> void:
 			)
 			_ladder_view = DoubleOrNothingView.new()
 			_ladder_view.finished.connect(_on_ladder_finished)
-			_ladder_view.waiting_changed.connect(_on_ladder_waiting)
+			_ladder_view.waiting_changed.connect(_on_game_waiting)
 			_body.add_child(_ladder_view)
 			_ladder_view.setup(_definition, _ladder, _device, _character)
+		PushYourLuckGame.KIND:
+			_push_view = PushYourLuckView.new()
+			_push_view.finished.connect(_on_ladder_finished)
+			_push_view.waiting_changed.connect(_on_game_waiting)
+			_body.add_child(_push_view)
+			_push_view.setup(
+				_definition, PushYourLuckGame.new(_definition["knobs"], seed_value), _character
+			)
+		StopTheBarGame.KIND:
+			_build_turn_view(
+				StopTheBarView.new(),
+				StopTheBarGame.new(_definition["knobs"], seed_value, _time_scale)
+			)
+		HoldReleaseGame.KIND:
+			_build_turn_view(
+				HoldReleaseView.new(),
+				HoldReleaseGame.new(_definition["knobs"], seed_value, _time_scale)
+			)
 
 
 func _finish_play(tier_id: String, headline: String) -> void:
@@ -439,22 +516,13 @@ func _check_safe_finished() -> void:
 		(control as Button).disabled = true
 	match _safe.end_reason:
 		SafeCrackerGame.END_OPENED:
-			_lock.play_released(_tier_strength(tier_id))
+			_lock.play_released(MiniGameResolver.tier_strength(_definition["tiers"], tier_id))
 		SafeCrackerGame.END_JAMMED:
 			_lock.play_jammed()
 		SafeCrackerGame.END_TIME:
 			_lock.play_time_up()
 	await _lock.finale_finished
 	_finish_play(tier_id, headline)
-
-
-# How good a tier is, 0 (the lowest) to 1 (the highest). Tiers are sorted lowest first.
-func _tier_strength(tier_id: String) -> float:
-	var tiers: Array = _definition["tiers"]
-	for i in tiers.size():
-		if str((tiers[i] as Dictionary)["id"]) == tier_id:
-			return float(i) / maxf(1.0, float(tiers.size() - 1)) if tiers.size() > 1 else 1.0
-	return 0.0
 
 
 func _refresh_safe() -> void:
@@ -515,17 +583,41 @@ func _warmth_word(warmth: float) -> String:
 # ── Double or Nothing ────────────────────────────────────────────────────────
 
 
-# The ladder plays in its own view (the tower and the wheel); the screen just listens for how it
-# ended and runs auto-advance while it waits on the player.
+# The chance games play in their own views; the screen just listens for how they ended and runs auto-advance while
+# they wait on the player.
 func _on_ladder_finished(outcome: String, headline: String) -> void:
 	_finish_play(outcome, headline)
 
 
-func _on_ladder_waiting(is_waiting: bool) -> void:
+# A game playing in its own view runs auto-advance only while that view waits on the player.
+func _on_game_waiting(is_waiting: bool) -> void:
 	if is_waiting:
 		_restart_countdown()
 	else:
 		_stop_countdown()
+
+
+# ── Stop the Bar and Hold & Release ──────────────────────────────────────────
+
+
+# A turn game plays in its own view. A catcher over the whole screen takes the mouse, rather than _input, so a click
+# meant for anything opened on top of this screen can't count as a press.
+func _build_turn_view(view: TurnGameView, game: TurnScoreGame) -> void:
+	_turn_view = view
+	_turn_view.finished.connect(_on_turn_game_finished)
+	_turn_view.waiting_changed.connect(_on_game_waiting)
+	_body.add_child(_turn_view)
+	_turn_view.setup(_definition, game, _character)
+	_turn_mouse_catcher = Control.new()
+	_turn_mouse_catcher.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_turn_mouse_catcher.gui_input.connect(_turn_view.handle_pointer)
+	add_child(_turn_mouse_catcher)
+
+
+func _on_turn_game_finished(score: int) -> void:
+	_finish_play(
+		MiniGameResolver.tier_for_score(_definition["tiers"], score), "SCORE  %d%%" % score
+	)
 
 
 # ── Input and clock ──────────────────────────────────────────────────────────
@@ -545,6 +637,10 @@ func _input(event: InputEvent) -> void:
 		handled = _safe_input(event)
 	elif _phase == Phase.PLAY and _ladder_view != null:
 		handled = _ladder_view.handle_input(event)
+	elif _phase == Phase.PLAY and _push_view != null:
+		handled = _push_view.handle_input(event)
+	elif _phase == Phase.PLAY and _turn_view != null:
+		handled = _turn_view.handle_input(event)
 	if handled:
 		get_viewport().set_input_as_handled()
 
@@ -622,8 +718,10 @@ func _time_out() -> void:
 		_:
 			if _ladder_view != null and _phase == Phase.PLAY:
 				_ladder_view.time_out()
+			elif _push_view != null and _phase == Phase.PLAY:
+				_push_view.time_out()
 			elif MiniGameLibrary.is_chance(str(_definition.get("kind", ""))):
-				_resolve(DoubleOrNothingGame.CASHED_PREFIX + "1")  # never started: keeps rung 1
+				_resolve(MiniGameLibrary.untouched_chance_tier(_definition))
 			else:
 				_resolve(MiniGameResolver.timeout_tier(_definition))
 
@@ -673,7 +771,8 @@ func _reveal_rewards(label: Label, rewards: Dictionary) -> void:
 			if step != last_step[0]:
 				last_step[0] = step
 				UISound.dial_tick(1.4)
-		var count: Tween = create_tween()
+		# The label's own tween, because RETRY can remove the label mid-count, and the tween has to go with it.
+		var count: Tween = label.create_tween()
 		count.tween_method(count_to, 0.0, float(coins), COUNT_UP_SECS).set_ease(Tween.EASE_OUT)
 		await count.finished
 		if not is_inside_tree():
@@ -681,7 +780,7 @@ func _reveal_rewards(label: Label, rewards: Dictionary) -> void:
 		shown.append(label.text)
 	for part: String in others:
 		await get_tree().create_timer(REWARD_STAGGER_SECS).timeout
-		if not is_inside_tree():
+		if not is_inside_tree() or not is_instance_valid(label):
 			return
 		shown.append(part)
 		label.text = " · ".join(shown)

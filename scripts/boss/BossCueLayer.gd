@@ -23,24 +23,11 @@ extends Control
 # OLDEST animated cue is retired — a new attack hit matters more than the tail of the last one.
 const MAX_ANIMATED_CUES: int = 3
 
-# Reduce flashing: a cue authored to snap in ("flash") fades in over this long instead.
+# Reduce flashing: a cue that cuts in fades in over this long instead, since a snap on is a flash.
 const REDUCED_FLASH_FADE_MS: int = 250
 
 # Fallback hold for a one-shot cue that gives no timings at all, so it cannot linger forever.
 const DEFAULT_HOLD_MS: int = 1200
-
-# How much bigger a POP cue starts before settling. Overshoot is on the way IN only — it lands on 1.0
-# and stays, so nothing wobbles under the round.
-const POP_OVERSHOOT: float = 1.15
-
-# How far a "rise" drifts upward, as a fraction of the canvas height. Deliberately much shorter than a
-# slide: rise is the gentle option for dialogue, where a slide's travel reads as too much movement.
-const RISE_FRACTION: float = 0.035
-
-# How far a "slide" transition travels, as a fraction of the CANVAS width — cues are positioned in
-# canvas space, so measuring this against the window instead would make the same slide cover a
-# different share of the picture at every resolution.
-const SLIDE_FRACTION: float = 0.08
 
 # Cast art is placed against a fixed 1920x1080 REFERENCE CANVAS, letterboxed into whatever rect this
 # layer happens to occupy. This is what makes the encounter editor's preview trustworthy: the layer
@@ -125,12 +112,23 @@ func clear(id: String) -> void:
 		return
 	_kill_tween(entry)
 	var out_ms: int = int(entry.get("out_ms", 0))
-	if out_ms <= 0:
+	var motion: String = str(entry.get("exit_transition", RoundTimeline.DEFAULT_CUE_MOTION))
+	# A Cut leaves at once whatever its fade-out time says, and so does a fade with no time to fade over.
+	if motion == CastMotion.CUT or (motion == CastMotion.FADE and out_ms <= 0):
 		root.queue_free()
 		return
+	# The cue fades as one over its fade-out time while its art makes the exit, and goes when both are done.
+	var secs: float = out_ms / 1000.0
 	var tween: Tween = create_tween()
-	tween.tween_property(root, "modulate:a", 0.0, out_ms / 1000.0)
-	tween.tween_callback(root.queue_free)
+	tween.set_parallel(true)
+	if out_ms > 0:
+		tween.tween_property(root, "modulate:a", 0.0, secs)
+	var mover: Control = _mover(entry)
+	if mover != null and motion != CastMotion.FADE:
+		secs = maxf(secs, CastMotion.SHORTEST_SECS)
+		CastMotion.exit(mover, motion, REFERENCE_CANVAS, func() -> void: pass, secs, false)
+	tween.tween_interval(secs)
+	tween.chain().tween_callback(root.queue_free)
 
 
 ## Drops every cue at once — the round ended, or the encounter was cut short.
@@ -285,22 +283,20 @@ func _place_subtitle(label: Control, y: float) -> void:
 # ── Timing ───────────────────────────────────────────────────────────────────
 
 
-# Fades the cue in, and for a one-shot schedules its own exit. `flash` snaps in with no fade at all
-# (a short fade with Reduce flashing on); `slide` drifts in from the side while fading.
+# Fades the cue in while its art makes its entrance (CastMotion), and for a one-shot schedules its own exit. A Cut
+# snaps in with no fade at all (a short fade with Reduce flashing on).
 func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 	if not _cues.has(id):
 		return
 	var entry: Dictionary = _cues[id]
 	var root: Control = entry["root"]
-	var image: Control = _live(entry, "image")
-	var subtitle: Control = _live(entry, "subtitle")
-	var transition: String = str(cue.get("transition", RoundTimeline.TRANSITION_FADE))
-	var flash: bool = transition == RoundTimeline.TRANSITION_FLASH
+	var transition: String = str(cue.get("transition", RoundTimeline.DEFAULT_CUE_MOTION))
 	var in_ms: int = int(cue.get("in_ms", 0))
-	if flash:
+	if transition == CastMotion.CUT:
 		in_ms = REDUCED_FLASH_FADE_MS if SettingsService.get_reduce_flashing() else 0
 	# Remembered for clear(), which has only the id to go on by then.
 	entry["out_ms"] = int(cue.get("out_ms", 0))
+	entry["exit_transition"] = str(cue.get("exit_transition", RoundTimeline.DEFAULT_CUE_MOTION))
 
 	# The cue fades as ONE — art and line together. A line that wants its own schedule is simply its own
 	# text-only cue, which already carries a full set of fades; giving every cue a second parallel set of
@@ -308,18 +304,21 @@ func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 	if in_ms <= 0:
 		root.modulate.a = 1.0
 
-	# Motion belongs to the art; a subtitle sliding across the screen with its portrait reads as the
-	# caption coming loose. Only a cue with no art at all moves its line instead — and then it is the
-	var mover: Control = image if image != null else subtitle
-	var travel: Vector2 = _entry_travel(transition)
-	var popping: bool = transition == RoundTimeline.TRANSITION_POP and mover != null
-	var sliding: bool = travel != Vector2.ZERO and mover != null
+	var mover: Control = _mover(entry)
+	if mover != null:
+		CastMotion.enter(
+			mover,
+			transition,
+			REFERENCE_CANVAS,
+			maxf(CastMotion.SHORTEST_SECS, in_ms / 1000.0),
+			false
+		)
 	# A one-shot ANIMATION ends itself when its clip finishes (see _add_image), so only a still or a
 	# subtitle-only line needs a timed exit.
 	var timed_exit: bool = one_shot and not bool(entry.get("animated", false))
-	# A flash with no movement and no timed exit has nothing to animate, and a Tween created with no
+	# A Cut with no timed exit has nothing to fade, and a Tween created with no
 	# Tweeners errors on its first step — so the tween is built lazily, only once something needs it.
-	if in_ms <= 0 and not sliding and not popping and not timed_exit:
+	if in_ms <= 0 and not timed_exit:
 		return
 
 	var tween: Tween = create_tween()
@@ -327,27 +326,6 @@ func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 	tween.set_parallel(true)
 	if in_ms > 0:
 		tween.tween_property(root, "modulate:a", 1.0, in_ms / 1000.0)
-	if sliding:
-		var placed: Vector2 = mover.position
-		mover.position = placed + travel
-		(
-			tween
-			. tween_property(mover, "position", placed, maxf(0.12, in_ms / 1000.0))
-			. set_ease(Tween.EASE_OUT)
-			. set_trans(Tween.TRANS_CUBIC)
-		)
-	if popping:
-		# Scaled about the art's OWN centre, not the cue root's: the root spans the whole canvas, so
-		# scaling that would swing an edge-anchored portrait in from the middle of the screen instead of
-		# letting it punch up where it was placed.
-		_centre_pivot(mover)
-		mover.scale = Vector2(POP_OVERSHOOT, POP_OVERSHOOT)
-		(
-			tween
-			. tween_property(mover, "scale", Vector2.ONE, maxf(0.14, in_ms / 1000.0))
-			. set_ease(Tween.EASE_OUT)
-			. set_trans(Tween.TRANS_BACK)
-		)
 	if not timed_exit:
 		return  # a window owns its lifetime; clear() ends it
 	var hold_ms: int = _hold_for(cue)
@@ -356,38 +334,17 @@ func _play_in(id: String, cue: Dictionary, one_shot: bool) -> void:
 	tween.tween_callback(func() -> void: clear(id))
 
 
-# Where a cue starts, relative to where it belongs, for the entrances that travel. Zero for the ones
-# that do not, which is also how _play_in decides whether there is any movement to tween.
-static func _entry_travel(transition: String) -> Vector2:
-	var slide_x: float = REFERENCE_CANVAS.x * SLIDE_FRACTION
-	var slide_y: float = REFERENCE_CANVAS.y * SLIDE_FRACTION
-	match transition:
-		RoundTimeline.TRANSITION_SLIDE_LEFT:
-			return Vector2(-slide_x, 0.0)
-		RoundTimeline.TRANSITION_SLIDE_RIGHT:
-			return Vector2(slide_x, 0.0)
-		RoundTimeline.TRANSITION_SLIDE_TOP:
-			return Vector2(0.0, -slide_y)
-		RoundTimeline.TRANSITION_SLIDE_BOTTOM:
-			return Vector2(0.0, slide_y)
-		RoundTimeline.TRANSITION_RISE:
-			return Vector2(0.0, REFERENCE_CANVAS.y * RISE_FRACTION)
-	return Vector2.ZERO
+# The part of a cue that makes its entrance and exit: its art, or a line on its own when it has none. Motion
+# belongs to the art; a subtitle sliding with its portrait reads as the caption coming loose.
+func _mover(entry: Dictionary) -> Control:
+	var image: Control = _live(entry, "image")
+	return image if image != null else _live(entry, "subtitle")
 
 
 # One of a cue's parts, or null if it has none of that kind (or it has already been freed).
 static func _live(entry: Dictionary, key: String) -> Control:
 	var node: Variant = entry.get(key)
 	return node if node is Control and is_instance_valid(node) else null
-
-
-# Puts a node's scaling origin at its own middle. A subtitle is sized by anchors, so on the frame it is
-# created its size is still zero and the pivot would land in the corner — it is corrected once the
-# layout has actually run, which is well inside a pop's duration.
-static func _centre_pivot(node: Control) -> void:
-	node.pivot_offset = node.size * 0.5
-	if node.size == Vector2.ZERO:
-		node.resized.connect(func() -> void: node.pivot_offset = node.size * 0.5, CONNECT_ONE_SHOT)
 
 
 # How long a one-shot stays up. A subtitle sets the pace when there is one — a line the player cannot

@@ -1520,15 +1520,43 @@ const JOURNEY_MIN_APP_VERSION_WIDE_CODECS: String = "0.8.4"
 # heard of, so the journey has to be refused at load, where JourneySelect explains why.
 const JOURNEY_MIN_APP_VERSION_MINIGAMES: String = "0.9.2"
 
+# The floor a journey needs once it places a game newer than that (MiniGameLibrary.NEWER_KINDS).
+const JOURNEY_MIN_APP_VERSION_NEWER_GAMES: String = "0.9.3"
+
 
 # The MinVersion a save should stamp: the highest floor any of the journey's content needs, or "" for
 # the standing one. Each floor is newer than the one before it, so the newest that applies wins.
-static func content_min_version(keeps_wide_codecs: bool, places_minigames: bool) -> String:
+static func content_min_version(
+	keeps_wide_codecs: bool, places_minigames: bool, places_newer_games: bool = false
+) -> String:
+	if places_newer_games:
+		return JOURNEY_MIN_APP_VERSION_NEWER_GAMES
 	if places_minigames:
 		return JOURNEY_MIN_APP_VERSION_MINIGAMES
 	if keeps_wide_codecs:
 		return JOURNEY_MIN_APP_VERSION_WIDE_CODECS
 	return ""
+
+
+# Whether the graph plays a game from `library` that needs a newer build than the first mini-games did: a newer
+# kind on a mini-game node, or a Quick-Time Event with Hold or Mash prompts in a boss encounter. A rendition's
+# nodes can also play its base's games, which the base's own floor already covers.
+static func graph_needs_newer_game(graph: Dictionary, library: Array) -> bool:
+	for node: Variant in (graph.get("nodes", {}) as Dictionary).values():
+		if not (node is Dictionary):
+			continue
+		var data: Dictionary = (node as Dictionary).get("data", {})
+		for game_id: Variant in RoundTimeline.qte_games_on_node(data):
+			var qte: Dictionary = MiniGameLibrary.find(library, str(game_id))
+			if str(qte.get("kind", "")) == QuickTimeEventGame.KIND:
+				if QuickTimeEventGame.needs_newer_build(qte.get("knobs", {})):
+					return true
+		if str((node as Dictionary).get("type", "")) != "minigame":
+			continue
+		var definition: Dictionary = MiniGameLibrary.find(library, str(data.get("game", "")))
+		if str(definition.get("kind", "")) in MiniGameLibrary.NEWER_KINDS:
+			return true
+	return false
 
 
 # Whether anything in the graph plays a mini-game: a mini-game node, or a QTE in a boss encounter.
@@ -2541,9 +2569,13 @@ static func without_ids(list: Array, ids: Array, key: String = "id") -> Array:
 
 
 # ── Stage (a line's list of on-stage characters) ────────────────────────────
-# A LIST of {character, portrait?, placement?}. portrait/placement omitted → the character's default
-# (first) of each. Entries with no character are dropped; ids are NOT validated here (a stale id just
-# renders nothing at runtime, never a crash).
+# A LIST of {character, portrait?, placement?, enter?, exit?}. portrait/placement omitted → the character's
+# default (first) of each. enter (on arriving or changing expression) and exit (on leaving after this line) are
+# from the cast's shared set (CastMotion), omitted when they're a Cut, the default. Entries with no character are
+# dropped; ids are NOT validated here (a stale id just renders nothing at runtime, never a crash).
+const STAGE_MOTION_KEYS: Array[String] = ["enter", "exit"]
+
+
 static func clean_stage(v: Variant) -> Array:
 	var out: Array = []
 	if not (v is Array):
@@ -2561,6 +2593,12 @@ static func clean_stage(v: Variant) -> Array:
 			entry["portrait"] = por
 		if plc != "":
 			entry["placement"] = plc
+		for key: String in STAGE_MOTION_KEYS:
+			var motion: String = CastMotion.normalize(
+				(e as Dictionary).get(key, ""), CastMotion.CUT
+			)
+			if motion != CastMotion.CUT:
+				entry[key] = motion
 		out.append(entry)
 	return out
 
@@ -2757,7 +2795,12 @@ static func flag_names_in_graph(graph: Dictionary) -> Array:
 # `items` ({item_id: item}) adds what USING an item does: a node that can hand out an item with a flag
 # or counter effect shows that effect too ("🎒 Keycard → ⚑ has_key"), since the run state can change
 # there if the player uses it. Items show only when they matter to routing — see _routing_item_ids.
-static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> Dictionary:
+#
+# `minigames` is the journey's library. A game's rewards live there rather than on the node that plays it, so
+# without it the node shows nothing. See _minigame_marks.
+static func state_marks_in_graph(
+	graph: Dictionary, items: Dictionary = {}, minigames: Array = []
+) -> Dictionary:
 	var node_marks: Dictionary = {}
 	var edge_marks: Dictionary = {}
 	var item_ids: Array = items.keys()
@@ -2769,6 +2812,7 @@ static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> D
 		marks.append_array(_item_given_marks(node, items, item_ids))
 		for iid: String in items_given_by_node(node, item_ids):
 			marks.append_array(_item_effect_marks(items[iid] as Dictionary, iid))
+		marks.append_array(_minigame_marks(node, items, minigames))
 		for timeline: Dictionary in boss_timelines(data):
 			for key: String in RoundTimeline.OUTCOME_FLAG_KEYS:
 				var flag: String = str(timeline.get(key, "")).strip_edges()
@@ -2804,6 +2848,58 @@ static func state_marks_in_graph(graph: Dictionary, items: Dictionary = {}) -> D
 		"nodes": _keep_tracked_items(node_marks, tracked),
 		"edges": _keep_tracked_items(edge_marks, tracked),
 	}
+
+
+# What the games a node plays can change: a mini-game node's game, and any Quick-Time Events on its encounters.
+# Which of these happen depends on the result, so each chip names the results that do it, and results doing the
+# same thing share one chip: "⚑ opened_safe (Pass, Perfect)".
+static func _minigame_marks(node: Dictionary, items: Dictionary, minigames: Array) -> Array:
+	var data: Dictionary = node.get("data", {})
+	var game_ids: Array = RoundTimeline.qte_games_on_node(data)
+	if str(node.get("type", "")) == "minigame":
+		game_ids.append(str(data.get("game", "")))
+	var seen_games: Dictionary = {}
+	var marks: Array = []
+	for game_id: Variant in game_ids:
+		if seen_games.has(game_id):
+			continue
+		seen_games[game_id] = true
+		var definition: Dictionary = MiniGameLibrary.find(minigames, str(game_id))
+		if not definition.is_empty():
+			marks.append_array(_labelled_reward_marks(definition, items))
+	return marks
+
+
+# The marks for one game's results, each with its results listed after it.
+static func _labelled_reward_marks(definition: Dictionary, items: Dictionary) -> Array:
+	var marks: Array = []
+	var labels_by_text: Dictionary = {}  # a mark's text → the labels of the results that make it
+	for source: Dictionary in MiniGameLibrary.reward_sources(definition):
+		for mark: Dictionary in _reward_marks(source["rewards"], items):
+			var text: String = str(mark["text"])
+			if not labels_by_text.has(text):
+				labels_by_text[text] = []
+				marks.append(mark)
+			var labels: Array = labels_by_text[text]
+			if not labels.has(source["label"]):
+				labels.append(source["label"])
+	for mark: Dictionary in marks:
+		var labels: Array = labels_by_text[str(mark["text"])]
+		mark["text"] = "%s (%s)" % [str(mark["text"]), ", ".join(PackedStringArray(labels))]
+	return marks
+
+
+# What one set of rewards changes, including what using the item it gives can do.
+static func _reward_marks(rewards: Dictionary, items: Dictionary) -> Array:
+	var marks: Array = _state_change_marks(rewards, items)
+	var given: String = str(rewards.get("item", ""))
+	if given != "":
+		marks.append(
+			_state_mark("item", given, "change", "up", "🎒 +%s" % _item_label(items, given))
+		)
+		if items.has(given):
+			marks.append_array(_item_effect_marks(items[given] as Dictionary, given))
+	return marks
 
 
 # The items worth following on the map: those a fork, sacrifice or loop exit checks, and those whose
@@ -3051,6 +3147,46 @@ static func items_given_by_node(node: Dictionary, item_ids: Array) -> Array:
 		if id != "" and item_ids.has(id) and not out.has(id):
 			out.append(id)
 	return out
+
+
+# What the builder's panels call a node, such as in a fork choice's LEADS TO. Always something an author can read:
+# never the node's id. A Loop Start has no name of its own, so it's named for where it loops to.
+static func graph_node_label(nodes: Dictionary, node_id: String, minigames: Array = []) -> String:
+	if not nodes.has(node_id):
+		return "(missing node)"
+	var node: Dictionary = nodes[node_id]
+	var data: Dictionary = node.get("data", {})
+	var type: String = str(node.get("type", ""))
+	match type:
+		"round":
+			return _named_node_label("Round", data.get("name", ""))
+		"shop":
+			return _named_node_label("Shop", data.get("title", ""))
+		"storyboard":
+			return _named_node_label("Storyboard", data.get("name", ""))
+		"fork":
+			return _named_node_label("Fork", data.get("title", ""))
+		"checkpoint":
+			return _named_node_label("Checkpoint", data.get("name", ""))
+		"minigame":
+			var game: Dictionary = MiniGameLibrary.find(minigames, str(data.get("game", "")))
+			return _named_node_label("Mini-Game", game.get("name", ""))
+		"loop_start":
+			var out: Array = node.get("out", [])
+			var next_id: String = (
+				str((out[0] as Dictionary).get("to", "")) if not out.is_empty() else ""
+			)
+			if not nodes.has(next_id):
+				return "Loop to (nothing yet)"
+			return "Loop to %s" % graph_node_label(nodes, next_id, minigames)
+		"loop_end":
+			return "Loop End"
+	return type.capitalize() if type != "" else "Node"
+
+
+static func _named_node_label(kind: String, name: Variant) -> String:
+	var shown: String = str(name).strip_edges()
+	return "%s — %s" % [kind, shown if shown != "" else "(unnamed)"]
 
 
 # The key the overlay's picker uses for one counter or flag: "counter:Ammo", "flag:beat_boss".

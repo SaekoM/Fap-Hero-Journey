@@ -107,27 +107,8 @@ const BLEND_ADD: String = "add"
 const BLEND_SCREEN: String = "screen"
 const BLENDS: Array[String] = [BLEND_NORMAL, BLEND_ADD]
 
-const TRANSITION_FADE: String = "fade"
-const TRANSITION_FLASH: String = "flash"
-const TRANSITION_POP: String = "pop"
-const TRANSITION_RISE: String = "rise"
-const TRANSITION_SLIDE_LEFT: String = "slide_left"
-const TRANSITION_SLIDE_RIGHT: String = "slide_right"
-const TRANSITION_SLIDE_TOP: String = "slide_top"
-const TRANSITION_SLIDE_BOTTOM: String = "slide_bottom"
-# Superseded by the four directional values. Kept only to migrate cues authored while slide picked its
-# own direction — see normalize_event. Never offered for authoring.
-const TRANSITION_SLIDE: String = "slide"
-const TRANSITIONS: Array[String] = [
-	TRANSITION_FADE,
-	TRANSITION_FLASH,
-	TRANSITION_POP,
-	TRANSITION_RISE,
-	TRANSITION_SLIDE_LEFT,
-	TRANSITION_SLIDE_RIGHT,
-	TRANSITION_SLIDE_TOP,
-	TRANSITION_SLIDE_BOTTOM,
-]
+# A cast cue's entrance and exit come from the cast's shared set (CastMotion). Both default to a fade.
+const DEFAULT_CUE_MOTION: String = CastMotion.FADE
 
 const ANCHOR_CENTER: String = "center"
 const CAST_ANCHORS: Array[String] = ["center", "left", "right", "top", "bottom", "custom"]
@@ -624,12 +605,14 @@ static func _fill_cast(out: Dictionary, raw: Dictionary) -> void:
 	)
 	out["offset"] = _to_offset(raw.get("offset", null))
 	out["scale"] = maxf(0.01, float(raw.get("scale", 1.0)))
-	# Bare `slide` becomes slide_left, which is the direction it always travelled, so a cue authored
-	# before directions existed keeps the entrance it was given.
-	var raw_transition: String = str(raw.get("transition", TRANSITION_FADE))
-	if raw_transition == TRANSITION_SLIDE:
-		raw_transition = TRANSITION_SLIDE_LEFT
-	out["transition"] = _one_of(raw_transition, TRANSITIONS, TRANSITION_FADE)
+	# CastMotion reads the old names: a bare `slide` was always slide_left, and `flash` only ever snapped in,
+	# which is a Cut. So a cue authored before either change keeps the entrance it was given.
+	out["transition"] = CastMotion.normalize(
+		raw.get("transition", DEFAULT_CUE_MOTION), DEFAULT_CUE_MOTION
+	)
+	out["exit_transition"] = CastMotion.normalize(
+		raw.get("exit_transition", DEFAULT_CUE_MOTION), DEFAULT_CUE_MOTION
+	)
 	out["in_ms"] = maxi(0, int(raw.get("in_ms", DEFAULT_CUE_FADE_MS)))
 	out["out_ms"] = maxi(0, int(raw.get("out_ms", DEFAULT_CUE_FADE_MS)))
 	# Tier-1 animation layer: an animated source plays through the existing hidden decoder, with a blend

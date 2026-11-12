@@ -831,6 +831,20 @@ func _apply_layout() -> void:
 	_style_label(bldbg_hint, UITheme.TEXT_HINT, 11, false)
 	display_section.add_child(bldbg_hint)
 
+	_add_accessibility_toggle(
+		display_section,
+		"HARDWARE VIDEO DECODING",
+		SettingsService.get_hardware_video_decoding(),
+		SettingsService.set_hardware_video_decoding,
+		(
+			"Decodes video on your graphics chip, which keeps large videos (4K, 60 fps) smooth on laptops and "
+			+ "lighter on the processor. If the graphics chip can't play a video, it switches to the processor by "
+			+ "itself. Turn this off only if videos show glitches or won't play. Applies from the next video."
+		)
+	)
+	if OS.get_name() == "Windows":
+		_add_renderer_row(display_section)
+
 	# ── Update Check row (code-generated, appended to DisplaySection) ─────────
 	_updates_section = _make_section("UPDATES")
 	var upd_row: HBoxContainer = HBoxContainer.new()
@@ -1528,6 +1542,43 @@ func _build_accessibility_section(display_section: VBoxContainer) -> VBoxContain
 		)
 	)
 	return section
+
+
+# RENDERER — Direct3D 12 or Vulkan, Windows only. Godot chooses its renderer at launch, so the hint says which one
+# is running now and that a change applies after a restart.
+func _add_renderer_row(section: VBoxContainer) -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	section.add_child(row)
+
+	var label: Label = Label.new()
+	label.text = "RENDERER"
+	label.custom_minimum_size = Vector2(ROW_LABEL_W, 0)
+	_style_label(label, UITheme.WHITE_SOFT, 14, false)
+	row.add_child(label)
+
+	var dropdown: OptionButton = OptionButton.new()
+	for renderer: String in SettingsService.RENDERERS:
+		dropdown.add_item(str(SettingsService.RENDERER_NAMES[renderer]))
+	dropdown.selected = SettingsService.RENDERERS.find(SettingsService.get_renderer())
+	dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_option_button(dropdown)
+	dropdown.item_selected.connect(
+		func(index: int) -> void: SettingsService.set_renderer(SettingsService.RENDERERS[index])
+	)
+	row.add_child(dropdown)
+
+	var running: String = SettingsService.running_renderer()
+	var hint: Label = Label.new()
+	hint.text = (
+		"How the game draws to the screen. Try Vulkan if the picture looks grainy or grey, or if menus or "
+		+ "video stutter; switch back if Vulkan gives trouble. Applies after you restart the game. Running now: "
+		+ str(SettingsService.RENDERER_NAMES.get(running, running))
+		+ "."
+	)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_style_label(hint, UITheme.TEXT_HINT, 11, false)
+	section.add_child(hint)
 
 
 func _on_colour_mode_selected(index: int) -> void:

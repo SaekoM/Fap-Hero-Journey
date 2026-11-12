@@ -110,3 +110,14 @@ func test_possible_ids_respect_exclusions() -> void:
 	# ...unless it's also guaranteed.
 	var both := {"mode": "pool", "guaranteed": ["key"], "excluded": ["key"], "count": 3}
 	assert_bool("key" in JourneyData.shop_possible_ids(both, REGISTRY)).is_true()
+
+
+# A PRICE MULTIPLIER of 0 is a free shop: it's saved as 0 (not put back to the 1.0 default), and the auditor prices
+# its items at nothing, so it counts them as affordable on any purse.
+func test_a_zero_multiplier_makes_a_free_shop() -> void:
+	var saved: Dictionary = JourneyData.coerce_node_save_data(
+		"shop", {"title": "Free", "price_multiplier": 0.0}
+	)
+	assert_float(saved["price_multiplier"]).is_equal(0.0)
+	var items: Dictionary = {"key": {"price": 40}}
+	assert_int(JourneyAudit._shop_price(items, "key", 0.0)).is_equal(0)

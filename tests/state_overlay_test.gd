@@ -288,3 +288,140 @@ func test_an_item_nothing_checks_and_with_no_state_effect_is_left_off() -> void:
 		},
 	}
 	assert_dict(JourneyData.state_marks_in_graph(graph, KEYCARD)["nodes"]).is_empty()
+
+
+# ── Mini-games ───────────────────────────────────────────────────────────────
+
+
+func _safe_library(extra: Dictionary = {}) -> Array:
+	var raw: Dictionary = {
+		"id": "safe",
+		"kind": SafeCrackerGame.KIND,
+		"tiers":
+		[
+			{"name": "Fail", "min_score": 0, "rewards": {"clear_flags": ["lucky"]}},
+			{"name": "Pass", "min_score": 40, "rewards": {"set_flags": ["opened_safe"]}},
+			{
+				"name": "Perfect",
+				"min_score": 90,
+				"rewards": {"set_flags": ["opened_safe"], "set_counters": {"grit": 2}},
+			},
+		],
+	}
+	raw.merge(extra, true)
+	return [MiniGameLibrary.normalize_definition(raw)]
+
+
+func _graph_with_node(type: String, data: Dictionary) -> Dictionary:
+	return {"nodes": {"n": {"type": type, "data": data, "out": []}}}
+
+
+func _node_marks(graph: Dictionary, library: Array, items: Dictionary = {}) -> Array:
+	return JourneyData.state_marks_in_graph(graph, items, library)["nodes"].get("n", [])
+
+
+func test_a_game_node_shows_its_tiers_rewards_with_their_names() -> void:
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "safe"})
+	assert_array(_texts(_node_marks(graph, _safe_library()))).contains_exactly_in_any_order(
+		["⚐ lucky (Fail)", "⚑ opened_safe (Pass, Perfect)", "+2 grit (Perfect)"]
+	)
+
+
+func test_a_chip_keeps_what_the_where_used_list_filters_on() -> void:
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "safe"})
+	for mark: Dictionary in _node_marks(graph, _safe_library()):
+		if str(mark["kind"]) == "flag" and str(mark["name"]) == "opened_safe":
+			assert_str(str(mark["role"])).is_equal("change")
+			assert_str(str(mark["tone"])).is_equal("set")
+			return
+	fail("opened_safe has no mark")
+
+
+func test_different_amounts_are_separate_chips() -> void:
+	var library: Array = _safe_library(
+		{
+			"tiers":
+			[
+				{"name": "Fail", "min_score": 0, "rewards": {"set_counters": {"grit": -1}}},
+				{"name": "Pass", "min_score": 40, "rewards": {"set_counters": {"grit": 1}}},
+			]
+		}
+	)
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "safe"})
+	assert_array(_texts(_node_marks(graph, library))).contains_exactly_in_any_order(
+		["−1 grit (Fail)", "+1 grit (Pass)"]
+	)
+
+
+func test_a_ladder_names_its_rungs_and_its_bust() -> void:
+	var library: Array = [
+		(
+			MiniGameLibrary
+			. normalize_definition(
+				{
+					"id": "wager",
+					"kind": DoubleOrNothingGame.KIND,
+					"rungs":
+					[
+						{"rewards": {}},
+						{"rewards": {"set_flags": ["high_roller"]}},
+					],
+					"bust_rewards": {"clear_flags": ["lucky"]},
+				}
+			)
+		)
+	]
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "wager"})
+	assert_array(_texts(_node_marks(graph, library))).contains_exactly_in_any_order(
+		["⚑ high_roller (Rung 2)", "⚐ lucky (Bust)"]
+	)
+
+
+func test_a_retry_cost_shows_only_when_a_retry_can_be_offered() -> void:
+	var cost: Dictionary = {"set_counters": {"grit": -1}}
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "safe"})
+	var one_try: Array = _safe_library({"attempts": 1, "retry_cost": cost})
+	assert_array(_texts(_node_marks(graph, one_try))).not_contains(["−1 grit (Retry)"])
+	var two_tries: Array = _safe_library({"attempts": 2, "retry_cost": cost})
+	assert_array(_texts(_node_marks(graph, two_tries))).contains(["−1 grit (Retry)"])
+
+
+func test_a_dodge_on_a_boss_shows_on_the_round() -> void:
+	var library: Array = [
+		(
+			MiniGameLibrary
+			. normalize_definition(
+				{
+					"id": "slip",
+					"kind": QuickTimeEventGame.KIND,
+					"tiers":
+					[
+						{"name": "Miss", "min_score": 0, "rewards": {}},
+						{"name": "Hit", "min_score": 50, "rewards": {"set_flags": ["slipped"]}},
+					],
+				}
+			)
+		)
+	]
+	var timeline: Dictionary = {"events": [{"track": "attack", "dodge": {"game": "slip"}}]}
+	var graph: Dictionary = _graph_with_node("round", {"timeline": timeline})
+	assert_array(_texts(_node_marks(graph, library))).contains_exactly(["⚑ slipped (Hit)"])
+
+
+func test_a_game_given_item_shows_what_using_it_does() -> void:
+	var library: Array = _safe_library(
+		{"tiers": [{"name": "Win", "min_score": 0, "rewards": {"item": "key"}}]}
+	)
+	var items: Dictionary = {
+		"key": {"name": "Keycard", "effects": [{"kind": "flag", "flag": "has_key"}]}
+	}
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "safe"})
+	assert_array(_texts(_node_marks(graph, library, items))).contains_exactly_in_any_order(
+		["🎒 +Keycard (Win)", "🎒 Keycard → ⚑ has_key (Win)"]
+	)
+
+
+func test_a_game_that_is_gone_or_a_journey_without_a_library_shows_nothing() -> void:
+	var graph: Dictionary = _graph_with_node("minigame", {"game": "gone"})
+	assert_array(_node_marks(graph, _safe_library())).is_empty()
+	assert_array(_node_marks(_graph_with_node("minigame", {"game": "safe"}), [])).is_empty()
